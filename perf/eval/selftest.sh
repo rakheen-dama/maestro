@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # Evaluator self-test:
 #   perf/eval/selftest.sh <a PASSING smoke result dir> [<a PASSING s1-throughput result dir>]
+#                         [<a PASSING s3-parked result dir>]
 # With the second argument it also runs the Scenario 1 cases (ceiling and
 # "sustains", the WP11 meters degrading to "not available", the statement
-# gate's baseline matching, warm-up size, levels, correctness).
+# gate's baseline matching, warm-up size, levels, correctness); with the
+# third the Scenario 3 cases (parked verification, window discipline, plan,
+# plateau and release correctness, linearity, baseline matching, advisories).
+# Pass "" as the second argument to run the Scenario 3 cases alone.
 #
 # Copies the run's identity.json and measurements.json to a scratch directory,
 # doctors them (and the resulting check list) one fault at a time, re-runs the
@@ -17,6 +21,7 @@ set -Eeuo pipefail
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 src=${1:?usage: perf/eval/selftest.sh <passing smoke result dir> [<passing s1-throughput result dir>]}
 s1src=${2:-}
+s3src=${3:-}
 scenario=$(jq -r .scenario "${src}/identity.json")
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest.XXXXXX")
 trap 'rm -rf "$work"' EXIT
@@ -652,6 +657,198 @@ if [[ -n "$s1src" ]]; then
   out=$(s1_eval s1-no-samples '.samples = []')
   expect "s1, no statement samples: advisory.statementsPerLevel" WARN "$(st "$out" advisory.statementsPerLevel)"
   expect "s1, no statement samples: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+fi
+
+# ── Scenario 3 (s3-parked) ──────────────────────────────────────────────────
+if [[ -n "$s3src" ]]; then
+  [[ "$(jq -r .scenario "${s3src}/identity.json")" == s3-parked ]] || { echo "selftest: ${s3src} is not an s3-parked run"; exit 1; }
+  # s3_eval <case> <measurements filter> [<identity filter>] [<baseline json>]
+  s3_eval() {
+    local dir="${work}/$1" base=""
+    mkdir -p "$dir"
+    jq "${3:-.}" "${s3src}/identity.json" >"${dir}/identity.json"
+    jq "$2" "${s3src}/measurements.json" >"${dir}/measurements.json"
+    [[ ! -s "${s3src}/prometheus.json" ]] || cp "${s3src}/prometheus.json" "${dir}/prometheus.json"
+    if [[ -n "${4:-}" ]]; then
+      printf '%s\n' "$4" >"${dir}/baseline.json"
+      base="${dir}/baseline.json"
+    fi
+    if ! bash "${PERF_DIR}/lib/evaluate.sh" "$dir" s3-parked "$base" >/dev/null 2>"${dir}/stderr"; then
+      printf '{"verdict":"CRASH","checks":{}}\n'
+      return 0
+    fi
+    jq -c '{verdict, checks: (.checks | map({key: .id, value: .status}) | from_entries)}' "${dir}/result.json"
+  }
+  s3_field() { jq -c "$2" "${work}/$1/result.json" 2>/dev/null || echo CRASH; }
+  s3st() { jq -r --arg id "$2" '.checks[$id] // "absent"' <<<"$1"; }
+  # The plateau windows' indices in .windows and the largest plateau.
+  pmax=$(jq '[.windows[] | select(.kind == "plateau") | .P] | max' "${s3src}/measurements.json")
+  pmin=$(jq '[.windows[] | select(.kind == "plateau") | .P] | min' "${s3src}/measurements.json")
+  last_plateau='(.windows | map(.kind == "plateau") | rindex(true))'
+  first_plateau='(.windows | map(.kind == "plateau") | index(true))'
+
+  out=$(s3_eval s3-pass '.')
+  expect "s3: unchanged run" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s3: windows' P (idle first, then the plateaus)" "$(jq -c '[0] + .plan.plateaus' "${s3src}/measurements.json")" "$(s3_field s3-pass '[.measurements.windows[].P]')"
+  expect "s3: every plateau's perParkedCallsPer30s > 0" true "$(s3_field s3-pass '[.measurements.windows[] | select(.P > 0) | .perParkedCallsPer30s > 0] | all')"
+  expect "s3: raw window fields kept next to the figures (resetAt, sweepCalls)" true \
+    "$(s3_field s3-pass '[.measurements.windows[] | (.resetAt | type == "string") and (.sweepCalls | type == "object") and (.cps | type == "number")] | all')"
+  expect "s3: baseline gate without a baseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+
+  # validity.parked
+  out=$(s3_eval s3-parked-running "${last_plateau} as \$i | .windows[\$i].parkedBefore.park.byStatus = {WAITING_SIGNAL: (.windows[\$i].P - 1), RUNNING: 1}")
+  expect "s3: one run still RUNNING when the window opened: validity.parked" INVALID "$(s3st "$out" validity.parked)"
+  expect "s3: one run still RUNNING when the window opened: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-parked-after "${first_plateau} as \$i | .windows[\$i].parkedAfter.park.total = (.windows[\$i].P + 1)")
+  expect "s3: an extra park row when the window closed: validity.parked" INVALID "$(s3st "$out" validity.parked)"
+  out=$(s3_eval s3-parked-other "${first_plateau} as \$i | .windows[\$i].parkedBefore.others.open = 1")
+  expect "s3: a probe row still open when the window opened: validity.parked" INVALID "$(s3st "$out" validity.parked)"
+  out=$(s3_eval s3-parked-missing "${first_plateau} as \$i | .windows[\$i] |= del(.parkedBefore)")
+  expect "s3: no parked snapshot before the window: validity.parked" INVALID "$(s3st "$out" validity.parked)"
+
+  # validity.windows
+  out=$(s3_eval s3-win-short "${last_plateau} as \$i | .windows[\$i].windowSecs = (.plan.holdSecs - 10)")
+  expect "s3: a plateau window 10 s short of its hold: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  out=$(s3_eval s3-win-long "${last_plateau} as \$i | .windows[\$i].windowSecs = (.plan.holdSecs + 6)")
+  expect "s3: a plateau window 6 s over its hold: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  out=$(s3_eval s3-win-unit '.plan.windowUnitSecs = 45')
+  expect "s3: a window unit (45 s) that is not a multiple of the node's intervals: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  out=$(s3_eval s3-win-node '.' '.nodes[0].recoveryPollInterval = "PT50S"')
+  expect "s3: node reports a 50 s recovery poll (60 s unit no longer whole): validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  out=$(s3_eval s3-win-release '.auxWindows |= map(if .kind == "release" then .windowSecs = (.windowSecs - 1) else . end)')
+  expect "s3: release window 1 s short of a whole unit: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  out=$(s3_eval s3-win-idle-first '.windows |= (.[1:] + .[:1])')
+  expect "s3: windows[0] is not the idle window: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+
+  # validity.plan
+  out=$(s3_eval s3-plan-probe '.probes[0].executedPlan.rate = 3')
+  expect "s3: a probe ran at another rate: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-plan-probe-it '.probes[0].phase as $ph | .k6 |= map(if .phase == $ph then .iterations = (.iterations - 5) else . end)')
+  expect "s3: a probe started 5 iterations too few: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-plan-seed '.plateaus[0].seed.executedPlan.durationSecs = 1')
+  expect "s3: a seed not paced over the recheck interval: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-plan-seed-starts '"seed-p\(.plateaus[0].P)" as $ph | .k6 |= map(if .phase == $ph then .checksPassed = (.checksPassed - 1) else . end)')
+  expect "s3: a seed with one start not accepted: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-plan-cross '.release.executedPlan.crossNode = true')
+  expect "s3: release recorded crossNode at 1 replica: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-plan-profile '.plan.profile = "full"')
+  expect "s3: plan recorded for another profile: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+
+  # correctness
+  out=$(s3_eval s3-not-reached '.plateaus[-1].reached = false | .plateaus[-1].statusAtTimeout = {park: {total: 5, byStatus: {RUNNING: 5}}} | .stopped = "plateau not reached within 600 s" | .windows |= .[:-1] | .release = null | .auxWindows |= map(select(.kind != "release"))')
+  expect "s3: last plateau not reached (scenario stopped): correctness.plateauReached" FAIL "$(s3st "$out" correctness.plateauReached)"
+  expect "s3: last plateau not reached: verdict FAIL (not hidden by an unjudgeable gate)" FAIL "$(jq -r .verdict <<<"$out")"
+  expect "s3: last plateau not reached: correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-rel-one-lost '.release.status.released -= 1 | .release.status.results = {released: (.release.count - 1), timeout: 1}')
+  expect "s3: one parked run ended otherwise (timeout): correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  expect "s3: one parked run ended otherwise: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-rel-dup '.release.status.signals.workflowsNotExactlyOneRow = 1 | .release.status.signals.unconsumed = 1')
+  expect "s3: a duplicated release signal: correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-rel-consumed '.release.status.signals.workflowsNotExactlyOneConsumed = 1')
+  expect "s3: a run without exactly one consumed signal: correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-rel-timeout '.release.drain.timedOut = true')
+  expect "s3: release drain timed out: correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-rel-missing '.release = null')
+  expect "s3: no release in signal mode: correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-rel-signal-lost '.k6 |= map(if .phase == "release" then .checksPassed = (.checksPassed - 1) | .checksFailed = 1 else . end)')
+  expect "s3: one release signal not accepted: correctness.releaseWakes" FAIL "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-sleep-mode '.parkMode = "sleep" | .release = null')
+  expect "s3: sleep mode (no signal release): correctness.releaseWakes not applicable" NO_BASELINE "$(s3st "$out" correctness.releaseWakes)"
+  out=$(s3_eval s3-failed '.runStatus.byStatus.FAILED = 1')
+  expect "s3: one FAILED row in the run: correctness.noFailures" FAIL "$(s3st "$out" correctness.noFailures)"
+  out=$(s3_eval s3-terminated '.runStatus.byStatus.TERMINATED = 1')
+  expect "s3: one TERMINATED row in the run: correctness.noFailures" FAIL "$(s3st "$out" correctness.noFailures)"
+  out=$(s3_eval s3-probe-open '.probes[-1].status.byStatus = {COMPLETED: (.probes[-1].accepted - 1), RUNNING: 1} | .probes[-1].drain.timedOut = true')
+  expect "s3: a probe never completed: correctness.probesCompleted" FAIL "$(s3st "$out" correctness.probesCompleted)"
+  out=$(s3_eval s3-foreign '.foreignRows = 3')
+  expect "s3: rows outside the run's id space: correctness.noForeignRows" FAIL "$(s3st "$out" correctness.noForeignRows)"
+
+  # gate.parkedCostLinear: rewrite the largest plateau's calls so its
+  # per-parked figure is <ratio> x the smallest's.
+  linear_at() { # <ratio>
+    printf '(.background.window | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) as $c0
+      | %s as $i | %s as $j
+      | ((.windows[$i] | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) - $c0) / .windows[$i].P as $k
+      | .windows[$j] |= (.maestroCalls = (($c0 + %s * $k * .P) * .windowSecs + .sweepCalls.lockCleaner | round)
+                         | .maestroCallsTopLevel = .maestroCalls)' "$first_plateau" "$last_plateau" "$1"
+  }
+  out=$(s3_eval s3-lin-130 "$(linear_at 1.30)")
+  expect "s3: per-parked cost 1.30 x at P=${pmax} vs P=${pmin}: gate.parkedCostLinear" FAIL "$(s3st "$out" gate.parkedCostLinear)"
+  expect "s3: superlinear: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-lin-124 "$(linear_at 1.24)")
+  expect "s3: per-parked cost 1.24 x: gate.parkedCostLinear" PASS "$(s3st "$out" gate.parkedCostLinear)"
+  out=$(s3_eval s3-lin-070 "$(linear_at 0.70)")
+  expect "s3: per-parked cost 0.70 x (re-checks falling behind): gate.parkedCostLinear" FAIL "$(s3st "$out" gate.parkedCostLinear)"
+  out=$(s3_eval s3-lin-076 "$(linear_at 0.76)")
+  expect "s3: per-parked cost 0.76 x: gate.parkedCostLinear" PASS "$(s3st "$out" gate.parkedCostLinear)"
+  out=$(s3_eval s3-lin-one "${last_plateau} as \$i | .windows |= del(.[\$i])")
+  expect "s3: one plateau window only: gate.parkedCostLinear (cannot be judged)" INVALID "$(s3st "$out" gate.parkedCostLinear)"
+
+  # gate.parkedCostBaseline (statements_gate, symmetric)
+  net=$(s3_field s3-pass '.measurements.baselineCandidate.perParkedCallsPerMin')
+  mk_base() { # <perParkedCallsPerMin> [<jq edit>]
+    jq -c --argjson v "$1" "{schema: 1, scenario: \"s3-parked\", profile: .profile, replicas: .identity.config.replicas}
+      + .measurements.baselineCandidate + {perParkedCallsPerMin: \$v} | ${2:-.}" "${work}/s3-pass/result.json"
+  }
+  out=$(s3_eval s3-base-same '.' '.' "$(mk_base "$net")")
+  expect "s3: baseline equal to this run: gate.parkedCostBaseline" PASS "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-up '.' '.' "$(mk_base "$(jq -n --argjson v "$net" '$v / 1.05')")")
+  expect "s3: 5 % more statements per parked run than the baseline: gate.parkedCostBaseline" FAIL "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-down '.' '.' "$(mk_base "$(jq -n --argjson v "$net" '$v * 1.05')")")
+  expect "s3: 5 % fewer than the baseline (symmetric): gate.parkedCostBaseline" FAIL "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-mode '.' '.' "$(mk_base "$net" '.parkMode = "sleep"')")
+  expect "s3: baseline of the other park mode: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-recheck '.' '.' "$(mk_base "$net" '.wakeRecheckInterval = "PT10S"')")
+  expect "s3: baseline at another wake-recheck interval: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-replicas '.' '.' "$(mk_base "$net" '.replicas = 2')")
+  expect "s3: baseline at 2 replicas: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-bad '.' '.' "$(mk_base '"6"')")
+  expect "s3: malformed baseline value: gate.parkedCostBaseline" ERROR "$(s3st "$out" gate.parkedCostBaseline)"
+
+  # validity.roleSplit, validity.background, common windows
+  out=$(s3_eval s3-noharness '.windows[1].harnessCalls = 0')
+  expect "s3: a window without harness calls: validity.roleSplit" INVALID "$(s3st "$out" validity.roleSplit)"
+  out=$(s3_eval s3-nobg 'del(.background)')
+  expect "s3: no idle window: validity.background (no crash)" INVALID "$(s3st "$out" validity.background)"
+  out=$(s3_eval s3-aux-janitor '.auxWindows[0].sweepCalls.signalJanitor = 1')
+  expect "s3: signal-janitor call in a seed window: validity.sweeps" INVALID "$(s3st "$out" validity.sweeps)"
+  out=$(s3_eval s3-plateau-dealloc "${last_plateau} as \$i | .windows[\$i].dealloc = 1")
+  expect "s3: evicted entries in a plateau window: validity.pgssComplete" INVALID "$(s3st "$out" validity.pgssComplete)"
+
+  # advisories: findings and degraded meters WARN, never change the verdict
+  out=$(s3_eval s3-dec-finding "${last_plateau} as \$i | .windows[\$i].components.instanceRead.calls |= (. / 2 | floor)")
+  expect "s3: half the instance reads (a re-check component off the documented 3): advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  expect "s3: decomposition finding: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-dec-held "${last_plateau} as \$i | .windows[\$i].components.heldKeys = {calls: 20, entries: 1}")
+  expect "s3: heldKeys reads at 1 replica: advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  out=$(s3_eval s3-dec-renew "${last_plateau} as \$i | .windows[\$i].components.lockRenewAll.calls *= 500")
+  expect "s3: one renewal statement per lock (pre-renewAll behaviour): advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  out=$(s3_eval s3-dec-old-engine '.windows |= map(del(.components))')
+  expect "s3: no component attribution (older harness record): advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  expect "s3: no component attribution: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-slots-absent '.windowProm |= map(.slotsUsed = {workflowMax: null, workflowAvg: null, activityMax: null})')
+  expect "s3: slot gauge absent (older engine): advisory.parkedSlots" WARN "$(s3st "$out" advisory.parkedSlots)"
+  expect "s3: slot gauge absent: says not available" yes \
+    "$(s3_field s3-slots-absent '.checks[] | select(.id == "advisory.parkedSlots") | .detail' | grep -q 'not available' && echo yes || echo no)"
+  expect "s3: slot gauge absent: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-slots-pinned '.windowProm |= map(if .kind == "plateau" then .slotsUsed.workflowMax = 20 else . end)')
+  expect "s3: workflow slots pinned while parked: advisory.parkedSlots" WARN "$(s3st "$out" advisory.parkedSlots)"
+  out=$(s3_eval s3-heap-absent '.windowProm |= map(.heap.usedAvg = null)')
+  expect "s3: heap not exported: advisory.heapPerParked" WARN "$(s3st "$out" advisory.heapPerParked)"
+  out=$(s3_eval s3-probe-slow '.probes[-1].latency.p95Ms = (.probes[0].latency.p95Ms * 2.5)')
+  expect "s3: probe p95 at Pmax 2.5 x that at P=0: advisory.probeLatency" WARN "$(s3st "$out" advisory.probeLatency)"
+  expect "s3: slow probes: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-host-hot '.hostLoad.end = {load1: 100, hostCpus: 10}')
+  expect "s3: host load 10 per CPU: advisory.contention" WARN "$(s3st "$out" advisory.contention)"
+  out=$(s3_eval s3-host-quiet '.hostLoad = {scenarioStart: {load1: 1, hostCpus: 10}, windows: [], end: {load1: 1, hostCpus: 10}}')
+  expect "s3: host load 0.1 per CPU, node CPU low: advisory.contention" PASS "$(s3st "$out" advisory.contention)"
+  out=$(s3_eval s3-cpu-hot '.windowProm |= map(if .kind == "plateau" then .nodeCpu.processAvg = 0.95 else . end) | .hostLoad = {scenarioStart: {load1: 1, hostCpus: 10}, windows: [], end: null}')
+  expect "s3: node CPU 0.95 in the plateau windows: advisory.contention" WARN "$(s3st "$out" advisory.contention)"
+  out=$(s3_eval s3-adv-garbage '.windowProm = "garbage" | .probes[0].latency = "x"')
+  expect "s3: garbage Prometheus and latency records: verdict (advisories WARN, never ERROR)" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s3: garbage records: advisory.heapPerParked" WARN "$(s3st "$out" advisory.heapPerParked)"
+  out=$(s3_eval s3-abandoned '.runAbandonedIncrease = 2')
+  expect "s3: two runs abandoned: advisory.runAbandoned" WARN "$(s3st "$out" advisory.runAbandoned)"
 fi
 
 if ((failures > 0)); then

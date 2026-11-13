@@ -343,7 +343,7 @@ scenario_run() {
     release=$(jq -nc --argjson n "$prev" --argjson a "$wa" --argjson t1 "$t1" --argjson d "$drain" --argjson r "$rel" \
       --argjson plan "$relplan" --argjson timeout "$releaseTimeout" \
       '{count: $n, phase: "release", startEpoch: $a, k6EndEpoch: $t1, k6Secs: ($t1 - $a), timeoutSecs: $timeout,
-        executedPlan: $plan, crossNode: ($plan.crossNode // null),
+        executedPlan: $plan, crossNode: (if $plan == null then null else $plan.crossNode end),
         drain: {waitedSecs: $d.waitedSecs, timedOut: $d.timedOut}, status: $r}')
     log "s3: release: $(jq -c '{released, results, byStatus, signals}' <<<"$rel")"
   fi

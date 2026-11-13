@@ -100,6 +100,8 @@ def recovery_page_size: 200;
 def window_slack_secs: 5;
 def recheck_match_fraction: 0.02;
 
+# The well-formed objects of a list field; anything else reads as empty.
+def objs: if type == "array" then map(select(type == "object")) else [] end;
 def comp($w; $name): ($w.components[$name].calls // 0 | if isnum then . else 0 end);
 def ceil_div($a; $b): (($a / $b) | ceil);
 
@@ -121,8 +123,8 @@ $identity[0] as $id
 | (background_problem($m.background; $replicas) == null) as $bgOk
 | (if $bgOk then ($m.background.window.maestroCalls - lock_cleaner_calls($m.background.window)) / $m.background.window.windowSecs else null end) as $cps0
 | (if $bgOk then ($m.background.window.maestroStatements - lock_cleaner_statements($m.background.window)) * $replicas else null end) as $tolCalls
-| ($m.windows // [] | map(select(type == "object"))) as $rawWindows
-| ($m.k6 // []) as $k6
+| ($m.windows | objs) as $rawWindows
+| ($m.k6 | objs) as $k6
 | (if $mode == "sleep" then 2 else 3 end) as $readsPerRecheck
 # ── per-window figures ──
 | ([$rawWindows[] | . as $w
@@ -203,13 +205,13 @@ $identity[0] as $id
          {component: "nested", calls: ($w.nestedCalls // null)}
        ]}]) as $decomposition
 # ── seed and release windows ──
-| ($m.auxWindows // [] | map(select(type == "object"))) as $aux
+| ($m.auxWindows | objs) as $aux
 | ([$aux[] | select(.kind == "seed") | . as $s
     | ([$plateauWins[] | select(.P == $s.Pprev)] | first // null) as $prevWin
-    | (if ($prevWin == null) then 0 else (($prevWin.cpsExact - $cps0) / $prevWin.P) end) as $kPrev
+    | (if $prevWin == null or ($cps0 | isnum | not) then 0 else (($prevWin.cpsExact - $cps0) / $prevWin.P) end) as $kPrev
     | (($s.maestroCalls - lock_cleaner_calls($s)) / $s.windowSecs) as $cpsS
     | ($s.P - $s.Pprev) as $n
-    | ([($m.plateaus // [])[] | select(.P == $s.P)] | first // {}) as $pl
+    | ([($m.plateaus | objs)[] | select(.P == $s.P)] | first // {}) as $pl
     | {P: $s.P, Pprev: $s.Pprev, started: $n, windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
        timeToParkSecs: ($pl.seed.timeToParkSecs // $pl.seed.waitedSecs // null), k6Secs: ($pl.seed.k6Secs // null),
        lagSecs: ($pl.seed.lagSecs // null),
@@ -227,10 +229,10 @@ $identity[0] as $id
         k6SignalSecs: $rel.k6Secs, waitedAfterSignalsSecs: $rel.drain.waitedSecs,
         drainSecs: (($rel.status.lastCompletedAt | ts_secs) as $last | ($relWin.resetAt | ts_secs) as $r0
                     | if ($last | isnum) and ($r0 | isnum) then $last - $r0 | round2 else null end),
-        crossNode: $rel.crossNode}
+        crossNode: (if ($rel.executedPlan | type) == "object" then $rel.executedPlan.crossNode else null end)}
    else null end) as $releaseFig
 # ── Prometheus per window ──
-| ($m.windowProm // []) as $wp
+| ($m.windowProm | objs) as $wp
 | ([$wp[] | select(.kind == "idle")] | first // null) as $promIdle
 | ([$wp[] | select(.kind == "plateau")] | sort_by(.P)) as $promPlateaus
 | ($promPlateaus | last // null) as $promMax
@@ -249,7 +251,7 @@ $identity[0] as $id
    elif $b.replicas != $replicas then "baseline replicas \($b.replicas | tojson) is not this run's \($replicas)"
    else null end) as $noBase
 | (if $noBase == null then $b.perParkedCallsPerMin else null end) as $expected
-| ($m.plateaus // []) as $plRecs
+| ($m.plateaus | objs) as $plRecs
 | ($plan.plateaus // []) as $planned
 | [
     background_check($m.background; $replicas),
@@ -312,7 +314,7 @@ $identity[0] as $id
             ($rl[] | select(.ok | not) | "release window lasted \(.windowSecs) s, not a whole number of \($unit) s units")
           ] | reasons end) ),
     # ── validity.plan ──
-    ( ([($m.probes // [])[] | . as $p
+    ( ([($m.probes | objs)[] | . as $p
         | ([$k6[] | select(.phase == $p.phase)] | last // null) as $r
         | ($p.executedPlan // null) as $ex
         | {executor: "constant-arrival-rate", rate: $p.requested.rate, timeUnit: "1s", durationSecs: $p.requested.durationSecs,
@@ -329,16 +331,17 @@ $identity[0] as $id
       | (if $rel == null then [] else
           ([$k6[] | select(.phase == "release")] | last // null) as $r
           | [{phase: "release", iterations: $r.iterations, expected: $rel.count, executed: $rel.executedPlan,
-              ok: ($r != null and $r.iterations == $rel.count and ($rel.executedPlan.count // null) == $rel.count
-                   and ($rel.executedPlan.crossNode // null) == ($replicas > 1)
-                   and ($rel.executedPlan.nodes // null) == $replicas)}] end) as $rp
+              ok: ($r != null and ($rel.executedPlan | type) == "object" and $r.iterations == $rel.count
+                   and $rel.executedPlan.count == $rel.count
+                   and $rel.executedPlan.crossNode == ($replicas > 1)
+                   and $rel.executedPlan.nodes == $replicas)}] end) as $rp
       | ($plan.profile == $id.profile) as $profOk
       | ($profOk and ($pp | length) > 0 and (($pp + $sp + $rp) | all(.ok))) as $ok
       | check("validity.plan"; "validity"; if $ok then "PASS" else "INVALID" end;
           {profile: $plan.profile, runProfile: $id.profile, probes: $pp, seeds: $sp, release: $rp};
           {probes: "executed plan == requested; iterations + dropped within max(2, 0.5 %) of rate x duration",
            seeds: "executed plan == requested (P - P_prev starts paced over one wake-recheck interval); starts accepted == P - P_prev", release: "iterations == count; crossNode == (replicas > 1)"};
-          if $ok then "k6 ran every phase as asked: \($pp | length) probe(s), \($sp | length) seed(s)\(if ($rp | length) > 0 then ", the release of \($rel.count) (crossNode \($rel.crossNode))" else "" end)"
+          if $ok then "k6 ran every phase as asked: \($pp | length) probe(s), \($sp | length) seed(s)\(if ($rp | length) > 0 then ", the release of \($rel.count) (crossNode \($releaseFig.crossNode))" else "" end)"
           else [
             (if $profOk | not then "the scenario recorded profile \($plan.profile | tojson) for a \($id.profile) run" else null end),
             (if ($pp | length) == 0 then "no probe was recorded" else null end),
@@ -366,11 +369,11 @@ $identity[0] as $id
         | check("correctness.releaseWakes"; "correctness"; if $ok then "PASS" else "FAIL" end;
             {count: $rel.count, total: $s.total, released: $s.released, results: $s.results, byStatus: $s.byStatus,
              signals: $s.signals, signalsAccepted: $rk.checksPassed, drainTimedOut: $rel.drain.timedOut,
-             crossNode: $rel.crossNode, drainSecs: $releaseFig.drainSecs};
+             crossNode: $releaseFig.crossNode, drainSecs: $releaseFig.drainSecs};
             {released: "== Pmax (\($pmax)) COMPLETED with result \"released\"", signalRowsPerRun: "exactly 1, consumed",
              within: "\($rel.timeoutSecs // "n/a") s"};
             if $rel == null then "no release was run\(if $m.stopped != null then " (\($m.stopped))" else "" end)"
-            elif $ok then "\($s.released)/\($pmax) parked runs released (COMPLETED, result \"released\"), each with exactly one consumed perf.release row; all terminal \($releaseFig.drainSecs) s after the release window opened\(if $rel.crossNode == true then "; every signal was sent to the node that does not own the run (cross-node wake)" else "" end)"
+            elif $ok then "\($s.released)/\($pmax) parked runs released (COMPLETED, result \"released\"), each with exactly one consumed perf.release row; all terminal \($releaseFig.drainSecs) s after the release window opened\(if $releaseFig.crossNode == true then "; every signal was sent to the node that does not own the run (cross-node wake)" else "" end)"
             else [
               (if $s.total != $pmax then "\($s.total) park rows for \($pmax) parked" else null end),
               (if $s.released != $pmax then "\($s.released) of \($pmax) COMPLETED with result \"released\" (results \($s.results | tojson), by status \($s.byStatus | tojson))" else null end),
@@ -387,7 +390,7 @@ $identity[0] as $id
           {byStatus: $by, total: $m.runStatus.total}; {FAILED: 0, TERMINATED: 0};
           if $ok then "no row of the run (\($m.runPrefix)) FAILED or was TERMINATED: \($by | tojson)"
           else "\($by.FAILED // 0) FAILED, \($by.TERMINATED // 0) TERMINATED over \($m.runPrefix)" end) ),
-    ( ([($m.probes // [])[] | . as $p
+    ( ([($m.probes | objs)[] | . as $p
         | ([$k6[] | select(.phase == $p.phase)] | last // {}) as $r
         | {P: $p.P, accepted: $p.accepted, completed: ($p.status.byStatus.COMPLETED // 0), total: $p.status.total,
            timedOut: $p.drain.timedOut, checksFailed: ($r.checksFailed // null),
@@ -441,7 +444,7 @@ $identity[0] as $id
                 + (if ($diff | length) == 0 then "; every component matches the documented arithmetic"
                    else "; FINDINGS (measured differs from the documented arithmetic): \($diff | join("; "))" end) end)),
     advisory_guarded("advisory.probeLatency";
-      ([($m.probes // [])[] | {P, p50Ms: .latency.p50Ms, p95Ms: .latency.p95Ms, maxMs: .latency.maxMs, completed: .latency.completed}]) as $pl
+      ([($m.probes | objs)[] | {P, p50Ms: .latency.p50Ms, p95Ms: .latency.p95Ms, maxMs: .latency.maxMs, completed: .latency.completed}]) as $pl
       | ([$pl[] | select(.P == 0)] | first // null) as $p0
       | ($pl | max_by(.P) // null) as $pM
       | (($p0.p95Ms | isnum) and ($pM.p95Ms | isnum) and $p0.p95Ms > 0) as $have
@@ -508,7 +511,7 @@ $identity[0] as $id
 | ([$plateauWins[] | . as $w
     | ([$plRecs[] | select(.P == $w.P)] | first // {}) as $pl
     | ([$promPlateaus[] | select(.P == $w.P)] | first // {}) as $pp
-    | ([($m.probes // [])[] | select(.P == $w.P)] | first // {}) as $pr
+    | ([($m.probes | objs)[] | select(.P == $w.P)] | first // {}) as $pr
     | ([$decomposition[] | select(.P == $w.P)] | first // {rows: []}) as $d
     | def r($n): ([$d.rows[] | select(.component == $n)] | first // {});
     {P: $w.P, timeToParkSecs: ($pl.seed.timeToParkSecs // null), windowSecs: $w.windowSecs,
@@ -519,7 +522,8 @@ $identity[0] as $id
      recoveryPagesPerPass: r("recoveryPages").per, heldKeysPerPass: r("heldKeys").per, otherCalls: r("other").calls,
      heapUsedAvgMiB: ($pp.heap.usedAvg // null | if isnum then . / 1048576 | round2 else . end),
      liveThreadsMax: ($pp.threads.liveMax // null), workflowSlotsMax: ($pp.slotsUsed.workflowMax // null),
-     probeP50Ms: ($pr.latency.p50Ms // null), probeP95Ms: ($pr.latency.p95Ms // null)}]) as $table
+     probeP50Ms: ($pr.latency | if type == "object" then .p50Ms else null end),
+     probeP95Ms: ($pr.latency | if type == "object" then .p95Ms else null end)}]) as $table
 | result($id;
          $m + {windows: [range(0; $rawWindows | length) as $i
                          | $rawWindows[$i] + ($windows[$i] | {lockCleanerCalls, cps, perParkedCallsPer30s, perParkedCallsPerMin,
