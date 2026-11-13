@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.messaging.kafka.listener.MaestroSignalListenerBeanPostProcessor;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.MaestroProperties;
@@ -19,6 +20,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -70,8 +72,13 @@ import java.util.HashMap;
  * engine topics. See {@code docs/configuration.md} § Kafka client
  * configuration for the full precedence table.
  *
- * <p>All beans are guarded with {@link ConditionalOnMissingBean} to allow
- * user overrides.
+ * <p>Maestro's Kafka beans are not default candidates. Inject them with
+ * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)} (or {@code PRODUCER_FACTORY},
+ * {@code CONSUMER_FACTORY}). Replace one by declaring a bean with the same
+ * name, with {@code defaultCandidate = false}.
+ *
+ * <p>Your own Kafka traffic uses Spring Boot's beans and {@code spring.kafka.*},
+ * as in a service without Maestro.
  *
  * <h2>Thread Safety</h2>
  * <p>This class holds no mutable instance state — every {@code @Bean} method
@@ -134,8 +141,21 @@ public class KafkaMessagingAutoConfiguration {
      */
     static final int DEFAULT_MAX_BLOCK_MS = 10_000;
 
-    @Bean
-    @ConditionalOnMissingBean(name = "maestroKafkaProducerFactory")
+    /**
+     * The engine's {@code String}/{@code byte[]} producer factory, built from
+     * {@code spring.kafka.producer.*} with the engine's wire-format invariants
+     * forced last.
+     *
+     * <p>Not a default candidate: inject with
+     * {@code @Qualifier(MaestroKafkaBeans.PRODUCER_FACTORY)}; replace by
+     * declaring a bean of this name.
+     *
+     * @param kafkaProperties   Boot's bound {@code spring.kafka.*}
+     * @param connectionDetails overrides the bootstrap servers when present
+     * @return the engine's producer factory
+     */
+    @Bean(name = MaestroKafkaBeans.PRODUCER_FACTORY, defaultCandidate = false)
+    @ConditionalOnMissingBean(name = MaestroKafkaBeans.PRODUCER_FACTORY)
     public ProducerFactory<String, byte[]> maestroKafkaProducerFactory(
             KafkaProperties kafkaProperties,
             ObjectProvider<KafkaConnectionDetails> connectionDetails
@@ -159,10 +179,23 @@ public class KafkaMessagingAutoConfiguration {
         return new DefaultKafkaProducerFactory<>(props);
     }
 
-    @Bean
-    @ConditionalOnMissingBean(name = "maestroKafkaTemplate")
+    /**
+     * The engine's {@code String}/{@code byte[]} template, over
+     * {@link #maestroKafkaProducerFactory}.
+     *
+     * <p>Not a default candidate: inject with
+     * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)}; replace by declaring a
+     * bean of this name.
+     *
+     * @param maestroKafkaProducerFactory the engine's producer factory
+     * @param tracePropagation            present when tracing is wired; turns observation on by default
+     * @param env                         reads {@code spring.kafka.template.observation-enabled}
+     * @return the engine's template
+     */
+    @Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)
+    @ConditionalOnMissingBean(name = MaestroKafkaBeans.TEMPLATE)
     public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
-            ProducerFactory<String, byte[]> maestroKafkaProducerFactory,
+            @Qualifier(MaestroKafkaBeans.PRODUCER_FACTORY) ProducerFactory<String, byte[]> maestroKafkaProducerFactory,
             ObjectProvider<KafkaTracePropagation> tracePropagation,
             Environment env
     ) {
@@ -194,8 +227,22 @@ public class KafkaMessagingAutoConfiguration {
         return configured != null ? configured : tracerPresent;
     }
 
-    @Bean
-    @ConditionalOnMissingBean(name = "maestroKafkaConsumerFactory")
+    /**
+     * The engine's {@code String}/{@code byte[]} consumer factory, built from
+     * {@code spring.kafka.consumer.*} with the engine's wire-format invariants
+     * and group id forced last.
+     *
+     * <p>Not a default candidate: inject with
+     * {@code @Qualifier(MaestroKafkaBeans.CONSUMER_FACTORY)}; replace by
+     * declaring a bean of this name.
+     *
+     * @param kafkaProperties   Boot's bound {@code spring.kafka.*}
+     * @param connectionDetails overrides the bootstrap servers when present
+     * @param messagingConfig   supplies the engine-owned group id
+     * @return the engine's consumer factory
+     */
+    @Bean(name = MaestroKafkaBeans.CONSUMER_FACTORY, defaultCandidate = false)
+    @ConditionalOnMissingBean(name = MaestroKafkaBeans.CONSUMER_FACTORY)
     public ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory(
             KafkaProperties kafkaProperties,
             ObjectProvider<KafkaConnectionDetails> connectionDetails,
@@ -319,8 +366,8 @@ public class KafkaMessagingAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(WorkflowMessaging.class)
     public KafkaWorkflowMessaging kafkaWorkflowMessaging(
-            KafkaTemplate<String, byte[]> maestroKafkaTemplate,
-            ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory,
+            @Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]> maestroKafkaTemplate,
+            @Qualifier(MaestroKafkaBeans.CONSUMER_FACTORY) ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory,
             ObjectMapper objectMapper,
             KafkaMessagingConfig maestroKafkaMessagingConfig,
             ObjectProvider<KafkaTracePropagation> tracePropagation
