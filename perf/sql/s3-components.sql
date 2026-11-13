@@ -6,12 +6,16 @@
 -- constants, 'PENDING' and false included, to $n) — never the 200-character
 -- cut pgss-window.sql's list carries, which cannot tell the instance read by
 -- workflow_id from the recovery page read (same 200-character head):
---   recheckInstance   SELECT ... FROM maestro_workflow_instance WHERE workflow_id = $1
---                     (WorkflowStore.getInstance: the parked run's stand-down read)
---   recheckSignals    ... FROM maestro_workflow_signal WHERE workflow_id = $1 AND
+--   instanceRead      SELECT ... FROM maestro_workflow_instance WHERE workflow_id = $1
+--                     (WorkflowStore.getInstance; while runs are only parked: the
+--                     re-check's stand-down read)
+--   signalsRead       ... FROM maestro_workflow_signal WHERE workflow_id = $1 AND
 --                     signal_name = $2 AND consumed = ... (getUnconsumedSignals)
---   recheckTimerRow   ... FROM maestro_workflow_timer WHERE workflow_instance_id = $1
+--   timerRowRead      ... FROM maestro_workflow_timer WHERE workflow_instance_id = $1
 --                     AND timer_id = $2 (findTimer)
+--   The three reads also serve starts, consumes and completions; they are the
+--   wake re-check only in a window where runs are only parked (S3's plateau
+--   windows, validity.parked).
 --   lockRenewAll      UPDATE maestro_distributed_lock l SET expires_at ... (renewAll)
 --   lockRenewOne      UPDATE maestro_distributed_lock SET expires_at ... (renew)
 --   lockAcquire       INSERT INTO maestro_distributed_lock ... (tryAcquire)
@@ -35,9 +39,9 @@ WITH engine AS (
 ), c AS (
     SELECT calls, total_exec_time, q,
         CASE
-            WHEN q ~ '^SELECT .* FROM maestro_workflow_instance WHERE workflow_id = \$1$' THEN 'recheckInstance'
-            WHEN q ~ 'FROM maestro_workflow_signal WHERE workflow_id = \$1 AND signal_name = \$2 AND consumed = ' THEN 'recheckSignals'
-            WHEN q ~ 'FROM maestro_workflow_timer WHERE workflow_instance_id = \$1 AND timer_id = \$2' THEN 'recheckTimerRow'
+            WHEN q ~ '^SELECT .* FROM maestro_workflow_instance WHERE workflow_id = \$1$' THEN 'instanceRead'
+            WHEN q ~ 'FROM maestro_workflow_signal WHERE workflow_id = \$1 AND signal_name = \$2 AND consumed = ' THEN 'signalsRead'
+            WHEN q ~ 'FROM maestro_workflow_timer WHERE workflow_instance_id = \$1 AND timer_id = \$2' THEN 'timerRowRead'
             WHEN q ~ '^UPDATE maestro_distributed_lock l SET expires_at' THEN 'lockRenewAll'
             WHEN q ~ '^UPDATE maestro_distributed_lock SET expires_at' THEN 'lockRenewOne'
             WHEN q ~ '^INSERT INTO maestro_distributed_lock ' THEN 'lockAcquire'

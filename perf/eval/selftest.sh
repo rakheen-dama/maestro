@@ -243,6 +243,21 @@ out=$(evaluate_with sw-early-2 '.window.sweepCalls.lockCleaner = 2')
 expect "lock-cleaner calls in a window that ends long before 600 s: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
 out=$(evaluate_with sw-interval-60 '.window.sweepCalls.lockCleaner = 0' '.nodes |= map(.lockCleanupInterval = "PT20S")')
 expect "reported cleanup interval 20 s, 0 calls in a window holding passes: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# Auxiliary windows (.auxWindows[], e.g. Scenario 3's seed and release
+# windows) are held to the same completeness and sweep rules as the judged ones.
+out=$(evaluate_with aux-clean '.auxWindows = [.window]')
+expect "auxWindows: a clean copy of the load window: verdict" PASS "$(jq -r .verdict <<<"$out")"
+expect "auxWindows: listed by validity.sweeps" '"auxWindows[0]"' "$(check_field aux-clean validity.sweeps '.value.windows[-1].name')"
+out=$(evaluate_with aux-janitor '.auxWindows = [.window | .sweepCalls.signalJanitor = 1]')
+expect "auxWindows: signal-janitor call in an auxiliary window: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with aux-dealloc '.auxWindows = [.window | .dealloc = 2]')
+expect "auxWindows: evicted entries in an auxiliary window: validity.pgssComplete" INVALID "$(jq -r '.checks["validity.pgssComplete"]' <<<"$out")"
+out=$(evaluate_with aux-unclassified '.auxWindows = [.window | del(.sweepCalls)]')
+expect "auxWindows: auxiliary window without sweepCalls: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# Shared contention helper: load per CPU of well-formed host_load records only.
+expect "load_per_cpu: malformed records skipped" '[0.5,2.5]' \
+  "$(jq -nc -L "${PERF_DIR}/eval" 'include "common"; load_per_cpu([{load1: 5, hostCpus: 10}, null, {load1: "x", hostCpus: 2}, {load1: 5, hostCpus: 0}, {load1: 25, hostCpus: 10}])')"
+
 # Subtraction: two lock-cleaner calls added to the load window change nothing
 # when classified, and raise the net figure when they are not.
 net_of() { check_field "$1" gate.statementsMeasured '.value.statementsPerWorkflowNet'; }

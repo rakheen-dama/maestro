@@ -153,7 +153,7 @@ $identity[0] as $id
     | (if ($recoverySecs | isnum) then $w.windowSecs / $recoverySecs else null end) as $nRecovery
     | (if ($timerSecs | isnum) then $w.windowSecs / $timerSecs else null end) as $nTick
     | ($w.components // {}) as $c
-    | {inst: comp($w; "recheckInstance"), sig: comp($w; "recheckSignals"), tmr: comp($w; "recheckTimerRow"),
+    | {inst: comp($w; "instanceRead"), sig: comp($w; "signalsRead"), tmr: comp($w; "timerRowRead"),
        renew: comp($w; "lockRenewAll"), renewOne: comp($w; "lockRenewOne"), page: comp($w; "recoveryPage"),
        held: comp($w; "heldKeys"), acq: comp($w; "lockAcquire"), rel: comp($w; "lockRelease"),
        due: comp($w; "timerDuePoll"), elect: comp($w; "leaderElection"), clean: comp($w; "lockCleaner"),
@@ -212,7 +212,7 @@ $identity[0] as $id
     | ([($m.plateaus // [])[] | select(.P == $s.P)] | first // {}) as $pl
     | {P: $s.P, Pprev: $s.Pprev, started: $n, windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
        timeToParkSecs: ($pl.seed.timeToParkSecs // $pl.seed.waitedSecs // null), k6Secs: ($pl.seed.k6Secs // null),
-       parkedPerSec: (if ($pl.seed.timeToParkSecs | isnum) and $pl.seed.timeToParkSecs > 0 then $n / $pl.seed.timeToParkSecs | round2 else null end),
+       lagSecs: ($pl.seed.lagSecs // null),
        netPerStartedRun: (if ($cps0 | isnum) and $n > 0 then ($s.maestroCalls - lock_cleaner_calls($s) - ($cps0 + $kPrev * $s.Pprev) * $s.windowSecs) / $n | round2 else null end),
        grossPerStartedRun: (if $n > 0 then ($s.maestroCalls - lock_cleaner_calls($s)) / $n | round2 else null end)}]) as $seeds
 | ($m.release // null) as $rel
@@ -316,14 +316,16 @@ $identity[0] as $id
         | ([$k6[] | select(.phase == $p.phase)] | last // null) as $r
         | ($p.executedPlan // null) as $ex
         | {executor: "constant-arrival-rate", rate: $p.requested.rate, timeUnit: "1s", durationSecs: $p.requested.durationSecs,
-           preAllocatedVUs: 10, maxVUs: 50, idPrefix: $p.prefix} as $want
+           offset: 0, count: null, preAllocatedVUs: 10, maxVUs: 50, idPrefix: $p.prefix} as $want
         | (if ($r.iterations | isnum) and ($r.droppedIterations | isnum) then $r.iterations + $r.droppedIterations else null end) as $got
         | {phase: $p.phase, executed: $ex, requested: $want, iterationsPlusDropped: $got, expected: ($p.requested.rate * $p.requested.durationSecs),
            ok: ($ex == $want and iterations_ok($got; $p.requested.rate * $p.requested.durationSecs))}]) as $pp
-      | ([$plRecs[] | . as $pl
+      | ([$plRecs[] | select(.reached == true) | . as $pl
           | ([$k6[] | select(.phase == "seed-p\($pl.P)")] | last // null) as $r
-          | {phase: "seed-p\($pl.P)", iterations: $r.iterations, expected: ($pl.P - $pl.Pprev),
-             ok: ($r != null and $r.iterations == ($pl.P - $pl.Pprev))}]) as $sp
+          | {phase: "seed-p\($pl.P)", executed: $pl.seed.executedPlan, requested: $pl.seed.requested,
+             startsAccepted: $r.checksPassed, startsFailed: $r.checksFailed, expected: ($pl.P - $pl.Pprev),
+             ok: ($r != null and $pl.seed.executedPlan != null and $pl.seed.executedPlan == $pl.seed.requested
+                  and $r.checksPassed == ($pl.P - $pl.Pprev) and ($r.checksFailed // 0) == 0)}]) as $sp
       | (if $rel == null then [] else
           ([$k6[] | select(.phase == "release")] | last // null) as $r
           | [{phase: "release", iterations: $r.iterations, expected: $rel.count, executed: $rel.executedPlan,
@@ -335,7 +337,7 @@ $identity[0] as $id
       | check("validity.plan"; "validity"; if $ok then "PASS" else "INVALID" end;
           {profile: $plan.profile, runProfile: $id.profile, probes: $pp, seeds: $sp, release: $rp};
           {probes: "executed plan == requested; iterations + dropped within max(2, 0.5 %) of rate x duration",
-           seeds: "iterations == P - P_prev", release: "iterations == count; crossNode == (replicas > 1)"};
+           seeds: "executed plan == requested (P - P_prev starts paced over one wake-recheck interval); starts accepted == P - P_prev", release: "iterations == count; crossNode == (replicas > 1)"};
           if $ok then "k6 ran every phase as asked: \($pp | length) probe(s), \($sp | length) seed(s)\(if ($rp | length) > 0 then ", the release of \($rel.count) (crossNode \($rel.crossNode))" else "" end)"
           else [
             (if $profOk | not then "the scenario recorded profile \($plan.profile | tojson) for a \($id.profile) run" else null end),
@@ -480,7 +482,7 @@ $identity[0] as $id
       check("advisory.seedCost"; "advisory"; if ($seeds | length) > 0 and ($seeds | all(.netPerStartedRun | isnum)) then "PASS" else "WARN" end;
             $seeds; null;
             if ($seeds | length) == 0 then "no seed window"
-            else ([$seeds[] | "P=\(.P): \(.started) runs parked in \(.timeToParkSecs) s (\(.parkedPerSec)/s; k6 \(.k6Secs) s), \(.netPerStartedRun) statements per started-and-parked run net of the idle rate and the already-parked population (its own first re-checks included)"] | join("; ")) end)),
+            else ([$seeds[] | "P=\(.P): \(.started) runs started paced over \(.k6Secs) s (k6, container start included), all parked \(.lagSecs) s after k6 ended (2 s poll), \(.netPerStartedRun) statements per started-and-parked run net of the idle rate and the already-parked population (its own first re-checks included)"] | join("; ")) end)),
     advisory_guarded("advisory.contention";
       ((($loadPerCpu | length) > 0) or any($promPlateaus[]; .nodeCpu.processAvg | isnum)) as $have
       | check("advisory.contention"; "advisory"; if $have and ($loadHot | not) and ($cpuHot | length) == 0 then "PASS" else "WARN" end;
@@ -519,7 +521,9 @@ $identity[0] as $id
      liveThreadsMax: ($pp.threads.liveMax // null), workflowSlotsMax: ($pp.slotsUsed.workflowMax // null),
      probeP50Ms: ($pr.latency.p50Ms // null), probeP95Ms: ($pr.latency.p95Ms // null)}]) as $table
 | result($id;
-         $m + {windows: [$windows[] | del(.cpsExact, .perParkedCallsPerMinExact)],
+         $m + {windows: [range(0; $rawWindows | length) as $i
+                         | $rawWindows[$i] + ($windows[$i] | {lockCleanerCalls, cps, perParkedCallsPer30s, perParkedCallsPerMin,
+                                                               perParkedCallsPerRecheck, tolerancePerMin})],
                idleCallsPerSec: ($cps0 | round4), decomposition: $decomposition, seeds: $seeds,
                releaseFigures: $releaseFig, plateauTable: $table,
                baselineCandidate: {parkMode: $mode, wakeRecheckInterval: $node0.wakeRecheckInterval,

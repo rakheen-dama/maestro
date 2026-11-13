@@ -11,9 +11,25 @@
 # (PERF_ID_OFFSET); probes are ${RUN_ID}-probe-p<P>-<i> (chain, 3 activities
 # x 20 ms), started at a constant rate while P runs are parked.
 #
-#   profile  plateaus P          idle   hold   probe        seed VUs
-#   local    1000, 2000          60 s   120 s  2/s for 30 s  50
-#   full     1000, 5000, 10000   120 s  300 s  2/s for 60 s  50
+#   profile  plateaus P          idle   hold   probe         seed VUs
+#   local    1000, 2000          60 s   120 s  2/s for 30 s  200 / 200
+#   full     1000, 5000, 10000   120 s  300 s  2/s for 60 s  200 / 200
+#
+# Seeding is PACED: the P - P_prev new runs of a plateau are started at a
+# constant rate over exactly one wake-recheck interval (start-rate.js,
+# rate = P - P_prev per wakeRecheckSecs, capped at that count), so the
+# population's re-check phases are spread evenly over the interval. An
+# unpaced batch (start-batch.js at 50 VUs) parks 1000 runs in about 3 s
+# (shakedown r20261113t023959z: k6 3 s, all WAITING_SIGNAL within 5 s at a
+# 2 s poll) and every one of them then re-checks inside the same few seconds
+# of each 30 s cycle: a window edge that falls inside that burst counts a
+# partial cycle for a whole share of the population, which is exactly the
+# bias the window discipline below exists to prevent. Paced, a window of any
+# phase sees each run's re-checks in proportion to its length. timeToPark is
+# then the seeding interval plus the lag from the last start to the last
+# park (lagSecs, at a 2 s poll), not a capacity figure; the shakedown's
+# figure above is the one recorded for an unpaced batch. VUs 200 / 200 (all
+# pre-allocated): the full profile's 5000-run seed offers 167 starts/s.
 #
 # Window discipline. Every measured window (idle, each plateau's hold, the
 # release window) is a whole number of the node's wake-recheck interval AND
@@ -30,8 +46,8 @@
 #
 # Order: warm-up (40 chain runs per replica, outside every window) -> idle
 # window (P = 0: the background rate, validity.background) -> probe at P = 0
-# -> for each plateau P: seed P - P_prev parked runs (start-batch.js, 50 VUs;
-# its own auxiliary "seed" window), wait until exactly P rows of the park
+# -> for each plateau P: seed P - P_prev parked runs (start-rate.js, paced
+# over one wake-recheck interval; its own auxiliary "seed" window), wait until exactly P rows of the park
 # prefix are parked (WAITING_SIGNAL, or WAITING_TIMER for sleep; <= 600 s, or
 # correctness.plateauReached FAILs and the scenario stops), sleep settle =
 # wakeRecheckInterval + 5 s (every new run past its first recheck), status
@@ -156,7 +172,7 @@ scenario_run() {
     sleep) parkedStatus=WAITING_TIMER ;;
     *) die "s3-parked: PERF_PARK_MODE must be signal or sleep, got '${mode}'" ;;
   esac
-  local plateaus idleReq holdReq probeRate probeSecs seedVus=50
+  local plateaus idleReq holdReq probeRate probeSecs seedVus=200
   case "$PROFILE" in
     local) plateaus='[1000,2000]' idleReq=60 holdReq=90 probeRate=2 probeSecs=30 ;;
     full) plateaus='[1000,5000,10000]' idleReq=120 holdReq=300 probeRate=2 probeSecs=60 ;;
@@ -194,8 +210,8 @@ scenario_run() {
       lockTtlSecs: $lockTtl, renewIntervalSecs: (if $lockTtl == null then null else $lockTtl / 3 end),
       settleSecs: $settle, parkTimeoutSecs: 600,
       probe: {rate: $probeRate, durationSecs: $probeSecs, body: $probeBody, drainTimeoutSecs: 120},
-      seed: {vus: $seedVus, maxDuration: "10m", body: $parkBody},
-      release: {signal: "perf.release", vus: $seedVus, timeoutSecs: $releaseTimeout}}')
+      seed: {executor: "constant-arrival-rate", paceSecs: $recheck, vus: $seedVus, body: $parkBody},
+      release: {signal: "perf.release", vus: 50, timeoutSecs: $releaseTimeout}}')
   log "s3: plan $(jq -c '{parkMode, plateaus, idleSecs, holdSecs, windowUnitSecs, settleSecs, probe: .probe | {rate, durationSecs}}' <<<"$plan")"
 
   local host_start
@@ -239,8 +255,9 @@ scenario_run() {
     psql_json pgss-reset >/dev/null
     wa=$(date +%s)
     t0=$wa
-    k6_run "seed-p${p}" start-batch.js "PERF_ID_PREFIX=${parkPrefix}" "PERF_ID_OFFSET=${prev}" \
-      "PERF_COUNT=${delta}" "PERF_VUS=${seedVus}" "PERF_MAX_DURATION=10m" "PERF_BODY=${parkBody}"
+    k6_run "seed-p${p}" start-rate.js "PERF_ID_PREFIX=${parkPrefix}" "PERF_ID_OFFSET=${prev}" \
+      "PERF_COUNT=${delta}" "PERF_RATE=${delta}" "PERF_TIME_UNIT=${recheck}" "PERF_DURATION=${recheck}" \
+      "PERF_K6_VUS=${seedVus}" "PERF_K6_MAX_VUS=${seedVus}" "PERF_BODY=${parkBody}"
     t1=$(date +%s)
     reached=false
     while :; do
@@ -253,6 +270,8 @@ scenario_run() {
       sleep 2
     done
     waited=$(($(date +%s) - t0))
+    local seedplan=null
+    [[ ! -s "${RESULTS}/k6-seed-p${p}-plan.json" ]] || seedplan=$(jq -c . "${RESULTS}/k6-seed-p${p}-plan.json")
     w=$(s3_window)
     wb=$(date +%s)
     aux=$(jq -c --argjson w "$w" --argjson p "$p" --argjson prev "$prev" --argjson a "$wa" --argjson b "$wb" \
@@ -260,9 +279,9 @@ scenario_run() {
     log "s3: plateau P=${p}: reached=${reached} after ${waited} s (k6 $((t1 - t0)) s); $(jq -c '.park' <<<"$st")"
     if [[ "$reached" != true ]]; then
       plateauRecs=$(jq -c --argjson p "$p" --argjson prev "$prev" --argjson st "$st" --argjson t0 "$t0" \
-        --argjson t1 "$t1" --argjson w "$waited" \
+        --argjson t1 "$t1" --argjson w "$waited" --argjson sp "$seedplan" \
         '. + [{P: $p, Pprev: $prev, reached: false, seed: {startEpoch: $t0, k6EndEpoch: $t1, waitedSecs: $w,
-               k6Secs: ($t1 - $t0)}, statusAtTimeout: $st}]' <<<"$plateauRecs")
+               k6Secs: ($t1 - $t0), executedPlan: $sp}, statusAtTimeout: $st}]' <<<"$plateauRecs")
       stopped="\"plateau ${p} not reached within 600 s\""
       log "s3: plateau P=${p} not reached: scenario stops"
       break
@@ -284,8 +303,13 @@ scenario_run() {
       --argjson before "$before" --argjson after "$after" \
       '. + [$w + {P: $p, kind: "plateau", epochs: {start: $a, end: $b}, parkedBefore: $before, parkedAfter: $after}]' <<<"$windows")
     plateauRecs=$(jq -c --argjson p "$p" --argjson prev "$prev" --argjson t0 "$t0" --argjson t1 "$t1" --argjson w "$waited" \
+      --argjson sp "$seedplan" --argjson r "$recheck" --argjson v "$seedVus" \
       '. + [{P: $p, Pprev: $prev, reached: true,
-             seed: {startEpoch: $t0, k6EndEpoch: $t1, k6Secs: ($t1 - $t0), timeToParkSecs: $w}}]' <<<"$plateauRecs")
+             seed: {startEpoch: $t0, k6EndEpoch: $t1, k6Secs: ($t1 - $t0), timeToParkSecs: $w,
+                    lagSecs: ($t0 + $w - $t1), executedPlan: $sp,
+                    requested: {executor: "constant-arrival-rate", rate: ($p - $prev), timeUnit: "\($r)s",
+                                durationSecs: $r, offset: $prev, count: ($p - $prev),
+                                preAllocatedVUs: $v, maxVUs: $v, idPrefix: "'"${parkPrefix}"'"}}}]' <<<"$plateauRecs")
     probes=$(jq -c --argjson r "$(s3_probe "$p" "$probeRate" "$probeSecs" "$probeBody")" '. + [$r]' <<<"$probes")
     prev=$p
   done
@@ -298,14 +322,16 @@ scenario_run() {
     psql_json pgss-reset >/dev/null
     wa=$(date +%s)
     k6_run release signal-batch.js "PERF_ID_PREFIX=${parkPrefix}" "PERF_ID_OFFSET=0" "PERF_COUNT=${prev}" \
-      "PERF_VUS=${seedVus}" "PERF_MAX_DURATION=10m" "PERF_SIGNAL=perf.release"
+      "PERF_VUS=50" "PERF_MAX_DURATION=10m" "PERF_SIGNAL=perf.release"
     t1=$(date +%s)
     local drain fill rel relplan=null
     drain=$(wait_terminal "$parkPrefix" "$prev" "$releaseTimeout" 2)
     # Fill the release window to a whole number of units, so the rechecks of
     # the runs not yet released and the recovery passes are whole cycles.
-    fill=$(jq -rn --argjson a "$wa" --argjson now "$(date +%s)" --argjson u "$unit" \
-      '([(($now - $a) / $u | ceil), 1] | max) * $u - ($now - $a) | if . < 0 then 0 else . end')
+    # On the database clock (the one windowSecs is measured on), plus 0.5 s
+    # so the window is never shorter than its whole number of units.
+    fill=$(jq -rn --argjson e "$(psql_json pgss-elapsed)" --argjson u "$unit" \
+      '([(($e + 0.5) / $u | ceil), 1] | max) * $u - $e + 0.5')
     log "s3: release: $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain"); filling the window by ${fill} s"
     sleep "$fill"
     w=$(s3_window)
