@@ -1075,21 +1075,35 @@ names only a type gets Boot's bean. Pinned by
   Kafka producer on first send, so Boot's opens no connection unless you send
   through it (traced).
 
-**Plain `@KafkaListener` consumers.** The suppression above only removes
-Boot's *typed* `String`/`byte[]` beans — it does not touch Boot's own
-`kafkaListenerContainerFactory`, which stays name-conditioned and is never
-suppressed. A plain `@KafkaListener` method with no explicit
-`containerFactory` rides that factory, built from `spring.kafka.consumer.*`
-the ordinary Boot way. Maestro's engine-forced invariants (key/value
-(de)serializer, `group.id`) apply **only** to `maestroKafkaConsumerFactory`
-and never reach this factory — so a plain `@KafkaListener` must declare its
-own `spring.kafka.consumer.key-deserializer` /
-`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in
-a Maestro-free Boot application. Injecting `ConsumerFactory` by type resolves
-Maestro's `byte[]` factory instead; inject by bean name
-(`maestroKafkaConsumerFactory`) or define your own if that is not what you
-want. This is the rule the `sample-payment-gateway`, `underwriting-service`,
-and `verification-gateway-service` samples follow — each keeps its plain
+**Plain `@KafkaListener` consumers.** A plain `@KafkaListener` is Spring
+Boot's, configured exactly as in a service without Maestro; a
+`@MaestroSignalListener` is Maestro's. Neither sees the other's settings:
+
+| | Plain `@KafkaListener` | `@MaestroSignalListener` |
+|---|---|---|
+| Container factory | Boot's `kafkaListenerContainerFactory` (or the one its `containerFactory` names) | None: Maestro builds each container itself; it is not in the `KafkaListenerEndpointRegistry` |
+| Consumer factory | Boot's `kafkaConsumerFactory` bean | `maestroKafkaConsumerFactory` |
+| Deserializers | `spring.kafka.consumer.key-deserializer` / `value-deserializer` | Always `StringDeserializer` / `ByteArrayDeserializer`, whatever `spring.kafka.consumer.*` says |
+| Group id | Its own (`groupId`, or `spring.kafka.consumer.group-id`) | `maestro-<service>` (or `maestro.messaging.consumer-group`), plus `-<groupIdSuffix>` when set |
+| `spring.kafka.listener.*` | Applies (e.g. `ack-mode`, `auto-startup`) | Does not apply, except `observation-enabled`; always `AckMode.RECORD`, always started |
+| Error handler and DLT | Your `CommonErrorHandler` bean, if there is exactly one. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
+| Reply template | Boot's `kafkaTemplate` | None (a `@MaestroSignalListener` returns a `SignalRouting`, not a reply) |
+| `KafkaConnectionDetails` | Applies (bootstrap servers) | Applies (bootstrap servers) |
+
+Pinned by `KafkaListenerBoundaryTest` (`maestro-messaging-kafka`), with both
+kinds in one application; `KafkaCoexistenceRoundTripTest` runs them against a
+real broker. Before this release a plain `@KafkaListener` ignored
+`KafkaConnectionDetails`: Boot's container factory found no consumer factory
+bean it could use and built an inline one from `spring.kafka.*` alone, so a
+Testcontainers `@ServiceConnection` user's plain listeners connected to
+`spring.kafka.bootstrap-servers` instead. The same inline factory skipped every
+`DefaultKafkaConsumerFactoryCustomizer` bean (traced).
+
+Maestro's forced deserializers never reach a plain `@KafkaListener`, so it must
+declare its own `spring.kafka.consumer.key-deserializer` /
+`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in a
+Maestro-free Boot application. This is the rule the `sample-payment-gateway`,
+`underwriting-service`, and `verification-gateway-service` samples follow — each keeps its plain
 `@KafkaListener`'s `spring.kafka.consumer.*-deserializer` properties in its
 `application.yml`, with a comment explaining why removing them (on the
 mistaken belief that Maestro's invariants cover them) breaks that listener.

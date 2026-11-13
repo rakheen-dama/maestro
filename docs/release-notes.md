@@ -18,7 +18,11 @@
 - **A plain `@Bean` replacing `maestroKafkaProducerFactory` now fails startup.** Before, the context started and the engine used the replacement (the start is observed against the old code, the engine's use traced). Now Boot's `kafkaProducerFactory` backs off for it while Boot's `kafkaTemplate` still registers, and startup fails with `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`. Declare the replacement `@Bean(name = MaestroKafkaBeans.PRODUCER_FACTORY, defaultCandidate = false)`.
 - A plain `@Bean` replacing `maestroKafkaTemplate` or `maestroKafkaConsumerFactory` still works, as before: the engine uses it and Boot's bean of that type backs off. Declare it with `defaultCandidate = false` to keep Boot's bean of that type as well.
 
-**The wire is unchanged.** The engine's producer and consumer keep their serializers, `acks=all` and group ids.
+**Fixed:**
+
+- **A plain `@KafkaListener` now honours `KafkaConnectionDetails`.** Before, Boot's `kafkaListenerContainerFactory` found no consumer factory bean it could use and built an inline one from `spring.kafka.*` alone, so with a Testcontainers `@ServiceConnection` a host's plain listeners connected to `spring.kafka.bootstrap-servers` (observed: `[localhost:1]` where the connection details said otherwise) while Maestro's consumers used the connection details. That inline factory also skipped every `DefaultKafkaConsumerFactoryCustomizer` (traced). Now a plain `@KafkaListener` rides Boot's `kafkaConsumerFactory` bean, gets Boot's `kafkaTemplate` as reply template, and stays separate from `@MaestroSignalListener` (its own deserializers, group, `spring.kafka.listener.*` and error handler; no dead-letter topic unless the host configures one). Pinned by `KafkaListenerBoundaryTest`. See [Configuration § Kafka Client Configuration](configuration.md#kafka-client-configuration).
+
+**The wire is unchanged.** The engine's producer and consumer keep their serializers, `acks=all` and group ids. Against a real broker, beside a host template configured for JSON, the engine writes exactly its own envelope bytes and a dead-lettered `@MaestroSignalListener` record keeps its original bytes (`KafkaCoexistenceRoundTripTest`).
 
 ### Fixed — stored workflow input lost decimal digits; a live activity call returns what its replay returns (3.8, D7, D9, C1)
 
