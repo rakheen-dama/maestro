@@ -7,6 +7,7 @@ import io.b2mash.maestro.messaging.kafka.KafkaSignalIdentity;
 import io.b2mash.maestro.messaging.kafka.KafkaTopicVerifier;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import io.b2mash.maestro.spring.config.MaestroProperties;
@@ -23,7 +24,6 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.context.ApplicationContextAware;
 import org.springframework.kafka.core.ConsumerFactory;
 import org.springframework.kafka.core.KafkaOperations;
-import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
@@ -50,7 +50,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *   <li><b>Topic verification</b> ({@code afterSingletonsInstantiated}, first
  *       thing): one {@link KafkaTopicVerifier} pass over every topic this
  *       service needs — the engine's own signal topic and {@code .DLT}, the
- *       admin-events topic, and every registration's topic and {@code .DLT} —
+ *       admin-events topic when lifecycle events are enabled, and every
+ *       registration's topic and {@code .DLT} —
  *       governed by {@code maestro.messaging.topics.verify-on-startup}. This
  *       runs whether or not there are registrations: it is the Kafka
  *       transport's one startup gate, placed here because this is the only
@@ -172,7 +173,8 @@ public class MaestroSignalListenerBeanPostProcessor
         var messagingConfig = ctx.getBean(KafkaMessagingConfig.class);
 
         // The transport's one startup gate — before the early return below, because
-        // the engine's own signal topic (and the admin-events topic) must exist
+        // the engine's own signal topic (and the admin-events topic, when lifecycle
+        // events are enabled) must exist
         // whether or not this service declares any @MaestroSignalListener.
         var verification = verifyTopics(messagingConfig, consumerFactory, properties);
         var fatalOnMissing = KafkaTopicVerifier.fatalOnMissing(messagingConfig.verifyOnStartup(), verification);
@@ -369,35 +371,36 @@ public class MaestroSignalListenerBeanPostProcessor
     }
 
     /**
-     * Resolves the producer used to publish exhausted records.
+     * Resolves the producer used to publish exhausted records: Maestro's own
+     * template, by name only.
      *
-     * <p>Maestro's own template is looked up by name first, so an application
-     * that defines {@code KafkaTemplate} beans of its own does not make the
-     * lookup ambiguous.
+     * <p>There is no by-type fallback. The name always exists (the
+     * auto-configuration registers it unless a host replaced it under the same
+     * name), and by type this lookup would now resolve Spring Boot's
+     * {@code kafkaTemplate}, the only default candidate, which is built from
+     * the host's {@code spring.kafka.producer.*} (by default a
+     * {@code StringSerializer}, which cannot send the {@code byte[]} records a
+     * dead letter carries).
      */
     @SuppressWarnings("unchecked")
     private static KafkaOperations<String, byte[]> resolveKafkaTemplate(ApplicationContext ctx) {
-        if (ctx.containsBean("maestroKafkaTemplate")) {
-            return (KafkaOperations<String, byte[]>) ctx.getBean("maestroKafkaTemplate", KafkaOperations.class);
-        }
-        return (KafkaOperations<String, byte[]>) ctx.getBean(KafkaTemplate.class);
+        return (KafkaOperations<String, byte[]>) ctx.getBean(MaestroKafkaBeans.TEMPLATE, KafkaOperations.class);
     }
 
     /**
-     * Resolves the consumer factory used to build listener containers.
+     * Resolves the consumer factory used to build listener containers:
+     * Maestro's own factory, by name only (finding F3).
      *
-     * <p>Maestro's own factory is looked up by name first (finding F3), so an
-     * application that defines additional {@code ConsumerFactory} beans of its
-     * own does not make the by-type lookup ambiguous — mirroring
-     * {@link #resolveKafkaTemplate}.
+     * <p>There is no by-type fallback, for the same reason as
+     * {@link #resolveKafkaTemplate}: the name always exists, and by type this
+     * lookup would now resolve Spring Boot's {@code kafkaConsumerFactory},
+     * which is built from the host's {@code spring.kafka.consumer.*} and
+     * carries neither the engine's forced {@code ByteArrayDeserializer} nor
+     * its group id.
      */
     @SuppressWarnings("unchecked")
     private static ConsumerFactory<String, byte[]> resolveConsumerFactory(ApplicationContext ctx) {
-        if (ctx.containsBean("maestroKafkaConsumerFactory")) {
-            return (ConsumerFactory<String, byte[]>)
-                    ctx.getBean("maestroKafkaConsumerFactory", ConsumerFactory.class);
-        }
-        return (ConsumerFactory<String, byte[]>) ctx.getBean(ConsumerFactory.class);
+        return (ConsumerFactory<String, byte[]>) ctx.getBean(MaestroKafkaBeans.CONSUMER_FACTORY, ConsumerFactory.class);
     }
 
     private void handleMessage(

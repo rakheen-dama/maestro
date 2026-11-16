@@ -24,15 +24,14 @@ import static org.assertj.core.api.Assertions.assertThat;
  * stay forced.
  *
  * <p>Boot's real {@link KafkaAutoConfiguration} is included (not stubbed) so
- * the suppression-plus-property-honouring contract — Maestro's typed
- * factories must register before Boot's type-conditioned ones back off — is
- * pinned against the genuine {@code AutoConfigurations} ordering, the same
- * lesson the tracing test in this package already applies.
+ * that {@code spring.kafka.*} precedence is pinned with Boot's beans present,
+ * against the genuine {@code AutoConfigurations} ordering, the same lesson the
+ * tracing test in this package already applies.
  */
 class KafkaMessagingAutoConfigurationPropertiesTest {
 
-    // Real auto-configurations, Boot's INCLUDED, so the suppression-plus-
-    // property-honouring contract is pinned against the genuine ordering.
+    // Real auto-configurations, Boot's INCLUDED, so spring.kafka.* precedence
+    // is pinned with Boot's beans present.
     private final ApplicationContextRunner runner = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(
                     KafkaMessagingAutoConfiguration.class,
@@ -139,15 +138,6 @@ class KafkaMessagingAutoConfigurationPropertiesTest {
                                     + "maestro-{serviceName}) — spring.kafka.consumer.group-id must not win")
                             .containsEntry(ConsumerConfig.GROUP_ID_CONFIG, "maestro-props-test");
                 });
-    }
-
-    @Test
-    void bootsOwnTemplateStaysSuppressed_deliberately() {
-        runner.run(ctx -> {
-            assertThat(ctx).hasBean("maestroKafkaTemplate");
-            assertThat(ctx).doesNotHaveBean("kafkaTemplate");
-            assertThat(ctx).doesNotHaveBean("kafkaProducerFactory");
-        });
     }
 
     /** Binds {@link MaestroProperties} the way the starter's auto-configuration would. */

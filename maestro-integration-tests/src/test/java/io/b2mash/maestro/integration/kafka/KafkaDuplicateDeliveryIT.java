@@ -63,6 +63,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.service-name=" + KafkaDuplicateDeliveryIT.SERVICE,
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
+                "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + KafkaDuplicateDeliveryIT.ADMIN_TOPIC,
                 "maestro.recovery.enabled=false",
                 "maestro.messaging.redelivery.initial-interval=200ms"

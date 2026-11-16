@@ -1,5 +1,6 @@
 package io.b2mash.maestro.samples.loan.application.activity.impl;
 
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
 import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.loan.application.activity.LoanMessagingActivities;
@@ -9,6 +10,7 @@ import io.b2mash.maestro.samples.loan.application.domain.UnderwritingRequested;
 import io.b2mash.maestro.samples.loan.application.domain.VerificationRequested;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -35,7 +37,7 @@ public class KafkaLoanMessagingActivities implements LoanMessagingActivities {
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
-    public KafkaLoanMessagingActivities(KafkaTemplate<String, byte[]> kafkaTemplate,
+    public KafkaLoanMessagingActivities(@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]> kafkaTemplate,
                                         ObjectMapper objectMapper) {
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;

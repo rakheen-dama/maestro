@@ -29,7 +29,7 @@ sensible defaults and can be left unset for local development.
 **`maestro.enabled=false` disables every Maestro auto-configuration in the
 application**, not just the core engine: `maestro-messaging-kafka`,
 `maestro-store-postgres` (store, lock and the LISTEN/NOTIFY wake listener),
-`maestro-admin-client`, and the health/observability
+and the health/observability
 auto-configurations all carry the same `@ConditionalOnProperty(maestro.enabled)`
 gate as the core `MaestroAutoConfiguration`, so flipping this one flag backs
 every module off cleanly rather than leaving, say, a `LISTEN` connection
@@ -313,6 +313,7 @@ on the node that started it.
 |---------------------------------|----------|------------|-------------------------------------------------------------------------------------------------|
 | `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. `kafka` is the only supported value; any other value (including the removed `postgres`) fails startup with a message naming the removal. |
 | `maestro.messaging.consumer-group`| `String`| `null`   | Kafka consumer group ID. If not set, defaults to `maestro-{serviceName}` at runtime.            |
+| `maestro.messaging.template-injection-check` | `fail` \| `warn` \| `off` | `fail` | What happens at startup when a bean injects a `KafkaTemplate<…, byte[]>` without a qualifier and received a template that cannot send `byte[]` unchanged: fail startup, log each case at `WARN` and start, or check nothing. A way out of last resort — see [Kafka Client Configuration](#kafka-client-configuration). Any other value fails startup. |
 
 ### Topic Properties
 
@@ -381,7 +382,7 @@ in one `describeTopics` call bounded to 5 seconds, whether each exists:
 |------------------------------------------------------------------|---------------------------------------------------|
 | `maestro.signals.{serviceName}` (or `maestro.messaging.topics.signals`) | always                                     |
 | `maestro.signals.{serviceName}.DLT` (`+ dead-letter-suffix`)     | `maestro.messaging.redelivery.enabled=true` (default) |
-| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default)     |
+| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default `false`) |
 | every `@MaestroSignalListener(topic = "...")` topic              | always                                            |
 | each listener topic `+ dead-letter-suffix`                       | `maestro.messaging.redelivery.enabled=true` (default) |
 
@@ -858,15 +859,25 @@ the Maestro admin dashboard.
 
 | Property                      | Type      | Default                  | Description                                                                     |
 |-------------------------------|-----------|--------------------------|---------------------------------------------------------------------------------|
-| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
+| `maestro.admin.events.enabled`| `boolean` | `false`                  | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
 | `maestro.admin.events.topic`  | `String`  | `"maestro.admin.events"` | Kafka topic where lifecycle events are published.                               |
 
 When enabled, Maestro publishes lifecycle events for every workflow state
 transition. The admin dashboard (`maestro-admin` module) consumes these events to
 provide real-time visibility into workflow execution across all services.
 
-Set `enabled` to `false` if you are not running the admin dashboard and want to
-eliminate the publishing overhead.
+Publishing is **off by default** (since WP7; pinned by
+`MaestroPropertiesBindingTest.adminEventsAreOffByDefault` and
+`MaestroAutoConfigurationLifecycleEventsTest.byDefault_noLifecycleEventIsPublished`).
+When on, it costs two producer sends per live activity (started, then completed
+or failed) on top of the workflow, signal, timer and compensation events
+(traced, not tested), and the admin-events topic
+(`maestro.messaging.topics.admin-events`) must exist at startup: the topic
+verification requires it only while this property is `true`
+(`KafkaTopicVerificationStartupTest.failMode_adminTopicIsNotRequiredByDefault`).
+Set `maestro.admin.events.enabled: true` on every service the dashboard should
+show; a service that leaves it unset publishes nothing, and the dashboard shows
+nothing from it.
 
 ---
 
@@ -949,7 +960,7 @@ maestro:
     verify-arguments: true
   admin:
     events:
-      enabled: true
+      enabled: true   # off by default; on here for the dashboard
       topic: maestro.admin.events
   retention:
     enabled: true
@@ -1043,56 +1054,264 @@ Override with `spring.kafka.consumer.auto-offset-reset`,
 `spring.kafka.consumer.properties.allow.auto.create.topics` and
 `spring.kafka.producer.properties.max.block.ms` respectively.
 
-Boot's own `kafkaTemplate` / `kafkaProducerFactory` / `kafkaConsumerFactory`
-beans are **deliberately suppressed**: `KafkaMessagingAutoConfiguration`
-registers before `KafkaAutoConfiguration` and satisfies
-`ConditionalOnMissingBean(KafkaTemplate.class)`, so Boot's typed,
-`Object`-valued beans never get created. This is intentional, not a bug —
-Maestro needs exactly one `String`/`byte[]`-typed producer/consumer pair for
-its own topics, and letting Boot's beans coexist would leave two
-`KafkaTemplate`s of overlapping type in the context.
+**Your own Kafka traffic uses Spring Boot's beans.** Maestro's three Kafka
+beans (`maestroKafkaTemplate`, `maestroKafkaProducerFactory`,
+`maestroKafkaConsumerFactory`) are not default candidates
+(`@Bean(defaultCandidate = false)`). Spring Boot's `kafkaTemplate`,
+`kafkaProducerFactory` and `kafkaConsumerFactory` therefore exist beside them,
+built from the same `spring.kafka.*` properties, and an injection point that
+names only a type gets Boot's bean. Pinned by
+`KafkaCoexistenceContextTest` (`maestro-messaging-kafka`).
 
-A service that also needs Kafka for its own application traffic has two
-options:
+- **Your own traffic.** Inject Boot's `KafkaTemplate<String, YourDto>` (set
+  `spring.kafka.producer.value-serializer` for it), or declare your own
+  `ProducerFactory` / `KafkaTemplate` / `ConsumerFactory` beans, exactly as in
+  a service without Maestro. Boot's beans back off for yours as they always
+  do; the engine is unaffected. One exception: a typed `ProducerFactory` of
+  your own (such as `ProducerFactory<String, YourDto>`) **without** a
+  `KafkaTemplate` of your own fails startup, because Boot's `kafkaTemplate`
+  (no longer backing off for Maestro's) cannot use a factory whose declared
+  generics its `ProducerFactory<Object, Object>` parameter does not match
+  (`NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+  raised while creating `kafkaTemplate`). Declare your own `KafkaTemplate`
+  over it too, or declare the factory `@Bean(defaultCandidate = false)` and
+  inject it by name, so Boot's `kafkaProducerFactory` and `kafkaTemplate`
+  register beside it. A factory declared `ProducerFactory<?, ?>` is used by
+  Boot's `kafkaTemplate` and starts; a raw or `<Object, Object>` one should
+  behave the same (traced, not tested). Pinned by
+  `KafkaCoexistenceContextTest`.
+- **Reusing the engine's `byte[]` template.** Inject it with its qualifier:
+  `@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]>`
+  (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
+  `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier, what
+  the point receives depends on your own beans:
+  - **You declare no `KafkaTemplate` of your own:** the point receives
+    Boot's template, whose default value serializer is `StringSerializer`
+    (see the check below).
+  - **You declare a `KafkaTemplate` of your own that the point does not
+    match** (one for another value type, such as
+    `KafkaTemplate<String, String>`): Boot's `kafkaTemplate` backs off,
+    Maestro's is not a default candidate, and the point receives nothing.
+    Startup fails with
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.KafkaTemplate<java.lang.String, byte[]>'`,
+    which a Spring Boot application reports as
+    `Bean '<bean>' injects a KafkaTemplate<…, byte[]> without a qualifier (<injection point>), and no Kafka template can be injected there by type. Maestro's 'maestroKafkaTemplate' is not a default candidate: …`,
+    with the qualifier as the action (`ByteArrayTemplateMissingFailureAnalyzer`;
+    pinned by `ByteArrayTemplateMissingFailureAnalyzerTest`). An unqualified
+    `ProducerFactory<String, byte[]>` or `ConsumerFactory<String, byte[]>`
+    beside a host factory of that kind should fail the same way, without
+    that analysis (traced, not tested).
 
-- **Different value type (the common case).** Define your own `KafkaTemplate`
-  bean under a bean name other than `maestroKafkaTemplate` — e.g. one typed
-  `KafkaTemplate<String, YourDto>` with its own `ProducerFactory`. It still
-  reads `spring.kafka.producer.*` for its own settings; only the engine's
-  forced invariants above are specific to `maestroKafkaTemplate`.
-- **Same `byte[]` traffic.** Inject and reuse `maestroKafkaTemplate` /
-  `maestroKafkaProducerFactory` directly rather than standing up a second
-  client.
+  A service whose point received Boot's template fails at startup rather
+  than on its first send, with one `IllegalStateException` that lists every
+  offending injection point, one block each, e.g.:
 
-**Plain `@KafkaListener` consumers.** The suppression above only removes
-Boot's *typed* `String`/`byte[]` beans — it does not touch Boot's own
-`kafkaListenerContainerFactory`, which stays name-conditioned and is never
-suppressed. A plain `@KafkaListener` method with no explicit
-`containerFactory` rides that factory, built from `spring.kafka.consumer.*`
-the ordinary Boot way. Maestro's engine-forced invariants (key/value
-(de)serializer, `group.id`) apply **only** to `maestroKafkaConsumerFactory`
-and never reach this factory — so a plain `@KafkaListener` must declare its
-own `spring.kafka.consumer.key-deserializer` /
-`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in
-a Maestro-free Boot application. Injecting `ConsumerFactory` by type resolves
-Maestro's `byte[]` factory instead; inject by bean name
-(`maestroKafkaConsumerFactory`) or define your own if that is not what you
-want. This is the rule the `sample-payment-gateway`, `underwriting-service`,
-and `verification-gateway-service` samples follow — each keeps its plain
+  ```text
+  Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> without a qualifier (constructor parameter 0 of com.example.LegacyBytesSender) and received 'kafkaTemplate', whose value serializer org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send through it would fail.
+  ```
+
+  The message goes on to name both fixes: the qualifier, or
+  `spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer`
+  to send `byte[]` through Boot's template (a service that sets it starts and
+  uses Boot's template), and then `maestro.messaging.template-injection-check`
+  as the way out of last resort (below).
+
+  Spring Kafka's JSON serializers are violations too: `JacksonJsonSerializer`,
+  the deprecated `JsonSerializer` (matched by class name; traced, not tested)
+  and their subclasses, even one declared for `byte[]`, write a `byte[]`
+  value as a base64-encoded JSON string (`hello` becomes `"aGVsbG8="`,
+  pinned by `aJsonSerializerWritesByteArrayAsABase64String`), so every send
+  succeeds and every record carries a different payload (traced). The
+  block for one says `whose value serializer
+  org.springframework.kafka.support.serializer.JacksonJsonSerializer writes
+  byte[] as a base64-encoded JSON string, not the bytes themselves`, and adds
+  a third way out for a template that is meant to send JSON: qualify the
+  point with that template's own bean name, e.g. `@Qualifier("kafkaTemplate")`,
+  which takes the point out of the check (pinned by
+  `aPointQualifiedWithTheJsonTemplatesOwnName_startsAndHoldsIt`). A JSON
+  subclass that you made pass `byte[]` through unchanged is still a
+  violation, because the check goes by class: give its points that
+  qualifier, or set `maestro.messaging.template-injection-check=warn`.
+
+  The check runs once, after every singleton is created and before
+  `MaestroSignalListenerBeanPostProcessor` verifies the topics or starts any
+  `@MaestroSignalListener` consumer (pinned). The check
+  (`ByteArrayTemplateInjectionCheck`) sees
+  constructor parameters that Spring autowired, and field, `@Bean`-method and
+  `@Autowired`-method parameters, of beans created at startup, typed
+  `KafkaTemplate<…, byte[]>`, `KafkaOperations<…, byte[]>` or a subclass. It
+  counts a point against a template only when that template is the one
+  template of the point's declared type that the point could have received,
+  so a bean that uses a `String` template and a separate `byte[]` template of
+  yours is not blamed for the wrong one, and a point typed with your own
+  `KafkaTemplate` subclass is checked against beans of that subclass only. A
+  point that several of your templates match (Spring chose by `@Primary`,
+  `@Priority` or the parameter or field name) never fails startup. It gets
+  one `WARN` when a matching template the bean depends on cannot serialize
+  `byte[]` or has a serializer the check cannot classify; when that
+  template's serializer is not visible to the check at all (a
+  `KafkaOperations` that is not a `KafkaTemplate`, or a factory with no
+  value serializer), only a `DEBUG` line (traced, not tested).
+  - **Not points, because Spring did not autowire them:** the constructor of
+    a bean built by an instance supplier (a `BeanRegistrar` supplier, or
+    `registerBean(…, Supplier)`, which may call `getBean` itself), and
+    constructor parameters given explicit indexed argument values. For a
+    `FactoryBean`, the FactoryBean's own class is checked, never its
+    product's. For a bean wrapped in a JDK dynamic proxy, the class its bean
+    definition names is checked (when that is a class, not an interface), and
+    a `@Bean` method's parameters are checked either way. A
+    definition with generic (unindexed) argument values exempts every
+    constructor parameter (traced, not tested).
+  - **A `@Qualifier` takes a point out of the check.** A point with Spring's
+    `@Qualifier` (or a `jakarta.inject` qualifier) is not checked, whichever
+    template the qualifier names; `@Qualifier("kafkaTemplate")` on a
+    `KafkaTemplate<String, byte[]>` starts and receives Boot's
+    `StringSerializer` template.
+  - **Shapes it does not see**, each of which starts and receives Boot's
+    template: raw or wildcard generics (`KafkaTemplate`,
+    `KafkaTemplate<String, ?>`), `ObjectProvider`, `Optional` and collection
+    points, and a `@Lazy` point (a proxy; no dependency is recorded at
+    startup). Nor does it see a class with several constructors none of
+    which is `@Autowired`, or (traced) a `getBean` call or a lazy bean or
+    prototype not created at startup.
+
+  Any other value serializer it cannot classify (a generic one whose type
+  it cannot resolve) does not fail startup; the check logs a `WARN` naming
+  the bean and the fix instead. A serializer declared for `Object` passes
+  without a `WARN`, Spring Kafka's `DelegatingSerializer`,
+  `DelegatingByTypeSerializer` and `DelegatingByTopicSerializer` among them
+  (pinned), although what it writes for `byte[]` depends on delegates the
+  check cannot see. A serializer named only in the producer
+  configuration (`spring.kafka.producer.value-serializer`) is classified
+  from its class, without being instantiated; a serializer instance or
+  supplier set on the factory in code is asked for once (it wins over the
+  configuration, as in Kafka). Pinned by
+  `ByteArrayTemplateInjectionCheckTest` (`maestro-messaging-kafka`).
+
+  **When the point is in code you cannot change**, and neither fix is open
+  to you, `maestro.messaging.template-injection-check` is the way out of
+  last resort: `warn` logs each violation at `WARN`, with the text above
+  less its last-resort sentence and ending `(Logged, not fatal, because
+  maestro.messaging.template-injection-check=warn.)`, and starts; `off` turns the check off, its other `WARN`s included. The
+  default is `fail`; an unknown value fails startup. Either setting leaves
+  the point holding the template it received, so its sends still fail or
+  still carry a different payload (traced). Pinned by `ByteArrayTemplateInjectionCheckTest`
+  (`failMode_*`, `warnMode_*`, `offMode_*`) and `MaestroPropertiesBindingTest`.
+- **Replacing an engine bean.** Declare a bean with its name and
+  `defaultCandidate = false`, e.g.
+  `@Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)`; the
+  engine uses it and Boot's three Kafka beans still exist.
+  - For `maestroKafkaProducerFactory`, `defaultCandidate = false` is
+    **required**. A plain `@Bean` of that name makes Boot's
+    `kafkaProducerFactory` back off while Boot's `kafkaTemplate` still
+    registers, and startup fails with
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+    raised while creating `kafkaTemplate`. A Spring Boot application reports
+    it as:
+
+    ```text
+    ***************************
+    APPLICATION FAILED TO START
+    ***************************
+
+    Description:
+
+    The bean 'maestroKafkaProducerFactory' replaces Maestro's engine producer factory but is a default candidate, so Spring Boot's kafkaProducerFactory backed off. Spring Boot's kafkaTemplate (parameter 0 of method kafkaTemplate in org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration) then found no ProducerFactory<Object, Object> to use.
+
+    Action:
+
+    Declare the replacement with @Bean(name = MaestroKafkaBeans.PRODUCER_FACTORY, defaultCandidate = false), so Spring Boot's kafkaProducerFactory registers beside it, or define your own KafkaTemplate bean, so Spring Boot's kafkaTemplate backs off. See docs/configuration.md § Kafka Client Configuration.
+    ```
+
+    Either fix starts. The analysis (`ProducerFactoryReplacementFailureAnalyzer`)
+    appears only for this failure; any other missing `ProducerFactory` is
+    left to Spring Boot's own failure reporting. Pinned by
+    `ProducerFactoryReplacementFailureAnalyzerTest`.
+  - For `maestroKafkaTemplate` and `maestroKafkaConsumerFactory` it is
+    recommended. A plain `@Bean` of that name also replaces the engine's, but
+    Boot's `kafkaTemplate` (respectively `kafkaConsumerFactory`) then backs
+    off and your unqualified injection points of that type get yours; plain
+    `@KafkaListener`s change too (see **After a plain-`@Bean` replacement**
+    below).
+
+  Each combination is pinned by
+  `KafkaCoexistenceContextTest.replacingAnEngineBeanByName_matrix`.
+- **`spring.kafka.producer.*` now configures two producer factories**, Boot's
+  and the engine's (which then forces its invariants above). Each creates its
+  Kafka producer on first send, so Boot's opens no connection unless you send
+  through it (traced).
+
+**Plain `@KafkaListener` consumers.** A plain `@KafkaListener` is Spring
+Boot's, configured exactly as in a service without Maestro; a
+`@MaestroSignalListener` is Maestro's. Neither sees the other's settings.
+The table holds while Maestro's consumer factory and template are not
+replaced by plain `@Bean`s (replacements declared `defaultCandidate = false`
+keep it; see below for plain ones):
+
+| | Plain `@KafkaListener` | `@MaestroSignalListener` |
+|---|---|---|
+| Container factory | Boot's `kafkaListenerContainerFactory` (or the one its `containerFactory` names) | None: Maestro builds each container itself; it is not in the `KafkaListenerEndpointRegistry` |
+| Consumer factory | Boot's `kafkaConsumerFactory` bean | `maestroKafkaConsumerFactory` |
+| Deserializers | `spring.kafka.consumer.key-deserializer` / `value-deserializer` | Always `StringDeserializer` / `ByteArrayDeserializer`, whatever `spring.kafka.consumer.*` says |
+| Group id | Its own (`groupId`, or `spring.kafka.consumer.group-id`) | `maestro-<service>` (or `maestro.messaging.consumer-group`), plus `-<groupIdSuffix>` when set |
+| `spring.kafka.listener.*` | Applies (e.g. `ack-mode`, `auto-startup`) | Does not apply, except `observation-enabled`; always `AckMode.RECORD`, always started |
+| Error handler and DLT | Your `CommonErrorHandler` bean if it is the only one; among several, the `@Primary` one, else the highest `@Priority` (traced, not tested), else the one named `commonErrorHandler` (Boot resolves it through a parameter of that name); with none of these, no handler is set and Spring Kafka's default `DefaultErrorHandler` applies. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
+| Reply template | Boot's `kafkaTemplate` | None (a `@MaestroSignalListener` returns a `SignalRouting`, not a reply) |
+| `KafkaConnectionDetails` | Applies (bootstrap servers) | Applies (bootstrap servers) |
+
+Pinned by `KafkaListenerBoundaryTest` (`maestro-messaging-kafka`), with both
+kinds in one application; `KafkaCoexistenceRoundTripTest` runs them against a
+real broker, including the dead-letter record's `kafka_dlt-*` headers.
+
+**After a plain-`@Bean` replacement** of `maestroKafkaConsumerFactory` and
+`maestroKafkaTemplate`, Boot's `kafkaConsumerFactory` and `kafkaTemplate` back
+off, and what a plain `@KafkaListener` gets depends on how the replacement is
+declared. Boot's container factory asks for a `ConsumerFactory<Object, Object>`
+and a `KafkaTemplate<Object, Object>`:
+
+- Declared `ConsumerFactory<String, byte[]>` / `KafkaTemplate<String, byte[]>`:
+  neither matches, so a plain `@KafkaListener` rides an inline consumer
+  factory built from `spring.kafka.consumer.*` alone, which ignores
+  `KafkaConnectionDetails`, and has no reply template.
+- Declared with wildcards (`ConsumerFactory<?, ?>`, `KafkaTemplate<?, ?>`):
+  both match, so a plain `@KafkaListener` rides your `byte[]` factory and its
+  deserializers instead of `spring.kafka.consumer.*`, and replies through
+  your `byte[]` template.
+
+`@MaestroSignalListener` uses the replacement either way. Pinned by
+`KafkaListenerBoundaryTest`.
+
+Before this release a plain `@KafkaListener` ignored
+`KafkaConnectionDetails`: Boot's container factory found no consumer factory
+bean it could use and built an inline one from `spring.kafka.*` alone, so a
+Testcontainers `@ServiceConnection` user's plain listeners connected to
+`spring.kafka.bootstrap-servers` instead. The same inline factory skipped every
+`DefaultKafkaConsumerFactoryCustomizer` bean (traced).
+
+Maestro's forced deserializers never reach a plain `@KafkaListener`, so it must
+declare its own `spring.kafka.consumer.key-deserializer` /
+`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in a
+Maestro-free Boot application. This is the rule the `sample-payment-gateway`,
+`underwriting-service`, and `verification-gateway-service` samples follow — each keeps its plain
 `@KafkaListener`'s `spring.kafka.consumer.*-deserializer` properties in its
 `application.yml`, with a comment explaining why removing them (on the
 mistaken belief that Maestro's invariants cover them) breaks that listener.
 
-**Two `spring.kafka.template.*` properties that read but do nothing for
-Maestro's own template.** `spring.kafka.template.default-topic` binds and
-appears in `/actuator/configprops`, but `maestroKafkaTemplate`'s send calls
-always name an explicit topic, so it is never consulted. Kafka producer
-transactions (`spring.kafka.producer.transaction-id-prefix` and friends) are
-also quietly unsupported — Boot's `kafkaTransactionManager` never exists in a
-Maestro context, since `maestroKafkaProducerFactory` is not
-transaction-capable. Both are ordinary, honoured settings for a *second*,
-user-defined `KafkaTemplate` (the "different value type" option above); only
-`maestroKafkaTemplate` ignores them.
+**`spring.kafka.template.default-topic` does nothing for Maestro's own
+template.** `maestroKafkaTemplate`'s send calls always name an explicit topic,
+so it is never consulted. Boot's `kafkaTemplate`, which now exists, honours
+it (traced).
+
+**Kafka producer transactions.** Before this release, setting
+`spring.kafka.producer.transaction-id-prefix` failed startup: Boot built its
+`kafkaTransactionManager` over `maestroKafkaProducerFactory`, which is not
+transaction-capable, and the context failed with
+`java.lang.IllegalArgumentException: The 'ProducerFactory' must support transactions`.
+Now `kafkaTransactionManager` is built over Boot's transactional
+`kafkaProducerFactory`, for your own traffic. The engine's producer is never
+transactional (`maestroKafkaProducerFactory.transactionCapable()` and
+`maestroKafkaTemplate.isTransactional()` are `false`). Pinned by
+`KafkaCoexistenceContextTest.aTransactionIdPrefix_givesBootsTransactionManagerOverBootsFactory`.
 
 Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
 the `@MaestroSignalListener` consumer containers defaults **on** when
@@ -1113,7 +1332,7 @@ Create topics before starting your service — with the default
 otherwise, and prints exactly these commands for whatever is missing (see
 [Kafka Topic Verification](#kafka-topic-verification)). For a service named
 `order-service` with one `@MaestroSignalListener(topic = "payments.results")`,
-redelivery on (default) and lifecycle events on (default):
+redelivery on (default) and lifecycle events enabled:
 
 ```bash
 # The engine's inbound signal topic and its dead-letter companion
@@ -1130,7 +1349,7 @@ kafka-topics.sh --create --topic payments.results.DLT \
   --bootstrap-server localhost:9092
 # (payments.results itself is usually created by the service that publishes it)
 
-# Lifecycle events for the admin dashboard (skip with maestro.admin.events.enabled=false)
+# Lifecycle events for the admin dashboard (only with maestro.admin.events.enabled: true)
 kafka-topics.sh --create --topic maestro.admin.events \
   --partitions 3 --replication-factor 3 \
   --bootstrap-server localhost:9092

@@ -56,6 +56,7 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
     static final String OK_TOPIC = "verify.startup.ok.events";
     static final String WARN_TOPIC = "verify.startup.warn.events";
     static final String MIN_TOPIC = "verify.startup.min.events";
+    static final String NOADMIN_TOPIC = "verify.startup.noadmin.events";
 
     private ListAppender<ILoggingEvent> logAppender;
 
@@ -90,7 +91,9 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
         createTopics(FAIL_TOPIC);
 
         runner(service, FailListenerConfiguration.class)
-                .withPropertyValues("maestro.messaging.topics.admin-events=verify.admin." + service)
+                .withPropertyValues(
+                        "maestro.admin.events.enabled=true",
+                        "maestro.messaging.topics.admin-events=verify.admin." + service)
                 .run(ctx -> {
                     assertThat(ctx).hasFailed();
                     // afterSingletonsInstantiated's exception propagates out of refresh()
@@ -116,7 +119,9 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
                 "verify.admin." + service, OK_TOPIC, OK_TOPIC + ".DLT");
 
         runner(service, OkListenerConfiguration.class)
-                .withPropertyValues("maestro.messaging.topics.admin-events=verify.admin." + service)
+                .withPropertyValues(
+                        "maestro.admin.events.enabled=true",
+                        "maestro.messaging.topics.admin-events=verify.admin." + service)
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     var bpp = ctx.getBean(MaestroSignalListenerBeanPostProcessor.class);
@@ -149,6 +154,7 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
 
         runner(service, WarnListenerConfiguration.class)
                 .withPropertyValues(
+                        "maestro.admin.events.enabled=true",
                         "maestro.messaging.topics.admin-events=verify.admin." + service,
                         "maestro.messaging.topics.verify-on-startup=warn")
                 .run(ctx -> {
@@ -179,6 +185,24 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
                             .hasNotFailed();
                     assertThat(logAppender.list).anySatisfy(e -> assertThat(e.getFormattedMessage())
                             .contains("Verified 2 Kafka topic(s)"));
+                });
+    }
+
+    @Test
+    @DisplayName("fail: by default the admin-events topic is not required")
+    void failMode_adminTopicIsNotRequiredByDefault() throws Exception {
+        var service = "verify-noadmin-" + suffix();
+        // No maestro.admin.* and no maestro.messaging.topics.admin-events property at all:
+        // the default admin topic (maestro.admin.events) is not created on this broker.
+        createTopics("maestro.signals." + service, "maestro.signals." + service + ".DLT",
+                NOADMIN_TOPIC, NOADMIN_TOPIC + ".DLT");
+
+        runner(service, NoAdminListenerConfiguration.class)
+                .run(ctx -> {
+                    assertThat(ctx).as("a service that did not enable admin events needs no admin-events topic")
+                            .hasNotFailed();
+                    assertThat(logAppender.list).anySatisfy(e -> assertThat(e.getFormattedMessage())
+                            .contains("Verified 4 Kafka topic(s)"));
                 });
     }
 
@@ -233,6 +257,21 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
         @MaestroSignalListener(topic = MIN_TOPIC, signalName = "verify.signal")
         public SignalRouting handle(String event) {
             return SignalRouting.builder().workflowId("wf-" + event).build();
+        }
+    }
+
+    public static class NoAdminRoutingBean {
+        @MaestroSignalListener(topic = NOADMIN_TOPIC, signalName = "verify.signal")
+        public SignalRouting handle(String event) {
+            return SignalRouting.builder().workflowId("wf-" + event).build();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class NoAdminListenerConfiguration {
+        @Bean
+        NoAdminRoutingBean noAdminRoutingBean() {
+            return new NoAdminRoutingBean();
         }
     }
 

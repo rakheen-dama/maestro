@@ -380,7 +380,7 @@ maestro/
 ├── maestro-messaging-kafka         # Kafka WorkflowMessaging implementation
 ├── maestro-lock-valkey             # Valkey/Redis distributed locking (removed 2026-11-04; lock now in maestro-store-postgres)
 ├── maestro-admin                   # Standalone dashboard (Spring Boot + Thymeleaf + HTMX)
-├── maestro-admin-client            # Lifecycle event publisher for services
+├── maestro-admin-client            # A plain AdminEventPublisher class, not auto-configured; services do not need it (Issue 52)
 ├── maestro-test                    # In-memory engine, time control, TestWorkflowEnvironment
 ├── maestro-samples/
 │   ├── sample-order-service        # Order fulfilment workflow
@@ -453,7 +453,7 @@ archive target). See `docs/operations.md` § Retention and table growth.
 
 ## 10. Admin Dashboard
 
-Standalone Spring Boot application. Consumes `maestro.admin.events` from Kafka, stores aggregated state in its own Postgres, serves a Thymeleaf + HTMX UI. Completely decoupled — downtime has zero impact on services.
+Standalone Spring Boot application. Consumes `maestro.admin.events` from Kafka, stores aggregated state in its own Postgres, serves a Thymeleaf + HTMX UI. Completely decoupled — downtime has zero impact on services. Services publish those events through the engine's `WorkflowMessaging` (`maestro-messaging-kafka`) only when `maestro.admin.events.enabled: true` (off by default).
 
 **Features (v1):** Overview dashboard with aggregate counts and sparklines. Workflow list (searchable, filterable). Workflow detail with event timeline. Cross-service correlation via shared identifiers. Failed workflow view with one-click retry. Signal monitor (pending, pre-delivered, consumed). Timer monitor. Manual actions (retry, terminate, send signal).
 

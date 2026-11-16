@@ -41,6 +41,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * gates lifecycle publishing entirely at the engine (see
  * {@code MaestroAutoConfigurationLifecycleEventsTest}). This suite
  * deliberately configures the canonical property.
+ *
+ * <p>It also sets {@code maestro.admin.events.enabled=true} explicitly:
+ * lifecycle events are off by default (WP7), and this suite exists to observe
+ * them.
  */
 @SpringBootTest(
         classes = KafkaSignalTestApplication.class,
@@ -49,6 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.service-name=" + KafkaLifecycleEventsIT.SERVICE,
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
+                "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + KafkaLifecycleEventsIT.ADMIN_TOPIC,
                 "maestro.recovery.enabled=false"
         })

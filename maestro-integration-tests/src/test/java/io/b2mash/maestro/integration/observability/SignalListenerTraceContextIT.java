@@ -101,7 +101,8 @@ class SignalListenerTraceContextIT extends PostgresIntegrationSupport {
         // The real auto-configuration chain below verifies every topic this
         // service needs at startup (verify-on-startup=fail, the default): the
         // listener topic and its .DLT, the engine's own signal topic and its
-        // .DLT, and the default admin-events topic.
+        // .DLT. The default admin-events topic is required only while
+        // maestro.admin.events.enabled=true (off by default); creating it is harmless.
         createTopics(TOPIC, TOPIC + ".DLT",
                 "maestro.signals." + SERVICE, "maestro.signals." + SERVICE + ".DLT",
                 "maestro.admin.events");

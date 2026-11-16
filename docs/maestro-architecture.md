@@ -115,7 +115,7 @@ graph TB
 | `maestro-store-postgres` | Postgres `WorkflowStore`; table-backed `DistributedLock` + leader election (`io.b2mash.maestro.store.postgres.lock`); `LISTEN/NOTIFY` cross-node signal wake (`...store.postgres.notify`); Flyway 11 migrations (own history table). | Yes (auto-configuration only) |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
-| `maestro-admin-client` | Publishes lifecycle events to Kafka. Lightweight. | Minimal |
+| `maestro-admin-client` | A plain `AdminEventPublisher` class, not auto-configured; no service needs it. Services publish lifecycle events through `maestro-messaging-kafka`. Its future is [Issue 52](open-issues.md#issue-52). | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
 
 > **One implementation per SPI ships today.** `maestro-store-postgres` provides both the `WorkflowStore` and the `DistributedLock` (same database, same `DataSource`); `maestro-messaging-kafka` is the only `WorkflowMessaging`. The SPIs remain the seam — `maestro-test` provides in-memory implementations of all three — but there is no second production backend to choose between.
@@ -591,6 +591,8 @@ graph TB
     PG --> R
     R -->|"Retry / Signal / Terminate"| T
 ```
+
+Services publish to the topic through the engine's own `WorkflowMessaging` (`maestro-messaging-kafka`), and only when `maestro.admin.events.enabled=true`; it is off by default, so each service the dashboard should show sets it.
 
 | Page | Content |
 |---|---|

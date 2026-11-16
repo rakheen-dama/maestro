@@ -19,4 +19,7 @@ dependencies {
 
     testImplementation(project(":maestro-test"))
     testImplementation(libs.spring.boot.starter.test)
+    // The *TemplateTest builds a context from Boot's real KafkaAutoConfiguration
+    // beside Maestro's (no broker needed), so it names Boot's Kafka classes.
+    testImplementation(libs.spring.boot.kafka)
 }
