@@ -313,6 +313,7 @@ on the node that started it.
 |---------------------------------|----------|------------|-------------------------------------------------------------------------------------------------|
 | `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. `kafka` is the only supported value; any other value (including the removed `postgres`) fails startup with a message naming the removal. |
 | `maestro.messaging.consumer-group`| `String`| `null`   | Kafka consumer group ID. If not set, defaults to `maestro-{serviceName}` at runtime.            |
+| `maestro.messaging.template-injection-check` | `fail` \| `warn` \| `off` | `fail` | What happens at startup when a bean injects a `KafkaTemplate<…, byte[]>` without a qualifier and received a template that cannot send `byte[]` unchanged: fail startup, log each case at `WARN` and start, or check nothing. A way out of last resort — see [Kafka Client Configuration](#kafka-client-configuration). Any other value fails startup. |
 
 ### Topic Properties
 
@@ -1074,11 +1075,26 @@ names only a type gets Boot's bean. Pinned by
 - **Reusing the engine's `byte[]` template.** Inject it with its qualifier:
   `@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]>`
   (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
-  `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier you get
-  Boot's template, whose default value serializer is `StringSerializer`.
-  A service that does that fails at startup rather than on its first send,
-  with one `IllegalStateException` that lists every offending injection
-  point, one block each, e.g.:
+  `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier, what
+  the point receives depends on your own beans:
+  - **You declare no `KafkaTemplate` of your own:** the point receives
+    Boot's template, whose default value serializer is `StringSerializer`
+    (see the check below).
+  - **You declare any `KafkaTemplate` of your own** (for any value type):
+    Boot's `kafkaTemplate` backs off, Maestro's is not a default candidate,
+    and the point receives nothing. Startup fails with
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.KafkaTemplate<java.lang.String, byte[]>'`,
+    which a Spring Boot application reports as
+    `Bean '<bean>' injects a KafkaTemplate<…, byte[]> without a qualifier (<injection point>), and no Kafka template can be injected there by type. Maestro's 'maestroKafkaTemplate' is not a default candidate: …`,
+    with the qualifier as the action (`ByteArrayTemplateMissingFailureAnalyzer`;
+    pinned by `ByteArrayTemplateMissingFailureAnalyzerTest`). An unqualified
+    `ProducerFactory<String, byte[]>` or `ConsumerFactory<String, byte[]>`
+    beside a host factory of that kind should fail the same way, without
+    that analysis (traced, not tested).
+
+  A service whose point received Boot's template fails at startup rather
+  than on its first send, with one `IllegalStateException` that lists every
+  offending injection point, one block each, e.g.:
 
   ```text
   Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> without a qualifier (constructor parameter 0 of com.example.LegacyBytesSender) and received 'kafkaTemplate', whose value serializer org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send through it would fail.
@@ -1087,7 +1103,22 @@ names only a type gets Boot's bean. Pinned by
   The message goes on to name both fixes: the qualifier, or
   `spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer`
   to send `byte[]` through Boot's template (a service that sets it starts and
-  uses Boot's template). The check (`ByteArrayTemplateInjectionCheck`) sees
+  uses Boot's template), and then `maestro.messaging.template-injection-check`
+  as the way out of last resort (below).
+
+  Spring Kafka's JSON serializers are violations too: `JacksonJsonSerializer`,
+  the deprecated `JsonSerializer` (matched by class name; traced, not tested)
+  and their subclasses, even one declared for `byte[]`, write a `byte[]`
+  value as a base64-encoded JSON string (`hello` goes out as `"aGVsbG8="`),
+  so every send succeeds and every record carries a different payload. The
+  block for one says `whose value serializer
+  org.springframework.kafka.support.serializer.JacksonJsonSerializer writes
+  byte[] as a base64-encoded JSON string, not the bytes themselves`.
+
+  The check runs once, after every singleton is created and before
+  `MaestroSignalListenerBeanPostProcessor` verifies the topics or starts any
+  `@MaestroSignalListener` consumer (pinned). The check
+  (`ByteArrayTemplateInjectionCheck`) sees
   constructor parameters that Spring autowired, and field, `@Bean`-method and
   `@Autowired`-method parameters, of beans created at startup, typed
   `KafkaTemplate<…, byte[]>`, `KafkaOperations<…, byte[]>` or a subclass. It
@@ -1108,8 +1139,10 @@ names only a type gets Boot's bean. Pinned by
     `registerBean(…, Supplier)`, which may call `getBean` itself), and
     constructor parameters given explicit indexed argument values. For a
     `FactoryBean`, the FactoryBean's own class is checked, never its
-    product's. A definition with generic (unindexed) argument values exempts
-    every constructor parameter (traced, not tested).
+    product's. For a bean wrapped in a JDK dynamic proxy, the class its bean
+    definition names is checked (when that is a class, not an interface). A
+    definition with generic (unindexed) argument values exempts every
+    constructor parameter (traced, not tested).
   - **A `@Qualifier` takes a point out of the check.** A point with Spring's
     `@Qualifier` (or a `jakarta.inject` qualifier) is not checked, whichever
     template the qualifier names; `@Qualifier("kafkaTemplate")` on a
@@ -1123,10 +1156,23 @@ names only a type gets Boot's bean. Pinned by
     which is `@Autowired`, or (traced) a `getBean` call or a lazy bean or
     prototype not created at startup.
 
-  A value serializer it cannot classify (for example
-  `JacksonJsonSerializer`, which is generic) does not fail startup; the check
-  logs a `WARN` naming the bean and the fix instead. Pinned by
+  Any other value serializer it cannot classify (a generic one whose type
+  it cannot resolve) does not fail startup; the check logs a `WARN` naming
+  the bean and the fix instead. A serializer named only in the producer
+  configuration (`spring.kafka.producer.value-serializer`) is classified
+  from its class, without being instantiated; a serializer instance or
+  supplier set on the factory in code is asked for once (it wins over the
+  configuration, as in Kafka). Pinned by
   `ByteArrayTemplateInjectionCheckTest` (`maestro-messaging-kafka`).
+
+  **When the point is in code you cannot change**, and neither fix is open
+  to you, `maestro.messaging.template-injection-check` is the way out of
+  last resort: `warn` logs each violation at `WARN`, with the text above,
+  and starts; `off` turns the check off, its other `WARN`s included. The
+  default is `fail`; an unknown value fails startup. Either setting leaves
+  the point holding the template it received, so its sends still fail or
+  still carry a different payload (traced). Pinned by `ByteArrayTemplateInjectionCheckTest`
+  (`failMode_*`, `warnMode_*`, `offMode_*`) and `MaestroPropertiesBindingTest`.
 - **Replacing an engine bean.** Declare a bean with its name and
   `defaultCandidate = false`, e.g.
   `@Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)`; the

@@ -272,7 +272,9 @@ component (a decision for the maintainer), the engine's Kafka clients ignore
 Boot's customizers and most of `KafkaConnectionDetails`, an unresolvable
 bootstrap host fails startup, a host-only `ProducerFactory` fails without a
 failure analysis, and an ambiguous unqualified `byte[]` template point is only
-warned about.
+warned about. Issues 57–58, from the same work's final fix wave, are filed
+**open**: the `byte[]` template check runs a programmatic serializer supplier
+once, and it precedes Maestro's consumers only by registration order.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -344,6 +346,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | Open |
 | [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | Open |
 | [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | Open |
+| [57](#issue-57) | The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once | Library gap — startup check side effects | Low | Open |
+| [58](#issue-58) | The `byte[]` template check runs before Maestro's consumers only by bean-registration order | Library gap — startup ordering | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -4086,6 +4090,83 @@ fallback) instead of the candidate set, after confirming it creates no bean.
 **Done when.** A context where an unqualified `byte[]` point receives a
 `@Primary` `StringSerializer` template fails startup naming that template, and
 the two tests above still start.
+
+---
+
+### Issue 57 — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once {#issue-57}
+
+> **Open.** Filed by WP7's final fix wave, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
+
+**Kind:** Library gap — startup check side effects. **Severity:** Low.
+
+**What's wrong.** To classify a template's value serializer,
+`ByteArrayTemplateInjectionCheck` calls the producer factory's
+`getValueSerializer()` once, for a template an unqualified `byte[]` point
+received. On a `DefaultKafkaProducerFactory` built with a serializer instance
+or supplier, that runs the supplier and the serializer's `configure(…)`
+(`ByteArrayTemplateInjectionCheckTest.theCheckResolvesTheValueSerializerOnce`
+pins exactly one such call). A factory built only from a configuration map
+(Boot's `kafkaProducerFactory` from `spring.kafka.producer.value-serializer`)
+runs no host code: its supplier is Spring Kafka's `() -> null`, and the class
+is read from `value.serializer` without being instantiated
+(`aSerializerNamedOnlyInTheConfigurationMap_isClassifiedWithoutBeingInstantiated`).
+
+**Harm.** Small: Spring Kafka runs the same supplier and `configure(…)` every
+time it creates a producer, so a serializer must already tolerate it. A
+supplier with side effects (a counter, a registry lookup) sees one extra call
+at startup.
+
+**Why not the fix wave.** The suggested order (configuration map first, the
+supplier only as a fallback) misclassifies a factory that has both: Kafka uses
+the instance, which wins over the map
+(`aHostTemplateWithASerializerInstanceForByteArray_starts`: map
+`StringSerializer`, instance `ByteArraySerializer`). Spring Kafka offers no
+way to tell a programmatic supplier from its own `() -> null` default without
+calling it. Calling `getValueSerializerSupplier().get()` (the raw supplier,
+without `configure(…)`) would drop the `configure(…)` call but changes the
+pinned count from one to zero, which the fix wave was told to keep.
+
+**How to tackle it.** Read the raw supplier (`getValueSerializerSupplier()`)
+and call it without `configure(…)`, falling back to `getValueSerializer()` for
+a factory whose raw supplier is absent, then to the configuration map; update
+`theCheckResolvesTheValueSerializerOnce` to pin zero `configure(…)` calls.
+
+**Done when.** The check classifies the instance-wins case correctly and adds
+no `configure(…)` call on a host serializer.
+
+---
+
+### Issue 58 — The `byte[]` template check runs before Maestro's consumers only by bean-registration order {#issue-58}
+
+> **Open.** Filed by WP7's final fix wave, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
+
+**Kind:** Library gap — startup ordering. **Severity:** Low.
+
+**What's wrong.** Spring calls `afterSingletonsInstantiated` in
+bean-registration order. `KafkaMessagingAutoConfiguration` declares
+`maestroKafkaTemplateInjectionCheck` before
+`maestroSignalListenerBeanPostProcessor`, so a failing check stops startup
+before the post-processor verifies the topics or starts any
+`@MaestroSignalListener` consumer
+(`ByteArrayTemplateInjectionCheckTest.theCheckFailsStartupBeforeAnyMaestroSignalListenerConsumerStarts`).
+A host that declares its own `MaestroSignalListenerBeanPostProcessor` bean (the
+auto-configured one is `@ConditionalOnMissingBean`) registers it from its own
+configuration, before the auto-configuration, so its consumers start before
+the check runs (traced, not tested). Any host `SmartInitializingSingleton`
+registered earlier that sends through a misinjected template also runs first
+(traced).
+
+**Harm.** In that shape, consumers poll for a moment before the check fails
+startup and the context closes them; the failure itself is unchanged.
+
+**How to tackle it.** Have the post-processor run the check itself (once,
+idempotently) at the top of its `afterSingletonsInstantiated`, so the order
+holds whichever bean is registered first.
+
+**Done when.** A context with a host-declared post-processor and a
+misinjected point fails startup without starting a consumer.
 
 ---
 

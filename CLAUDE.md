@@ -230,7 +230,10 @@ WARNs). Full reference: `docs/configuration.md`. Notable properties added post-0
 policy, Kafka), `maestro.admin.events.enabled` (default `false` since WP7;
 dashboard users set `true` on every service; the admin-events topic is required
 at startup only while it is `true`; `.topic` is a deprecated alias for
-`maestro.messaging.topics.admin-events`),
+`maestro.messaging.topics.admin-events`), `maestro.messaging.template-injection-check`
+(fail | warn | off, default `fail`; the way out of last resort when an unqualified
+`KafkaTemplate<…, byte[]>` point that received a template unable to send `byte[]`
+unchanged sits in code the host cannot change),
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
 the tracing flag gates the Kafka W3C header injection too — see
@@ -323,6 +326,7 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never assume signal ordering.**
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config, and enforced at startup: `KafkaTopicVerifier` fails the context on a confirmed-missing topic (`maestro.messaging.topics.verify-on-startup=fail`, the default), the engine consumer defaults `allow.auto.create.topics=false`, and under `fail` — once the probe has confirmed every required topic present (`KafkaTopicVerifier.fatalOnMissing`; never after an inconclusive probe, which must not turn into a restart loop) — every Maestro container is `missingTopicsFatal`. Every suite that touches a broker pre-creates its topics — `.DLT` companions included — against a broker with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
+- **Never inject a Maestro Kafka bean by type** — `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` are `@Bean(defaultCandidate = false)`, so Spring Boot's Kafka beans exist beside them; Maestro code injects them only with `@Qualifier(MaestroKafkaBeans.TEMPLATE)` (or `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). An unqualified `KafkaTemplate<String, byte[]>` receives Spring Boot's template (with Boot's `StringSerializer`, which `ByteArrayTemplateInjectionCheck` fails startup over) or, once the host declares a template of its own, nothing at all (a `NoSuchBeanDefinitionException` that `ByteArrayTemplateMissingFailureAnalyzer` explains).
 - **Never publish a lifecycle event on the workflow thread** — go through `LifecycleEventSink` (`WorkflowExecutor.lifecycleEventSink()`), never `WorkflowMessaging.publishLifecycleEvent` directly; a Kafka producer blocks up to `max.block.ms` on a missing topic.
 - **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`. The one exception is the annotations package: Jackson 3 keeps `com.fasterxml.jackson.annotation` (`@JsonTypeInfo`, `@JsonSubTypes`, `@JsonProperty`, …), so those imports are correct and required.
 - **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.
