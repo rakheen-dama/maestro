@@ -478,6 +478,10 @@ final class ParkingLot {
      *
      * <p>The poison is dropped by {@link #clearTerminated(String)} once the run
      * has unwound, so a later run of the same {@code workflowId} can park again.
+     * A terminate that reaches the lot after the run has already ended (the
+     * {@code runsHere} predicate, asked after the sweep, says it no longer runs
+     * here) drops the poison itself, because the run's own
+     * {@code clearTerminated} may have run before the poison was put.
      *
      * <p>Matches {@code workflowId} exactly: the waiters, permits and later
      * parks of a workflow whose id merely starts with {@code workflowId + ":"}
@@ -495,6 +499,14 @@ final class ParkingLot {
             }
         });
         clearPending(workflowId);
+        if (!runsHere.test(workflowId)) {
+            // The run ended before or during this sweep — the terminate looked
+            // it up, then it ended. Its own clearTerminated may have run before
+            // the put above, so drop the poison here: nothing else would. A run
+            // still registered at this check clears it itself when it ends (its
+            // registration is dropped before its clearTerminated runs).
+            terminatedWorkflows.remove(workflowId);
+        }
     }
 
     /**
