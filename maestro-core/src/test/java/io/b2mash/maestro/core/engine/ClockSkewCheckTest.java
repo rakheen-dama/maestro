@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayDeque;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -54,30 +55,44 @@ class ClockSkewCheckTest {
 
     @Test
     void exactlyOneSecondIsNotWarned() {
-        assertEquals(Optional.empty(), warning(Duration.ofSeconds(1)));
-        assertEquals(Optional.empty(), warning(Duration.ofSeconds(-1)));
+        assertEquals(Optional.empty(), warning(Duration.ofSeconds(1), Duration.ZERO));
+        assertEquals(Optional.empty(), warning(Duration.ofSeconds(-1), Duration.ZERO));
     }
 
     @Test
     void aNodeAheadIsWarnedThatItsDeadlinesFireLate() {
-        assertEquals(Optional.of("This node's clock is 1500 ms ahead of the database clock (warns above 1 s). "
+        assertEquals(Optional.of("This node's clock is 1500 ms ahead of the database clock (warns above 1 s; "
+                        + "the upper bound adds the time the store read took). "
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
                         + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
                         + "1500 ms later than the database clock would set it: a sleep() can wake, and an "
                         + "awaitSignal() timeout can expire, up to 1500 ms late. "
                         + "Check this node's time synchronisation (NTP)."),
-                warning(Duration.ofMillis(1500)));
+                warning(Duration.ofMillis(1500), Duration.ZERO));
     }
 
     @Test
     void aNodeBehindIsWarnedThatItsDeadlinesFireEarly() {
-        assertEquals(Optional.of("This node's clock is 2000 ms behind the database clock (warns above 1 s). "
+        assertEquals(Optional.of("This node's clock is 2000 ms behind the database clock (warns above 1 s; "
+                        + "the upper bound adds the time the store read took). "
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
                         + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
                         + "2000 ms earlier than the database clock would set it: a sleep() can wake, and an "
                         + "awaitSignal() timeout can expire, up to 2000 ms early. "
                         + "Check this node's time synchronisation (NTP)."),
-                warning(Duration.ofMillis(-2000)));
+                warning(Duration.ofMillis(-2000), Duration.ZERO));
+    }
+
+    @Test
+    void aReadThatTookTimeIsWarnedWithBothBounds_theUpperRoundedUp() {
+        assertEquals(Optional.of("This node's clock is between 1500 and 1521 ms behind the database clock "
+                        + "(warns above 1 s; the upper bound adds the time the store read took). "
+                        + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
+                        + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
+                        + "between 1500 and 1521 ms earlier than the database clock would set it: a sleep() can "
+                        + "wake, and an awaitSignal() timeout can expire, up to 1521 ms early. "
+                        + "Check this node's time synchronisation (NTP)."),
+                warning(Duration.ofMillis(-1500), Duration.ofMillis(20).plusNanos(1)));
     }
 
     // ── maybeCheck ─────────────────────────────────────────────────────
@@ -109,9 +124,32 @@ class ClockSkewCheckTest {
         try (var capture = CapturingSlf4jProvider.watch(ClockSkewCheck.class)) {
             inSync.maybeCheck();
             skewed.maybeCheck();
-            assertEquals(List.of(warning(Duration.ofMillis(1500)).orElseThrow()),
+            assertEquals(List.of(warning(Duration.ofMillis(1500), Duration.ZERO).orElseThrow()),
                     capture.records().stream().filter(r -> r.level() == Level.WARN)
                             .map(CapturingSlf4jProvider.CapturedLog::message).toList());
+        }
+    }
+
+    /**
+     * The node is 5 s ahead and the read takes 3 s: {@code before = T+5s},
+     * {@code storeTime = T+2s}, {@code after = T+8s}. The measured skew is
+     * 3 s, a lower bound; the WARN must give an upper bound that covers the
+     * true 5 s — measured skew plus the read time, 6 s — not the 3 s alone.
+     */
+    @Test
+    void aSlowReadIsWarnedWithAnUpperBoundThatCoversTheTrueOffset() {
+        var instants = new ArrayDeque<>(List.of(T.plusSeconds(5), T.plusSeconds(8)));
+        InstantSource advancing = instants::poll;
+        var check = new ClockSkewCheck(new ScriptedClockStore(() -> Optional.of(T.plusSeconds(2))),
+                advancing, nanos::get);
+        try (var capture = CapturingSlf4jProvider.watch(ClockSkewCheck.class)) {
+            assertEquals(Optional.of(Duration.ofSeconds(3)), check.maybeCheck());
+            var warns = capture.records().stream().filter(r -> r.level() == Level.WARN)
+                    .map(CapturingSlf4jProvider.CapturedLog::message).toList();
+            assertEquals(1, warns.size());
+            assertTrue(warns.getFirst().contains("between 3000 and 6000 ms ahead of the database clock"),
+                    warns.getFirst());
+            assertTrue(warns.getFirst().contains("up to 6000 ms late"), warns.getFirst());
         }
     }
 

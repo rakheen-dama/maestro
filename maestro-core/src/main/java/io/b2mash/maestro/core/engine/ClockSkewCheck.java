@@ -33,7 +33,11 @@ import java.util.function.LongSupplier;
  * <p>{@code before = clock.instant()}, {@code t = store.storeTime()},
  * {@code after = clock.instant()}. The skew is the distance of {@code t} from
  * the window {@code [before, after]} — see {@link #skew} — so the statement's
- * own latency can never produce a false {@code WARN}.
+ * own latency can never produce a false {@code WARN}. The same latency makes
+ * the skew a lower bound: the true offset lies between it and it plus
+ * {@code after - before}, and the {@code WARN} reports both bounds
+ * ({@link #warning}). A read slower than {@link #WARN_ABOVE} can hide an
+ * offset above it.
  *
  * <h2>Failures</h2>
  * <p>A store with no clock of its own ({@code storeTime()} empty) is logged
@@ -119,7 +123,8 @@ final class ClockSkewCheck {
                 return Optional.empty();
             }
             var skew = skew(before, storeTime.get(), after);
-            warning(skew).ifPresent(logger::warn);
+            var readTime = Duration.between(before, after);
+            warning(skew, readTime.isNegative() ? Duration.ZERO : readTime).ifPresent(logger::warn);
             return Optional.of(skew);
         } catch (RuntimeException e) {
             logger.debug("Clock-skew check could not read the store's clock — retried in {}: {}",
@@ -153,23 +158,36 @@ final class ClockSkewCheck {
      * The {@code WARN} for a skew, or empty when its magnitude is at most
      * {@link #WARN_ABOVE}.
      *
-     * @param skew the measured skew; positive means this node is ahead
+     * <p>The measured skew is a lower bound on this node's true offset: the
+     * store read its clock at some instant inside the read, so the offset lies
+     * between the measured skew and the measured skew plus the read time. The
+     * {@code WARN} gives both bounds, and states the effect on deadlines with
+     * the upper one. For the same reason a read slower than
+     * {@link #WARN_ABOVE} can hide an offset above it: no {@code WARN} means
+     * the offset is at most {@link #WARN_ABOVE} plus that read's time.
+     *
+     * @param skew     the measured skew; positive means this node is ahead
+     * @param readTime how long the read took on this node's clock; not negative
      * @return the warning text, or empty
      */
-    static Optional<String> warning(Duration skew) {
+    static Optional<String> warning(Duration skew, Duration readTime) {
         if (skew.abs().compareTo(WARN_ABOVE) > 0) {
             var ahead = !skew.isNegative();
-            var millis = skew.abs().toMillis();
+            var low = skew.abs().toMillis();
+            var highNanos = skew.abs().plus(readTime).toNanos();
+            var high = (highNanos + 999_999) / 1_000_000;    // rounded up: an upper bound
+            var range = low == high ? low + " ms" : "between %d and %d ms".formatted(low, high);
             // "can ... up to": an awaitSignal() deadline is also compared on the
             // clock of the node running the await, so a timeout can expire on
             // time; only the bound and its direction hold for both kinds.
-            return Optional.of(("This node's clock is %d ms %s the database clock (warns above 1 s). Due timers "
-                    + "are polled on the database clock, but sleep() and awaitSignal() deadlines are armed on "
-                    + "the clock of the node that schedules them, so a deadline armed here is set %d ms %s "
-                    + "than the database clock would set it: a sleep() can wake, and an awaitSignal() timeout "
-                    + "can expire, up to %d ms %s. Check this node's time synchronisation (NTP).")
-                    .formatted(millis, ahead ? "ahead of" : "behind", millis, ahead ? "later" : "earlier",
-                            millis, ahead ? "late" : "early"));
+            return Optional.of(("This node's clock is %s %s the database clock (warns above 1 s; the upper "
+                    + "bound adds the time the store read took). Due timers are polled on the database clock, "
+                    + "but sleep() and awaitSignal() deadlines are armed on the clock of the node that schedules "
+                    + "them, so a deadline armed here is set %s %s than the database clock would set it: a "
+                    + "sleep() can wake, and an awaitSignal() timeout can expire, up to %d ms %s. Check this "
+                    + "node's time synchronisation (NTP).")
+                    .formatted(range, ahead ? "ahead of" : "behind", range, ahead ? "later" : "earlier",
+                            high, ahead ? "late" : "early"));
         }
         return Optional.empty();
     }
