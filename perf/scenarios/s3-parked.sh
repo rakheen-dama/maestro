@@ -304,13 +304,13 @@ scenario_run() {
       --argjson before "$before" --argjson after "$after" \
       '. + [$w + {P: $p, kind: "plateau", epochs: {start: $a, end: $b}, parkedBefore: $before, parkedAfter: $after}]' <<<"$windows")
     plateauRecs=$(jq -c --argjson p "$p" --argjson prev "$prev" --argjson t0 "$t0" --argjson t1 "$t1" --argjson w "$waited" \
-      --argjson sp "$seedplan" --argjson r "$recheck" --argjson v "$seedVus" \
+      --argjson sp "$seedplan" --argjson r "$recheck" --argjson v "$seedVus" --arg pp "$parkPrefix" \
       '. + [{P: $p, Pprev: $prev, reached: true,
              seed: {startEpoch: $t0, k6EndEpoch: $t1, k6Secs: ($t1 - $t0), timeToParkSecs: $w,
                     lagSecs: ($t0 + $w - $t1), executedPlan: $sp,
                     requested: {executor: "constant-arrival-rate", rate: ($p - $prev), timeUnit: "\($r)s",
                                 durationSecs: $r, offset: $prev, count: ($p - $prev),
-                                preAllocatedVUs: $v, maxVUs: $v, idPrefix: "'"${parkPrefix}"'"}}}]' <<<"$plateauRecs")
+                                preAllocatedVUs: $v, maxVUs: $v, idPrefix: $pp}}}]' <<<"$plateauRecs")
     probes=$(jq -c --argjson r "$(s3_probe "$p" "$probeRate" "$probeSecs" "$probeBody")" '. + [$r]' <<<"$probes")
     prev=$p
   done

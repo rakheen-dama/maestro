@@ -677,10 +677,12 @@ if [[ -n "$s3src" ]]; then
   [[ "$(jq -r .scenario "${s3src}/identity.json")" == s3-parked ]] || { echo "selftest: ${s3src} is not an s3-parked run"; exit 1; }
   # The cases are written for a PASSING local run at one replica in signal
   # mode whose plateau windows hold nothing but the parked population (other
-  # = 0): profile, replica count, slot limit and per-node arithmetic are
-  # assumed by several of them.
+  # = 0): profile, replica count, park mode, slot limit and per-node
+  # arithmetic are assumed by several of them.
   [[ "$(jq -r '"\(.profile) \(.config.replicas)"' "${s3src}/identity.json")" == "local 1" ]] \
     || { echo "selftest: ${s3src} is not a local, 1-replica s3-parked run"; exit 1; }
+  [[ "$(jq -r '.parkMode // .plan.parkMode // "none"' "${s3src}/measurements.json")" == signal ]] \
+    || { echo "selftest: ${s3src} is not a signal-mode s3-parked run (park mode $(jq -c '.parkMode // .plan.parkMode' "${s3src}/measurements.json"))"; exit 1; }
   # s3_eval <case> <measurements filter> [<identity filter>] [<baseline json>]
   s3_eval() {
     local dir="${work}/$1" base=""
