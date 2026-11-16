@@ -65,7 +65,7 @@ maestro/
 ├── maestro-store-jdbc              ← Abstract JDBC WorkflowStore SPI.
 ├── maestro-store-postgres          ← Postgres WorkflowStore + DistributedLock + LISTEN/NOTIFY signal wake; Flyway 11 migrations.
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI (the only transport).
-├── maestro-admin-client            ← Lightweight lifecycle event publisher.
+├── maestro-admin-client            ← Plain AdminEventPublisher class only; no auto-config, no service needs it (Issue 52).
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment (crash/recover a node to exercise replay).
 ├── maestro-samples/
@@ -102,6 +102,8 @@ public interface WorkflowStore {
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
+    default List<WorkflowTimer> getDueTimers(int batchSize); // due by the store's clock (Postgres: fire_at <= now()); the timer poller calls this
+    default Optional<Instant> storeTime(); // the store's clock, for the skew WARN; empty = no clock
     Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
     boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
     void markTimerCancelled(UUID timerId);
@@ -205,10 +207,13 @@ Locks are rows in `maestro_distributed_lock` / `maestro_leader_election` (`lock_
 
 ```
 maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
-maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
 maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader_election (15s TTL)
 maestro:leader:retention:{service}            — Retention sweeper leader in maestro_leader_election (15s TTL, re-elected per batch)
 ```
+
+There is no per-activity lock (3.10). With a lock backend, two runners execute a step concurrently only in the window after a node lost its instance lock, or after a node's instance-lock acquire failed and it proceeded unlocked (traced, not tested); lease fencing (V6) rejects the stale runner's outcome append, so the stale runner records nothing, and the adopting node, finding no recorded outcome, runs the step again — so activities must be idempotent. A duplicate Kafka delivery is deduplicated by the signal's message id (V9), not by a lock.
+
+Due timers are polled on the database clock (`fire_at <= now()`); `fire_at` and await deadlines are armed on the scheduling node's clock, and every node WARNs when its clock is more than 1 s from the database's (checked at timer-poller start and every 10 min).
 
 Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
 
@@ -227,8 +232,13 @@ topic with a `kafka-topics.sh --create` line each; an unreachable broker only
 WARNs). Full reference: `docs/configuration.md`. Notable properties added post-0.3.0:
 `maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
 (default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
-policy, Kafka), `maestro.admin.events.enabled` (now actually wired;
-`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`),
+policy, Kafka), `maestro.admin.events.enabled` (default `false` since WP7;
+dashboard users set `true` on every service; the admin-events topic is required
+at startup only while it is `true`; `.topic` is a deprecated alias for
+`maestro.messaging.topics.admin-events`), `maestro.messaging.template-injection-check`
+(fail | warn | off, default `fail`; the way out of last resort when an unqualified
+`KafkaTemplate<…, byte[]>` point that received a template unable to send `byte[]`
+unchanged sits in code the host cannot change),
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
 the tracing flag gates the Kafka W3C header injection too — see
@@ -321,6 +331,7 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never assume signal ordering.**
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config, and enforced at startup: `KafkaTopicVerifier` fails the context on a confirmed-missing topic (`maestro.messaging.topics.verify-on-startup=fail`, the default), the engine consumer defaults `allow.auto.create.topics=false`, and under `fail` — once the probe has confirmed every required topic present (`KafkaTopicVerifier.fatalOnMissing`; never after an inconclusive probe, which must not turn into a restart loop) — every Maestro container is `missingTopicsFatal`. Every suite that touches a broker pre-creates its topics — `.DLT` companions included — against a broker with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
+- **Never inject a Maestro Kafka bean by type** — `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` are `@Bean(defaultCandidate = false)`, so Spring Boot's Kafka beans exist beside them; Maestro code injects them only with `@Qualifier(MaestroKafkaBeans.TEMPLATE)` (or `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). An unqualified `KafkaTemplate<String, byte[]>` receives Spring Boot's template (with Boot's `StringSerializer`, which `ByteArrayTemplateInjectionCheck` fails startup over) or, once the host declares a template of its own for another value type, nothing at all (a `NoSuchBeanDefinitionException` that `ByteArrayTemplateMissingFailureAnalyzer` explains).
 - **Never publish a lifecycle event on the workflow thread** — go through `LifecycleEventSink` (`WorkflowExecutor.lifecycleEventSink()`), never `WorkflowMessaging.publishLifecycleEvent` directly; a Kafka producer blocks up to `max.block.ms` on a missing topic.
 - **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`. The one exception is the annotations package: Jackson 3 keeps `com.fasterxml.jackson.annotation` (`@JsonTypeInfo`, `@JsonSubTypes`, `@JsonProperty`, …), so those imports are correct and required.
 - **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.

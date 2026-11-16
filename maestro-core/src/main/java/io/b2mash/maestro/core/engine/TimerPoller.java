@@ -8,7 +8,6 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -28,6 +27,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * (effectively renewing the TTL). If the lock backend is unavailable
  * ({@code null}), the poller runs unconditionally (single-node mode).
  *
+ * <h2>Clock</h2>
+ * <p>A due timer is one the store says is due by its own clock
+ * ({@link WorkflowStore#getDueTimers(int)}). On Postgres that is the
+ * database's clock ({@code fire_at <= now()}), so this leader's own clock
+ * does not decide when a timer fires. On a store without a clock of its own
+ * (the in-memory test store, a custom store) it is this JVM's clock, as
+ * before. A timer's {@code fireAt} itself is still armed by the node that
+ * schedules it, on that node's clock; so every node, leader or not, runs a
+ * {@link ClockSkewCheck} at the end of each loop iteration (at start, then
+ * every {@link ClockSkewCheck#INTERVAL}) and logs a {@code WARN} when its clock
+ * is more than {@link ClockSkewCheck#WARN_ABOVE} off the store's.
+ *
  * <h2>Idempotency</h2>
  * <p>Duplicate timer fires are handled safely:
  * <ul>
@@ -43,7 +54,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * The polling loop runs on its own virtual thread. Concurrent {@code start()}
  * calls are guarded by an {@link AtomicBoolean}.
  *
- * @see TimerManager
  * @see WorkflowExecutor#fireTimer(String, String, UUID)
  */
 final class TimerPoller {
@@ -59,6 +69,7 @@ final class TimerPoller {
     private final Duration pollInterval;
     private final int batchSize;
     private final String candidateId;
+    private final ClockSkewCheck skewCheck;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private volatile boolean running;
@@ -101,6 +112,7 @@ final class TimerPoller {
         this.pollInterval = pollInterval;
         this.batchSize = batchSize;
         this.candidateId = UUID.randomUUID().toString();
+        this.skewCheck = new ClockSkewCheck(store);
     }
 
     /**
@@ -157,11 +169,26 @@ final class TimerPoller {
         logger.debug("Timer poller loop started on thread '{}'", Thread.currentThread().getName());
         while (running) {
             try {
-                if (isLeader()) {
-                    var fired = pollDueTimers();
-                    if (fired > 0) {
-                        logger.debug("Fired {} due timer(s)", fired);
+                // Leadership first: the skew check's SELECT now() can block on
+                // an exhausted pool for longer than LEADER_TTL, so it runs
+                // after this pass's renewal and poll. It still sits between
+                // this renewal and the next one, so a blocked read can delay
+                // the NEXT renewal (at most once per ClockSkewCheck.INTERVAL);
+                // losing the lease is safe, firing a timer is a compare-and-set.
+                var leader = isLeader();
+                try {
+                    if (leader) {
+                        var fired = pollDueTimers();
+                        if (fired > 0) {
+                            logger.debug("Fired {} due timer(s)", fired);
+                        }
                     }
+                } finally {
+                    // Every node, leader or not: every node arms deadlines
+                    // (3.7). Runs even when the poll threw. Never throws a
+                    // RuntimeException; at most one store read per
+                    // ClockSkewCheck.INTERVAL.
+                    skewCheck.maybeCheck();
                 }
                 Thread.sleep(pollInterval);
             } catch (InterruptedException e) {
@@ -183,7 +210,7 @@ final class TimerPoller {
     }
 
     private int pollDueTimers() {
-        var dueTimers = store.getDueTimers(Instant.now(), batchSize);
+        var dueTimers = store.getDueTimers(batchSize);
         var fired = 0;
 
         for (var timer : dueTimers) {

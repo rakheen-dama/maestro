@@ -432,7 +432,6 @@ class ActivityInvocationHandlerTest {
             assertEquals("append collision at sequence 1", thrown.detail());
         });
         assertEquals(1, calls.get(), "the second activity must not execute — the winner runs that side effect");
-        assertEquals(1, lock.acquiredKeys.size(), "no activity lock for the stood-down call");
         assertEquals(1, messaging.publishedEvents.stream()
                         .filter(e -> e.eventType() == LifecycleEventType.ACTIVITY_STARTED).count(),
                 "no ACTIVITY_STARTED for the stood-down call");
@@ -441,69 +440,18 @@ class ActivityInvocationHandlerTest {
         assertTrue(store.appendedEvents.isEmpty(), "the stale run persisted nothing");
     }
 
-    // ── Lock behavior tests ───────────────────────────────────────────
-
     @Test
-    @DisplayName("Lock: proceeds without lock when lock acquisition fails")
-    void lockAcquisitionFailure() {
-        lock.failAcquisition = true;
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-
-            // Should still succeed — lock is optimization, not correctness
-            var result = proxy.greet("World");
-            assertEquals("Hello, World!", result.message());
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: proceeds when lock backend throws exception")
-    void lockBackendError() {
-        lock.throwOnAcquire = true;
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-
-            var result = proxy.greet("World");
-            assertEquals("Hello, World!", result.message());
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: acquires and releases lock on success")
-    void lockLifecycle() {
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new GreetingActivitiesImpl());
-            proxy.greet("World");
-
-            assertEquals(1, lock.acquiredKeys.size());
-            assertTrue(lock.acquiredKeys.getFirst().contains("maestro:lock:activity:" + WORKFLOW_ID));
-            assertEquals(1, lock.releasedCount);
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: releases lock even when activity fails")
-    void lockReleasedOnFailure() {
-        withContext(() -> {
-            var proxy = createProxy(GreetingActivities.class, new FailingActivities());
-
-            assertThrows(ActivityExecutionException.class, () -> proxy.greet("World"));
-            assertEquals(1, lock.releasedCount);
-        });
-    }
-
-    @Test
-    @DisplayName("Lock: honours a custom lock key prefix (maestro.lock.key-prefix)")
-    void lockHonoursCustomKeyPrefix() {
-        withContext(() -> {
-            var proxy = createProxyWithLockPrefix(
-                    GreetingActivities.class, new GreetingActivitiesImpl(), "custom:prefix:");
-            proxy.greet("World");
-
-            assertEquals(1, lock.acquiredKeys.size());
-            assertEquals("custom:prefix:activity:" + WORKFLOW_ID + ":1", lock.acquiredKeys.getFirst(),
-                    "the activity lock key must honour the configured prefix exactly like the instance lock");
-        });
+    @DisplayName("A live activity takes no lock (3.10)")
+    void liveActivityTakesNoLock() {
+        var result = new java.util.concurrent.atomic.AtomicReference<Greeting>();
+        withContext(() -> result.set(
+                createProxy(GreetingActivities.class, new GreetingActivitiesImpl()).greet("World")));
+        assertEquals(new Greeting("Hello, World!"), result.get(), "the activity ran live and returned its value");
+        assertEquals(List.of(EventType.ACTIVITY_COMPLETED),
+                store.appendedEvents.stream().map(WorkflowEvent::eventType).toList(),
+                "the live call recorded its one outcome");
+        assertEquals(List.of(), lock.acquiredKeys, "a live activity takes no lock (3.10)");
+        assertEquals(0, lock.releasedCount);
     }
 
     // ── Messaging behavior tests ──────────────────────────────────────
@@ -704,7 +652,7 @@ class ActivityInvocationHandlerTest {
     }
 
     @Test
-    @DisplayName("Terminate requested before the call: no lock, no ACTIVITY_STARTED, no attempt (R22 part 3)")
+    @DisplayName("Terminate requested before the call: no ACTIVITY_STARTED, no attempt (R22 part 3)")
     void terminateBeforeCall_publishesNoActivityStarted() {
         var calls = new AtomicInteger();
         var observer = new RecordingEngineObserver();
@@ -718,7 +666,7 @@ class ActivityInvocationHandlerTest {
                 "a terminated run must not publish ACTIVITY_STARTED (or open an activity span)");
         assertTrue(observer.invocations().isEmpty(),
                 "no observer callback either — in particular no activityStarted: " + observer.callbackNames());
-        assertTrue(lock.acquiredKeys.isEmpty(), "no activity lock for a terminated run");
+        assertEquals(0, calls.get(), "the terminated run executed no activity");
         assertTrue(store.appendedEvents.isEmpty());
         assertEquals(0, calls.get());
     }
@@ -808,14 +756,6 @@ class ActivityInvocationHandlerTest {
                 iface, impl, store, lock, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
-        );
-    }
-
-    private <T> T createProxyWithLockPrefix(Class<T> iface, T impl, String lockKeyPrefix) {
-        return factory.createProxy(
-                iface, impl, store, lock, messaging,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30),
-                serializer, retryExecutor, lockKeyPrefix
         );
     }
 
@@ -1112,17 +1052,9 @@ class ActivityInvocationHandlerTest {
 
         final List<String> acquiredKeys = new ArrayList<>();
         int releasedCount = 0;
-        boolean failAcquisition = false;
-        boolean throwOnAcquire = false;
 
         @Override
         public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
-            if (throwOnAcquire) {
-                throw new RuntimeException("Lock backend unavailable");
-            }
-            if (failAcquisition) {
-                return Optional.empty();
-            }
             acquiredKeys.add(key);
             return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
         }

@@ -38,4 +38,7 @@ dependencies {
     // @DurableWorkflow bean (R55). The Postgres lock ships with
     // maestro-store-postgres, so nothing extra is needed for locking.
     testImplementation(libs.testcontainers.postgresql)
+    // The *TemplateTest builds a context from Boot's real KafkaAutoConfiguration
+    // beside Maestro's (no broker needed), so it names Boot's Kafka classes.
+    testImplementation(libs.spring.boot.kafka)
 }

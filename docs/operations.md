@@ -112,7 +112,9 @@ workflows; only one is the elected `TimerPoller` leader
 (`maestro:leader:timer-poller:{service}`, 15s TTL). The elected leader is
 `kill -9`'d while a workflow *not owned by the leader* is mid-sleep on the
 surviving node. The durable timer must still fire and the workflow must
-progress, bounded by leader-TTL + poll-interval + wake-recheck.
+progress, bounded by leader-TTL + poll-interval + wake-recheck. The leader's
+own clock does not decide when a timer fires: due timers are compared with the
+database clock (§13 has the skew check).
 
 | Lock backend | Observed failover latency | Bound |
 |---|---|---|
@@ -213,7 +215,10 @@ notification hand-offs in flight and drops the excess, logged at `DEBUG`. A
 dropped or failed notification costs latency (one recheck interval), never a
 signal. While failures persist, the outage `WARN` repeats every 5 minutes. The
 cross-node *timer* wake described above has no notify path and always rides
-the recheck interval.
+the recheck interval. A wake that reaches a node not running the workflow (a
+Kafka-consumed signal, a timer the leader fires for a workflow owned elsewhere)
+stores nothing there: the durable row is the wake, and the owner is woken by
+`NOTIFY` or its re-check.
 
 ---
 
@@ -1172,6 +1177,7 @@ P = workflows parked on this node):
 | Recovery pass — lock reads | at most 1 `heldKeys` read of `maestro_distributed_lock` per non-empty page, ≤ ⌈A / 200⌉ | same pass |
 | Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) | same pass |
 | Parked-workflow wake re-check | 2 reads per parked `sleep()` (instance status, timer row), 3 per parked `awaitSignal()` (status, signals, deadline row): 2P–3P reads | `maestro.signal.wake-recheck-interval` = **30 s** (unchanged by this cycle) |
+| Clock-skew check | 1 `SELECT now()` | at timer-poller start, then every **10 min** |
 
 Worked example (arithmetic): a node holding 2,000 parked workflows of a
 service with 10,000 active instances spread over five nodes renews them with
@@ -1206,7 +1212,7 @@ competes with the application's own. If Maestro has its own pool
 size it at **≥ max(`default-concurrency`, `default-activity-concurrency`) + 5**
 (25 at the defaults; add the same `max(...)` for every further queue that is
 busy at the same time). Both kinds of slot holder borrow connections: an
-activity slot's holder for the activity's dedup lock and outcome write, and a
+activity slot's holder for the activity's outcome write, and a
 workflow slot's holder that runs no activity, such as a run replaying its
 history or a parked run's wake re-check. The headroom covers the wake listener's one connection held for the
 application's lifetime, the short borrow of every `NOTIFY`, the lock renewer

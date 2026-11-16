@@ -72,8 +72,8 @@ site.
 
 ## Meter catalog
 
-Twenty-one meters: **16 counters and 2 timers**, registered by
-`MicrometerEngineObserver`, plus **3 gauges** — two registered by
+Twenty-two meters: **16 counters and 2 timers**, registered by
+`MicrometerEngineObserver`, plus **4 gauges** — three registered by
 `MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
 bounded task queue and kind) by `MaestroTaskQueueGauges` — all in the
 `io.b2mash.maestro.spring.observe` package of `maestro-spring-boot-starter`.
@@ -167,13 +167,14 @@ recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 |---|---|---|
 | `maestro.workflows.running` | *(none)* | `WorkflowExecutor.runningCount()` |
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
+| `maestro.wake.permits` | *(none)* | `WorkflowExecutor.wakePermitCount()` |
 | `maestro.taskqueue.slots.used` | `queue`, `kind` | `TaskQueueGovernor.workflowSlotsInUse(queue)` (`kind=workflow`) / `activitySlotsInUse(queue)` (`kind=activity`) |
 
 `queue` is the `taskQueue` of a registered `@DurableWorkflow` that is bounded
 on this node; `kind` is `workflow` or `activity`. Prometheus exposes it as
 `maestro_taskqueue_slots_used`.
 
-All three are registered with `.strongReference(true)` — the first two by
+All four are registered with `.strongReference(true)` — the first three by
 `MaestroEngineGauges`, `maestro.taskqueue.slots.used` by
 `MaestroTaskQueueGauges` — because Micrometer's `Gauge.Builder` holds its state
 object behind a `WeakReference` by default, which would report `NaN` once the
@@ -190,13 +191,21 @@ builder went out of scope.
   by **parking key** — one entry per active park (a `sleep()` on a durable
   timer, or an `awaitSignal()`). Entries are removed on unpark, timeout,
   interrupt, or exception.
+- `maestro.wake.permits` is the size of `ParkingLot`'s permit map, keyed by
+  parking key: a wake (a signal, a timer fire or cancel, a cross-node
+  notification) that reached this node when nobody was parked on that key yet.
+  Since 3.2 a permit is stored only for a workflow running on this node, and it
+  is dropped when that run parks, ends, is terminated or the node shuts down,
+  so the value stays near zero; one that grows with signal or timer throughput
+  is a regression. Tests show this: `WakePermitLocalityTest`,
+  `ParkingLotWakeGateTest`.
 - `maestro.taskqueue.slots.used` is the queue's limit minus the free permits of
   its slot pool in `TaskQueueGovernor` — the slots held right now **on this
   JVM**. `kind=workflow` counts runs executing on the queue; a parked run gives
   its slot back for the park, so a parked workflow counts in
   `maestro.workflows.running` but not here. `kind=activity` counts live
-  activity executions (from the dedup lock through every retry to the
-  persisted outcome); a replayed step takes no slot. Compare it against the
+  activity executions (from the first attempt through every retry to
+  the persisted outcome); a replayed step takes no slot. Compare it against the
   queue's `maestro.worker.task-queues[]` limits, or the
   `maestro.worker.default-*` limits (20/20) for an unlisted queue, to see
   saturation. The gauges are registered on `ContextRefreshedEvent`, once

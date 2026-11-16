@@ -136,9 +136,9 @@ The admin schema is managed by Flyway and applied automatically on startup. Migr
 
 ### Kafka topic
 
-> **Note:** Lifecycle events reach the dashboard over Kafka, Maestro's only transport. Set `maestro.admin.events.enabled: false` in a service you do not want the dashboard to observe.
+> **Note:** Lifecycle events reach the dashboard over Kafka, Maestro's only transport. Publishing is off by default: set `maestro.admin.events.enabled: true` in each service the dashboard should observe. A service that leaves it unset publishes nothing, and the dashboard shows nothing from it.
 
-The `maestro.admin.events` topic must be pre-created. The `kafka-init` service in `docker-compose.yml` handles this:
+The `maestro.admin.events` topic must be pre-created. A service with `maestro.admin.events.enabled: true` refuses to start without it (under the default `maestro.messaging.topics.verify-on-startup=fail`). The `kafka-init` service in `docker-compose.yml` handles this:
 
 ```bash
 kafka-topics.sh --create --if-not-exists --topic maestro.admin.events --partitions 1 --replication-factor 1
@@ -148,14 +148,7 @@ kafka-topics.sh --create --if-not-exists --topic maestro.admin.events --partitio
 
 ## Enabling Event Publishing in Services
 
-Services must include the `maestro-admin-client` dependency to publish lifecycle events to the dashboard:
-
-```kotlin
-// build.gradle.kts
-dependencies {
-    implementation("io.b2mash.maestro:maestro-admin-client")
-}
-```
+A service needs no extra dependency to publish lifecycle events to the dashboard. The engine publishes them itself, through its Kafka `WorkflowMessaging` (`maestro-messaging-kafka`), to the `maestro.messaging.topics.admin-events` topic (default `maestro.admin.events`). Publishing is off by default; set `maestro.admin.events.enabled: true` in every service the dashboard should observe:
 
 ```yaml
 # application.yml
@@ -163,12 +156,11 @@ maestro:
   admin:
     events:
       enabled: true
-      topic: maestro.admin.events
 ```
 
-Event publishing is **enabled by default** (`enabled: true`). Adding the dependency is sufficient -- no additional configuration is required unless you need to change the topic name.
+See [Configuration § Admin Events Configuration](configuration.md#admin-events-configuration) for the property's default and the topic properties.
 
-Set `enabled: false` to disable publishing (e.g., in test environments):
+Leaving the property unset, or setting `enabled: false`, publishes nothing (the default):
 
 ```yaml
 maestro:
@@ -177,7 +169,9 @@ maestro:
       enabled: false
 ```
 
-The `AdminEventPublisher` uses **fire-and-forget** semantics: publishing failures are logged at `WARN` level and silently swallowed. Lifecycle event failures never interrupt workflow execution.
+The engine publishes lifecycle events off the workflow thread, through its bounded lifecycle-event sink; a failed or slow publish never interrupts workflow execution (see [Release notes § Kafka — missing topics fail startup; lifecycle publishes never block a workflow](release-notes.md#kafka--missing-topics-fail-startup-lifecycle-publishes-never-block-a-workflow)).
+
+`maestro-admin-client` contributes no auto-configuration. Its `AdminEventPublisher` is a plain class, not a bean; a Maestro service does not need it.
 
 ---
 
@@ -332,14 +326,7 @@ All properties are configured in the admin app's `application.yml`:
 | `maestro.admin.signal-topic-prefix` | `maestro.signals.` | Prefix for per-service signal topics (used for admin actions) |
 | `spring.kafka.bootstrap-servers` | `localhost:29092` | Kafka bootstrap servers |
 
-### Admin client (`maestro-admin-client`)
-
-Configured in each service's `application.yml`:
-
-| Property | Default | Description |
-|---|---|---|
-| `maestro.admin.events.enabled` | `true` | Enable or disable lifecycle event publishing |
-| `maestro.admin.events.topic` | `maestro.admin.events` | Kafka topic to publish lifecycle events to |
+A service's own publishing properties (`maestro.admin.events.*`, `maestro.messaging.topics.admin-events`) are the engine's: see [Configuration § Admin Events Configuration](configuration.md#admin-events-configuration).
 
 ---
 

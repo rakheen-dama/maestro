@@ -128,7 +128,7 @@ docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --topic maestro.signals.my-service --partitions 3
 
-# Admin events topic (optional, for the dashboard)
+# Admin events topic (only with `maestro.admin.events.enabled: true`, for the dashboard)
 docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --topic maestro.admin.events --partitions 1

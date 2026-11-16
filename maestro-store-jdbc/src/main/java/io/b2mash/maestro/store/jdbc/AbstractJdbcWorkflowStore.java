@@ -35,6 +35,7 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -111,6 +112,13 @@ import java.util.stream.Collectors;
  * <ul>
  *   <li>{@link #getDueTimersSql()} — <b>abstract</b>, must provide row-level
  *       locking SQL (e.g., {@code FOR UPDATE SKIP LOCKED} in Postgres).</li>
+ *   <li>{@link #getDueTimersByStoreClockSql()} — override to compare
+ *       {@code fire_at} with the database's clock in
+ *       {@link #getDueTimers(int)} (Postgres: {@code fire_at <= now()}); the
+ *       default {@code null} compares with this JVM's clock instead.</li>
+ *   <li>{@link #storeTimeSql()} — override to read the database's clock in
+ *       {@link #storeTime()} (Postgres: {@code SELECT now()}); the default
+ *       {@code null} reports no clock, and the clock-skew check stays off.</li>
  *   <li>{@link #getPurgeCandidatesSql()} — override to lock the retention
  *       purge's candidate rows (Postgres: {@code LIMIT ? FOR UPDATE SKIP
  *       LOCKED}); the portable default uses {@code FETCH FIRST ? ROWS ONLY}
@@ -224,6 +232,35 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * @return the parameterized SQL string
      */
     protected abstract String getDueTimersSql();
+
+    /**
+     * Returns the SQL for polling the timers due by the <em>database's</em>
+     * clock, used by {@link #getDueTimers(int)} — or {@code null} (the
+     * default) when this database has none to offer, in which case
+     * {@link #getDueTimers(int)} compares with this JVM's clock through
+     * {@link #getDueTimersSql()}.
+     *
+     * <p>The SQL is {@link #getDueTimersSql()} with the {@code fire_at}
+     * parameter replaced by the database's current time (Postgres:
+     * {@code fire_at <= now()}); its single parameter is the row limit.
+     *
+     * @return the parameterized SQL string, or {@code null}
+     */
+    protected @Nullable String getDueTimersByStoreClockSql() {
+        return null;
+    }
+
+    /**
+     * Returns the SQL that reads the database's current time as one row of one
+     * column, read as {@link OffsetDateTime} by {@link #storeTime()} — or
+     * {@code null} (the default) when this database has no clock to offer, in
+     * which case {@link #storeTime()} returns empty without running any SQL.
+     *
+     * @return the SQL string, or {@code null}
+     */
+    protected @Nullable String storeTimeSql() {
+        return null;
+    }
 
     /**
      * Returns the row-locking clause appended to the fenced
@@ -1536,6 +1573,41 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setTimestamp(1, Timestamp.from(now));
             ps.setInt(2, batchSize);
         }, this::mapTimer);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Runs {@link #getDueTimersByStoreClockSql()}, binding only the batch
+     * size; without that hook, {@code getDueTimers(Instant.now(), batchSize)}.
+     * The lock lifetime note on {@link #getDueTimers(Instant, int)} applies.
+     */
+    @Override
+    public List<WorkflowTimer> getDueTimers(int batchSize) {
+        var sql = getDueTimersByStoreClockSql();
+        if (sql == null) {
+            return getDueTimers(Instant.now(), batchSize);
+        }
+        return queryList(sql, ps -> ps.setInt(1, batchSize), this::mapTimer);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Runs {@link #storeTimeSql()} and reads its one value as
+     * {@link OffsetDateTime}; without that hook, empty and no SQL. A SQL error
+     * is translated as every other read's is.
+     */
+    @Override
+    public Optional<Instant> storeTime() {
+        var sql = storeTimeSql();
+        if (sql == null) {
+            return Optional.empty();
+        }
+        return querySingle(sql, ps -> {}, rs -> {
+            var now = rs.getObject(1, OffsetDateTime.class);
+            return now == null ? null : now.toInstant();
+        });
     }
 
     @Override

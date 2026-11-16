@@ -1,5 +1,6 @@
 package io.b2mash.maestro.samples.order.activity.impl;
 
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
 import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.order.activity.MessagingActivities;
@@ -7,6 +8,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import io.b2mash.maestro.samples.order.domain.PaymentRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -27,7 +29,7 @@ public class KafkaMessagingActivities implements MessagingActivities {
     private final KafkaTemplate<String, byte[]> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
-    public KafkaMessagingActivities(KafkaTemplate<String, byte[]> kafkaTemplate,
+    public KafkaMessagingActivities(@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]> kafkaTemplate,
                                     ObjectMapper objectMapper) {
         this.kafkaTemplate = kafkaTemplate;
         this.objectMapper = objectMapper;

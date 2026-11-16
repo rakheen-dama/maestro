@@ -231,6 +231,16 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     }
 
     @Override
+    public List<WorkflowTimer> getDueTimers(int batchSize) {
+        return delegate.getDueTimers(batchSize);
+    }
+
+    @Override
+    public Optional<Instant> storeTime() {
+        return delegate.storeTime();
+    }
+
+    @Override
     public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
         return delegate.findTimer(workflowInstanceId, timerId);
     }

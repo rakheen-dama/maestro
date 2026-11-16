@@ -45,6 +45,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.service-name=" + AdminCommandKafkaIT.SERVICE,
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
+                "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + AdminCommandKafkaIT.ADMIN_TOPIC,
                 "maestro.recovery.enabled=false",
                 // Tight budget so the poison case's exhaustion (~1.75s of backoff)

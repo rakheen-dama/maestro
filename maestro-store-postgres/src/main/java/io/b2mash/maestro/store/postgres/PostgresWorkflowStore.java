@@ -20,6 +20,10 @@ import java.sql.Types;
  *   <li>JSONB parameters via {@link PGobject} for native type handling.</li>
  *   <li>{@code FOR UPDATE SKIP LOCKED} for concurrent timer polling and for
  *       the retention purge's candidate rows.</li>
+ *   <li>Due timers compared with the database clock: {@link #getDueTimers(int)}
+ *       selects {@code fire_at <= now()}, so the timer-poller leader's own
+ *       clock does not decide when a timer fires; {@link #storeTime()} reads
+ *       {@code SELECT now()} for every node's clock-skew check.</li>
  *   <li>{@code INSERT ... RETURNING payload} for
  *       {@link #appendEventReturningPayload}, so a live result is the
  *       {@code jsonb} form a replay reads.</li>
@@ -74,6 +78,35 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
                 + " ORDER BY fire_at ASC"
                 + " LIMIT ?"
                 + " FOR UPDATE SKIP LOCKED";
+    }
+
+    /**
+     * Returns {@link #getDueTimersSql()} with {@code fire_at} compared to the
+     * database's {@code now()} instead of a bound instant; the one parameter
+     * is the limit.
+     *
+     * <p>{@code fire_at} is {@code TIMESTAMPTZ}, so the comparison is absolute
+     * whatever the session or JVM time zone, and {@code now()} is stable within
+     * the statement, so the partial index on {@code (fire_at, status)} still
+     * serves it (traced).
+     */
+    @Override
+    protected String getDueTimersByStoreClockSql() {
+        return "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, "
+                + "status, created_at FROM " + tableName("workflow_timer")
+                + " WHERE fire_at <= now() AND status = 'PENDING'"
+                + " ORDER BY fire_at ASC"
+                + " LIMIT ?"
+                + " FOR UPDATE SKIP LOCKED";
+    }
+
+    /**
+     * Returns {@code SELECT now()}: the clock {@link #getDueTimersByStoreClockSql()}
+     * compares with, for the clock-skew check.
+     */
+    @Override
+    protected String storeTimeSql() {
+        return "SELECT now()";
     }
 
     /**
