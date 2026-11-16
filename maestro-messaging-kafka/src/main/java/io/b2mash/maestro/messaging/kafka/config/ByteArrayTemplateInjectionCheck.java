@@ -216,8 +216,10 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         if (pointsByBean.isEmpty() && ambiguousPoints.isEmpty()) {
             return;
         }
-        var target = valueSerializerTarget(template);
+        // Resolved once: on a DefaultKafkaProducerFactory each getValueSerializer()
+        // call runs the supplier and configure(...) on the shared serializer.
         var serializerClass = valueSerializerClass(template);
+        var target = valueSerializerTarget(serializerClass);
         if (target != null && target.isAssignableFrom(byte[].class)) {
             return;
         }
@@ -329,10 +331,18 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
      *         class name, or a {@code T} that does not resolve
      */
     static @Nullable Class<?> valueSerializerTarget(KafkaOperations<?, ?> template) {
-        return serializedType(valueSerializerClass(template));
+        return valueSerializerTarget(valueSerializerClass(template));
     }
 
-    private static @Nullable Class<?> serializedType(@Nullable Class<?> serializerClass) {
+    /**
+     * The type a value serializer class declares it serializes: {@code T} of
+     * {@code Serializer<T>}.
+     *
+     * @param serializerClass the serializer class, or {@code null}
+     * @return the serialized type, or {@code null} when the class is
+     *         {@code null} or {@code T} does not resolve
+     */
+    static @Nullable Class<?> valueSerializerTarget(@Nullable Class<?> serializerClass) {
         if (serializerClass == null) {
             return null;
         }

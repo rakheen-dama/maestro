@@ -33,6 +33,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.TEMPLATE;
 import static io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.coexistenceRunner;
@@ -326,6 +327,31 @@ class ByteArrayTemplateInjectionCheckTest {
         });
     }
 
+    @Test
+    void theCheckResolvesTheValueSerializerOnce() {
+        // DefaultKafkaProducerFactory.getValueSerializer() runs configure(...) on the
+        // shared serializer instance on every call.
+        var withoutAPoint = new AtomicInteger();
+        coexistenceRunner().withUserConfiguration(CountingTemplateConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            withoutAPoint.set(ctx.getBean(CountingByteArraySerializer.class).configureCalls());
+        });
+        coexistenceRunner().withUserConfiguration(CountingTemplateConfiguration.class,
+                LegacyBytesSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(ctx.getBean(LegacyBytesSender.class).template()).isSameAs(ctx.getBean("countingTemplate"));
+            var serializer = ctx.getBean(CountingByteArraySerializer.class);
+            var afterStartup = serializer.configureCalls();
+            var factory = ctx.getBean("countingTemplate", KafkaTemplate.class).getProducerFactory();
+            factory.getValueSerializer();
+            var oneResolution = serializer.configureCalls() - afterStartup;
+            assertThat(oneResolution).as("configure calls per getValueSerializer()").isEqualTo(1);
+            assertThat(afterStartup - withoutAPoint.get())
+                    .as("configure calls the check adds when a point received the template")
+                    .isEqualTo(oneResolution);
+        });
+    }
+
     // ── Static helpers ───────────────────────────────────────────────────
 
     @Test
@@ -540,6 +566,37 @@ class ByteArrayTemplateInjectionCheckTest {
         }
 
         TwoConstructors(KafkaTemplate<String, byte[]> template) {
+        }
+    }
+
+    /** A {@code ByteArraySerializer} that counts its {@code configure} calls. */
+    static class CountingByteArraySerializer extends ByteArraySerializer {
+        private final AtomicInteger configureCalls = new AtomicInteger();
+
+        @Override
+        public void configure(Map<String, ?> configs, boolean isKey) {
+            configureCalls.incrementAndGet();
+            super.configure(configs, isKey);
+        }
+
+        int configureCalls() {
+            return configureCalls.get();
+        }
+    }
+
+    /** A host byte[] template whose factory holds a counting serializer instance. */
+    @Configuration(proxyBeanMethods = false)
+    static class CountingTemplateConfiguration {
+        @Bean
+        CountingByteArraySerializer countingSerializer() {
+            return new CountingByteArraySerializer();
+        }
+
+        @Bean
+        KafkaTemplate<String, byte[]> countingTemplate(CountingByteArraySerializer serializer) {
+            return new KafkaTemplate<>(new DefaultKafkaProducerFactory<String, byte[]>(
+                    Map.of(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1"),
+                    new StringSerializer(), serializer));
         }
     }
 
