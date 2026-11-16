@@ -913,6 +913,44 @@ if [[ -n "$s3src" ]]; then
   out=$(s3_eval s3-base-bad '.' '.' "$(mk_base '"6"')")
   expect "s3: malformed baseline value: gate.parkedCostBaseline" ERROR "$(s3st "$out" gate.parkedCostBaseline)"
 
+  # validity.record: a malformed record is INVALID, naming the field, never
+  # an evaluator crash and never a pass.
+  s3_names() { # <case> <text>: does validity.record's detail name <text>?
+    s3_field "$1" '.checks[] | select(.id == "validity.record") | .detail' | grep -qF -- "$2" && echo yes || echo no
+  }
+  out=$(s3_eval s3-rec-calls-null "${last_plateau} as \$i | .windows[\$i].maestroCalls = null")
+  expect "s3: plateau maestroCalls null: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: plateau maestroCalls null: validity.record" INVALID "$(s3st "$out" validity.record)"
+  expect "s3: plateau maestroCalls null: names the field" yes "$(s3_names s3-rec-calls-null maestroCalls)"
+  out=$(s3_eval s3-rec-secs-zero "${last_plateau} as \$i | .windows[\$i].windowSecs = 0")
+  expect "s3: plateau windowSecs 0: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: plateau windowSecs 0: validity.record" INVALID "$(s3st "$out" validity.record)"
+  expect "s3: plateau windowSecs 0: names the field" yes "$(s3_names s3-rec-secs-zero windowSecs)"
+  out=$(s3_eval s3-rec-replicas '.' '.config.replicas = null')
+  expect "s3: identity.config.replicas null: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: identity.config.replicas null: validity.record" INVALID "$(s3st "$out" validity.record)"
+  expect "s3: identity.config.replicas null: names the field" yes "$(s3_names s3-rec-replicas config.replicas)"
+  out=$(s3_eval s3-rec-status 'del(.parkedStatus, .plan.parkedStatus)')
+  expect "s3: parkedStatus missing: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: parkedStatus missing: validity.record" INVALID "$(s3st "$out" validity.record)"
+  expect "s3: parkedStatus missing: names the field" yes "$(s3_names s3-rec-status parkedStatus)"
+  out=$(s3_eval s3-rec-mode 'del(.parkMode, .plan.parkMode)')
+  expect "s3: parkMode missing: verdict (not PASS)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: parkMode missing: validity.record" INVALID "$(s3st "$out" validity.record)"
+  expect "s3: parkMode missing: names the field" yes "$(s3_names s3-rec-mode parkMode)"
+  out=$(s3_eval s3-rec-mismatch '.parkedStatus = "WAITING_TIMER" | .plan.parkedStatus = "WAITING_TIMER"')
+  expect "s3: parkedStatus WAITING_TIMER in signal mode: validity.record" INVALID "$(s3st "$out" validity.record)"
+  expect "s3: recorded run: validity.record" PASS "$(s3st "$(s3_eval s3-pass '.')" validity.record)"
+  # Found by nulling every leaf of the record one at a time (no crash left):
+  out=$(s3_eval s3-rec-pprev '.plateaus[0].Pprev = null')
+  expect "s3: a plateau record without Pprev: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: a plateau record without Pprev: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-rec-probe-rate '.probes[0].requested.rate = null')
+  expect "s3: a probe record without its requested rate: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s3: a probe record without its requested rate: validity.plan" INVALID "$(s3st "$out" validity.plan)"
+  out=$(s3_eval s3-rec-aux-secs '.auxWindows[0].windowSecs = null')
+  expect "s3: a seed window without windowSecs: validity.record" INVALID "$(s3st "$out" validity.record)"
+
   # validity.roleSplit, validity.background, common windows
   out=$(s3_eval s3-noharness '.windows[1].harnessCalls = 0')
   expect "s3: a window without harness calls: validity.roleSplit" INVALID "$(s3st "$out" validity.roleSplit)"

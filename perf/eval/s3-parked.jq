@@ -166,6 +166,14 @@
 #   probesCompleted: every accepted probe start COMPLETED within 120 s.
 #
 # ── Validity (besides the common checks) ───────────────────────────────────
+# validity.record: the fields every figure rests on are present and sane:
+#   parkMode signal | sleep, parkedStatus the one that mode parks in
+#   (WAITING_SIGNAL | WAITING_TIMER), identity.config.replicas a positive
+#   integer, and every window (idle, plateau, seed, release) with a numeric
+#   maestroCalls and windowSecs > 0 (a plateau also P > 0). Otherwise
+#   INVALID, naming each field; the figures that need a missing field read
+#   null and the evaluator does not crash (every leaf of a recorded run
+#   nulled, or set to a string, one at a time: no crash).
 # validity.parked: before each plateau window opens and after it closes,
 #   exactly P rows of the park prefix exist, all in the parked status, and no
 #   other row of the run is open: a plateau measured while runs are still
@@ -189,6 +197,11 @@ def recheck_match_fraction: 0.02;
 
 # The well-formed objects of a list field; anything else reads as empty.
 def objs: if type == "array" then map(select(type == "object")) else [] end;
+def posnum: isnum and . > 0;
+# Calls per second of a window, or null when its record cannot say.
+def window_cps($w):
+  if ($w.maestroCalls | isnum) and ($w.windowSecs | posnum)
+  then ($w.maestroCalls - lock_cleaner_calls($w)) / $w.windowSecs else null end;
 def comp($w; $name): ($w.components[$name].calls // 0 | if isnum then . else 0 end);
 def ceil_div($a; $b): (($a / $b) | ceil);
 def arith_band: 0.05;
@@ -225,9 +238,9 @@ $identity[0] as $id
 | (if $mode == "sleep" then 2 else 3 end) as $readsPerRecheck
 # ── per-window figures ──
 | ([$rawWindows[] | . as $w
-    | (($w.maestroCalls - lock_cleaner_calls($w)) / $w.windowSecs) as $cps
+    | window_cps($w) as $cps
     | ($w.P // null) as $P
-    | (($P | isnum) and $P > 0 and ($cps0 | isnum)) as $hasNet
+    | (($P | posnum) and ($cps | isnum) and ($cps0 | isnum)) as $hasNet
     | {P: $P, kind: $w.kind, windowSecs: $w.windowSecs, maestroCalls: $w.maestroCalls,
        maestroCallsTopLevel: $w.maestroCallsTopLevel, harnessCalls: $w.harnessCalls,
        lockCleanerCalls: lock_cleaner_calls($w), cps: ($cps | round4),
@@ -235,7 +248,7 @@ $identity[0] as $id
        perParkedCallsPer30s: (if $hasNet then ($cps - $cps0) * 30 / $P | round4 else null end),
        perParkedCallsPerMin: (if $hasNet then ($cps - $cps0) * 60 / $P | round4 else null end),
        perParkedCallsPerMinExact: (if $hasNet then ($cps - $cps0) * 60 / $P else null end),
-       perParkedCallsPerRecheck: (if $hasNet and ($recheckSecs | isnum) then ($cps - $cps0) * $recheckSecs / $P | round4 else null end),
+       perParkedCallsPerRecheck: (if $hasNet and ($recheckSecs | posnum) then ($cps - $cps0) * $recheckSecs / $P | round4 else null end),
        tolerancePerMin: (if $hasNet and ($tolCalls | isnum) then $tolCalls / $P * 60 / $w.windowSecs | round4 else null end),
        components: ($w.components // null), nestedCalls: ($w.nestedCalls // null), otherTop: ($w.otherTop // null),
        top: $w.top}]) as $windows
@@ -243,14 +256,15 @@ $identity[0] as $id
 | ($plateauWins | first // null) as $wMin
 | ($plateauWins | last // null) as $wMax
 # ── decomposition ──
-| ([$plateauWins[] | . as $w
+# (only windows it can describe: replicas known, a positive length)
+| ([$plateauWins[] | select($replicasOk and (.windowSecs | posnum)) | . as $w
     | $w.P as $P
     | ($P / $replicas) as $H
     | $P as $A
-    | (if ($recheckSecs | isnum) then $w.windowSecs / $recheckSecs else null end) as $nRecheck
-    | (if ($renewSecs | isnum) then $w.windowSecs / $renewSecs else null end) as $nRenew
-    | (if ($recoverySecs | isnum) then $w.windowSecs / $recoverySecs else null end) as $nRecovery
-    | (if ($timerSecs | isnum) then $w.windowSecs / $timerSecs else null end) as $nTick
+    | (if ($recheckSecs | posnum) then $w.windowSecs / $recheckSecs else null end) as $nRecheck
+    | (if ($renewSecs | posnum) then $w.windowSecs / $renewSecs else null end) as $nRenew
+    | (if ($recoverySecs | posnum) then $w.windowSecs / $recoverySecs else null end) as $nRecovery
+    | (if ($timerSecs | posnum) then $w.windowSecs / $timerSecs else null end) as $nTick
     | ($w.components // {}) as $c
     | {inst: comp($w; "instanceRead"), sig: comp($w; "signalsRead"), tmr: comp($w; "timerRowRead"),
        renew: comp($w; "lockRenewAll"), renewOne: comp($w; "lockRenewOne"), page: comp($w; "recoveryPage"),
@@ -286,7 +300,7 @@ $identity[0] as $id
          # the nominal per-pass figure is kept beside it.
          ((($c.lockRenewAll.totalMs // null) as $ms
            | if ($ms | isnum) and $k.renew > 0 then $ms / $k.renew else null end) as $stmtMs
-          | (if ($stmtMs | isnum) and ($renewSecs | isnum) then $renewSecs + ceil_div($H; renew_chunk) * $stmtMs / 1000 else null end) as $effPeriod
+          | (if ($stmtMs | isnum) and ($renewSecs | posnum) then $renewSecs + ceil_div($H; renew_chunk) * $stmtMs / 1000 else null end) as $effPeriod
           | (if ($effPeriod | isnum) then $w.windowSecs / $effPeriod else $nRenew end) as $effPasses
           | row("lockRenewal"; $k.renew + $k.renewOne; $effPasses; $renewDocPerPass;
                 "statements per renewal pass (all \($replicas) node(s); every \($renewSecs) s + the pass's own duration)"; 1)
@@ -318,20 +332,23 @@ $identity[0] as $id
 | ($m.auxWindows | objs) as $aux
 | ([$aux[] | select(.kind == "seed") | . as $s
     | ([$plateauWins[] | select(.P == $s.Pprev)] | first // null) as $prevWin
-    | (if $prevWin == null or ($cps0 | isnum | not) then 0 else (($prevWin.cpsExact - $cps0) / $prevWin.P) end) as $kPrev
-    | (($s.maestroCalls - lock_cleaner_calls($s)) / $s.windowSecs) as $cpsS
-    | ($s.P - $s.Pprev) as $n
+    | (if $s.Pprev == 0 then 0
+       elif $prevWin != null and ($cps0 | isnum) and ($prevWin.cpsExact | isnum) then ($prevWin.cpsExact - $cps0) / $prevWin.P
+       else null end) as $kPrev
+    | (if ($s.P | isnum) and ($s.Pprev | isnum) then $s.P - $s.Pprev else null end) as $n
+    | (($n | posnum) and (window_cps($s) | isnum)) as $sOk
     | ([($m.plateaus | objs)[] | select(.P == $s.P)] | first // {}) as $pl
     | {P: $s.P, Pprev: $s.Pprev, started: $n, windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
        timeToParkSecs: ($pl.seed.timeToParkSecs // $pl.seed.waitedSecs // null), k6Secs: ($pl.seed.k6Secs // null),
        lagSecs: ($pl.seed.lagSecs // null),
-       netPerStartedRun: (if ($cps0 | isnum) and $n > 0 then ($s.maestroCalls - lock_cleaner_calls($s) - ($cps0 + $kPrev * $s.Pprev) * $s.windowSecs) / $n | round2 else null end),
-       grossPerStartedRun: (if $n > 0 then ($s.maestroCalls - lock_cleaner_calls($s)) / $n | round2 else null end)}]) as $seeds
+       netPerStartedRun: (if $sOk and ($cps0 | isnum) and ($kPrev | isnum) then ($s.maestroCalls - lock_cleaner_calls($s) - ($cps0 + $kPrev * $s.Pprev) * $s.windowSecs) / $n | round2 else null end),
+       grossPerStartedRun: (if $sOk then ($s.maestroCalls - lock_cleaner_calls($s)) / $n | round2 else null end)}]) as $seeds
 | ($m.release // null) as $rel
 | ([$aux[] | select(.kind == "release")] | first // null) as $relWin
-| (if $rel != null and $relWin != null and ($cps0 | isnum) and ($rel.count | isnum) and $rel.count > 0 then
+| (if ($rel | type) == "object" and $relWin != null and ($cps0 | isnum) and ($rel.count | posnum)
+      and (window_cps($relWin) | isnum) then
      (($relWin.maestroCalls - lock_cleaner_calls($relWin))) as $calls
-     | (if $wMax != null then ($wMax.cpsExact - $cps0) / $wMax.P else null end) as $kMax
+     | (if $wMax != null and ($wMax.cpsExact | isnum) then ($wMax.cpsExact - $cps0) / $wMax.P else null end) as $kMax
      | {count: $rel.count, windowSecs: $relWin.windowSecs, maestroCalls: $relWin.maestroCalls,
         grossPerReleased: ($calls / $rel.count | round2),
         netPerReleased: (($calls - $cps0 * $relWin.windowSecs) / $rel.count | round2),
@@ -365,6 +382,30 @@ $identity[0] as $id
 | ($plan.plateaus // []) as $planned
 | [
     background_check($m.background; $replicas),
+    # ── validity.record ──
+    ( ({signal: "WAITING_SIGNAL", sleep: "WAITING_TIMER"}) as $statusOf
+      | def win_problems($name; $w):
+          [(if ($w.maestroCalls | isnum) | not then "\($name) maestroCalls is \($w.maestroCalls | tojson), not a number" else null end),
+           (if ($w.windowSecs | posnum) | not then "\($name) windowSecs is \($w.windowSecs | tojson), not a positive number" else null end),
+           (if $w.kind == "plateau" and (($w.P | posnum) | not) then "\($name) P is \($w.P | tojson), not a positive number" else null end)][];
+      ([(if ($mode == "signal" or $mode == "sleep") | not
+           then "measurements.parkMode (or plan.parkMode) is \($mode | tojson), not \"signal\" or \"sleep\"" else null end),
+        (if ($parkedStatus | type) != "string"
+           then "measurements.parkedStatus (or plan.parkedStatus) is \($parkedStatus | tojson), not a status"
+         elif ($mode == "signal" or $mode == "sleep") and $parkedStatus != $statusOf[$mode]
+           then "measurements.parkedStatus is \($parkedStatus | tojson), but \($mode) mode parks \($statusOf[$mode])" else null end),
+        (if $replicasOk | not then "identity.config.replicas is \($replicas | tojson), not a positive integer" else null end),
+        (range(0; $rawWindows | length) as $i | $rawWindows[$i] as $w
+         | win_problems("measurements.windows[\($i)] (\($w.kind // "?") P=\($w.P // "?"))"; $w)),
+        (range(0; $aux | length) as $i | $aux[$i] as $w
+         | win_problems("measurements.auxWindows[\($i)] (\($w.kind // "?") P=\($w.P // "?"))"; $w))
+       ] | map(select(. != null))) as $rp
+      | check("validity.record"; "validity"; if ($rp | length) == 0 then "PASS" else "INVALID" end;
+          {parkMode: $mode, parkedStatus: $parkedStatus, replicas: $replicas, windows: ($rawWindows | length), auxWindows: ($aux | length)};
+          {parkMode: "signal | sleep", parkedStatus: "WAITING_SIGNAL (signal) | WAITING_TIMER (sleep)", replicas: "a positive integer",
+           windows: "maestroCalls a number, windowSecs > 0, plateau P > 0"};
+          if ($rp | length) == 0 then "park mode \($mode) (\($parkedStatus)), \($replicas) replica(s), every window has its calls and a positive length"
+          else "the record cannot be judged: \($rp | join("; "))" end) ),
     # ── validity.roleSplit ──
     ( ($windows | map(select(.kind != "idle"))) as $ws
       | (($ws | length) > 0 and ($ws | all((.maestroCalls | isnum) and .maestroCalls > 0))
@@ -379,7 +420,7 @@ $identity[0] as $id
        | [{edge: "before", s: $w.parkedBefore}, {edge: "after", s: $w.parkedAfter}][]
        | . as $e
        | ($e.s.park.total // null) as $t
-       | ($e.s.park.byStatus[$parkedStatus] // 0) as $n
+       | ($e.s.park.byStatus | if type == "object" and ($parkedStatus | type) == "string" then (.[$parkedStatus] // 0) else null end) as $n
        | ($e.s.others.open // null) as $o
        | {P: $w.P, edge: $e.edge, parkTotal: $t, parked: $n, othersOpen: $o, byStatus: ($e.s.park.byStatus // null),
           ok: ($t == $w.P and $n == $w.P and $o == 0)}] ) as $pk
@@ -403,7 +444,7 @@ $identity[0] as $id
                          planned: (if .kind == "idle" then $plan.idleSecs elif .kind == "plateau" then $plan.holdSecs else null end)}
         | . + {ok: fits(.windowSecs; .planned)}]) as $wl
       | ([$aux[] | select(.kind == "release") | {kind, windowSecs,
-            planned: (if ($unit | isnum) and $unit > 0 then ((.windowSecs / $unit) | floor) * $unit else null end)}
+            planned: (if ($unit | posnum) and (.windowSecs | isnum) then ((.windowSecs / $unit) | floor) * $unit else null end)}
           | . + {ok: ((.planned | isnum) and .planned >= $unit and fits(.windowSecs; .planned))}]) as $rl
       | (($plan.idleSecs | isnum) and ($plan.holdSecs | isnum) and ($unit | isnum) and $unit > 0
          and ($plan.idleSecs / $unit) == (($plan.idleSecs / $unit) | floor)
@@ -430,14 +471,16 @@ $identity[0] as $id
         | {executor: "constant-arrival-rate", rate: $p.requested.rate, timeUnit: "1s", durationSecs: $p.requested.durationSecs,
            offset: 0, count: null, preAllocatedVUs: 10, maxVUs: 50, idPrefix: $p.prefix} as $want
         | (if ($r.iterations | isnum) and ($r.droppedIterations | isnum) then $r.iterations + $r.droppedIterations else null end) as $got
-        | {phase: $p.phase, executed: $ex, requested: $want, iterationsPlusDropped: $got, expected: ($p.requested.rate * $p.requested.durationSecs),
-           ok: ($ex == $want and iterations_ok($got; $p.requested.rate * $p.requested.durationSecs))}]) as $pp
+        | (if ($p.requested.rate | isnum) and ($p.requested.durationSecs | isnum) then $p.requested.rate * $p.requested.durationSecs else null end) as $wantIt
+        | {phase: $p.phase, executed: $ex, requested: $want, iterationsPlusDropped: $got, expected: $wantIt,
+           ok: ($ex == $want and iterations_ok($got; $wantIt))}]) as $pp
       | ([$plRecs[] | select(.reached == true) | . as $pl
           | ([$k6[] | select(.phase == "seed-p\($pl.P)")] | last // null) as $r
+          | (if ($pl.P | isnum) and ($pl.Pprev | isnum) then $pl.P - $pl.Pprev else null end) as $nSeed
           | {phase: "seed-p\($pl.P)", executed: $pl.seed.executedPlan, requested: $pl.seed.requested,
-             startsAccepted: $r.checksPassed, startsFailed: $r.checksFailed, expected: ($pl.P - $pl.Pprev),
-             ok: ($r != null and $pl.seed.executedPlan != null and $pl.seed.executedPlan == $pl.seed.requested
-                  and $r.checksPassed == ($pl.P - $pl.Pprev) and ($r.checksFailed // 0) == 0)}]) as $sp
+             startsAccepted: $r.checksPassed, startsFailed: $r.checksFailed, expected: $nSeed,
+             ok: ($r != null and ($nSeed | posnum) and $pl.seed.executedPlan != null and $pl.seed.executedPlan == $pl.seed.requested
+                  and $r.checksPassed == $nSeed and ($r.checksFailed // 0) == 0)}]) as $sp
       | (if $rel == null then [] else
           ([$k6[] | select(.phase == "release")] | last // null) as $r
           | [{phase: "release", iterations: $r.iterations, expected: $rel.count, executed: $rel.executedPlan,
@@ -663,7 +706,7 @@ $identity[0] as $id
     | def r($n): ([$d.rows[] | select(.component == $n)] | first // {});
     {P: $w.P, timeToParkSecs: ($pl.seed.timeToParkSecs // null), windowSecs: $w.windowSecs,
      grossCallsPerSec: $w.cps, idleCallsPerSec: ($cps0 | round4),
-     grossPerParkedPerMin: ($w.cpsExact * 60 / $w.P | round4),
+     grossPerParkedPerMin: (if ($w.cpsExact | isnum) then $w.cpsExact * 60 / $w.P | round4 else null end),
      perParkedCallsPerMin: $w.perParkedCallsPerMin, perParkedCallsPer30s: $w.perParkedCallsPer30s,
      recheckReadsPerParkedPerInterval: r("wakeRecheck").per, renewalStatementsPerPass: r("lockRenewal").per,
      recoveryPagesPerPass: r("recoveryPages").per, heldKeysPerPass: r("heldKeys").per, otherCalls: r("other").calls,
