@@ -86,6 +86,18 @@ class PostgresWakeListenerCloseOrderTest {
     }
 
     @Test
+    @DisplayName("close() before the first start() is terminal too: the later start() borrows no connection")
+    void aCloseBeforeTheFirstStartIsTerminal() {
+        var listener = scripted.newListener();
+        listener.close();
+
+        listener.start();
+
+        assertEquals(List.of(), scripted.events(), "a listener closed before it started must never borrow or LISTEN");
+        assertFalse(listener.isConnected());
+    }
+
+    @Test
     @DisplayName("once start() returns, only the poll thread touches the connection")
     void theConnectionIsTouchedOnlyByThePollThreadAfterStart() {
         var listener = scripted.newListener();

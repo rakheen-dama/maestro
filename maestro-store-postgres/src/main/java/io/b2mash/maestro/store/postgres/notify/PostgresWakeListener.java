@@ -16,6 +16,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
@@ -92,6 +93,12 @@ public final class PostgresWakeListener implements AutoCloseable {
     private final AtomicLong reconnects = new AtomicLong();
     /** Counted down by {@link #close()}: ends a back-off wait without an interrupt. */
     private final CountDownLatch stop = new CountDownLatch(1);
+    /**
+     * Serialises the state transitions of {@link #start()} and {@link #close()},
+     * so a start can never slip in after a close has begun. Never held across
+     * the join in {@code close()}.
+     */
+    private final ReentrantLock lifecycle = new ReentrantLock();
 
     private volatile @Nullable Connection connection;
     private volatile @Nullable PGConnection pgConnection;
@@ -130,21 +137,26 @@ public final class PostgresWakeListener implements AutoCloseable {
      * listener instead (Spring does, one per context).
      */
     public void start() {
-        if (stop.getCount() == 0) {
-            logger.debug("start() ignored: the wake listener on channel '{}' was closed", channel);
-            return;
+        lifecycle.lock();
+        try {
+            if (stop.getCount() == 0) {
+                logger.debug("start() ignored: the wake listener on channel '{}' was closed", channel);
+                return;
+            }
+            if (!running.compareAndSet(false, true)) {
+                return;
+            }
+            if (connect()) {
+                logger.info("Listening for signal wakes on Postgres channel '{}'", channel);
+            } else {
+                logger.warn("Could not open the Postgres LISTEN session on channel '{}' — retrying in the "
+                        + "background; until it connects, cross-node wakes fall back to "
+                        + "maestro.signal.wake-recheck-interval", channel);
+            }
+            pollingThread = Thread.ofVirtual().name("maestro-pg-wake-listener").start(this::pollLoop);
+        } finally {
+            lifecycle.unlock();
         }
-        if (!running.compareAndSet(false, true)) {
-            return;
-        }
-        if (connect()) {
-            logger.info("Listening for signal wakes on Postgres channel '{}'", channel);
-        } else {
-            logger.warn("Could not open the Postgres LISTEN session on channel '{}' — retrying in the "
-                    + "background; until it connects, cross-node wakes fall back to "
-                    + "maestro.signal.wake-recheck-interval", channel);
-        }
-        pollingThread = Thread.ofVirtual().name("maestro-pg-wake-listener").start(this::pollLoop);
     }
 
     /**
@@ -188,15 +200,23 @@ public final class PostgresWakeListener implements AutoCloseable {
      * most two seconds. The poll thread leaves within one poll (500 ms),
      * issues {@code UNLISTEN *} and returns its connection to the pool. If it
      * has not left in time, this method returns anyway and the thread releases
-     * the connection when its current database call returns. Idempotent.
+     * the connection when its current database call returns. Idempotent, and
+     * terminal even for a listener that was never started. A {@code close()}
+     * concurrent with a {@code start()} waits for that start's connect attempt.
      */
     @Override
     public void close() {
-        if (!running.compareAndSet(true, false)) {
-            return;
+        Thread thread;
+        lifecycle.lock();
+        try {
+            stop.countDown();
+            if (!running.compareAndSet(true, false)) {
+                return;
+            }
+            thread = pollingThread;
+        } finally {
+            lifecycle.unlock();
         }
-        stop.countDown();
-        var thread = pollingThread;
         var stopped = true;
         if (thread != null) {
             try {

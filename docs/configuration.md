@@ -756,7 +756,10 @@ reconnects with 1 s → 30 s backoff if it drops. At shutdown the listener stops
 polling within one poll (500 ms; bounded at 2 s), issues `UNLISTEN *` and
 returns its connection to the pool intact: it is closed with the application
 context's beans, after the engine has drained (traced, not tested) and before
-the `DataSource` is shut down. Those up to 2 s come after
+the `DataSource` is shut down. If a poll is stuck in a database call past the
+2 s bound, the close returns anyway and the connection is released when that
+call returns, which can be after the pool has begun shutting down. Those up to
+2 s come after
 `maestro.shutdown.timeout`, not out of it. A pooled connection is never
 returned still listening: on a clean stop it is unlistened first; a session
 that failed is handed back broken, for the pool to discard (traced).
