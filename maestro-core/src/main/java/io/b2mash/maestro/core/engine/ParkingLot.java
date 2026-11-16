@@ -505,6 +505,17 @@ final class ParkingLot {
      * here) drops the poison itself, because the run's own
      * {@code clearTerminated} may have run before the poison was put.
      *
+     * <p>The re-check asks whether <em>a</em> run of {@code workflowId} is
+     * registered, not whether it is the run the terminate looked up. A newer
+     * run registered in between is poisoned too, and that is correct (traced,
+     * not tested): {@code terminateWorkflow} calls this only after its
+     * {@code TERMINATED} write committed, a run registers only after re-reading
+     * the row as active and winning its adoption compare-and-set, and
+     * {@code workflow_id} is unique, so any such run adopted the row before the
+     * terminate's write and belongs to the workflow just terminated. With the
+     * instance lock held it cannot exist at all: the old run's deregistration
+     * precedes its lock release, which precedes the new run's adoption.
+     *
      * <p>Matches {@code workflowId} exactly: the waiters, permits and later
      * parks of a workflow whose id merely starts with {@code workflowId + ":"}
      * are left alone.

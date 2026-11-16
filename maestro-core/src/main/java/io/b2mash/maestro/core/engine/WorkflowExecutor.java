@@ -1150,7 +1150,11 @@ public final class WorkflowExecutor {
             // abandoned; a remote owner converges via the terminal-status guard.
             // Flag first, then parks: the flag stops the next live activity
             // attempt and abandons a retry backoff; abandoning the parks
-            // unblocks a thread waiting on a signal or timer.
+            // unblocks a thread waiting on a signal or timer. A run of this id
+            // that registers after this lookup adopted the row before the
+            // TERMINATED write above, so abandoning by workflowId (not by this
+            // RunningWorkflow) poisons only runs of the terminated workflow —
+            // see ParkingLot.abandonWorkflow (traced, not tested).
             var running = runningWorkflows.get(workflowId);
             if (running != null) {
                 running.cancellation().requestTermination(reason);
