@@ -34,7 +34,8 @@
 # The idle window's timer-poll ticks are COUNTED from what Postgres recorded
 # in it, never assumed from its length: observedTicks = calls of the timer
 # poller's due-timer query (pattern "FROM maestro_workflow_timer WHERE
-# fire_at <= $n AND status = ", common.jq tick_query_re), which only the
+# fire_at <= $n AND status = ", or "fire_at <= now() AND status = " after a
+# pending engine merge; common.jq tick_query_re), which only the
 # leader issues, once per tick. One tick at 1 replica = 1 leader-election
 # upsert + 1 due-timer query; at 2 replicas = 2 upserts (every node tries
 # every tick) + 1 due-timer query. expectedTicks = floor(windowSecs /

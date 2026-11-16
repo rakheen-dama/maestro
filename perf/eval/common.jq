@@ -102,9 +102,14 @@ def isnum: type == "number";
 #   created_at FROM maestro_workflow_timer WHERE fire_at <= $1 AND status = $3
 #   ORDER BY fire_at ASC LIMIT $2 FOR UPDATE SKIP LOCKED
 # ('PENDING' normalised to $3; whitespace collapsed and the text cut at 200
-# characters by pgss-window.sql). It is matched, top-level entries only, by
-# the regex tick_query_re, which needs only the stable head of its WHERE
-# clause: it survives the normalisation and the cut, and no other engine
+# characters by pgss-window.sql). A pending engine merge moves the cut-off
+# onto the database clock:
+#   ... FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2
+#   ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED
+# Both forms are matched (self-tested), top-level entries only, by the regex
+# tick_query_re, which needs only the stable head of the WHERE clause
+# (fire_at <= $n or now(), then status =): it survives the normalisation
+# and the cut, and no other engine
 # statement (and nothing of the harness, which runs as postgres and is not in
 # the engine's list) reads maestro_workflow_timer by fire_at.
 #
@@ -123,7 +128,7 @@ def isnum: type == "number";
 # node's poller ran at least about observedTicks - 1 times, and it does catch
 # a node whose poller is fully dead (2 replicas, 12 ticks: about 12 upserts
 # against a floor of 22).
-def tick_query_re: "FROM maestro_workflow_timer WHERE fire_at <= \\$[0-9]+ AND status = ";
+def tick_query_re: "FROM maestro_workflow_timer WHERE fire_at <= (\\$[0-9]+|now\\(\\)) AND status = ";
 def leader_election_query_re: "^INSERT INTO maestro_leader_election ";
 
 # Calls of the engine's top-level statements matching $re in a pgss window's

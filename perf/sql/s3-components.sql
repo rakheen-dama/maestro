@@ -24,6 +24,8 @@
 --                     status IN (...) (getRecoverableInstances, one per page)
 --   heldKeys          SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY
 --   timerDuePoll      ... FROM maestro_workflow_timer WHERE fire_at <= $n AND status = ...
+--                     (today's form) or ... WHERE fire_at <= now() AND status = $n ...
+--                     (the form a pending engine merge introduces)
 --   leaderElection    INSERT INTO maestro_leader_election ...
 --   lockCleaner       DELETE FROM maestro_distributed_lock / maestro_leader_election
 --                     WHERE expires_at < now() ...
@@ -48,7 +50,7 @@ WITH engine AS (
             WHEN q ~ '^DELETE FROM maestro_distributed_lock WHERE lock_key = ' THEN 'lockRelease'
             WHEN q ~ 'FROM maestro_workflow_instance WHERE service_name = \$1 AND status IN ' THEN 'recoveryPage'
             WHEN q ~ '^SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY' THEN 'heldKeys'
-            WHEN q ~ 'FROM maestro_workflow_timer WHERE fire_at <= \$[0-9]+ AND status = ' THEN 'timerDuePoll'
+            WHEN q ~ 'FROM maestro_workflow_timer WHERE fire_at <= (\$[0-9]+|now\(\)) AND status = ' THEN 'timerDuePoll'
             WHEN q ~ '^INSERT INTO maestro_leader_election ' THEN 'leaderElection'
             WHEN q ~ '^DELETE FROM maestro_(distributed_lock|leader_election) WHERE expires_at < now\(\)' THEN 'lockCleaner'
             ELSE 'other'

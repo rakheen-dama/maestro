@@ -167,6 +167,19 @@ out=$(evaluate_with bg-election-edge "$(bg_ticks '$e' "$replicas"' * ($e - 1)')"
 expect "election upserts = replicas x (ticks - 1): validity.background" PASS "$(jq -r '.checks["validity.background"]' <<<"$out")"
 out=$(evaluate_with bg-calls-contradict '.background.window.maestroCalls = 3')
 expect "maestroCalls below its own poller statements: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
+# The due-timer query in both of its forms: today's (cut-off bound as $1,
+# PENDING as $3) and the one a pending engine merge introduces (cut-off on
+# the database clock, PENDING as $2, the batch size as $1).
+due_today='SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= $1 AND status = $3 ORDER BY fire_at ASC LIMIT $2 FOR UPDATE SKIP LOCKED'
+due_now='SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED'
+due_form() { # <query text>: the idle window's due-timer entry rewritten to it
+  jq -nr --arg q "$1" --arg re "$due_re" '"(.background.window.top |= map(if (.query | test(\($re | tojson))) then .query = \($q | tojson) else . end))"'
+}
+out=$(evaluate_with bg-due-today "$(due_form "$due_today")")
+expect "due-timer query, today's form (fire_at <= \$1 AND status = \$3): validity.background" PASS "$(jq -r '.checks["validity.background"]' <<<"$out")"
+out=$(evaluate_with bg-due-now "$(due_form "$due_now")")
+expect "due-timer query, merged form (fire_at <= now() AND status = \$2): validity.background" PASS "$(jq -r '.checks["validity.background"]' <<<"$out")"
+expect "due-timer query, merged form: ticks counted" "${expected_ticks}" "$(check_field bg-due-now validity.background .value.observedTicks)"
 
 # Timestamps: RFC 3339 with Z, numeric offsets and fractional seconds.
 ts_of() { jq -n -r -L "${PERF_DIR}/eval" --arg t "$1" 'include "common"; $t | ts_secs'; }
@@ -692,6 +705,19 @@ if [[ -n "$s3src" ]]; then
   pmin=$(jq '[.windows[] | select(.kind == "plateau") | .P] | min' "${s3src}/measurements.json")
   last_plateau='(.windows | map(.kind == "plateau") | rindex(true))'
   first_plateau='(.windows | map(.kind == "plateau") | index(true))'
+
+  # perf/sql/s3-components.sql classifies the due-timer query (timerDuePoll)
+  # in both of its forms. No database here: the WHEN clause's pattern is read
+  # out of the file and applied with jq's regex engine (Oniguruma), which
+  # agrees with Postgres's ARE on every construct the pattern uses (\$,
+  # [0-9]+, a group with |, \( \)). The timer-row read must stay out of it.
+  due_sql_re=$(sed -n "s/.*WHEN q ~ '\(.*\)' THEN 'timerDuePoll'.*/\1/p" "${PERF_DIR}/sql/s3-components.sql")
+  due_sql_test() { jq -n --arg q "$1" --arg re "$due_sql_re" '($re | length) > 0 and ($q | test($re))'; }
+  expect "s3-components.sql: timerDuePoll pattern read from the file" true "$(jq -n --arg re "$due_sql_re" '$re | length > 0')"
+  expect "s3-components.sql: timerDuePoll matches today's form (fire_at <= \$1 AND status = \$3)" true "$(due_sql_test "$due_today")"
+  expect "s3-components.sql: timerDuePoll matches the merged form (fire_at <= now() AND status = \$2)" true "$(due_sql_test "$due_now")"
+  expect "s3-components.sql: timerDuePoll does not take the timer-row read" false \
+    "$(due_sql_test 'SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2')"
 
   out=$(s3_eval s3-pass '.')
   expect "s3: unchanged run" PASS "$(jq -r .verdict <<<"$out")"
