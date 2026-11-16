@@ -65,7 +65,7 @@ maestro/
 ├── maestro-store-jdbc              ← Abstract JDBC WorkflowStore SPI.
 ├── maestro-store-postgres          ← Postgres WorkflowStore + DistributedLock + LISTEN/NOTIFY signal wake; Flyway 11 migrations.
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI (the only transport).
-├── maestro-admin-client            ← Lightweight lifecycle event publisher.
+├── maestro-admin-client            ← Plain AdminEventPublisher class only; no auto-config, no service needs it (Issue 52).
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment (crash/recover a node to exercise replay).
 ├── maestro-samples/

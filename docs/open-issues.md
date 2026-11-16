@@ -265,7 +265,14 @@ message, workflow input on Postgres differs between the first run and
 recovery, input is read with the raw parameter class, `collectSignals` throws
 on a null payload, an `Error` from a result deserializer fails the run, an
 unparseable stored payload is logged only at `DEBUG`, nothing checks the
-mapper at startup, and future-typed activity results are accepted.
+mapper at startup, and future-typed activity results are accepted. Issues
+52–56, found while making Spring Boot's Kafka beans coexist with Maestro's
+(WP7, 2026-11-16), are filed **open**: `maestro-admin-client` has no wired
+component (a decision for the maintainer), the engine's Kafka clients ignore
+Boot's customizers and most of `KafkaConnectionDetails`, an unresolvable
+bootstrap host fails startup, a host-only `ProducerFactory` fails without a
+failure analysis, and an ambiguous unqualified `byte[]` template point is only
+warned about.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -332,6 +339,11 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | Open |
 | [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | Open |
 | [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | Open |
+| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | Open — maintainer to decide |
+| [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | Open |
+| [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | Open |
+| [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | Open |
+| [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2102,7 +2114,8 @@ in the callout above.
 > decision instead of an alphabetical-package-name accident; `afterName`
 > was deliberately rejected, since it would resurrect Boot's beans
 > alongside Maestro's and break the context with
-> `NoUniqueBeanDefinitionException`. **Part 2 (trace context).**
+> `NoUniqueBeanDefinitionException`. *(Superseded by WP7: the ordering is
+> gone and Boot's beans are no longer suppressed; see the note below.)* **Part 2 (trace context).**
 > `maestroKafkaTemplate` and every `@MaestroSignalListener` container now
 > default Micrometer observation **on** when a `Tracer` *and* a
 > `Propagator` bean both exist and `maestro.observability.tracing.enabled`
@@ -2129,12 +2142,26 @@ in the callout above.
 > default, pt 2), `472e87d` (listener trace extraction + observation + F3
 > named lookup, pt 2), `dc434ea` (workaround removal), `0486212`/`c60cfd7`
 > (`docs/observability.md` correction). Pinned by
-> `KafkaMessagingAutoConfigurationPropertiesTest` (beforeName ordering,
-> `spring.kafka.*` precedence, and the auto-offset-reset-override-vs-
+> `KafkaMessagingAutoConfigurationPropertiesTest` (beforeName ordering, a
+> pin since removed with the ordering in WP7; `spring.kafka.*` precedence, and the auto-offset-reset-override-vs-
 > engine-owned-`group.id` boundary) and `SignalListenerTraceContextIT`
 > (real broker: an inbound `traceparent` on a signal-topic record survives
 > to the persisted `trace_context` column). The rest of this section is
 > kept as the record of the defect.
+>
+> **WP7 (2026-11-16, branch `fix/kafka-coexistence`): Boot's beans are no
+> longer suppressed.** Maestro's three Kafka beans are
+> `@Bean(defaultCandidate = false)` and injected by qualifier
+> (`MaestroKafkaBeans`), and `KafkaMessagingAutoConfiguration` no longer
+> orders itself before `KafkaAutoConfiguration`. Boot's `kafkaTemplate`,
+> `kafkaProducerFactory`, `kafkaConsumerFactory` and, with a
+> `transaction-id-prefix`, `kafkaTransactionManager` register beside
+> Maestro's in either configuration order, and `spring.kafka.*` reaches them
+> (`KafkaCoexistenceContextTest`); the `NoUniqueBeanDefinitionException` that
+> ruled out `afterName` cannot arise, because Maestro's beans are not by-type
+> candidates. The engine's own clients still ignore Boot's factory
+> customizers and take only the bootstrap servers from
+> `KafkaConnectionDetails` ([Issue 53](#issue-53)).
 
 **Kind:** Library defect (plus a documentation gap — corrected in
 `docs/observability.md` §"Cross-service trace propagation (Kafka)", whose
@@ -3818,6 +3845,245 @@ method, so the starter fails at context start.
 **Done when.** Creating a proxy for an interface with a `CompletableFuture`
 method throws, naming the method, and `ReadBackFormsTest`'s future cases are
 replaced by that test.
+
+---
+
+### Issue 52 — `maestro-admin-client` has no wired component {#issue-52}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not decided: this is
+> the maintainer's call.
+
+**Kind:** Product decision — module scope. **Severity:** Low (no runtime
+effect; a published artifact with no purpose, and docs that must explain it).
+
+**What's wrong.** WP7 deleted the module's auto-configuration
+(`AdminClientAutoConfiguration`, `AdminClientProperties` and its
+`AutoConfiguration.imports`), because its only bean, `adminEventPublisher`,
+was never called and injected the engine's `KafkaTemplate<String, byte[]>` by
+type (pinned by `AdminClientContributesNoAutoConfigurationTest`). What remains:
+
+- **Main source:** one class, `AdminEventPublisher` (a plain, fire-and-forget
+  publisher of `WorkflowLifecycleEvent` to a Kafka topic, constructed by hand
+  from a `KafkaTemplate<String, byte[]>`, an `ObjectMapper` and a topic), plus
+  `package-info.java`. Its tests: `AdminEventPublisherTest` and
+  `AdminClientContributesNoAutoConfigurationTest`.
+- **Dependencies:** `api(project(":maestro-core"))`, `implementation(libs.spring.kafka)`.
+- **Who uses it.** No Maestro service: the engine publishes its own lifecycle
+  events through `WorkflowMessaging` (`maestro-messaging-kafka`) when
+  `maestro.admin.events.enabled=true`. No sample. `maestro-admin` declares
+  `implementation(project(":maestro-admin-client"))` but imports nothing from
+  `io.b2mash.maestro.admin.client`; what it uses through that dependency is
+  `maestro-core` (for `WorkflowLifecycleEvent` and `LifecycleEventType`), which
+  the module exports as `api` (traced, not tested).
+- **Where it is still listed:** `settings.gradle.kts`, the BOM
+  (`maestro-bom/build.gradle.kts`), the aggregate Javadoc list in the root
+  `build.gradle.kts`, `RELEASING.md`'s artifact table, the two issue templates
+  under `.github/ISSUE_TEMPLATE/`, `README.md`, `CLAUDE.md`,
+  `docs/maestro-architecture.md` and `docs/maestro-prd.md`. The docs now say it
+  holds only the plain class.
+
+**Harm.** A published artifact whose name promises "the client side of the
+dashboard" and delivers nothing a service needs; a reader adding it as the old
+`docs/admin.md` asked gets no events and no error.
+
+**Options (not ranked).**
+
+1. **Remove the module.** Delete it from settings, the BOM, the aggregate
+   Javadoc list, `RELEASING.md`, the issue templates and the docs above; give
+   `maestro-admin` a direct `maestro-core` dependency. `AdminEventPublisher`
+   goes with it.
+2. **Merge it.** Move `AdminEventPublisher` into `maestro-admin` (or delete it)
+   and drop the module the same way.
+3. **Keep it and give it a purpose**, for example a publisher for applications
+   that do not run the engine but want to appear on the dashboard. That needs a
+   documented use, a qualified template injection (see
+   `ByteArrayTemplateInjectionCheck`), and a test of the use.
+
+**Done when.** The maintainer has chosen; under 1 or 2, `./gradlew build`
+passes with the module gone and no listing above still names it; under 3, the
+purpose is documented and pinned by a test.
+
+---
+
+### Issue 53 — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` {#issue-53}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
+
+**Kind:** Library gap — Spring Boot integration. **Severity:** Low.
+
+**What's wrong.** `maestroKafkaProducerFactory` and
+`maestroKafkaConsumerFactory` build a `DefaultKafkaProducerFactory` /
+`DefaultKafkaConsumerFactory` themselves from
+`KafkaProperties.buildProducerProperties()` / `buildConsumerProperties()`
+(`KafkaMessagingAutoConfiguration.java:137-227`, traced). From an available
+`KafkaConnectionDetails` they take only `getProducer()` /
+`getConsumer().getBootstrapServers()`. They never apply Boot's
+`DefaultKafkaProducerFactoryCustomizer` / `DefaultKafkaConsumerFactoryCustomizer`
+beans. So (traced, not tested):
+
+- **No Micrometer client metrics for engine traffic.** Boot's
+  `KafkaMetricsAutoConfiguration` registers its `MicrometerProducerListener` /
+  `MicrometerConsumerListener` through those customizers; Boot's own
+  `kafkaProducerFactory` / `kafkaConsumerFactory` get them, the engine's do not.
+- **No security protocol or SSL bundle from connection details.** A
+  `KafkaConnectionDetails` that carries security settings (a service connection
+  to a TLS broker, say) reaches Boot's factories, not the engine's; the engine
+  sees the address and whatever `spring.kafka.ssl.*` / `security.*` say.
+
+`spring.kafka.producer.*` and `spring.kafka.consumer.*` do reach the engine's
+factories (`KafkaMessagingAutoConfigurationPropertiesTest.producerPropertiesReachMaestroFactory`),
+and since WP7 Boot's own beans exist beside the engine's and are fully
+customised (see Issue 23's WP7 note).
+
+**Harm.** Engine traffic is missing from the client metrics a host already
+graphs, and a host relying on connection details for TLS must also set
+`spring.kafka.*` security properties for the engine.
+
+**Why not WP7.** WP7 made Boot's beans coexist with the engine's; changing how
+the engine's own clients are configured is a separate decision about which
+customisations may touch an engine client (a customizer can also change
+serializers, which the engine forces last).
+
+**How to tackle it.** Apply the `ObjectProvider`-ordered customizers to the
+engine's factories before forcing the wire-format invariants, and copy the
+security protocol and SSL bundle from `KafkaConnectionDetails` the way Boot's
+`KafkaAutoConfiguration` does.
+
+**Done when.** A context test with `KafkaMetricsAutoConfiguration` and a
+`MeterRegistry` shows the engine's factories carrying the Micrometer listener,
+and one with a `KafkaConnectionDetails` that sets a security protocol shows it
+in the engine's producer and consumer config, with the engine's serializers,
+`acks` and group id still forced.
+
+---
+
+### Issue 54 — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists {#issue-54}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Pre-existing; recorded, not
+> fixed.
+
+**Kind:** Library gap — startup behaviour, docs. **Severity:** Low.
+
+**What's wrong.** `MaestroSignalListenerBeanPostProcessor` starts each
+`@MaestroSignalListener` container during context refresh
+(`afterSingletonsInstantiated`), and the container constructs its
+`KafkaConsumer` synchronously. A bootstrap host that does not resolve (a typo,
+or a DNS name that exists only inside a compose network) fails that
+construction, so the whole context fails:
+
+```text
+org.apache.kafka.common.KafkaException: Failed to construct kafka consumer
+  … at MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated(MaestroSignalListenerBeanPostProcessor.java:211)
+Caused by: org.apache.kafka.common.config.ConfigException: No resolvable bootstrap urls given in bootstrap.servers
+```
+
+Observed while writing `KafkaListenerBoundaryTest` (its `DETAILS_BOOTSTRAP`
+constant says why it must be a resolvable address). A resolvable address with
+no broker behind it starts, and the Maestro container runs
+(`KafkaListenerBoundaryTest.aPlainKafkaListenerRidesBootsFactoryAndAMaestroListenerRidesMaestros`,
+`localhost:1`). The behaviour predates WP7 (traced: the container start was
+synchronous before it).
+
+**Harm.** Two outages that look alike behave differently: a broker that is
+down lets the service start and retry, a name that does not resolve yet stops
+it. Neither is documented.
+
+**How to tackle it.** Decide whether this is wanted (fail fast on a
+configuration error) and document it in `docs/configuration.md` §
+Kafka Topic Verification and `docs/operations.md`; or start the containers
+after refresh so that an unresolvable host behaves like a down broker.
+
+**Done when.** A context test pins the chosen behaviour for an unresolvable
+host, and the docs state it beside the down-broker case.
+
+---
+
+### Issue 55 — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis {#issue-55}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Introduced on that branch;
+> listed in the release note's Breaking list. Recorded, not fixed.
+
+**Kind:** Library gap — error reporting. **Severity:** Low (the release note
+and `docs/configuration.md` give both ways out).
+
+**What's wrong.** Since Maestro's Kafka beans are not default candidates,
+Boot's `kafkaTemplate` no longer backs off for Maestro's template. A host that
+declares only its own `ProducerFactory<String, HostDto>` makes Boot's
+`kafkaProducerFactory` back off, and Boot's `kafkaTemplate` then finds no
+`ProducerFactory<Object, Object>`: startup fails with
+`NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+raised while creating `kafkaTemplate`
+(`KafkaCoexistenceContextTest.aHostWithOnlyItsOwnProducerFactory_failsStartupInBootsKafkaTemplate`;
+the same context started before WP7, observed against the old code). Both ways
+out start (`aHostWithOnlyItsOwnProducerFactory_startsWithEitherWayOut`).
+
+`ProducerFactoryReplacementFailureAnalyzer` deliberately stays out of this case
+(`ProducerFactoryReplacementFailureAnalyzerTest.aMissingProducerFactoryWithNoMaestroReplacement_isNotAnalyzed`).
+In a real `SpringApplication` run the host got a raw stack (`Application run
+failed`) rather than even Boot's own analysis (observed in WP7 Tasks 4–5). The
+reason is inferred, not observed: Boot's `NoSuchBeanDefinitionFailureAnalyzer`
+calls `getBean` on each candidate, and re-creating a factory-method bean during
+failure analysis probably throws.
+
+**Harm.** A host upgrading with this one shape gets a stack trace that never
+mentions Maestro or the fix.
+
+**Why not WP7.** Widening the analyzer contradicts two assertions pinned in
+WP7 (`aMissingProducerFactoryWithNoMaestroReplacement_isNotAnalyzed`,
+`aPlainReplacementBesideAnotherDefaultCandidateFactory_isNotAnalyzed`), and the
+case is not Maestro's bean.
+
+**How to tackle it.** Either a second analyzer for exactly this shape (a
+`kafkaTemplate` failure, no bean named `maestroKafkaProducerFactory` that is a
+default candidate, one host `ProducerFactory` with non-`Object` generics) that
+names both ways out, or a startup check that explains it before Boot's
+`kafkaTemplate` is created.
+
+**Done when.** A `SpringApplication` run with only a host
+`ProducerFactory<String, HostDto>` logs a failure analysis naming the two ways
+out, and the two existing assertions still hold or are replaced by a ruling.
+
+---
+
+### Issue 56 — An unqualified `byte[]` template point that several templates match is never failed at startup {#issue-56}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed; the
+> narrow behaviour was a WP7 ruling.
+
+**Kind:** Library gap — startup check coverage. **Severity:** Low.
+
+**What's wrong.** `ByteArrayTemplateInjectionCheck` fails startup when an
+unqualified `KafkaTemplate<…, byte[]>` point could only have received a
+template that cannot serialize `byte[]`. When several default-candidate
+templates match the point, Spring chooses by `@Primary`, `@Priority` or the
+parameter or field name, and the check does not reimplement that choice: it
+never fails, and logs one `WARN` per point only when one of the matching
+templates cannot be confirmed to serialize `byte[]`
+(`ByteArrayTemplateInjectionCheckTest.aPrimaryTemplateBesideAQualifiedOne_startsAndWarnsOnceThatItCannotTell`,
+`aBeanInjectingTwoTemplatesByParameterName_startsAndWarnsOnceThatItCannotTell`).
+So a genuine misinjection that reaches a `StringSerializer` template through
+`@Primary` or a parameter name starts, and surfaces at the first send as a
+`SerializationException`, as before WP7 (traced, not tested).
+
+**Harm.** The one shape of the old silent break that the check does not catch
+at startup; the `WARN` is the only early sign.
+
+**Why not WP7.** Ruled: a correct `@Primary` host must stay quiet, and
+reimplementing Spring's candidate choice risks false startup failures.
+
+**How to tackle it.** Resolve the point through the bean factory's own
+resolution (`DefaultListableBeanFactory.resolveDependency` with the point's
+`DependencyDescriptor`, which applies `@Primary`, `@Priority` and the name
+fallback) instead of the candidate set, after confirming it creates no bean.
+
+**Done when.** A context where an unqualified `byte[]` point receives a
+`@Primary` `StringSerializer` template fails startup naming that template, and
+the two tests above still start.
 
 ---
 
