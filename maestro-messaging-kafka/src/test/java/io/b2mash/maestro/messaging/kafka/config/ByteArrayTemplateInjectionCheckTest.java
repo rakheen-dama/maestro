@@ -118,6 +118,27 @@ class ByteArrayTemplateInjectionCheckTest {
             + "change, set maestro.messaging.template-injection-check=warn (or off) to start anyway. "
             + "See docs/configuration.md § Kafka Client Configuration.";
 
+    /** The last-resort sentence of a failure; a WARN under {@code warn} replaces it. */
+    static final String LAST_RESORT = " Only if the injection point is in code you cannot change, set "
+            + "maestro.messaging.template-injection-check=warn (or off) to start anyway.";
+
+    /** {@link #LEGACY_VIOLATION} as {@code warn} logs it. */
+    static final String LEGACY_WARNING = LEGACY_VIOLATION.replace(LAST_RESORT, "")
+            + " (Logged, not fatal, because maestro.messaging.template-injection-check=warn.)";
+
+    /** The whole failure for {@link LegacyBytesSender} over Boot's template configured for JSON. */
+    static final String JSON_VIOLATION = "Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> "
+            + "without a qualifier (constructor parameter 0 of " + LegacyBytesSender.class.getName()
+            + ") and received 'kafkaTemplate', whose value serializer "
+            + "org.springframework.kafka.support.serializer.JacksonJsonSerializer writes byte[] as a base64-encoded "
+            + "JSON string, not the bytes themselves: every record sent through it would carry a different payload. "
+            + "Maestro's Kafka beans are not injected by type. Inject Maestro's "
+            + "template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\"maestroKafkaTemplate\"), or set "
+            + "spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer "
+            + "to send byte[] through Spring Boot's template. If 'kafkaTemplate' is meant to send JSON, qualify "
+            + "the point with its bean name, @Qualifier(\"kafkaTemplate\"), which takes the point out of this "
+            + "check." + LAST_RESORT + " See docs/configuration.md § Kafka Client Configuration.";
+
     /**
      * The whole failure for a point that received Boot's default {@code StringSerializer} template.
      *
@@ -146,7 +167,7 @@ class ByteArrayTemplateInjectionCheckTest {
     }
 
     @Test
-    void warnMode_startsAndLogsEveryViolationWithTheFailureText() {
+    void warnMode_startsAndLogsEveryViolationAsAWarning() {
         coexistenceRunner()
                 .withUserConfiguration(LegacyBytesSenderConfiguration.class, FieldSenderConfiguration.class)
                 .withPropertyValues("maestro.messaging.template-injection-check=warn")
@@ -154,7 +175,10 @@ class ByteArrayTemplateInjectionCheckTest {
                     assertThat(ctx).hasNotFailed();
                     assertThat(ctx.getBean(LegacyBytesSender.class).template()).isSameAs(ctx.getBean("kafkaTemplate"));
                     assertThat(warnings()).hasSize(2);
-                    assertThat(warnings()).contains(LEGACY_VIOLATION);
+                    assertThat(warnings()).contains(LEGACY_WARNING);
+                    assertThat(warnings()).allSatisfy(w -> assertThat(w)
+                            .doesNotContain("to start anyway")
+                            .endsWith(" (Logged, not fatal, because maestro.messaging.template-injection-check=warn.)"));
                     assertThat(warnings()).anySatisfy(w -> assertThat(w)
                             .startsWith("Bean 'fieldSender' injects a KafkaTemplate<…, byte[]> without a qualifier "
                                     + "(field template of " + FieldSender.class.getName() + ")"));
@@ -163,6 +187,18 @@ class ByteArrayTemplateInjectionCheckTest {
 
     @Test
     void offMode_startsAndTheCheckLogsNothing() {
+        // The check's logger at DEBUG, so "no line at any level" covers its DEBUG lines too.
+        var previousLevel = checkLogger().getLevel();
+        checkLogger().setLevel(Level.DEBUG);
+        try {
+            offModeContexts();
+        }
+        finally {
+            checkLogger().setLevel(previousLevel);
+        }
+    }
+
+    private void offModeContexts() {
         // A violation (fails under fail) and an ambiguous point (WARNs under fail and warn).
         coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
                 .withPropertyValues("maestro.messaging.template-injection-check=off")
@@ -341,7 +377,21 @@ class ByteArrayTemplateInjectionCheckTest {
                                     + ") and received 'kafkaTemplate', whose value serializer "
                                     + JacksonJsonSerializer.class.getName()
                                     + " writes byte[] as a base64-encoded JSON string")
-                            .hasMessageContaining("@Qualifier(MaestroKafkaBeans.TEMPLATE)");
+                            .hasMessageContaining("@Qualifier(MaestroKafkaBeans.TEMPLATE)")
+                            .hasMessage(JSON_VIOLATION);
+                });
+    }
+
+    @Test
+    void aPointQualifiedWithTheJsonTemplatesOwnName_startsAndHoldsIt() {
+        // The JSON verdict's way out for a host that sends JSON on purpose.
+        coexistenceRunner().withUserConfiguration(UnseenShapesConfiguration.class)
+                .withPropertyValues("spring.kafka.producer.value-serializer="
+                        + "org.springframework.kafka.support.serializer.JacksonJsonSerializer")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    assertThat(ctx.getBean(QualifiedByNameSender.class).template()).isSameAs(ctx.getBean("kafkaTemplate"));
+                    assertThat(warnings()).isEmpty();
                 });
     }
 

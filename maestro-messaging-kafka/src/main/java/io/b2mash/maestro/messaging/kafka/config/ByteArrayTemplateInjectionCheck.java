@@ -89,7 +89,8 @@ import java.util.function.IntPredicate;
  * <p>The check fails startup only on a confirmed violation, with one
  * exception listing every violation ({@code maestro.messaging.template-injection-check}
  * = {@code fail}, the default). Under {@code warn} each violation is logged at
- * {@code WARN} with the same text and startup continues; under {@code off} the
+ * {@code WARN}, with the same text less the way out of last resort, and
+ * startup continues; under {@code off} the
  * check does nothing, not even the {@code WARN}s below. A serializer it
  * cannot classify (another generic serializer, a lambda, a delegating
  * serializer) is not a failure: it is logged at
@@ -172,7 +173,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             return;
         }
         var templates = defaultCandidateTemplates(bf);
-        var violations = new ArrayList<String>();
+        var violations = new ArrayList<Violation>();
         var ambiguous = new LinkedHashMap<String, String>();
         for (var templateName : bf.getBeanNamesForType(KafkaOperations.class, true, false)) {
             try {
@@ -187,10 +188,11 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             return;
         }
         if (this.mode == TemplateInjectionCheck.WARN) {
-            violations.forEach(logger::warn);
+            violations.forEach(violation -> logger.warn(violation.text(false)));
             return;
         }
-        throw new IllegalStateException(String.join("\n\n", violations));
+        throw new IllegalStateException(
+                String.join("\n\n", violations.stream().map(violation -> violation.text(true)).toList()));
     }
 
     /**
@@ -222,7 +224,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
     }
 
     private static void inspectTemplate(ConfigurableListableBeanFactory bf, String templateName,
-            List<String> templates, List<String> violations, Map<String, String> ambiguous) {
+            List<String> templates, List<Violation> violations, Map<String, String> ambiguous) {
         if (!bf.containsBeanDefinition(templateName) || !bf.containsSingleton(templateName)) {
             return;
         }
@@ -283,7 +285,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         }
         for (Map.Entry<String, List<String>> entry : pointsByBean.entrySet()) {
             for (var point : entry.getValue()) {
-                violations.add(violation(entry.getKey(), point, templateName, serializerClass, verdict));
+                violations.add(new Violation(entry.getKey(), point, templateName, serializerClass, verdict));
             }
         }
     }
@@ -407,18 +409,6 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
                 + "See docs/configuration.md § Kafka Client Configuration.";
     }
 
-    private static String violation(String bean, String point, String templateName, Class<?> serializerClass,
-            Verdict verdict) {
-        return "Bean '" + bean + "' injects a KafkaTemplate<…, byte[]> without a qualifier (" + point
-                + ") and received '" + templateName + "', whose value serializer " + serializerClass.getName()
-                + " " + verdict.reason + ". Maestro's Kafka beans are not "
-                + "injected by type. Inject Maestro's template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\""
-                + MaestroKafkaBeans.TEMPLATE + "\"), or set spring.kafka.producer.value-serializer="
-                + "org.apache.kafka.common.serialization.ByteArraySerializer to send byte[] through Spring Boot's "
-                + "template. Only if the injection point is in code you cannot change, set "
-                + PROPERTY + "=warn (or off) to start anyway. "
-                + "See docs/configuration.md § Kafka Client Configuration.";
-    }
 
     private static void warnUnclassified(String templateName, Class<?> serializerClass,
             Map<String, List<String>> pointsByBean) {
@@ -627,6 +617,44 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
 
     /** An unqualified {@code byte[]} template injection point: its description and how Spring resolves it. */
     private record InjectionPoint(String description, DependencyDescriptor descriptor) {}
+
+    /**
+     * A point that received a template that cannot send {@code byte[]} unchanged.
+     *
+     * @param bean            the bean that declares the point
+     * @param point           the point, as described in the message
+     * @param templateName    the template it received
+     * @param serializerClass that template's value serializer
+     * @param verdict         why it cannot send {@code byte[]} unchanged
+     */
+    private record Violation(String bean, String point, String templateName, Class<?> serializerClass,
+            Verdict verdict) {
+
+        /**
+         * @param fatal {@code true} for the startup failure, which ends with the
+         *              way out of last resort; {@code false} for the {@code WARN}
+         *              logged under {@code warn}, which says why it is not fatal
+         */
+        String text(boolean fatal) {
+            var text = "Bean '" + bean + "' injects a KafkaTemplate<…, byte[]> without a qualifier (" + point
+                    + ") and received '" + templateName + "', whose value serializer " + serializerClass.getName()
+                    + " " + verdict.reason + ". Maestro's Kafka beans are not "
+                    + "injected by type. Inject Maestro's template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\""
+                    + MaestroKafkaBeans.TEMPLATE + "\"), or set spring.kafka.producer.value-serializer="
+                    + "org.apache.kafka.common.serialization.ByteArraySerializer to send byte[] through Spring Boot's "
+                    + "template.";
+            if (verdict == Verdict.WRITES_BASE64_JSON) {
+                text += " If '" + templateName + "' is meant to send JSON, qualify the point with its bean name, "
+                        + "@Qualifier(\"" + templateName + "\"), which takes the point out of this check.";
+            }
+            if (fatal) {
+                text += " Only if the injection point is in code you cannot change, set " + PROPERTY
+                        + "=warn (or off) to start anyway.";
+            }
+            text += " See docs/configuration.md § Kafka Client Configuration.";
+            return fatal ? text : text + " (Logged, not fatal, because " + PROPERTY + "=warn.)";
+        }
+    }
 
     /** A point that several default-candidate templates match, among them the one being inspected. */
     private record AmbiguousPoint(String bean, String description, List<String> candidates) {}

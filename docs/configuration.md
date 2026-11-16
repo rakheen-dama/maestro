@@ -1116,7 +1116,14 @@ names only a type gets Boot's bean. Pinned by
   succeeds and every record carries a different payload (traced). The
   block for one says `whose value serializer
   org.springframework.kafka.support.serializer.JacksonJsonSerializer writes
-  byte[] as a base64-encoded JSON string, not the bytes themselves`.
+  byte[] as a base64-encoded JSON string, not the bytes themselves`, and adds
+  a third way out for a template that is meant to send JSON: qualify the
+  point with that template's own bean name, e.g. `@Qualifier("kafkaTemplate")`,
+  which takes the point out of the check (pinned by
+  `aPointQualifiedWithTheJsonTemplatesOwnName_startsAndHoldsIt`). A JSON
+  subclass that you made pass `byte[]` through unchanged is still a
+  violation, because the check goes by class: give its points that
+  qualifier, or set `maestro.messaging.template-injection-check=warn`.
 
   The check runs once, after every singleton is created and before
   `MaestroSignalListenerBeanPostProcessor` verifies the topics or starts any
@@ -1171,8 +1178,9 @@ names only a type gets Boot's bean. Pinned by
 
   **When the point is in code you cannot change**, and neither fix is open
   to you, `maestro.messaging.template-injection-check` is the way out of
-  last resort: `warn` logs each violation at `WARN`, with the text above,
-  and starts; `off` turns the check off, its other `WARN`s included. The
+  last resort: `warn` logs each violation at `WARN`, with the text above
+  less its last-resort sentence and ending `(Logged, not fatal, because
+  maestro.messaging.template-injection-check=warn.)`, and starts; `off` turns the check off, its other `WARN`s included. The
   default is `fail`; an unknown value fails startup. Either setting leaves
   the point holding the template it received, so its sends still fail or
   still carry a different payload (traced). Pinned by `ByteArrayTemplateInjectionCheckTest`
