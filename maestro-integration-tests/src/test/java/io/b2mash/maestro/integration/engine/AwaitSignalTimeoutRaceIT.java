@@ -25,6 +25,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -383,6 +384,12 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         @Override
         public int deleteFailureEvents(UUID instanceId) {
             return delegate.deleteFailureEvents(instanceId);
+        }
+
+        @Override
+        public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                         Set<String> deleteTimerIds) {
+            delegate.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
         }
 
         @Override

@@ -92,6 +92,7 @@ public interface WorkflowStore {
     default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease); // the payload as stored (Postgres: INSERT … RETURNING); a live activity returns what replay reads; a store decorator must forward it (the default returns the payload sent, not the jsonb form)
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);
     List<WorkflowEvent> getEvents(UUID instanceId);
+    default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences, Set<String> deleteTimerIds); // admin retry: deletes + RUNNING CAS in one transaction
 
     void saveSignal(WorkflowSignal signal);
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);

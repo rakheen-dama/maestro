@@ -15,6 +15,7 @@ import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -75,6 +76,12 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     @Override
     public int deleteFailureEvents(UUID instanceId) {
         return delegate.deleteFailureEvents(instanceId);
+    }
+
+    @Override
+    public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                     Set<String> deleteTimerIds) {
+        delegate.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
     }
 
     @Override
