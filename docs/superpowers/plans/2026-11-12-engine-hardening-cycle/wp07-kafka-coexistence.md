@@ -18,8 +18,10 @@
 |---|---|
 | `io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans` | `public final class` with a private constructor and three constants: `TEMPLATE = "maestroKafkaTemplate"`, `PRODUCER_FACTORY = "maestroKafkaProducerFactory"`, `CONSUMER_FACTORY = "maestroKafkaConsumerFactory"`. The Javadoc says these are the documented qualifiers and that the beans are not default candidates. It sits beside `MaestroSignalHeaders`, which hosts already import. |
 | Bean `maestroKafkaTemplateInjectionCheck` | Type `ByteArrayTemplateInjectionCheck`, a package-private class in `io.b2mash.maestro.messaging.kafka.config`. It is a `SmartInitializingSingleton` registered by `KafkaMessagingAutoConfiguration` (Task 4). It has no property and no override. |
+| *(added during execution)* `ProducerFactoryReplacementFailureAnalyzer`, `ByteArrayTemplateMissingFailureAnalyzer` | Package-private `FailureAnalyzer`s in the same package, registered in the module's new `META-INF/spring.factories`. |
+| *(added during execution)* `maestro.messaging.template-injection-check` | `fail` \| `warn` \| `off`, default `fail`; a new component on the public record `MaestroProperties.MessagingProperties`. Added by the whole-branch review's fix wave, which also ruled that the check needs an off switch. |
 
-No new configuration property, SPI method or migration.
+No new SPI method or migration. (As written, the plan also said "no new configuration property"; the fix wave added the one above.)
 
 **Changed**
 

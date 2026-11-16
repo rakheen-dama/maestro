@@ -8,13 +8,13 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [x] Spec written, builder-checked, approved by the maintainer with D1–D11 (2026-11-12)
 - [x] WP0 Executor builder (Issue 37) — Lane A — PR #50 merged 2026-11-12 (56e9c00): 5 tasks reviewed, whole-branch review + fix wave, uncached full build green on 9c1cfbf, CI Build & Test green
 - [x] WP1 Replay fidelity (3.8, exact decimals, stored-input rounding) — Lane A — PR #53 merged 2026-11-13 (834a9da): 9 tasks, whole-branch review + fix wave, uncached full build green; NOT yet run on it: nightly E2E, chaos PR-gate x3, 2 h soak; Issues 42-49 filed
-- [ ] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A
+- [x] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A — PR #54 merged 2026-11-16 (c925661): 6 tasks, whole-branch review + fix wave + re-review, uncached full build green twice (7306235, ff11be1), CodeRabbit 9 comments (8 fixed incl. three engine defects, 1 tracked as Issue 51); Issues 50-51 filed; timer accuracy now = DB clock minus scheduling node's clock until Issue 51; NOT yet run: nightly E2E, chaos x3, soak
 - [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
 - [ ] WP4 Loop liveness and health (3.5) — Lane A
 - [ ] WP5 Shutdown (Issue 29, 3.6) — Lane A
 - [ ] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A
 - [x] WP9 Schema safety and upgrade fixture — Lane B — PR #52 merged 2026-11-12 (6c8248b); Issues 40-41 filed
-- [ ] WP7 Kafka coexistence (3.4, 3.11c) — Lane B
+- [x] WP7 Kafka coexistence (3.4, 3.11c) — Lane B — PR #55 merged 2026-11-16 (525b287): 7 tasks, three review rounds on the byte[] template check, whole-branch review + fix wave + residuals, uncached full build green on e871b70 (main merged in), CI green; CodeRabbit rate-limited, merged without its review on the maintainer's say-so; new property maestro.messaging.template-injection-check; admin events default false; Issues 52-58 filed; NOT yet run: nightly E2E, chaos x3
 - [ ] WP10 Wake-listener shutdown (Issue 38) — Lane B
 - [ ] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B, after WP6
 - [ ] WP11 k6 load-test foundation — Lane C — Tasks 1-5 done (3 meters, sample-perf, harness after 5 review rounds); Task 6 (Scenario 1) in fix round 2; Tasks 7-9 remain; first numbers: ~71-73 completions/s on one node at 20/20 (slot-limited, 5x50 ms activities), 36.00 net statements per workflow
