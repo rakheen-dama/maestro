@@ -107,6 +107,50 @@ class KafkaCoexistenceContextTest {
     }
 
     @Test
+    void aHostWithOnlyItsOwnProducerFactory_failsStartupInBootsKafkaTemplate() {
+        // Boot's kafkaProducerFactory backs off for the host's factory, while Boot's
+        // kafkaTemplate (Maestro's template is not a default candidate) still
+        // registers and cannot use a ProducerFactory<String, HostDto>.
+        coexistenceRunner().withUserConfiguration(HostProducerFactoryOnlyConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasFailed();
+            assertThat(rootCause(ctx.getStartupFailure()))
+                    .isInstanceOf(NoSuchBeanDefinitionException.class)
+                    .hasMessageContaining("No qualifying bean of type "
+                            + "'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'");
+            assertThat(ctx.getStartupFailure())
+                    .hasStackTraceContaining("Error creating bean with name 'kafkaTemplate' defined in "
+                            + "org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration");
+        });
+    }
+
+    @Test
+    void aHostWithOnlyItsOwnProducerFactory_startsWithEitherWayOut() {
+        // (a) its own KafkaTemplate over its factory: Boot's kafkaTemplate backs off.
+        coexistenceRunner()
+                .withUserConfiguration(HostProducerFactoryOnlyConfiguration.class, HostTemplateOnlyConfiguration.class)
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed()
+                            .doesNotHaveBean("kafkaTemplate")
+                            .doesNotHaveBean("kafkaProducerFactory");
+                    assertThat(ctx.getBean("hostTemplate", KafkaTemplate.class).getProducerFactory())
+                            .isSameAs(ctx.getBean("hostProducerFactory"));
+                    assertEngineHoldsMaestrosBeans(ctx);
+                });
+        // (b) its factory declared defaultCandidate = false: Boot's kafkaProducerFactory
+        // and kafkaTemplate register beside it.
+        coexistenceRunner().withUserConfiguration(NonDefaultCandidateHostProducerFactoryConfiguration.class)
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed()
+                            .hasBean("hostProducerFactory")
+                            .hasBean("kafkaProducerFactory")
+                            .hasBean("kafkaTemplate");
+                    assertThat(ctx.getBean("kafkaTemplate", KafkaTemplate.class).getProducerFactory())
+                            .isSameAs(ctx.getBean("kafkaProducerFactory"));
+                    assertEngineHoldsMaestrosBeans(ctx);
+                });
+    }
+
+    @Test
     void aHostReplacingMaestrosTemplateByName_isWhatTheEngineUses() {
         // (a) the documented way: same name, not a default candidate. Boot's template stays.
         coexistenceRunner().withUserConfiguration(NonDefaultCandidateTemplateReplacement.class).run(ctx -> {
@@ -324,6 +368,26 @@ class KafkaCoexistenceContextTest {
                     ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
                     ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class,
                     ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, JacksonJsonDeserializer.class));
+        }
+    }
+
+    /** A host that declares only a producer factory for its own type, and no template. */
+    @Configuration(proxyBeanMethods = false)
+    static class HostProducerFactoryOnlyConfiguration {
+
+        @Bean
+        ProducerFactory<String, HostDto> hostProducerFactory() {
+            return new DefaultKafkaProducerFactory<>(hostProducerProps());
+        }
+    }
+
+    /** The same factory, not a default candidate: the host injects it by name. */
+    @Configuration(proxyBeanMethods = false)
+    static class NonDefaultCandidateHostProducerFactoryConfiguration {
+
+        @Bean(defaultCandidate = false)
+        ProducerFactory<String, HostDto> hostProducerFactory() {
+            return new DefaultKafkaProducerFactory<>(hostProducerProps());
         }
     }
 

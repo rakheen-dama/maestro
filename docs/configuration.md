@@ -1048,7 +1048,15 @@ names only a type gets Boot's bean. Pinned by
   `spring.kafka.producer.value-serializer` for it), or declare your own
   `ProducerFactory` / `KafkaTemplate` / `ConsumerFactory` beans, exactly as in
   a service without Maestro. Boot's beans back off for yours as they always
-  do; the engine is unaffected.
+  do; the engine is unaffected. One exception: a `ProducerFactory` of your
+  own **without** a `KafkaTemplate` of your own fails startup, because Boot's
+  `kafkaTemplate` (no longer backing off for Maestro's) cannot use a
+  `ProducerFactory<String, YourDto>`
+  (`NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+  raised while creating `kafkaTemplate`). Declare your own `KafkaTemplate`
+  over it too, or declare the factory `@Bean(defaultCandidate = false)` and
+  inject it by name, so Boot's `kafkaProducerFactory` and `kafkaTemplate`
+  register beside it. Pinned by `KafkaCoexistenceContextTest`.
 - **Reusing the engine's `byte[]` template.** Inject it with its qualifier:
   `@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]>`
   (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
