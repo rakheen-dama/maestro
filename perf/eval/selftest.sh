@@ -1003,6 +1003,37 @@ if [[ -n "$s3src" ]]; then
   expect "s3: garbage records: advisory.heapPerParked" WARN "$(s3st "$out" advisory.heapPerParked)"
   out=$(s3_eval s3-abandoned '.runAbandonedIncrease = 2')
   expect "s3: two runs abandoned: advisory.runAbandoned" WARN "$(s3st "$out" advisory.runAbandoned)"
+
+  # advisory.liveness: in sleep mode nothing wakes a parked run, so the
+  # NO_BASELINE release check proves nothing; the verdict must say so.
+  s3_detail() { s3_field "$1" ".checks[] | select(.id == \"$2\") | .detail"; }
+  expect "s3: signal mode: advisory.liveness" PASS "$(s3st "$(s3_eval s3-pass '.')" advisory.liveness)"
+  out=$(s3_eval s3-live-sleep "$to_sleep | $(s3_fig '$f0 - 2')")
+  expect "s3: sleep mode: advisory.liveness" WARN "$(s3st "$out" advisory.liveness)"
+  expect "s3: sleep mode: verdict still PASS (advisory only)" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s3: sleep mode: advisory.liveness says the release is no proof of liveness" yes \
+    "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'NOT proof' && echo yes || echo no)"
+  expect "s3: sleep mode: advisory.liveness says sleep figures are not measured" yes \
+    "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'not measured' && echo yes || echo no)"
+  expect "s3: sleep mode: correctness.releaseWakes says it is no proof of liveness" yes \
+    "$(s3_detail s3-live-sleep correctness.releaseWakes | grep -qF 'NOT proof' && echo yes || echo no)"
+
+  # advisory.crossNodeWake: at 2+ replicas a drain longer than the wake
+  # re-check interval means the runs may have woken on their re-check, not
+  # by NOTIFY; correctness.releaseWakes cannot tell the two apart.
+  rel_drain() { # <seconds after the release window opened>
+    printf '([.auxWindows[] | select(.kind == "release")][0].resetAt[0:19] + "Z" | fromdate) as $r0
+      | .release.executedPlan |= (.crossNode = true | .nodes = 2)
+      | .release.status.lastCompletedAt = ($r0 + %s | todate)' "$1"
+  }
+  out=$(s3_eval s3-xnode-slow "$(rel_drain 40)" '.config.replicas = 2')
+  expect "s3: 2 replicas, drain 40 s (> the 30 s re-check): advisory.crossNodeWake" WARN "$(s3st "$out" advisory.crossNodeWake)"
+  out=$(s3_eval s3-xnode-fast "$(rel_drain 5)" '.config.replicas = 2')
+  expect "s3: 2 replicas, drain 5 s: advisory.crossNodeWake" PASS "$(s3st "$out" advisory.crossNodeWake)"
+  out=$(s3_eval s3-xnode-unknown '.release.status.lastCompletedAt = null | .release.executedPlan |= (.crossNode = true | .nodes = 2)' '.config.replicas = 2')
+  expect "s3: 2 replicas, drain not recorded: advisory.crossNodeWake" WARN "$(s3st "$out" advisory.crossNodeWake)"
+  out=$(s3_eval s3-xnode-one "$(rel_drain 40)")
+  expect "s3: 1 replica, drain 40 s (no cross-node wake to judge): advisory.crossNodeWake" PASS "$(s3st "$out" advisory.crossNodeWake)"
 fi
 
 if ((failures > 0)); then

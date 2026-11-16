@@ -132,8 +132,9 @@
 # arithmetic at the node's bound intervals (H = instance locks held per node
 # = P / replicas, A = active rows of the service = P):
 #   wake re-check   3 reads per parked awaitSignal (instance status, signals,
-#                   timer row), 2 per parked sleep (status, timer row), every
-#                   wakeRecheckSecs
+#                   timer row), 2 per parked sleep (status, timer row; sleep
+#                   mode not run, so the 2 is documented, not measured),
+#                   every wakeRecheckSecs
 #   lock renewal    ceil(H / 500) UPDATE ... unnest per node every lockTtl / 3
 #                   (the renewer sleeps, then renews: the effective period is
 #                   lockTtl / 3 + the pass's own duration, ceil(H / 500) x the
@@ -160,8 +161,15 @@
 #   "released", each with exactly one perf.release signal row, consumed, none
 #   unconsumed, every signal accepted (202), within the release timeout
 #   (120 s + Pmax / 10 s); crossNode is recorded (true when replicas > 1:
-#   signal n went to nodeFor(n + 1), every wake crossed nodes). In sleep mode
-#   the runs cannot be released by a signal: NO_BASELINE, "not applicable".
+#   signal n went to nodeFor(n + 1), so every signal landed on a node that
+#   does not own its run). That timeout is longer than the 30 s wake
+#   re-check, so releaseWakes also passes a broken cross-node NOTIFY (the
+#   runs then wake on their own re-checks): advisory.crossNodeWake WARNs at
+#   replicas > 1 when the drain took longer than one wake-recheck interval.
+#   In sleep mode the runs cannot be released by a signal: NO_BASELINE,
+#   "not applicable", which is NOT proof the parked runs were live:
+#   advisory.liveness WARNs and says so (sleep mode is supported, not run;
+#   its figures are not measured).
 #   noFailures: FAILED and TERMINATED == 0 over the run's whole id space.
 #   probesCompleted: every accepted probe start COMPLETED within 120 s.
 #
@@ -345,6 +353,12 @@ $identity[0] as $id
        grossPerStartedRun: (if $sOk then ($s.maestroCalls - lock_cleaner_calls($s)) / $n | round2 else null end)}]) as $seeds
 | ($m.release // null) as $rel
 | ([$aux[] | select(.kind == "release")] | first // null) as $relWin
+# the drain: last release completion after the release window opened (both
+# on the database clock); needs no idle rate
+| (($rel | if type == "object" then .status.lastCompletedAt else null end) | ts_secs) as $relLast
+| (($relWin | if type == "object" then .resetAt else null end) | ts_secs) as $relR0
+| (if ($relLast | isnum) and ($relR0 | isnum) then $relLast - $relR0 | round2 else null end) as $drainSecs
+| (if ($rel | type) == "object" and ($rel.executedPlan | type) == "object" then $rel.executedPlan.crossNode else null end) as $relCross
 | (if ($rel | type) == "object" and $relWin != null and ($cps0 | isnum) and ($rel.count | posnum)
       and (window_cps($relWin) | isnum) then
      (($relWin.maestroCalls - lock_cleaner_calls($relWin))) as $calls
@@ -354,9 +368,8 @@ $identity[0] as $id
         netPerReleased: (($calls - $cps0 * $relWin.windowSecs) / $rel.count | round2),
         recheckResidualBoundPerReleased: (if ($kMax | isnum) and ($rel.k6Secs | isnum) then $kMax * $rel.k6Secs | round2 else null end),
         k6SignalSecs: $rel.k6Secs, waitedAfterSignalsSecs: $rel.drain.waitedSecs,
-        drainSecs: (($rel.status.lastCompletedAt | ts_secs) as $last | ($relWin.resetAt | ts_secs) as $r0
-                    | if ($last | isnum) and ($r0 | isnum) then $last - $r0 | round2 else null end),
-        crossNode: (if ($rel.executedPlan | type) == "object" then $rel.executedPlan.crossNode else null end)}
+        drainSecs: $drainSecs,
+        crossNode: $relCross}
    else null end) as $releaseFig
 # ── Prometheus per window ──
 | ($m.windowProm | objs) as $wp
@@ -510,7 +523,7 @@ $identity[0] as $id
           else "plateau(s) not reached\(if $m.stopped != null then " (\($m.stopped))" else "" end): \([$plRecs[] | select(.reached != true) | "P=\(.P): \(.statusAtTimeout.park // null | tojson)"] | join("; "))" end) ),
     ( if $mode == "sleep" then
         check("correctness.releaseWakes"; "correctness"; "NO_BASELINE"; null; null;
-              "not applicable: sleep-mode runs are not released by a signal; they stay \($parkedStatus) until their 7200 s timer")
+              "not applicable: sleep-mode runs are not released by a signal; they stay \($parkedStatus) until their 7200 s timer. This NO_BASELINE is NOT proof that the parked runs were live (see advisory.liveness)")
       else
         ($wMax.P // ($planned | last) // null) as $pmax
         | ([$k6[] | select(.phase == "release")] | last // null) as $rk
@@ -522,11 +535,11 @@ $identity[0] as $id
         | check("correctness.releaseWakes"; "correctness"; if $ok then "PASS" else "FAIL" end;
             {count: $rel.count, total: $s.total, released: $s.released, results: $s.results, byStatus: $s.byStatus,
              signals: $s.signals, signalsAccepted: $rk.checksPassed, drainTimedOut: $rel.drain.timedOut,
-             crossNode: $releaseFig.crossNode, drainSecs: $releaseFig.drainSecs};
+             crossNode: $relCross, drainSecs: $drainSecs};
             {released: "== Pmax (\($pmax)) COMPLETED with result \"released\"", signalRowsPerRun: "exactly 1, consumed",
              within: "\($rel.timeoutSecs // "n/a") s"};
             if $rel == null then "no release was run\(if $m.stopped != null then " (\($m.stopped))" else "" end)"
-            elif $ok then "\($s.released)/\($pmax) parked runs released (COMPLETED, result \"released\"), each with exactly one consumed perf.release row; all terminal \($releaseFig.drainSecs) s after the release window opened\(if $releaseFig.crossNode == true then "; every signal was sent to the node that does not own the run (cross-node wake)" else "" end)"
+            elif $ok then "\($s.released)/\($pmax) parked runs released (COMPLETED, result \"released\"), each with exactly one consumed perf.release row; all terminal \($drainSecs) s after the release window opened\(if $relCross == true then "; every signal was sent to a node that does not own its run (whether the wake crossed nodes by NOTIFY rather than by re-check: advisory.crossNodeWake)" else "" end)"
             else [
               (if $s.total != $pmax then "\($s.total) park rows for \($pmax) parked" else null end),
               (if $s.released != $pmax then "\($s.released) of \($pmax) COMPLETED with result \"released\" (results \($s.results | tojson), by status \($s.byStatus | tojson))" else null end),
@@ -688,6 +701,38 @@ $identity[0] as $id
                                   (if ($cpuHot | length) > 0 then "node CPU saturated at P=\($cpuHot | map(tostring) | join(", P="))" else null end)] | reasons)
                 + "; the latency advisories of this run are not the engine's alone (statement counts are unaffected unless re-checks fall behind)"
               else "quiet: host load at most \($loadPerCpu | max // "n/a") per CPU (<= \(host_load_per_cpu_max)), node CPU below \(cpu_saturation) in every plateau window (blind spot: contention too mild to cross either)" end)),
+    advisory_guarded("advisory.liveness";
+      ([$decomposition[] | {P, per: ([.rows[] | select(.component == "wakeRecheck")][0].per)}]) as $rc
+      | if $mode == "signal" then
+          check("advisory.liveness"; "advisory"; "PASS"; {parkMode: $mode}; null;
+                "signal mode: liveness is judged by correctness.releaseWakes (every parked run woken by its signal and COMPLETED with result \"released\")")
+        else
+          check("advisory.liveness"; "advisory"; "WARN"; {parkMode: $mode, recheckReadsPerParkedPerInterval: $rc}; null;
+                if $mode == "sleep" then
+                  "sleep mode: no parked run was woken or completed, so correctness.releaseWakes (NO_BASELINE, not applicable) is NOT proof that the parked runs were live; the only evidence of it is their re-check reads in the plateau windows (\([$rc[] | "P=\(.P) \(.per // "n/a")"] | join(", ")) reads per parked run per \($recheckSecs // "?") s, \($readsPerRecheck) documented). Sleep mode is supported, not run: its figures are not measured"
+                else "park mode \($mode | tojson) is unknown: nothing shows the parked runs were live" end)
+        end),
+    advisory_guarded("advisory.crossNodeWake";
+      $drainSecs as $d
+      | if $replicasOk and $replicas == 1 then
+          check("advisory.crossNodeWake"; "advisory"; "PASS"; {replicas: $replicas, drainSecs: $d}; null;
+                "one node: every signal arrived on the node that owns its run; no cross-node wake to judge")
+        elif ($replicasOk | not) then
+          check("advisory.crossNodeWake"; "advisory"; "WARN"; {replicas: $replicas}; null; "replica count unknown: cross-node wake not judged")
+        elif $mode != "signal" then
+          check("advisory.crossNodeWake"; "advisory"; "WARN"; {replicas: $replicas, parkMode: $mode}; null;
+                "\($replicas) replicas, \($mode | tojson) mode: no signal release ran, so cross-node wake is not demonstrated")
+        elif ($d | isnum | not) or ($recheckSecs | posnum | not) then
+          check("advisory.crossNodeWake"; "advisory"; "WARN"; {replicas: $replicas, drainSecs: $d, wakeRecheckSecs: $recheckSecs}; null;
+                "\($replicas) replicas: the release drain time or the wake-recheck interval is not available, so cross-node wake is not demonstrated")
+        else
+          ($d <= $recheckSecs) as $ok
+          | check("advisory.crossNodeWake"; "advisory"; if $ok then "PASS" else "WARN" end;
+                  {replicas: $replicas, crossNode: $relCross, drainSecs: $d, wakeRecheckSecs: $recheckSecs};
+                  {drainSecs: "<= wakeRecheckSecs (\($recheckSecs))"};
+                  if $ok then "\($replicas) replicas: every signal went to a node that does not own its run, and all \($rel.count // "?") released runs were terminal \($d) s after the release window opened, within one \($recheckSecs) s wake re-check: consistent with a cross-node NOTIFY wake (with NOTIFY broken, the runs wake on their own re-checks, whose phases are spread over the interval, so the last would take close to a full interval)"
+                  else "\($replicas) replicas: the release drained in \($d) s, longer than the \($recheckSecs) s wake re-check: the runs may have woken on their own re-check rather than by a cross-node NOTIFY, and correctness.releaseWakes (timeout \($rel.timeoutSecs // "n/a") s) cannot tell the two apart, so cross-node wake is NOT demonstrated" end)
+        end),
     advisory_guarded("advisory.runAbandoned";
       $m.runAbandonedIncrease as $a
       | any($promPlateaus[]; .slotsUsed.workflowMax | isnum) as $wp11

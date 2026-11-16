@@ -6,7 +6,8 @@
 #
 # Workload: perf-park runs (one step, park, one step) parked on the signal
 # perf.release (PERF_PARK_MODE=signal, the default) or on a durable sleep
-# (PERF_PARK_MODE=sleep), parkSeconds 7200 so no deadline fires during a run.
+# (PERF_PARK_MODE=sleep: supported, not run; its figures are not measured),
+# parkSeconds 7200 so no deadline fires during a run.
 # Parked ids are ${RUN_ID}-park-<n>, n continuous across plateaus
 # (PERF_ID_OFFSET); probes are ${RUN_ID}-probe-p<P>-<i> (chain, 3 activities
 # x 20 ms), started at a constant rate while P runs are parked.
