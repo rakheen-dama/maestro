@@ -504,9 +504,13 @@ public final class WorkflowExecutor {
          * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
          * controllable test clock; production code has no reason to set it.
          * Keep {@link InstantSource#system()} in production: the timer
-         * poller ({@link WorkflowExecutor#startTimerPoller}) still compares
-         * due rows against the system clock, so a non-system source is only
-         * for a test harness that fires timers itself (as
+         * poller ({@link WorkflowExecutor#startTimerPoller}) never reads this
+         * source. It asks the store for the due rows
+         * ({@code WorkflowStore.getDueTimers(int)}), and the store decides
+         * against its own clock: on Postgres the database's {@code now()};
+         * a store that does not override {@code getDueTimers(int)}, the
+         * caller's system clock. So a non-system source is only for a test
+         * harness that fires timers itself (as
          * {@code TestWorkflowEnvironment.advanceTime} does) and never starts
          * the poller.
          *
@@ -541,10 +545,13 @@ public final class WorkflowExecutor {
      * the value a live {@code currentTime()} records (R59).
      *
      * <p>{@link InstantSource#system()} unless {@link Builder#instantSource}
-     * was given another — the Spring starter never does, and the
-     * timer poller compares due rows against the system clock, so a
-     * non-system source is only coherent where the poller is not running and
-     * something else fires the rows ({@code TestWorkflowEnvironment.advanceTime}).
+     * was given another — the Spring starter never does. The timer poller
+     * does not read this source: the store decides which rows are due
+     * ({@code WorkflowStore.getDueTimers(int)}), on Postgres by the database's
+     * {@code now()} and, in a store that does not override that method, by
+     * the caller's system clock. So a non-system source is only coherent where
+     * the poller is not running and something else fires the rows
+     * ({@code TestWorkflowEnvironment.advanceTime}).
      * Replay never re-arms from it: a memoized deadline is read back.
      *
      * @return the instant source, never {@code null}
@@ -2435,11 +2442,16 @@ public final class WorkflowExecutor {
             // a permit fails its re-check (the run is gone) and drops it, and
             // no new run can be registered until the release below. That last
             // step relies on the instance lock: a new run of this id is
-            // registered only by a node that acquired the lock. With no lock
-            // backend, a new run of the id (a recovery or a retry) can
+            // registered only by a node that acquired the lock. It does not
+            // hold when the new run's launch proceeded unlocked — with no lock
+            // backend, or when the lock backend threw during that launch's
+            // acquire (tryAcquire answers NO_BACKEND and the run launches
+            // anyway). Then a new run of the id (a recovery or a retry) can
             // register here between the removal and clearPending, and a permit
-            // stored for it can be erased — it then waits for its wake-recheck
-            // interval: latency, never a lost wake (traced, not tested).
+            // stored for it can be erased. The cost is latency, never a lost
+            // wake: that run's park finds no permit and wakes at its next
+            // re-check, at most one wake-recheck interval later
+            // (traced, not tested).
             parkingLot.clearPending(ctx.workflowId());
             instanceLockManager.release(ctx.workflowId());
             // Drop the sticky terminate poison: this run is over, so a future
