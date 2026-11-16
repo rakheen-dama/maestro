@@ -4,7 +4,8 @@
 #
 # D4: numbers first. Pass/fail rests only on statement counts and within-run
 # comparisons: the per-parked-run cost at each plateau (gate.parkedCostLinear,
-# within the run; gate.parkedCostBaseline, against a recorded baseline), and
+# within the run; gate.parkedCostArithmetic, against the documented
+# arithmetic; gate.parkedCostBaseline, against a recorded baseline), and
 # on correctness (every plateau reached, every parked run released with
 # result "released" and exactly one consumed signal row, nothing failed).
 # Latency, memory, slots and time are advisories.
@@ -27,12 +28,70 @@
 # recovery pass or recheck cycle biases the per-minute figure.
 #
 # ── Gates ──────────────────────────────────────────────────────────────────
-# gate.parkedCostLinear (within the run): ratio = perParkedCallsPerMin(Pmax)
-#   / perParkedCallsPerMin(Pmin); PASS when |ratio - 1| <= linear_band (0.25,
-#   the brief's 1.25 x, made symmetric like the statement gate: a per-parked
-#   cost that FALLS at Pmax means re-checks no longer keep their interval, as
-#   suspicious as one that rises). INVALID when fewer than two plateaus were
-#   measured (could not be judged).
+# gate.parkedCostLinear (within the run): for EVERY plateau above the
+#   smallest, ratio = perParkedCallsPerMin(P) / perParkedCallsPerMin(Pmin);
+#   PASS when every |ratio - 1| <= linear_band (0.25, the brief's 1.25 x,
+#   made symmetric like the statement gate: a per-parked cost that FALLS at a
+#   larger P means re-checks no longer keep their interval, as suspicious as
+#   one that rises). INVALID when fewer than two plateaus were measured, or a
+#   plateau has no figure (could not be judged). On its own it admits a lot:
+#   a per-run cost that is doubled, halved or a tenth at every plateau is
+#   still linear, and over the local profile's 2 x range of P a P-squared
+#   term of up to 1.24 x passes it (self-tested). The absolute gate below
+#   closes that.
+# gate.parkedCostArithmetic (absolute; applies with or without a baseline):
+#   EVERY plateau's perParkedCallsPerMin against the documented arithmetic
+#   (docs/operations.md §13) at this run's park mode, replicas R and the
+#   node's bound intervals; PASS when |figure - expected| <= tolerancePerMin
+#   + arith_band (0.05) x expected. INVALID when an input is missing (park
+#   mode, replicas, wakeRecheckInterval, lockTtl, recoveryPollInterval, a
+#   plateau figure or its tolerance) or no plateau was measured; never a pass
+#   on missing data. It is not superseded by a baseline: the baseline gate
+#   judges Pmax alone, this one every plateau.
+#   expected(P), per parked run per minute, net of the idle window (H = P / R
+#   instance locks per node, A = P active rows; validity.parked guarantees
+#   no other row is open):
+#     re-check       reads x 60 / wakeRecheckSecs, reads = 3 per parked
+#                    awaitSignal, 2 per parked sleep
+#     renewal        R x ceil(H / 500) x (60 / (lockTtl / 3)) / P  (nominal
+#                    period; the effective period is longer, see the
+#                    decomposition below: 0.0008 less at P = 10000)
+#     recovery pages R x floor(A / 200) x (60 / recoveryPollSecs) / P (the
+#                    idle pass's one empty page is already subtracted)
+#     heldKeys       R x ceil(A / 200) x (60 / recoveryPollSecs) / P when
+#                    R > 1, else 0 (traced: one per non-empty page per node
+#                    on a fleet, none on one node)
+#   At the defaults (30 s, lockTtl 30 s so 10 s, 60 s) and P a multiple of
+#   1000: signal mode 6.000 + 0.012 + 0.005 + 0 = 6.017 at one node, + 0.005
+#   recovery + 0.010 heldKeys = 6.032 at two. Measured (re-evaluated by this
+#   evaluator): 6.0141-6.0172 at P = 1000 / 2000 in the three local one-node
+#   runs below, 6.0308 / 6.0309 at two replicas (r20261113t033214z),
+#   6.0160 / 6.0162 / 6.0121 at P = 1000 / 5000 / 10000 (full profile,
+#   r20261113t034332z): the largest |measured - expected| is 0.0049 (0.08 %),
+#   at P = 10000, where re-checks read 2.998 per parked run per interval.
+#   Sleep mode's centre (4.000 + 0.017 = 4.017) is the documented arithmetic
+#   only: sleep mode is supported, not run; its figures are not measured.
+#   The band, arith_band = 0.05 (+/- 0.30 per minute at 6.017), from the
+#   components: the re-check term is 99.5-99.7 % of the centre and moves only in
+#   whole reads (+/- 2.0 per minute, +/- 33 %, for one read more or less per
+#   re-check) or with its period (5 % = a re-check period off by 1.5 s per
+#   30 s cycle; measured worst 0.02 s, the 2.998 above). The other three
+#   terms together are 0.017-0.032 per minute (0.3-0.5 % of the centre), so
+#   their step functions (ceil, floor) cannot move a figure out of the band.
+#   +/- 5 % is about 60 x the largest measured deviation and FAILs: a cost
+#   doubled (12.03), halved (3.01) or a tenth (0.60), one read more or less
+#   per re-check, and a P-squared shape such as 7.22 at P = 1000 and 8.42 at
+#   2000 (+20 % / +40 %), which the linearity gate passes (1.166 x); all
+#   self-tested. A P-squared term small enough to stay within + 5 % at every
+#   plateau passes both gates.
+#   Not gated separately: the re-check component (reads per parked run per
+#   interval against its integer, 3 or 2). Because the re-check is 99.5-99.7 %
+#   of the figure, this gate already holds it to within about +/- 5 % unless
+#   another per-run statement moves the opposite way at the same time; and a
+#   component gate would rest on statement-text classification
+#   (perf/sql/s3-components.sql), which an engine with different SQL (an
+#   older engine) turns into a false FAIL. The decomposition advisory checks
+#   it to 2 % and WARNs.
 # gate.parkedCostBaseline: statements_gate (common.jq; symmetric band =
 #   tolerance + relativeAllowance x expected) on perParkedCallsPerMin(Pmax)
 #   against perf/baselines/s3-parked.json's perParkedCallsPerMin, used only
@@ -51,12 +110,19 @@
 # host (advisory.contention: load average up to 9.24, 3.0 and 10.75 per CPU)
 # and the figure did not move with it: the statement count of a parked
 # population is set by its intervals, not by host speed. 0.02 is a band of
-# +/- 0.12 statements per parked run per minute (+/- 2 %): far above the
-# observed spread, and far below the smallest real regression, one more read
-# per re-check (+2 per minute, +33 %), or renewal per lock instead of per 500
-# (+6 per minute). What could move it without a code change: a re-check
-# period stretched by slow reads or a slot wait (2 % = 0.6 s per 30 s cycle;
-# not observed: re-check reads per parked run per interval 2.9986-2.9996).
+# about +/- 0.12 statements per parked run per minute (+/- 2 %, plus the
+# tolerance): far above the observed spread, and far below a regression of
+# the RE-CHECK, one more read per re-check (+2 per minute, +33 %), or of
+# renewal per lock instead of per 500 (+6 per minute). What could move it
+# without a code change: a re-check period stretched by slow reads or a slot
+# wait (2 % = 0.6 s per 30 s cycle; not observed: re-check reads per parked
+# run per interval 2.9986-2.9996).
+# What neither this band nor gate.parkedCostArithmetic's can see: a
+# regression in the small terms. Renewal in chunks of 50 instead of 500 adds
+# 0.108 per parked run per minute (inside the +/- 0.12); recovery pages of 50
+# rows instead of 200 add 0.015; a heldKeys read appearing on one node adds
+# 0.005. Only advisory.decomposition shows these (per component, against the
+# documented count per pass), as a WARN.
 # The 25 % tolerance cap does not bind: tolerancePerMin at P = 2000 is
 # 3 x 1 / 2000 x 60 / 120 = 0.00075.
 #
@@ -125,6 +191,15 @@ def recheck_match_fraction: 0.02;
 def objs: if type == "array" then map(select(type == "object")) else [] end;
 def comp($w; $name): ($w.components[$name].calls // 0 | if isnum then . else 0 end);
 def ceil_div($a; $b): (($a / $b) | ceil);
+def arith_band: 0.05;
+# The documented arithmetic of one plateau, statements per parked run per
+# minute, net of the idle window (header: gate.parkedCostArithmetic).
+def arith_terms($P; $R; $reads; $recheckSecs; $renewSecs; $recoverySecs):
+  ($reads * 60 / $recheckSecs) as $re
+  | ($R * ceil_div($P / $R; renew_chunk) * 60 / $renewSecs / $P) as $rn
+  | ($R * (($P / recovery_page_size) | floor) * 60 / $recoverySecs / $P) as $rp
+  | (if $R > 1 then $R * ceil_div($P; recovery_page_size) * 60 / $recoverySecs / $P else 0 end) as $hk
+  | {recheck: $re, renewal: $rn, recoveryPages: $rp, heldKeys: $hk, expected: ($re + $rn + $rp + $hk)};
 
 def iterations_ok($got; $want): ($got | isnum) and ($want | isnum) and ((($got - $want) | fabs) <= ([2, 0.005 * $want] | max));
 
@@ -132,6 +207,7 @@ $identity[0] as $id
 | $measurements[0] as $m
 | ($baseline[0] // null) as $b
 | $id.config.replicas as $replicas
+| (($replicas | isnum) and $replicas >= 1 and ($replicas | floor) == $replicas) as $replicasOk
 | ($m.plan // {}) as $plan
 | ($m.parkMode // $plan.parkMode) as $mode
 | ($m.parkedStatus // $plan.parkedStatus) as $parkedStatus
@@ -442,23 +518,60 @@ $identity[0] as $id
           if $m.foreignRows == 0 then "no instance row outside this run's id space \($m.runPrefix)"
           else "\($m.foreignRows) instance row(s) outside \($m.runPrefix): leftover state" end),
     # ── gates ──
-    ( if ($plateauWins | length) < 2 or ($wMin.perParkedCallsPerMinExact | isnum | not) or ($wMax.perParkedCallsPerMinExact | isnum | not)
+    ( if ($plateauWins | length) < 2 or ($plateauWins | all(.perParkedCallsPerMinExact | isnum) | not)
          or $wMin.perParkedCallsPerMinExact <= 0 then
         check("gate.parkedCostLinear"; "gate"; "INVALID"; {plateaus: [$plateauWins[] | {P, perParkedCallsPerMin}]};
-              {band: linear_band}; "fewer than two plateaus with a positive per-parked figure: linearity cannot be judged")
+              {band: linear_band}; "fewer than two plateaus, or a plateau without a per-parked figure, or a non-positive figure at the smallest plateau: linearity cannot be judged")
       else
-        ($wMax.perParkedCallsPerMinExact / $wMin.perParkedCallsPerMinExact) as $ratio
-        | ((($ratio - 1) | fabs) <= linear_band) as $ok
+        ([$plateauWins[1:][] | (.perParkedCallsPerMinExact / $wMin.perParkedCallsPerMinExact) as $r
+          | {P, perParkedCallsPerMin, ratio: ($r | round4), ok: ((($r - 1) | fabs) <= linear_band), dev: (($r - 1) | fabs), r: $r}]) as $rs
+        | ($rs | all(.ok)) as $ok
+        | ($rs | max_by(.dev)) as $worst
+        | ($wMax.perParkedCallsPerMinExact / $wMin.perParkedCallsPerMinExact) as $ratio
         | check("gate.parkedCostLinear"; "gate"; if $ok then "PASS" else "FAIL" end;
             {ratio: ($ratio | round4), Pmin: $wMin.P, Pmax: $wMax.P,
              perParkedCallsPerMinAtPmin: $wMin.perParkedCallsPerMin, perParkedCallsPerMinAtPmax: $wMax.perParkedCallsPerMin,
+             ratios: [$rs[] | {P, ratio}],
              plateaus: [$plateauWins[] | {P, perParkedCallsPerMin, perParkedCallsPer30s}]};
-            {min: (1 - linear_band), max: (1 + linear_band)};
-            "per-parked cost at P=\($wMax.P) is \($ratio | round4) x that at P=\($wMin.P) (\($wMax.perParkedCallsPerMin) vs \($wMin.perParkedCallsPerMin) statements per parked run per minute)"
-            + if $ok then ": linear within +/- \(linear_band * 100) %"
-              elif $ratio > 1 then ": SUPERLINEAR, more than \(1 + linear_band) x"
-              else ": SUBLINEAR, below \(1 - linear_band) x: re-checks are not keeping their interval at the larger population" end)
+            {min: (1 - linear_band), max: (1 + linear_band), every: "plateau, against the smallest"};
+            "per-parked cost against P=\($wMin.P) (\($wMin.perParkedCallsPerMin) statements per parked run per minute): \([$rs[] | "P=\(.P) \(.ratio) x (\(.perParkedCallsPerMin))"] | join(", "))"
+            + if $ok then ": linear within +/- \(linear_band * 100) % at every plateau"
+              elif $worst.r > 1 then ": SUPERLINEAR at P=\($worst.P), more than \(1 + linear_band) x"
+              else ": SUBLINEAR at P=\($worst.P), below \(1 - linear_band) x: re-checks are not keeping their interval at the larger population" end)
       end ),
+    # ── gate.parkedCostArithmetic ──
+    ( ([(if ($mode == "signal" or $mode == "sleep") | not then "measurements.parkMode is \($mode | tojson), not \"signal\" or \"sleep\"" else null end),
+        (if $replicasOk | not then "identity.config.replicas is \($replicas | tojson), not a positive integer" else null end),
+        (if (($recheckSecs | isnum) and $recheckSecs > 0) | not then "identity.nodes[0].wakeRecheckInterval is \($node0.wakeRecheckInterval | tojson)" else null end),
+        (if (($renewSecs | isnum) and $renewSecs > 0) | not then "identity.nodes[0].lockTtl is \($node0.lockTtl | tojson) (the renewal period is lockTtl / 3)" else null end),
+        (if (($recoverySecs | isnum) and $recoverySecs > 0) | not then "identity.nodes[0].recoveryPollInterval is \($node0.recoveryPollInterval | tojson)" else null end),
+        (if ($plateauWins | length) == 0 then "no plateau window was measured" else null end),
+        ($plateauWins[] | select((.perParkedCallsPerMinExact | isnum | not) or (.tolerancePerMin | isnum | not))
+         | "plateau P=\(.P) has no per-parked figure or tolerance (perParkedCallsPerMin \(.perParkedCallsPerMin | tojson), tolerancePerMin \(.tolerancePerMin | tojson))")
+       ] | map(select(. != null))) as $arMissing
+      | if ($arMissing | length) > 0 then
+          check("gate.parkedCostArithmetic"; "gate"; "INVALID"; {plateaus: [$plateauWins[] | {P, perParkedCallsPerMin}]};
+                {band: arith_band}; "the documented arithmetic cannot be applied: \($arMissing | join("; "))")
+        else
+          ([$plateauWins[] | . as $w
+            | arith_terms($w.P; $replicas; $readsPerRecheck; $recheckSecs; $renewSecs; $recoverySecs) as $t
+            | ($w.tolerancePerMin + arith_band * $t.expected) as $band
+            | ($w.perParkedCallsPerMinExact - $t.expected) as $delta
+            | {P: $w.P, perParkedCallsPerMin: $w.perParkedCallsPerMin, expected: ($t.expected | round4),
+               terms: ($t | del(.expected) | map_values(round4)), band: ($band | round4),
+               min: ($t.expected - $band | round4), max: ($t.expected + $band | round4),
+               delta: ($delta | round4), ok: (($delta | fabs) <= $band)}]) as $ar
+          | ($ar | all(.ok)) as $ok
+          | check("gate.parkedCostArithmetic"; "gate"; if $ok then "PASS" else "FAIL" end;
+              [$ar[] | {P, perParkedCallsPerMin, delta, ok}];
+              {relativeBand: arith_band, parkMode: $mode, readsPerRecheck: $readsPerRecheck, replicas: $replicas,
+               plateaus: [$ar[] | {P, expected, terms, band, min, max}]};
+              if $ok then "every plateau within the documented arithmetic (\($mode) mode, \($replicas) replica(s)) +/- \(arith_band * 100) %: \([$ar[] | "P=\(.P) \(.perParkedCallsPerMin) (expected \(.expected) +/- \(.band))"] | join(", ")) statements per parked run per minute"
+              else ([$ar[] | select(.ok | not)
+                     | "P=\(.P): \(.perParkedCallsPerMin) statements per parked run per minute, expected \(.expected) +/- \(.band) (re-check \(.terms.recheck), renewal \(.terms.renewal), recovery pages \(.terms.recoveryPages), heldKeys \(.terms.heldKeys))"
+                       + if .delta > 0 then ": ABOVE the arithmetic" else ": BELOW the arithmetic (re-checks not keeping their interval, or work missing)" end]
+                    | join("; ")) end)
+        end ),
     ( statements_gate("gate.parkedCostBaseline";
           {statementsPerWorkflowNet: ($wMax.perParkedCallsPerMin // null), netTolerancePerWorkflow: ($wMax.tolerancePerMin // null)};
           $expected; s3_relative_allowance)

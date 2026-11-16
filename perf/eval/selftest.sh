@@ -815,6 +815,82 @@ if [[ -n "$s3src" ]]; then
   expect "s3: per-parked cost 0.76 x: gate.parkedCostLinear" PASS "$(s3st "$out" gate.parkedCostLinear)"
   out=$(s3_eval s3-lin-one "${last_plateau} as \$i | .windows |= del(.[\$i])")
   expect "s3: one plateau window only: gate.parkedCostLinear (cannot be judged)" INVALID "$(s3st "$out" gate.parkedCostLinear)"
+  # Every plateau is judged, not only the first and the last: a third
+  # plateau (P = 1500, a copy of the first window) inserted between them with
+  # its per-parked figure <factor> x the first one's.
+  mid_plateau() { # <factor>
+    printf '(.background.window | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) as $c0
+      | %s as $i | .windows[$i] as $w
+      | ((($w.maestroCalls - $w.sweepCalls.lockCleaner) / $w.windowSecs - $c0) / $w.P) as $k
+      | .windows |= (.[:$i + 1]
+          + [$w | .P = 1500 | .maestroCalls = (($c0 + %s * $k * .P) * .windowSecs + .sweepCalls.lockCleaner | round)
+                | .maestroCallsTopLevel = .maestroCalls]
+          + .[$i + 1:])' "$first_plateau" "$1"
+  }
+  out=$(s3_eval s3-lin-mid-130 "$(mid_plateau 1.30)")
+  expect "s3: a middle plateau at 1.30 x the first, the last at 1.0 x: gate.parkedCostLinear" FAIL "$(s3st "$out" gate.parkedCostLinear)"
+  out=$(s3_eval s3-lin-mid-070 "$(mid_plateau 0.70)")
+  expect "s3: a middle plateau at 0.70 x the first: gate.parkedCostLinear" FAIL "$(s3st "$out" gate.parkedCostLinear)"
+  out=$(s3_eval s3-lin-mid-100 "$(mid_plateau 1.00)")
+  expect "s3: a middle plateau at 1.00 x the first: gate.parkedCostLinear" PASS "$(s3st "$out" gate.parkedCostLinear)"
+
+  # gate.parkedCostArithmetic: every plateau's per-parked figure against the
+  # documented arithmetic (about 6.017 per minute here) +/- 5 %. s3_fig sets
+  # each plateau window's calls so its figure is <expr>; $f0 is the figure
+  # the run recorded at that plateau, .P the plateau.
+  s3_fig() { # <jq expr>
+    printf '(.background.window | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) as $c0
+      | .windows |= map(if .kind == "plateau" then
+          (((.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs - $c0) * 60 / .P) as $f0
+          | .maestroCalls = (($c0 + (%s) * .P / 60) * .windowSecs + .sweepCalls.lockCleaner | round)
+          | .maestroCallsTopLevel = .maestroCalls
+        else . end)' "$1"
+  }
+  expect "s3: recorded run: gate.parkedCostArithmetic" PASS "$(s3st "$(s3_eval s3-pass '.')" gate.parkedCostArithmetic)"
+  expect "s3: recorded run: arithmetic centre (signal, 1 replica, 30/10/60 s)" '[6.017,6.017]' \
+    "$(s3_field s3-pass '[.checks[] | select(.id == "gate.parkedCostArithmetic") | .limit.plateaus[].expected]')"
+  for f in 2 0.5 0.1; do
+    out=$(s3_eval "s3-ar-x$f" "$(s3_fig "\$f0 * $f")")
+    expect "s3: per-parked cost x $f at every plateau: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+    expect "s3: per-parked cost x $f at every plateau: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  done
+  out=$(s3_eval s3-ar-p2 "$(s3_fig "if .P == ${pmin} then 7.22 else 8.42 end")")
+  expect "s3: a P-squared term (7.22 at P=${pmin}, 8.42 at P=${pmax}): gate.parkedCostLinear (1.166 x, inside +/- 25 %)" PASS "$(s3st "$out" gate.parkedCostLinear)"
+  expect "s3: a P-squared term: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+  expect "s3: a P-squared term: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-ar-104 "$(s3_fig '$f0 * 1.04')")
+  expect "s3: per-parked cost x 1.04: gate.parkedCostArithmetic" PASS "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-106 "$(s3_fig '$f0 * 1.06')")
+  expect "s3: per-parked cost x 1.06: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-096 "$(s3_fig '$f0 * 0.96')")
+  expect "s3: per-parked cost x 0.96: gate.parkedCostArithmetic" PASS "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-094 "$(s3_fig '$f0 * 0.94')")
+  expect "s3: per-parked cost x 0.94: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-one-read "$(s3_fig 'if .P == '"${pmax}"' then $f0 + 2 else $f0 end')")
+  expect "s3: one more read per re-check at Pmax only (+2 per minute): gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-pmin "$(s3_fig 'if .P == '"${pmin}"' then $f0 * 2 else $f0 end')")
+  expect "s3: x 2 at the smallest plateau only: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-nottl '.' '.nodes |= map(del(.lockTtl))')
+  expect "s3: node does not report lockTtl (renewal term unknown): gate.parkedCostArithmetic" INVALID "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-norecheck '.' '.nodes[0].wakeRecheckInterval = null')
+  expect "s3: node does not report its wake-recheck interval: gate.parkedCostArithmetic" INVALID "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-noplateau '.windows |= map(select(.kind != "plateau"))')
+  expect "s3: no plateau window: gate.parkedCostArithmetic (nothing judged)" INVALID "$(s3st "$out" gate.parkedCostArithmetic)"
+  # The centre follows the park mode: 2 reads per parked sleep(), so the
+  # signal run's own figures read as sleep are 1.5 x the sleep centre.
+  to_sleep='(.parkMode, .plan.parkMode) = "sleep" | (.parkedStatus, .plan.parkedStatus) = "WAITING_TIMER"
+    | .windows |= map(if .kind == "plateau" then (.parkedBefore, .parkedAfter) |= (.park.byStatus |= with_entries(if .key == "WAITING_SIGNAL" then .key = "WAITING_TIMER" else . end)) else . end)
+    | .release = null | .auxWindows |= map(select(.kind != "release")) | .k6 |= map(select(.phase != "release"))'
+  out=$(s3_eval s3-ar-sleep-as-signal "$to_sleep")
+  expect "s3: signal-mode figures recorded as sleep mode (centre 4.017): gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
+  out=$(s3_eval s3-ar-sleep "$to_sleep | $(s3_fig '$f0 - 2')")
+  expect "s3: sleep mode with 2 reads per re-check: gate.parkedCostArithmetic" PASS "$(s3st "$out" gate.parkedCostArithmetic)"
+  # With a usable baseline the arithmetic gate still judges every plateau.
+  out=$(s3_eval s3-ar-p2-base "$(s3_fig "if .P == ${pmin} then 7.22 else 8.42 end")" '.' \
+    "$(jq -c '{schema: 1, scenario: "s3-parked", profile: .profile, replicas: .identity.config.replicas}
+               + .measurements.baselineCandidate + {perParkedCallsPerMin: 8.42}' "${work}/s3-pass/result.json")")
+  expect "s3: P-squared run against a baseline recorded at its own Pmax: gate.parkedCostBaseline" PASS "$(s3st "$out" gate.parkedCostBaseline)"
+  expect "s3: P-squared run against that baseline: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
 
   # gate.parkedCostBaseline (statements_gate, symmetric)
   net=$(s3_field s3-pass '.measurements.baselineCandidate.perParkedCallsPerMin')
