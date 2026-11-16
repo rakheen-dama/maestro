@@ -1080,9 +1080,11 @@ names only a type gets Boot's bean. Pinned by
   - **You declare no `KafkaTemplate` of your own:** the point receives
     Boot's template, whose default value serializer is `StringSerializer`
     (see the check below).
-  - **You declare any `KafkaTemplate` of your own** (for any value type):
-    Boot's `kafkaTemplate` backs off, Maestro's is not a default candidate,
-    and the point receives nothing. Startup fails with
+  - **You declare a `KafkaTemplate` of your own that the point does not
+    match** (one for another value type, such as
+    `KafkaTemplate<String, String>`): Boot's `kafkaTemplate` backs off,
+    Maestro's is not a default candidate, and the point receives nothing.
+    Startup fails with
     `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.KafkaTemplate<java.lang.String, byte[]>'`,
     which a Spring Boot application reports as
     `Bean '<bean>' injects a KafkaTemplate<…, byte[]> without a qualifier (<injection point>), and no Kafka template can be injected there by type. Maestro's 'maestroKafkaTemplate' is not a default candidate: …`,
@@ -1109,8 +1111,9 @@ names only a type gets Boot's bean. Pinned by
   Spring Kafka's JSON serializers are violations too: `JacksonJsonSerializer`,
   the deprecated `JsonSerializer` (matched by class name; traced, not tested)
   and their subclasses, even one declared for `byte[]`, write a `byte[]`
-  value as a base64-encoded JSON string (`hello` goes out as `"aGVsbG8="`),
-  so every send succeeds and every record carries a different payload. The
+  value as a base64-encoded JSON string (`hello` becomes `"aGVsbG8="`,
+  pinned by `aJsonSerializerWritesByteArrayAsABase64String`), so every send
+  succeeds and every record carries a different payload (traced). The
   block for one says `whose value serializer
   org.springframework.kafka.support.serializer.JacksonJsonSerializer writes
   byte[] as a base64-encoded JSON string, not the bytes themselves`.
