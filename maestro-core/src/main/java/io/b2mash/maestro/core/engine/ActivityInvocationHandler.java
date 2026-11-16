@@ -911,13 +911,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw notRecorded;
             }
+            // WP3: the memo at seq is durable — remember which object carries
+            // it, so WORKFLOW_FAILED can name it (failedSequences). First, so
+            // nothing below can skip it.
+            WorkflowContextInternals.recordFailureMemo(ctx, e, seq);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
             // (An Error — e.g. a shutdown signal — never reaches this catch
             // and is never observed as a failure.)
             observer.activityFailed(info, elapsed, failureExceptionType(e), false);
-            // WP3: the memo at seq is durable — remember which object carries
-            // it, so WORKFLOW_FAILED can name it (failedSequences).
-            WorkflowContextInternals.recordFailureMemo(ctx, e, seq);
             throw e;
         }
         var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);

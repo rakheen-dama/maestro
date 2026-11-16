@@ -15,8 +15,8 @@ import java.util.List;
  * Stored histories carry that shape and the stores' signal-timeout
  * discriminator reads the {@code exceptionType} field, so the component names
  * are part of the persisted format and must not be renamed. History written
- * by a build before WP3 has no {@code failedSequences} field; it reads back as
- * {@code null}.
+ * by a build before this field was added has no {@code failedSequences}
+ * field; it reads back as {@code null}.
  *
  * <p><b>Thread safety:</b> immutable record; safe to share across threads.
  *
@@ -26,8 +26,9 @@ import java.util.List;
  * @param failedSequences the sequence numbers of the failure memos the escaping
  *                        exception carried (itself, its cause chain, its
  *                        suppressed exceptions), ascending and distinct; empty
- *                        when none did; {@code null} when a build before 0.x
- *                        (WP3) recorded the failure. Used by admin Retry
+ *                        when none did; {@code null} when a build before this
+ *                        field was added recorded the failure. Used by admin
+ *                        Retry
  */
 public record WorkflowFailureDetail(
         String exceptionType,
@@ -46,7 +47,8 @@ public record WorkflowFailureDetail(
 
     /**
      * Creates a detail without failure-memo attribution — the shape a build
-     * before WP3 wrote ({@code failedSequences} is {@code null}).
+     * before {@code failedSequences} was added wrote ({@code failedSequences}
+     * is {@code null}).
      *
      * @param exceptionType the fully-qualified class name of the exception the
      *                      workflow method threw

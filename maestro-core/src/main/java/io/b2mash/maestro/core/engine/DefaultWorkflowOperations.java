@@ -82,6 +82,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
     /** Step-name prefix recorded on {@link EventType#VERSION_MARKER} events. */
     private static final String VERSION_STEP_PREFIX = "$maestro:version:";
 
+    /**
+     * Logical-ID prefix of a {@code sleep()}'s timer row; the suffix is the
+     * sequence of the sleep's {@code TIMER_SCHEDULED} memo. Admin Retry derives
+     * the row ids of deleted slots from it.
+     */
+    static final String SLEEP_TIMER_ID_PREFIX = "sleep-";
+
     /** Step name of a sleep's {@code TIMER_FIRED} outcome event. */
     private static final String TIMER_FIRED_STEP = "$maestro:timer-fired";
 
@@ -428,7 +435,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
         // Live path: create and persist the timer
         WorkflowContextInternals.setReplaying(ctx, false);
-        var timerId = "sleep-" + seq;
+        var timerId = SLEEP_TIMER_ID_PREFIX + seq;
         var timer = new WorkflowTimer(
                 UUID.randomUUID(),
                 ctx.workflowInstanceId(),

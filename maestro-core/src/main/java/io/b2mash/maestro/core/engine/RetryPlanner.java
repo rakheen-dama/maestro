@@ -60,7 +60,7 @@ final class RetryPlanner {
 
     private static final String ACTIVITY_EXECUTION_EXCEPTION = ActivityExecutionException.class.getName();
     private static final String SIGNAL_TIMEOUT_EXCEPTION = SignalTimeoutException.class.getName();
-    private static final String SLEEP_TIMER_ID_PREFIX = "sleep-";
+    private static final String SLEEP_TIMER_ID_PREFIX = DefaultWorkflowOperations.SLEEP_TIMER_ID_PREFIX;
     private static final String AWAIT_TIMER_ID_PREFIX = SignalManager.TIMER_ID_PREFIX;
 
 
