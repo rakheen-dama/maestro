@@ -718,6 +718,11 @@ if [[ -n "$s3src" ]]; then
   expect "s3-components.sql: timerDuePoll pattern read from the file" true "$(jq -n --arg re "$due_sql_re" '$re | length > 0')"
   expect "s3-components.sql: timerDuePoll matches today's form (fire_at <= \$1 AND status = \$3)" true "$(due_sql_test "$due_today")"
   expect "s3-components.sql: timerDuePoll matches the merged form (fire_at <= now() AND status = \$2)" true "$(due_sql_test "$due_now")"
+  skew_sql_re=$(sed -n "s/.*WHEN q ~ '\(.*\)' THEN 'clockSkew'.*/\1/p" "${PERF_DIR}/sql/s3-components.sql")
+  skew_sql_test() { jq -n --arg q "$1" --arg re "$skew_sql_re" '($re | length) > 0 and ($q | test($re))'; }
+  expect "s3-components.sql: clockSkew matches the skew check's SELECT now()" true "$(skew_sql_test 'SELECT now()')"
+  expect "s3-components.sql: clockSkew takes no statement that only uses now()" false \
+    "$(skew_sql_test 'DELETE FROM maestro_distributed_lock WHERE expires_at < now() - interval $1')"
   expect "s3-components.sql: timerDuePoll does not take the timer-row read" false \
     "$(due_sql_test 'SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2')"
 
@@ -979,6 +984,16 @@ if [[ -n "$s3src" ]]; then
   expect "s3: renewal passes stretched by a 500 ms statement, calls as the effective period predicts: advisory.decomposition" PASS "$(s3st "$out" advisory.decomposition)"
   out=$(s3_eval s3-dec-renew-short "${last_plateau} as \$i | .windows[\$i].components.lockRenewAll = {calls: (.windows[\$i].P / 500 * 10), totalMs: 0, entries: 1}")
   expect "s3: the same renewal calls with no pass duration to explain them: advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  # The clock-skew check (SELECT now(), each node at start and then every
+  # 10 min) can land in any window: its own component, at most replicas x
+  # (floor(windowSecs / 600) + 1) calls, never a finding when within that.
+  out=$(s3_eval s3-dec-skew "${last_plateau} as \$i | .windows[\$i].components.clockSkew = {calls: 1, entries: 1, totalMs: 0.02}")
+  expect "s3: one clock-skew read in a plateau window: advisory.decomposition" PASS "$(s3st "$out" advisory.decomposition)"
+  expect "s3: one clock-skew read: its own decomposition row" 1 \
+    "$(s3_field s3-dec-skew '[.checks[] | select(.id == "advisory.decomposition") | .value[] | .rows[] | select(.component == "clockSkew") | .calls] | add')"
+  out=$(s3_eval s3-dec-skew-many "${last_plateau} as \$i | .windows[\$i].components.clockSkew = {calls: 3, entries: 1, totalMs: 0.06}")
+  expect "s3: three clock-skew reads in a 120 s window at 1 replica: advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
+  expect "s3: three clock-skew reads: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
   out=$(s3_eval s3-dec-old-engine '.windows |= map(del(.components))')
   expect "s3: no component attribution (older harness record): advisory.decomposition" WARN "$(s3st "$out" advisory.decomposition)"
   expect "s3: no component attribution: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
@@ -1015,8 +1030,12 @@ if [[ -n "$s3src" ]]; then
   expect "s3: sleep mode: verdict still PASS (advisory only)" PASS "$(jq -r .verdict <<<"$out")"
   expect "s3: sleep mode: advisory.liveness says the release is no proof of liveness" yes \
     "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'NOT proof' && echo yes || echo no)"
-  expect "s3: sleep mode: advisory.liveness says sleep figures are not measured" yes \
+  # Sleep mode has been measured (one local run, 2026-11-16): the detail
+  # must no longer say it is not.
+  expect "s3: sleep mode: advisory.liveness no longer says sleep figures are not measured" no \
     "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'not measured' && echo yes || echo no)"
+  expect "s3: sleep mode: advisory.liveness says how far sleep mode was measured" yes \
+    "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'measured on one local one-node run' && echo yes || echo no)"
   expect "s3: sleep mode: correctness.releaseWakes says it is no proof of liveness" yes \
     "$(s3_detail s3-live-sleep correctness.releaseWakes | grep -qF 'NOT proof' && echo yes || echo no)"
 

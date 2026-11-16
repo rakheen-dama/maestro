@@ -147,6 +147,14 @@
 #   lock acquires   0 (no orphans while every node is healthy)
 #   timer poll      1 due-timer query per tick (leader) and 1 leader-election
 #                   upsert per node per tick (perf/run.sh header)
+#   clock skew      SELECT now(), each node's ClockSkewCheck: at node start,
+#                   then every 10 min, so at most replicas x (floor(windowSecs
+#                   / 600) + 1) per window (measured: 1 call in the release
+#                   window of r20261116t223427z, about 10 min after node
+#                   start, beside the lock cleaner's first pass). Not in the
+#                   idle-rate model and not subtracted: one call in a 120 s
+#                   window at P = 1000 is 0.0005 per parked run per minute,
+#                   inside the tolerance
 # Measured per unit = calls / (windowSecs / interval) (per parked for the
 # re-check); a component "matches" when its calls are within one pass of the
 # documented count (re-checks: within 2 %). Any other statement is "other".
@@ -202,6 +210,8 @@ def renew_chunk: 500;
 def recovery_page_size: 200;
 def window_slack_secs: 5;
 def recheck_match_fraction: 0.02;
+# ClockSkewCheck.INTERVAL (maestro-core): one SELECT now() per node per interval.
+def clock_skew_interval_secs: 600;
 
 # The well-formed objects of a list field; anything else reads as empty.
 def objs: if type == "array" then map(select(type == "object")) else [] end;
@@ -278,7 +288,7 @@ $identity[0] as $id
        renew: comp($w; "lockRenewAll"), renewOne: comp($w; "lockRenewOne"), page: comp($w; "recoveryPage"),
        held: comp($w; "heldKeys"), acq: comp($w; "lockAcquire"), rel: comp($w; "lockRelease"),
        due: comp($w; "timerDuePoll"), elect: comp($w; "leaderElection"), clean: comp($w; "lockCleaner"),
-       other: comp($w; "other")} as $k
+       skew: comp($w; "clockSkew"), other: comp($w; "other")} as $k
     | ($k.inst + $k.sig + $k.tmr) as $recheckCalls
     | (if ($nRecheck | isnum) then $recheckCalls / $P / $nRecheck else null end) as $recheckPer
     | ($replicas * ceil_div($H; renew_chunk)) as $renewDocPerPass
@@ -331,6 +341,9 @@ $identity[0] as $id
          (row("timerDuePoll"; $k.due; $nTick; 1; "due-timer queries per \($timerSecs) s tick (leader only)"; 1)),
          (row("leaderElection"; $k.elect; $nTick; $replicas; "leader-election upserts per tick (every node)"; 1)),
          {component: "lockCleaner", calls: $k.clean, note: "2 per pass per node (subtracted exactly; validity.sweeps)"},
+         ((($replicas * (($w.windowSecs / clock_skew_interval_secs | floor) + 1))) as $skewMax
+          | {component: "clockSkew", calls: $k.skew, documentedMax: $skewMax, matches: ($k.skew <= $skewMax),
+             note: "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every \(clock_skew_interval_secs) s, so at most replicas x (floor(windowSecs / \(clock_skew_interval_secs)) + 1) per window; not in the idle-rate model, within the tolerance"}),
          {component: "lockRelease", calls: $k.rel},
          {component: "other", calls: $k.other, top: ($w.otherTop // []),
           matches: ($k.other == 0)},
@@ -709,7 +722,7 @@ $identity[0] as $id
         else
           check("advisory.liveness"; "advisory"; "WARN"; {parkMode: $mode, recheckReadsPerParkedPerInterval: $rc}; null;
                 if $mode == "sleep" then
-                  "sleep mode: no parked run was woken or completed, so correctness.releaseWakes (NO_BASELINE, not applicable) is NOT proof that the parked runs were live; the only evidence of it is their re-check reads in the plateau windows (\([$rc[] | "P=\(.P) \(.per // "n/a")"] | join(", ")) reads per parked run per \($recheckSecs // "?") s, \($readsPerRecheck) documented). Sleep mode is supported, not run: its figures are not measured"
+                  "sleep mode: no parked run was woken or completed, so correctness.releaseWakes (NO_BASELINE, not applicable) is NOT proof that the parked runs were live; the only evidence of it is their re-check reads in the plateau windows (\([$rc[] | "P=\(.P) \(.per // "n/a")"] | join(", ")) reads per parked run per \($recheckSecs // "?") s, \($readsPerRecheck) documented). Sleep mode was measured on one local one-node run only (perf/eval/s3-parked.jq header): not at 2+ replicas, not on the full profile"
                 else "park mode \($mode | tojson) is unknown: nothing shows the parked runs were live" end)
         end),
     advisory_guarded("advisory.crossNodeWake";

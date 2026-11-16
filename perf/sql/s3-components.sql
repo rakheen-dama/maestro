@@ -29,6 +29,8 @@
 --   leaderElection    INSERT INTO maestro_leader_election ...
 --   lockCleaner       DELETE FROM maestro_distributed_lock / maestro_leader_election
 --                     WHERE expires_at < now() ...
+--   clockSkew         SELECT now() (ClockSkewCheck: each node at start, then every
+--                     10 min)
 -- Everything else is "other" (its ten largest entries are listed). The texts
 -- are this engine's (traced from AbstractJdbcWorkflowStore and
 -- PostgresDistributedLock); on an engine whose SQL differs a component reads
@@ -53,6 +55,7 @@ WITH engine AS (
             WHEN q ~ 'FROM maestro_workflow_timer WHERE fire_at <= (\$[0-9]+|now\(\)) AND status = ' THEN 'timerDuePoll'
             WHEN q ~ '^INSERT INTO maestro_leader_election ' THEN 'leaderElection'
             WHEN q ~ '^DELETE FROM maestro_(distributed_lock|leader_election) WHERE expires_at < now\(\)' THEN 'lockCleaner'
+            WHEN q ~ '^SELECT now\(\)$' THEN 'clockSkew'
             ELSE 'other'
         END AS component
     FROM engine

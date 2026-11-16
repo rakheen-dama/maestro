@@ -97,6 +97,13 @@
 #     can hide a missed tick. It still catches a node whose poller is fully
 #     dead: at 2 replicas and 12 ticks such a window records about 12
 #     upserts, far below the floor of 22.
+#  5. Each node's clock-skew check (ClockSkewCheck, since 3.7) issues one
+#     SELECT now() at node start and then every 10 min. It is not in the
+#     idle-rate model and is not subtracted: one call in a window is inside
+#     the tolerance (netToleranceCalls), and Scenario 3's decomposition
+#     attributes it as its own component, clockSkew (measured: one call in
+#     the release window of r20261116t223427z, about 10 min after node
+#     start).
 #  Limit 2 is closed by validity.sweeps (above). result.json carries what it
 #  rests on: each node's jvmStartMillis, reportedAtMillis and reported sweep
 #  intervals (identity.nodes[]), each window's resetAt / snapshotAt and
