@@ -65,7 +65,10 @@ class ActivityLockStatementCountTest {
         executor = WorkflowExecutor.builder(store, serializer, "lock-count-svc")
                 .distributedLock(lock)
                 .lockKeyPrefix("maestro:lock:")
-                .instanceLockTtl(Duration.ofSeconds(30))
+                // Renewal runs every TTL/3: 200 s here, past the 60 s
+                // @Timeout, so no renewal UPDATE can join the exact count on
+                // a slow machine (at 30 s it fired 10 s into the run).
+                .instanceLockTtl(Duration.ofMinutes(10))
                 .lifecycleEventsEnabled(false)
                 .build();
         var steps = new ActivityProxyFactory().createProxy(Steps.class, input -> input + "+", store, lock, null,
@@ -86,6 +89,7 @@ class ActivityLockStatementCountTest {
                 store.getInstance("lock-count-1").orElseThrow().output().stringValue());
         assertEquals(1, counting.executedStartingWith("INSERT"), "one acquire: the instance lock's");
         assertEquals(1, counting.executedStartingWith("DELETE"), "one release: the instance lock's");
+        assertEquals(0, counting.executedStartingWith("UPDATE"), "no renewal can fire within the run");
         assertEquals(2, counting.executedStartingWith(""),
                 "lock-table statements for a " + ACTIVITIES + "-activity run");
     }
