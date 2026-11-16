@@ -16,6 +16,15 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.BeanRegistrar;
+import org.springframework.beans.factory.BeanRegistry;
+import org.springframework.beans.factory.FactoryBean;
+import org.springframework.beans.factory.config.RuntimeBeanReference;
+import org.springframework.beans.factory.support.BeanDefinitionRegistry;
+import org.springframework.beans.factory.support.RootBeanDefinition;
+import org.springframework.context.annotation.ImportBeanDefinitionRegistrar;
+import org.springframework.core.env.Environment;
+import org.springframework.core.type.AnnotationMetadata;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
@@ -372,6 +381,88 @@ class ByteArrayTemplateInjectionCheckTest {
             assertThat(afterStartup - withoutAPoint.get())
                     .as("configure calls the check adds when a point received the template")
                     .isEqualTo(oneResolution);
+        });
+    }
+
+    // ── Fix round 2 (N1): constructors Spring did not autowire are not points ──
+
+    @Test
+    void aBeanBuiltByAnInstanceSupplier_startsAndHoldsTheTemplatesItLookedUp() {
+        // A BeanRegistrar supplier calls getBean itself: Spring records supplierSender as a
+        // dependent of kafkaTemplate, but never resolves the record's constructor parameters.
+        coexistenceRunner().withUserConfiguration(SupplierSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var sender = ctx.getBean("supplierSender", TwoTemplateSender.class);
+            assertThat(sender.text()).isSameAs(ctx.getBean("kafkaTemplate"));
+            assertThat(sender.engine()).isSameAs(ctx.getBean(TEMPLATE));
+            assertThat(ctx.getBeanFactory().getDependentBeans("kafkaTemplate"))
+                    .as("the check sees supplierSender among kafkaTemplate's dependents")
+                    .contains("supplierSender");
+            assertThat(warnings()).isEmpty();
+        });
+    }
+
+    @Test
+    void aBeanWithExplicitConstructorArguments_startsAndHoldsTheReferencedTemplates() {
+        coexistenceRunner().withUserConfiguration(ConstructorArgsSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var sender = ctx.getBean("constructorArgsSender", TwoTemplateSender.class);
+            assertThat(sender.text()).isSameAs(ctx.getBean("kafkaTemplate"));
+            assertThat(sender.engine()).isSameAs(ctx.getBean(TEMPLATE));
+            assertThat(ctx.getBeanFactory().getDependentBeans("kafkaTemplate")).contains("constructorArgsSender");
+            assertThat(warnings()).isEmpty();
+        });
+    }
+
+    @Test
+    void aFactoryBeanProduct_isNotScanned_theFactoryBeanIs() {
+        // getType("senderFactory") is the product's class, whose constructor Spring never calls.
+        coexistenceRunner().withUserConfiguration(FactoryBeanSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var sender = ctx.getBean("senderFactory", TwoTemplateSender.class);
+            assertThat(sender.text()).isSameAs(ctx.getBean("kafkaTemplate"));
+            assertThat(sender.engine()).isSameAs(ctx.getBean(TEMPLATE));
+            assertThat(ctx.getBeanFactory().getDependentBeans("kafkaTemplate")).contains("senderFactory");
+            assertThat(warnings()).isEmpty();
+        });
+    }
+
+    @Test
+    void aFactoryBeanWhoseOwnFieldMisinjects_stillFails() {
+        coexistenceRunner().withUserConfiguration(BadFactoryBeanConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasFailed();
+            assertThat(rootCause(ctx))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("'badSenderFactory'")
+                    .hasMessageContaining("field template of " + BadSenderFactoryBean.class.getName())
+                    .hasMessageContaining("'kafkaTemplate'");
+        });
+    }
+
+    // ── Fix round 2 (N4): a non-generic subclass point matches only its own type ──
+
+    @Test
+    void aNonGenericSubclassPoint_isCheckedAgainstItsOwnTypeOnly() {
+        coexistenceRunner().withUserConfiguration(SubclassSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(ctx.getBean(SubclassSender.class).template()).isSameAs(ctx.getBean("myBytesTemplate"));
+            assertThat(warnings())
+                    .singleElement(InstanceOfAssertFactories.STRING)
+                    .contains("'subclassSender'", "received 'myBytesTemplate'",
+                            JacksonJsonSerializer.class.getName(), "cannot classify")
+                    .doesNotContain("several Kafka templates", "stringTemplate");
+        });
+    }
+
+    @Test
+    void aNonGenericSubclassPointThatCannotSendByteArray_failsStartup() {
+        coexistenceRunner().withUserConfiguration(StringSubclassSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasFailed();
+            assertThat(rootCause(ctx))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("'subclassSender'")
+                    .hasMessageContaining("received 'myBytesTemplate'")
+                    .hasMessageContaining(StringSerializer.class.getName());
         });
     }
 
@@ -737,6 +828,136 @@ class ByteArrayTemplateInjectionCheckTest {
         @Bean
         KafkaTemplate<?, ?> bytesTemplate() {
             return hostTemplate(ByteArraySerializer.class);
+        }
+    }
+
+    // ── Fix round 2 fixtures ─────────────────────────────────────────────
+
+    /** Boot's String template and Maestro's byte[] template, neither point qualified. */
+    record TwoTemplateSender(KafkaTemplate<String, String> text, KafkaTemplate<String, byte[]> engine) {}
+
+    @SuppressWarnings("unchecked")
+    static class SupplierSenderRegistrar implements BeanRegistrar {
+        @Override
+        public void register(BeanRegistry registry, Environment env) {
+            registry.registerBean("supplierSender", TwoTemplateSender.class, spec -> spec.supplier(context ->
+                    new TwoTemplateSender(context.bean("kafkaTemplate", KafkaTemplate.class),
+                            context.bean(TEMPLATE, KafkaTemplate.class))));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(SupplierSenderRegistrar.class)
+    static class SupplierSenderConfiguration {
+    }
+
+    static class ConstructorArgsSenderRegistrar implements ImportBeanDefinitionRegistrar {
+        @Override
+        public void registerBeanDefinitions(AnnotationMetadata metadata, BeanDefinitionRegistry registry) {
+            var definition = new RootBeanDefinition(TwoTemplateSender.class);
+            definition.getConstructorArgumentValues().addIndexedArgumentValue(0, new RuntimeBeanReference("kafkaTemplate"));
+            definition.getConstructorArgumentValues().addIndexedArgumentValue(1, new RuntimeBeanReference(TEMPLATE));
+            registry.registerBeanDefinition("constructorArgsSender", definition);
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(ConstructorArgsSenderRegistrar.class)
+    static class ConstructorArgsSenderConfiguration {
+    }
+
+    /**
+     * Field injection: a FactoryBean with constructor dependencies on the Kafka
+     * templates is instantiated early for its type and runs into a circular
+     * reference with Boot's KafkaAutoConfiguration, whatever Maestro does.
+     */
+    @Component("senderFactory")
+    static class SenderFactoryBean implements FactoryBean<TwoTemplateSender> {
+        @Autowired
+        private KafkaTemplate<String, String> text;
+        @Autowired
+        @Qualifier(TEMPLATE)
+        private KafkaTemplate<String, byte[]> engine;
+
+        @Override
+        public TwoTemplateSender getObject() {
+            return new TwoTemplateSender(text, engine);
+        }
+
+        @Override
+        public Class<?> getObjectType() {
+            return TwoTemplateSender.class;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(SenderFactoryBean.class)
+    static class FactoryBeanSenderConfiguration {
+    }
+
+    /** A FactoryBean whose own field is an unqualified byte[] template: still a point. */
+    @Component("badSenderFactory")
+    static class BadSenderFactoryBean implements FactoryBean<BytesHolder> {
+        @Autowired
+        private KafkaTemplate<String, byte[]> template;
+
+        @Override
+        public BytesHolder getObject() {
+            return new BytesHolder(template);
+        }
+
+        @Override
+        public Class<?> getObjectType() {
+            return BytesHolder.class;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(BadSenderFactoryBean.class)
+    static class BadFactoryBeanConfiguration {
+    }
+
+    /** A non-generic template subclass: a point typed with it matches only beans of this type. */
+    static class MyBytesTemplate extends KafkaTemplate<String, byte[]> {
+        MyBytesTemplate(ProducerFactory<String, byte[]> producerFactory) {
+            super(producerFactory);
+        }
+    }
+
+    @Component("subclassSender")
+    record SubclassSender(MyBytesTemplate template) {}
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(SubclassSender.class)
+    static class SubclassSenderConfiguration {
+        @Bean
+        KafkaTemplate<String, String> stringTemplate() {
+            return hostTemplate(StringSerializer.class);
+        }
+
+        @Bean
+        MyBytesTemplate myBytesTemplate() {
+            return new MyBytesTemplate(new DefaultKafkaProducerFactory<>(Map.of(
+                    ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:1",
+                    ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                    ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JacksonJsonSerializer.class)));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(SubclassSender.class)
+    static class StringSubclassSenderConfiguration {
+        @Bean
+        KafkaTemplate<String, String> stringTemplate() {
+            return hostTemplate(StringSerializer.class);
+        }
+
+        @Bean
+        MyBytesTemplate myBytesTemplate() {
+            return new MyBytesTemplate(new DefaultKafkaProducerFactory<>(Map.of(
+                    ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:1",
+                    ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                    ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class)));
         }
     }
 }

@@ -36,6 +36,8 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.function.IntPredicate;
 
 /**
  * Fails startup when a bean injects a {@code KafkaTemplate<…, byte[]>} without
@@ -62,16 +64,18 @@ import java.util.Map;
  *       {@code @Qualifier} or {@code jakarta.inject.Qualifier};</li>
  *   <li>a point counts against this template only if it received it: a
  *       {@link DependencyDescriptor} is built for the point, and this template
- *       must be the only default-candidate {@code KafkaOperations} bean that
- *       {@code isAutowireCandidate} accepts for it (strict generic matches,
- *       else Spring's fallback matches, as Spring searches). A bean that uses
+ *       must be the only default-candidate bean of the point's declared type
+ *       that {@code isAutowireCandidate} accepts for it (strict generic
+ *       matches, else Spring's fallback matches, as Spring searches). A bean that uses
  *       a {@code String} template and a separate {@code byte[]} template is
  *       therefore never blamed for the wrong one. A point several templates
  *       match (Spring picked by {@code @Primary}, {@code @Priority} or the
  *       parameter or field name) is never a failure: when this template
  *       cannot serialize {@code byte[]}, or cannot be classified, one
  *       {@code WARN} per point says Maestro cannot tell which one it
- *       received;</li>
+ *       received (a template whose value serializer the check cannot see,
+ *       such as a {@code KafkaOperations} that is not a {@code KafkaTemplate},
+ *       gets a {@code DEBUG} line only);</li>
  *   <li>only if a point remains, the template's value serializer is classified
  *       ({@link #valueSerializerTarget}); a violation is a serializer whose
  *       declared target type is not assignable from {@code byte[]}.</li>
@@ -86,10 +90,18 @@ import java.util.Map;
  * and already-created singletons only; it creates no bean.
  *
  * <h2>Reach</h2>
- * <p>Seen: constructor parameters (the {@code @Autowired} constructor, or the
- * only constructor), {@code @Autowired}/{@code @Inject} fields and method
- * parameters (including inherited ones), and {@code @Bean} method parameters,
- * of beans created at startup. Out of reach:
+ * <p>Seen: constructor parameters that Spring autowired (the
+ * {@code @Autowired} constructor, or the only constructor),
+ * {@code @Autowired}/{@code @Inject} fields and method parameters (including
+ * inherited ones), and {@code @Bean} method parameters, of beans created at
+ * startup. For a {@code FactoryBean}, its own class is scanned, never its
+ * product's. Not points, because Spring did not autowire them: the
+ * constructor of a bean built by an instance supplier (a
+ * {@code BeanRegistrar} supplier or {@code registerBean(…, Supplier)}, which
+ * may call {@code getBean} itself), and constructor or factory-method
+ * parameters given explicit constructor-argument values (an indexed value
+ * exempts its index; any generic value exempts every parameter). Out of
+ * reach:
  * <ul>
  *   <li>a qualified point, whichever template its qualifier names;</li>
  *   <li>raw or wildcard generics ({@code KafkaTemplate},
@@ -101,8 +113,7 @@ import java.util.Map;
  *       {@code @Lazy} injection points (no dependency is recorded);</li>
  *   <li>a class with several constructors none of which is
  *       {@code @Autowired};</li>
- *   <li>beans registered with an instance supplier that looks the template up
- *       itself.</li>
+ *   <li>templates an instance supplier looks up itself.</li>
  * </ul>
  *
  * <h2>Thread safety</h2>
@@ -256,8 +267,13 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
      */
     private static List<String> candidatesFor(ConfigurableListableBeanFactory bf, DependencyDescriptor descriptor,
             List<String> templates) {
-        var strict = matching(bf, descriptor, templates);
-        return strict.isEmpty() ? matching(bf, descriptor.forFallbackMatch(), templates) : strict;
+        // Spring first narrows to beans of the point's declared type (a non-generic
+        // KafkaTemplate subclass matches only its own type), then checks generics.
+        var ofRequiredType = Set.of(BeanFactoryUtils.beanNamesForTypeIncludingAncestors(
+                bf, descriptor.getDependencyType(), true, false));
+        var pool = templates.stream().filter(ofRequiredType::contains).toList();
+        var strict = matching(bf, descriptor, pool);
+        return strict.isEmpty() ? matching(bf, descriptor.forFallbackMatch(), pool) : strict;
     }
 
     private static List<String> matching(ConfigurableListableBeanFactory bf, DependencyDescriptor descriptor,
@@ -277,11 +293,35 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         }
         var definition = bf.getMergedBeanDefinition(beanName);
         var factoryMethod = definition instanceof RootBeanDefinition root ? root.getResolvedFactoryMethod() : null;
-        var type = bf.getType(beanName);
+        // For a FactoryBean, getType(name) is the product's class, which Spring never
+        // injects into; the FactoryBean itself is what was autowired.
+        var type = bf.isFactoryBean(beanName)
+                ? bf.getType(BeanFactory.FACTORY_BEAN_PREFIX + beanName)
+                : bf.getType(beanName);
         if (type == null) {
             return List.of();
         }
-        return unqualifiedByteArrayTemplateInjectionPoints(ClassUtils.getUserClass(type), factoryMethod);
+        return unqualifiedByteArrayTemplateInjectionPoints(ClassUtils.getUserClass(type), factoryMethod,
+                autowiredArguments(definition, factoryMethod));
+    }
+
+    /**
+     * Which constructor (or factory-method) parameter indexes Spring resolved by
+     * autowiring: none for a bean built by an instance supplier (it calls the
+     * constructor itself); none when the definition has generic argument values
+     * (matched by type, so any parameter may be one); otherwise every index
+     * without an explicit indexed value.
+     */
+    private static IntPredicate autowiredArguments(BeanDefinition definition, @Nullable Method factoryMethod) {
+        if (factoryMethod == null && definition instanceof AbstractBeanDefinition abstractDefinition
+                && abstractDefinition.getInstanceSupplier() != null) {
+            return index -> false;
+        }
+        var arguments = definition.getConstructorArgumentValues();
+        if (!arguments.getGenericArgumentValues().isEmpty()) {
+            return index -> false;
+        }
+        return index -> !arguments.hasIndexedArgumentValue(index);
     }
 
     private static String ambiguityWarning(AmbiguousPoint point, String templateName, Class<?> serializerClass,
@@ -394,17 +434,19 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
      * @return the descriptions, in declaration order
      */
     static List<String> unqualifiedByteArrayTemplatePoints(Class<?> beanClass, @Nullable Method factoryMethod) {
-        return unqualifiedByteArrayTemplateInjectionPoints(beanClass, factoryMethod).stream()
+        return unqualifiedByteArrayTemplateInjectionPoints(beanClass, factoryMethod, index -> true).stream()
                 .map(InjectionPoint::description)
                 .toList();
     }
 
     /**
      * The same points as {@link #unqualifiedByteArrayTemplatePoints}, each with
-     * the {@link DependencyDescriptor} Spring resolves it through.
+     * the {@link DependencyDescriptor} Spring resolves it through; constructor
+     * and factory-method parameters only where {@code autowired} accepts their
+     * index.
      */
     private static List<InjectionPoint> unqualifiedByteArrayTemplateInjectionPoints(Class<?> beanClass,
-            @Nullable Method factoryMethod) {
+            @Nullable Method factoryMethod, IntPredicate autowired) {
         var points = new ArrayList<InjectionPoint>();
         if (factoryMethod != null) {
             // Spring resolves a @Bean method on the user class, not on a CGLIB subclass,
@@ -412,7 +454,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             var owner = ClassUtils.getUserClass(factoryMethod.getDeclaringClass()).getName();
             for (int i = 0; i < factoryMethod.getParameterCount(); i++) {
                 var parameter = MethodParameter.forExecutable(factoryMethod, i);
-                if (isUnqualifiedByteArrayTemplate(parameter)) {
+                if (autowired.test(i) && isUnqualifiedByteArrayTemplate(parameter)) {
                     points.add(new InjectionPoint("parameter " + i + " of @Bean method " + owner + "."
                             + factoryMethod.getName(), new DependencyDescriptor(parameter, true)));
                 }
@@ -422,7 +464,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             for (var constructor : injectionConstructors(beanClass)) {
                 for (int i = 0; i < constructor.getParameterCount(); i++) {
                     var parameter = MethodParameter.forExecutable(constructor, i);
-                    if (isUnqualifiedByteArrayTemplate(parameter)) {
+                    if (autowired.test(i) && isUnqualifiedByteArrayTemplate(parameter)) {
                         points.add(new InjectionPoint("constructor parameter " + i + " of " + beanClass.getName(),
                                 descriptor(parameter, beanClass)));
                     }
