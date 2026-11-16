@@ -239,7 +239,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
      * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
@@ -269,14 +269,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
      * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      */
     public ActivityInvocationHandler(
             Object activityImpl,
@@ -302,14 +302,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
      * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam — fires
      *                            {@code activityStarted} (live only) and
      *                            {@code activityCompleted}/{@code activityFailed}
@@ -348,14 +348,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
      * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      *                            (pass {@link EngineObserver#NOOP})
      * @param governor            bounds live executions per task queue: a live
@@ -399,13 +399,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
      * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -439,13 +439,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
      * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until {@code Issue N1}
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
