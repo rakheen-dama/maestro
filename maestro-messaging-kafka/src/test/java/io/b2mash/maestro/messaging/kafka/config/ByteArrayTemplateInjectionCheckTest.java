@@ -482,6 +482,23 @@ class ByteArrayTemplateInjectionCheckTest {
         });
     }
 
+    @Test
+    void aSerializerNamedOnlyInTheConfigurationMap_isClassifiedWithoutBeingInstantiated() {
+        // Fix wave (B5): with no serializer instance or supplier on the factory (Boot's
+        // kafkaProducerFactory from spring.kafka.producer.value-serializer), the class is
+        // read from the configuration map and no host serializer code runs.
+        InstanceCountingSerializer.INSTANCES.set(0);
+        coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
+                .withPropertyValues("spring.kafka.producer.value-serializer="
+                        + InstanceCountingSerializer.class.getName())
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    assertThat(ctx.getBean(LegacyBytesSender.class).template()).isSameAs(ctx.getBean("kafkaTemplate"));
+                    assertThat(warnings()).as("classified as byte[]-capable from the class").isEmpty();
+                    assertThat(InstanceCountingSerializer.INSTANCES).hasValue(0);
+                });
+    }
+
     // ── Fix round 2 (N1): constructors Spring did not autowire are not points ──
 
     @Test
@@ -887,6 +904,15 @@ class ByteArrayTemplateInjectionCheckTest {
 
         int configureCalls() {
             return configureCalls.get();
+        }
+    }
+
+    /** A {@code ByteArraySerializer} that counts its instances. */
+    public static class InstanceCountingSerializer extends ByteArraySerializer {
+        static final AtomicInteger INSTANCES = new AtomicInteger();
+
+        public InstanceCountingSerializer() {
+            INSTANCES.incrementAndGet();
         }
     }
 
