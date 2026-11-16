@@ -1169,8 +1169,14 @@ step concurrently only when both hold the same workflow: the window after a
 node lost its instance lock, or after a node's instance-lock acquire failed
 and it proceeded unlocked (traced, not tested). Lease fencing (V6) rejects
 the stale runner's outcome append, so the stale runner records nothing; the
-adopting node, finding no recorded outcome, runs the step again. Fencing
-bounds *persisted progress*, not external side effects. Activities must be
+adopting node, finding no recorded outcome, runs the step again. That holds
+for a store that overrides `WorkflowStore`'s fenced overloads, as the shipped
+JDBC store does. A custom store that keeps the SPI defaults is unfenced (the
+defaults delegate to the unfenced writes; `WorkflowStore` Javadoc, "Lease
+fencing"): only the unique event index separates the two runners, so the
+outcome that lands first at a sequence is kept, possibly the stale runner's,
+and the other runner's append collides and stands it down (traced, not
+tested). Fencing bounds *persisted progress*, not external side effects. Activities must be
 idempotent. A duplicate Kafka delivery is deduplicated by the signal's message
 id (V9), not by a lock.
 
