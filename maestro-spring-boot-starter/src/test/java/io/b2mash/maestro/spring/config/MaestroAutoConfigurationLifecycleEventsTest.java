@@ -81,9 +81,9 @@ class MaestroAutoConfigurationLifecycleEventsTest {
     }
 
     @Test
-    @DisplayName("lifecycle publishing happens by default (enabled defaults to true)")
-    void adminEventsEnabledByDefault_publishesLifecycleEvents() {
-        runner.run(context -> {
+    @DisplayName("lifecycle publishing happens when enabled")
+    void adminEventsEnabled_publishesLifecycleEvents() {
+        runner.withPropertyValues("maestro.admin.events.enabled=true").run(context -> {
             assertThat(context).hasNotFailed();
             var client = context.getBean(MaestroClient.class);
             var messaging = (InMemoryWorkflowMessaging) context.getBean(WorkflowMessaging.class);
@@ -122,11 +122,11 @@ class MaestroAutoConfigurationLifecycleEventsTest {
     }
 
     @Test
-    @DisplayName("ACTIVITY_* events are published by default through the real @ActivityStub wiring")
-    void adminEventsEnabledByDefault_publishesActivityLifecycleEvents() {
-        // The positive control: without it, the disabled-case test above could
-        // pass vacuously if ActivityWorkflow never actually reached the proxy.
-        runner.run(context -> {
+    @DisplayName("ACTIVITY_* events are published when enabled, through the real @ActivityStub wiring")
+    void adminEventsEnabled_publishesActivityLifecycleEvents() {
+        // The positive control (enabled): without it, the disabled-case test above
+        // could pass vacuously if ActivityWorkflow never actually reached the proxy.
+        runner.withPropertyValues("maestro.admin.events.enabled=true").run(context -> {
             assertThat(context).hasNotFailed();
             var client = context.getBean(MaestroClient.class);
             var messaging = (InMemoryWorkflowMessaging) context.getBean(WorkflowMessaging.class);
@@ -140,6 +140,23 @@ class MaestroAutoConfigurationLifecycleEventsTest {
                         .toList();
                 assertThat(types).contains(LifecycleEventType.ACTIVITY_STARTED, LifecycleEventType.ACTIVITY_COMPLETED);
             });
+        });
+    }
+
+    @Test
+    @DisplayName("by default no lifecycle event is published, ACTIVITY_* included")
+    void byDefault_noLifecycleEventIsPublished() {
+        runner.run(context -> {
+            assertThat(context).hasNotFailed();
+            var result = context.getBean(MaestroClient.class)
+                    .newWorkflow(ActivityWorkflow.class, options("lifecycle-default-1"))
+                    .startAndWait("world", Duration.ofSeconds(10), String.class);
+            assertThat(result).isEqualTo("hello world");
+            var messaging = (InMemoryWorkflowMessaging) context.getBean(WorkflowMessaging.class);
+            // Publishing is off-thread (Issue 3): hold the "nothing published" fact
+            // for a while instead of reading it once, right after completion.
+            await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2))
+                    .until(() -> messaging.getLifecycleEvents().isEmpty());
         });
     }
 

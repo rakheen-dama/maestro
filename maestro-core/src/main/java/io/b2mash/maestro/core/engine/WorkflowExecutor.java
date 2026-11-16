@@ -390,7 +390,9 @@ public final class WorkflowExecutor {
          * Sets whether lifecycle events are published at all, independent of
          * whether {@link #messaging(WorkflowMessaging)} is configured.
          * Corresponds to {@code maestro.admin.events.enabled} in the Spring
-         * Boot starter. Default: {@code true}.
+         * Boot starter. Default here: {@code true}. The starter's
+         * {@code maestro.admin.events.enabled} defaults to {@code false} and is
+         * passed in explicitly.
          *
          * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
          *                               published at all

@@ -38,4 +38,4 @@ maestro:
 
   admin:
     events:
-      enabled: true
+      enabled: true   # off by default; on here for the admin dashboard (docker-compose.yml)

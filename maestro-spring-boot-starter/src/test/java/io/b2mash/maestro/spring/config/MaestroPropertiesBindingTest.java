@@ -221,6 +221,27 @@ class MaestroPropertiesBindingTest {
     }
 
     @Test
+    @DisplayName("admin lifecycle events are off unless enabled (D3)")
+    void adminEventsAreOffByDefault() {
+        // No maestro.admin.* at all: the field initialiser (AdminProperties.defaults()) is what is used.
+        runner.withPropertyValues("maestro.service-name=binding-test").run(ctx ->
+                assertThat(ctx.getBean(MaestroProperties.class).getAdmin().events().enabled()).isFalse());
+        assertThat(MaestroProperties.EventsProperties.defaults().enabled()).isFalse();
+        // Another maestro.admin.events.* key set: the record is bound and its @DefaultValue applies.
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.admin.events.topic=custom.admin.events")
+                .run(ctx -> {
+                    var events = ctx.getBean(MaestroProperties.class).getAdmin().events();
+                    assertThat(events.topic()).isEqualTo("custom.admin.events");
+                    assertThat(events.enabled()).isFalse();
+                });
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.admin.events.enabled=true")
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getAdmin().events().enabled())
+                        .isTrue());
+    }
+
+    @Test
     @DisplayName("worker task queues bind as a list of value objects")
     void workerTaskQueuesBind() {
         runner.withPropertyValues(

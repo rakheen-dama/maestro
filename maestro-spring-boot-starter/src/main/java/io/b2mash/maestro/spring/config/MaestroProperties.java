@@ -567,11 +567,18 @@ public class MaestroProperties {
     /**
      * Lifecycle event publishing to the admin dashboard.
      *
-     * @param enabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/{@code _FAILED}
-     *                lifecycle events are published at all. {@code false} disables
-     *                publishing entirely, independent of the messaging topic — a
-     *                legitimate choice for deployments that do not run the admin
-     *                dashboard and want no lifecycle traffic on the broker.
+     * <p>Off by default. When on, every live activity costs two producer sends
+     * (started, then completed or failed), on top of the workflow, signal,
+     * timer and compensation events, and the admin-events topic must exist at
+     * startup (the Kafka transport's topic verification requires it only while
+     * this is {@code true}). A deployment that runs the {@code maestro-admin}
+     * dashboard sets {@code maestro.admin.events.enabled=true} on every service
+     * the dashboard should show.
+     *
+     * @param enabled whether lifecycle events ({@code WORKFLOW_*}, {@code ACTIVITY_*}
+     *                and the rest) are published at all; default {@code false}.
+     *                {@code false} disables publishing entirely, independent of the
+     *                messaging topic.
      * @param topic   <b>Deprecated alias</b> for {@link TopicsProperties#adminEvents()}
      *                ({@code maestro.messaging.topics.admin-events}), kept for
      *                deployments that only disable the dashboard's own events and
@@ -580,12 +587,12 @@ public class MaestroProperties {
      *                logged at startup. Prefer configuring the topic there.
      */
     public record EventsProperties(
-            @DefaultValue("true") boolean enabled,
+            @DefaultValue("false") boolean enabled,
             @DefaultValue("maestro.admin.events") String topic
     ) {
         /** @return the defaults documented above */
         public static EventsProperties defaults() {
-            return new EventsProperties(true, "maestro.admin.events");
+            return new EventsProperties(false, "maestro.admin.events");
         }
     }
 

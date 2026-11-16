@@ -227,8 +227,10 @@ topic with a `kafka-topics.sh --create` line each; an unreachable broker only
 WARNs). Full reference: `docs/configuration.md`. Notable properties added post-0.3.0:
 `maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
 (default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
-policy, Kafka), `maestro.admin.events.enabled` (now actually wired;
-`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`),
+policy, Kafka), `maestro.admin.events.enabled` (default `false` since WP7;
+dashboard users set `true` on every service; the admin-events topic is required
+at startup only while it is `true`; `.topic` is a deprecated alias for
+`maestro.messaging.topics.admin-events`),
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
 the tracing flag gates the Kafka W3C header injection too — see

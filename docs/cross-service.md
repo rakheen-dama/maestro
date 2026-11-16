@@ -254,7 +254,7 @@ mechanics, and domain topics for cross-service communication.
 | Topic | Owner | Key | Purpose |
 |---|---|---|---|
 | `maestro.signals.{serviceName}` | Per-service | workflowId | Inbound signals from `@MaestroSignalListener` routing |
-| `maestro.admin.events` | All services | serviceName | Lifecycle events consumed by the admin dashboard |
+| `maestro.admin.events` | All services | serviceName | Lifecycle events consumed by the admin dashboard (when `maestro.admin.events.enabled`) |
 | Domain topics (e.g., `payments.requests`) | Application | varies | Cross-service domain events -- the choreography layer |
 
 ### Consumer groups

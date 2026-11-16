@@ -381,7 +381,7 @@ in one `describeTopics` call bounded to 5 seconds, whether each exists:
 |------------------------------------------------------------------|---------------------------------------------------|
 | `maestro.signals.{serviceName}` (or `maestro.messaging.topics.signals`) | always                                     |
 | `maestro.signals.{serviceName}.DLT` (`+ dead-letter-suffix`)     | `maestro.messaging.redelivery.enabled=true` (default) |
-| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default)     |
+| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default `false`) |
 | every `@MaestroSignalListener(topic = "...")` topic              | always                                            |
 | each listener topic `+ dead-letter-suffix`                       | `maestro.messaging.redelivery.enabled=true` (default) |
 
@@ -851,15 +851,25 @@ the Maestro admin dashboard.
 
 | Property                      | Type      | Default                  | Description                                                                     |
 |-------------------------------|-----------|--------------------------|---------------------------------------------------------------------------------|
-| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
+| `maestro.admin.events.enabled`| `boolean` | `false`                  | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
 | `maestro.admin.events.topic`  | `String`  | `"maestro.admin.events"` | Kafka topic where lifecycle events are published.                               |
 
 When enabled, Maestro publishes lifecycle events for every workflow state
 transition. The admin dashboard (`maestro-admin` module) consumes these events to
 provide real-time visibility into workflow execution across all services.
 
-Set `enabled` to `false` if you are not running the admin dashboard and want to
-eliminate the publishing overhead.
+Publishing is **off by default** (since WP7; pinned by
+`MaestroPropertiesBindingTest.adminEventsAreOffByDefault` and
+`MaestroAutoConfigurationLifecycleEventsTest.byDefault_noLifecycleEventIsPublished`).
+When on, it costs two producer sends per live activity (started, then completed
+or failed) on top of the workflow, signal, timer and compensation events
+(traced, not tested), and the admin-events topic
+(`maestro.messaging.topics.admin-events`) must exist at startup: the topic
+verification requires it only while this property is `true`
+(`KafkaTopicVerificationStartupTest.failMode_adminTopicIsNotRequiredByDefault`).
+Set `maestro.admin.events.enabled: true` on every service the dashboard should
+show; a service that leaves it unset publishes nothing, and the dashboard shows
+nothing from it.
 
 ---
 
@@ -941,7 +951,7 @@ maestro:
     verify-arguments: true
   admin:
     events:
-      enabled: true
+      enabled: true   # off by default; on here for the dashboard
       topic: maestro.admin.events
   retention:
     enabled: true
@@ -1235,7 +1245,7 @@ Create topics before starting your service — with the default
 otherwise, and prints exactly these commands for whatever is missing (see
 [Kafka Topic Verification](#kafka-topic-verification)). For a service named
 `order-service` with one `@MaestroSignalListener(topic = "payments.results")`,
-redelivery on (default) and lifecycle events on (default):
+redelivery on (default) and lifecycle events enabled:
 
 ```bash
 # The engine's inbound signal topic and its dead-letter companion
@@ -1252,7 +1262,7 @@ kafka-topics.sh --create --topic payments.results.DLT \
   --bootstrap-server localhost:9092
 # (payments.results itself is usually created by the service that publishes it)
 
-# Lifecycle events for the admin dashboard (skip with maestro.admin.events.enabled=false)
+# Lifecycle events for the admin dashboard (only with maestro.admin.events.enabled: true)
 kafka-topics.sh --create --topic maestro.admin.events \
   --partitions 3 --replication-factor 3 \
   --bootstrap-server localhost:9092

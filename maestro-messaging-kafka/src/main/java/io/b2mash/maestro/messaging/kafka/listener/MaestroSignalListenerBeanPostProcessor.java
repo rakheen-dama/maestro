@@ -50,7 +50,8 @@ import java.util.concurrent.CopyOnWriteArrayList;
  *   <li><b>Topic verification</b> ({@code afterSingletonsInstantiated}, first
  *       thing): one {@link KafkaTopicVerifier} pass over every topic this
  *       service needs — the engine's own signal topic and {@code .DLT}, the
- *       admin-events topic, and every registration's topic and {@code .DLT} —
+ *       admin-events topic when lifecycle events are enabled, and every
+ *       registration's topic and {@code .DLT} —
  *       governed by {@code maestro.messaging.topics.verify-on-startup}. This
  *       runs whether or not there are registrations: it is the Kafka
  *       transport's one startup gate, placed here because this is the only
@@ -172,7 +173,8 @@ public class MaestroSignalListenerBeanPostProcessor
         var messagingConfig = ctx.getBean(KafkaMessagingConfig.class);
 
         // The transport's one startup gate — before the early return below, because
-        // the engine's own signal topic (and the admin-events topic) must exist
+        // the engine's own signal topic (and the admin-events topic, when lifecycle
+        // events are enabled) must exist
         // whether or not this service declares any @MaestroSignalListener.
         var verification = verifyTopics(messagingConfig, consumerFactory, properties);
         var fatalOnMissing = KafkaTopicVerifier.fatalOnMissing(messagingConfig.verifyOnStartup(), verification);
