@@ -4,7 +4,11 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostSenderConfiguration;
+import io.b2mash.maestro.messaging.kafka.listener.MaestroSignalListenerBeanPostProcessor;
+import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
+import io.b2mash.maestro.spring.annotation.SignalRouting;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.LongSerializer;
@@ -50,6 +54,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.TEMPLATE;
 import static io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.coexistenceRunner;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.mock;
 
 /**
  * Pins WP7 Task 4 (D5 guard): a host that injects a {@code KafkaTemplate<…, byte[]>}
@@ -557,6 +562,42 @@ class ByteArrayTemplateInjectionCheckTest {
         });
     }
 
+    // ── Fix wave (B4): the check runs before any Maestro consumer starts ──
+
+    @Test
+    void theCheckFailsStartupBeforeAnyMaestroSignalListenerConsumerStarts() {
+        var listenerLog = new ListAppender<ILoggingEvent>();
+        listenerLog.start();
+        var listenerLogger = (Logger) LoggerFactory.getLogger(MaestroSignalListenerBeanPostProcessor.class);
+        listenerLogger.addAppender(listenerLog);
+        try {
+            var runner = coexistenceRunner()
+                    .withUserConfiguration(SignalListenerConfiguration.class)
+                    .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class));
+            // Positive control: without a misinjection, the post-processor starts the consumer.
+            runner.run(ctx -> {
+                assertThat(ctx).hasNotFailed();
+                var names = List.of(ctx.getBeanDefinitionNames());
+                assertThat(names.indexOf("maestroKafkaTemplateInjectionCheck"))
+                        .as("the check is registered, so it runs, before the post-processor")
+                        .isNotNegative()
+                        .isLessThan(names.indexOf("maestroSignalListenerBeanPostProcessor"));
+                assertThat(listenerLog.list).extracting(ILoggingEvent::getFormattedMessage)
+                        .anyMatch(m -> m.startsWith("Started Kafka consumer for @MaestroSignalListener"));
+            });
+            listenerLog.list.clear();
+            runner.withUserConfiguration(LegacyBytesSenderConfiguration.class).run(ctx -> {
+                assertThat(rootCause(ctx)).hasMessage(LEGACY_VIOLATION);
+                assertThat(listenerLog.list).extracting(ILoggingEvent::getFormattedMessage)
+                        .as("the post-processor's afterSingletonsInstantiated never ran: only its close, with nothing to stop")
+                        .containsExactly("Stopping 0 @MaestroSignalListener container(s)");
+            });
+        }
+        finally {
+            listenerLogger.detachAppender(listenerLog);
+        }
+    }
+
     // ── Static helpers ───────────────────────────────────────────────────
 
     @Test
@@ -1043,6 +1084,22 @@ class ByteArrayTemplateInjectionCheckTest {
         @Override
         public byte[] serialize(String topic, T data) {
             return new byte[0];
+        }
+    }
+
+    /** A {@code @MaestroSignalListener}, so the post-processor builds and starts a consumer. */
+    public static class OrderSignalListener {
+        @MaestroSignalListener(topic = "check.order.signals", signalName = "order")
+        public SignalRouting handle(String event) {
+            return SignalRouting.builder().workflowId("wf-" + event).build();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    static class SignalListenerConfiguration {
+        @Bean
+        OrderSignalListener orderSignalListener() {
+            return new OrderSignalListener();
         }
     }
 

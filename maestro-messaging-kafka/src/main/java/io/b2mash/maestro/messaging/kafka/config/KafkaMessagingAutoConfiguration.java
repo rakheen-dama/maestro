@@ -398,12 +398,6 @@ public class KafkaMessagingAutoConfiguration {
         }
     }
 
-    @Bean
-    @ConditionalOnMissingBean
-    public MaestroSignalListenerBeanPostProcessor maestroSignalListenerBeanPostProcessor() {
-        return new MaestroSignalListenerBeanPostProcessor();
-    }
-
     /**
      * Fails startup when a bean injects a {@code KafkaTemplate<…, byte[]>}
      * without a qualifier and received a template that cannot send
@@ -413,11 +407,22 @@ public class KafkaMessagingAutoConfiguration {
      * {@code maestro.messaging.template-injection-check} turns it into a
      * {@code WARN} or off.
      *
+     * <p>Declared before {@link #maestroSignalListenerBeanPostProcessor}: Spring
+     * calls {@code afterSingletonsInstantiated} in bean-registration order, so
+     * the check fails startup before the post-processor probes the topics and
+     * starts any {@code @MaestroSignalListener} consumer.
+     *
      * @param properties the bound Maestro configuration
      * @return the startup check
      */
     @Bean
     ByteArrayTemplateInjectionCheck maestroKafkaTemplateInjectionCheck(MaestroProperties properties) {
         return new ByteArrayTemplateInjectionCheck(properties.getMessaging().templateInjectionCheck());
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    public MaestroSignalListenerBeanPostProcessor maestroSignalListenerBeanPostProcessor() {
+        return new MaestroSignalListenerBeanPostProcessor();
     }
 }
