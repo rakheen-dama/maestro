@@ -1063,7 +1063,8 @@ names only a type gets Boot's bean. Pinned by
   `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier you get
   Boot's template, whose default value serializer is `StringSerializer`.
   A service that does that fails at startup rather than on its first send,
-  with one `IllegalStateException` per offending injection point, e.g.:
+  with one `IllegalStateException` that lists every offending injection
+  point, one block each, e.g.:
 
   ```text
   Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> without a qualifier (constructor parameter 0 of com.example.LegacyBytesSender) and received 'kafkaTemplate', whose value serializer org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send through it would fail.
@@ -1075,10 +1076,27 @@ names only a type gets Boot's bean. Pinned by
   uses Boot's template). The check (`ByteArrayTemplateInjectionCheck`) sees
   constructor, field, `@Bean`-method and `@Autowired`-method parameters of
   beans created at startup, typed `KafkaTemplate<…, byte[]>` or
-  `KafkaOperations<…, byte[]>`. It cannot see an `ObjectProvider` point or a
-  class with several constructors none of which is `@Autowired`, nor
-  (traced) an `Optional` or collection point, a `getBean` call, or a lazy bean
-  or prototype not created at startup. A value serializer it cannot classify (for example
+  `KafkaOperations<…, byte[]>`. It counts a point against a template only
+  when that template is the one template the point could have received, so a
+  bean that uses a `String` template and a separate `byte[]` template of
+  yours is not blamed for the wrong one. A point that several of your
+  templates match (Spring chose by `@Primary`, `@Priority` or the parameter
+  or field name) never fails startup; it gets one `WARN` instead when one of
+  those templates cannot serialize `byte[]` or cannot be classified.
+  - **A `@Qualifier` takes a point out of the check.** A point with Spring's
+    `@Qualifier` (or a `jakarta.inject` qualifier) is not checked, whichever
+    template the qualifier names; `@Qualifier("kafkaTemplate")` on a
+    `KafkaTemplate<String, byte[]>` starts and receives Boot's
+    `StringSerializer` template.
+  - **Shapes it does not see**, each of which starts and receives Boot's
+    template: raw or wildcard generics (`KafkaTemplate`,
+    `KafkaTemplate<String, ?>`), `ObjectProvider`, `Optional` and collection
+    points, and a `@Lazy` point (a proxy; no dependency is recorded at
+    startup). Nor does it see a class with several constructors none of
+    which is `@Autowired`, or (traced) a `getBean` call or a lazy bean or
+    prototype not created at startup.
+
+  A value serializer it cannot classify (for example
   `JacksonJsonSerializer`, which is generic) does not fail startup; the check
   logs a `WARN` naming the bean and the fix instead. Pinned by
   `ByteArrayTemplateInjectionCheckTest` (`maestro-messaging-kafka`).

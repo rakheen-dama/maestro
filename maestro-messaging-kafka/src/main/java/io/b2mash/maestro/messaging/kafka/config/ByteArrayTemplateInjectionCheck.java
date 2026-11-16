@@ -91,6 +91,9 @@ import java.util.Map;
  * parameters (including inherited ones), and {@code @Bean} method parameters,
  * of beans created at startup. Out of reach:
  * <ul>
+ *   <li>a qualified point, whichever template its qualifier names;</li>
+ *   <li>raw or wildcard generics ({@code KafkaTemplate},
+ *       {@code KafkaTemplate<String, ?>}): not a {@code byte[]} point;</li>
  *   <li>{@code ObjectProvider}, {@code Optional}, collection and
  *       {@code getBean} lookups — resolved when the host calls them, or not a
  *       {@code KafkaOperations}-typed point;</li>

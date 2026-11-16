@@ -33,6 +33,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.TEMPLATE;
@@ -255,6 +256,28 @@ class ByteArrayTemplateInjectionCheckTest {
         coexistenceRunner().withUserConfiguration(ProviderSenderConfiguration.class).run(ctx -> {
             assertThat(ctx).hasNotFailed();
             assertThat(ctx.getBean(ProviderSender.class).template().getIfUnique()).isSameAs(ctx.getBean("kafkaTemplate"));
+        });
+    }
+
+    @Test
+    void injectionShapesTheCheckDoesNotSee_startWithBootsTemplate() {
+        // Each of these points receives Boot's StringSerializer template, and the
+        // check does not see it: a qualified point, raw and wildcard generics,
+        // Optional, a collection and a @Lazy point (a proxy; no dependency is
+        // recorded at startup). Documented limits, not endorsements.
+        coexistenceRunner().withUserConfiguration(UnseenShapesConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var boot = ctx.getBean("kafkaTemplate");
+            assertThat(ctx.getBean(QualifiedByNameSender.class).template()).isSameAs(boot);
+            assertThat(ctx.getBean(RawSender.class).template()).isSameAs(boot);
+            assertThat(ctx.getBean(WildcardSender.class).template()).isSameAs(boot);
+            assertThat(ctx.getBean(OptionalSender.class).template().orElseThrow()).isSameAs(boot);
+            assertThat(ctx.getBean(ListSender.class).templates()).singleElement().isSameAs(boot);
+            var lazy = ctx.getBean(LazySender.class);
+            assertThat(ctx.getBeanFactory().getDependentBeans("kafkaTemplate"))
+                    .contains("qualifiedByNameSender", "rawSender", "wildcardSender", "optionalSender", "listSender")
+                    .doesNotContain("lazySender");
+            assertThat(lazy.template().getProducerFactory()).isSameAs(((KafkaTemplate<?, ?>) boot).getProducerFactory());
         });
     }
 
@@ -567,6 +590,39 @@ class ByteArrayTemplateInjectionCheckTest {
 
         TwoConstructors(KafkaTemplate<String, byte[]> template) {
         }
+    }
+
+    @Component("qualifiedByNameSender")
+    record QualifiedByNameSender(KafkaTemplate<String, byte[]> template) {
+        QualifiedByNameSender(@Qualifier("kafkaTemplate") KafkaTemplate<String, byte[]> template) {
+            this.template = template;
+        }
+    }
+
+    @Component("rawSender")
+    @SuppressWarnings("rawtypes")
+    record RawSender(KafkaTemplate template) {}
+
+    @Component("wildcardSender")
+    record WildcardSender(KafkaTemplate<String, ?> template) {}
+
+    @Component("optionalSender")
+    record OptionalSender(Optional<KafkaTemplate<String, byte[]>> template) {}
+
+    @Component("listSender")
+    record ListSender(List<KafkaTemplate<String, byte[]>> templates) {}
+
+    @Component("lazySender")
+    record LazySender(KafkaTemplate<String, byte[]> template) {
+        LazySender(@Lazy KafkaTemplate<String, byte[]> template) {
+            this.template = template;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import({QualifiedByNameSender.class, RawSender.class, WildcardSender.class, OptionalSender.class,
+            ListSender.class, LazySender.class})
+    static class UnseenShapesConfiguration {
     }
 
     /** A {@code ByteArraySerializer} that counts its {@code configure} calls. */
