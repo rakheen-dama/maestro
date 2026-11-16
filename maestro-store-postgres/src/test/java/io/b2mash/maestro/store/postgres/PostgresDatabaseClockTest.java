@@ -79,6 +79,49 @@ class PostgresDatabaseClockTest extends PostgresTestSupport {
         assertEquals(List.of(id), ids(store.getDueTimers(10)), "by the database it is due");
     }
 
+    // ── The trade-off: fire_at armed on the node's clock, compared on the database's ──
+
+    /**
+     * A single node five minutes ahead of the database arms {@code sleep(1s)}
+     * on its own clock ({@code fire_at = node now + 1s}). Two seconds later by
+     * that clock, the old build's poll (bound to the same node clock) fires
+     * it; the database-clock poll does not, because by the database
+     * {@code fire_at} is still five minutes away: the sleep now fires about
+     * five minutes late, where before it fired on time.
+     */
+    @Test
+    void aSingleNodeAheadOfTheDatabase_sleepArmedOnItsClockFiresLateByTheSkew() throws Exception {
+        var dbNow = selectNow();
+        var nodeNow = dbNow.plus(SKEW);
+        var instance = store.createInstance(newInstance("single-node-ahead"));
+        var id = saveTimer(instance, "sleep-1", nodeNow.plusSeconds(1));
+
+        var nodeTwoSecondsLater = nodeNow.plusSeconds(2);
+        assertEquals(List.of(id), ids(store.getDueTimers(nodeTwoSecondsLater, 10)),
+                "on the node's own clock (the old build's comparison) the 1 s sleep is due");
+        assertEquals(List.of(), ids(store.getDueTimers(10)),
+                "on the database clock it is due only in about five minutes");
+    }
+
+    /**
+     * A single node five minutes behind the database arms a one-minute timer
+     * (a {@code sleep(1m)} or an {@code awaitSignal} deadline) on its own
+     * clock. The database-clock poll fires it at once, though by the node's
+     * clock it has a minute left: it fires early by the skew.
+     */
+    @Test
+    void aSingleNodeBehindTheDatabase_deadlineArmedOnItsClockFiresEarlyByTheSkew() throws Exception {
+        var dbNow = selectNow();
+        var nodeNow = dbNow.minus(SKEW);
+        var instance = store.createInstance(newInstance("single-node-behind"));
+        var id = saveTimer(instance, "await-1", nodeNow.plus(Duration.ofMinutes(1)));
+
+        assertEquals(List.of(), ids(store.getDueTimers(nodeNow, 10)),
+                "on the node's own clock (the old build's comparison) a minute is left");
+        assertEquals(List.of(id), ids(store.getDueTimers(10)),
+                "on the database clock it is already four minutes overdue");
+    }
+
     /**
      * A database clock genuinely behind this JVM's: the statement runs in a
      * transaction opened before the timer fell due by the JVM, so its

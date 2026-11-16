@@ -619,9 +619,16 @@ Timer polling uses leader election via the distributed lock so that only one nod
 in the cluster polls at a time. The poll interval directly affects the maximum
 delay between a timer becoming due and the workflow resuming.
 
-Due timers are compared with the store's clock: on Postgres the poller selects `PENDING` rows with `fire_at <= now()`, so the poller leader's own clock no longer moves when a timer fires. A timer's `fire_at`, and an `awaitSignal` deadline, are still computed from the clock of the node that schedules them, so a node whose clock is off arms its deadlines off by the same amount (see the clock-skew `WARN` below). A store without a clock of its own (the in-memory test store, a custom store) is polled with the poller's clock, as before.
+Due timers are compared with the store's clock: on Postgres the poller selects `PENDING` rows with `fire_at <= now()`, so the poller leader's own clock no longer moves when a timer fires. A timer's `fire_at`, and an `awaitSignal` deadline, are still computed from the clock of the node that schedules them, so a node whose clock is off arms its deadlines off by the same amount ([Issue 51](open-issues.md#issue-51)). A store without a clock of its own (the in-memory test store, a custom store) is polled with the poller's clock, as before.
 
-Each node compares its clock with the database's when its timer poller starts and every 10 minutes (one `SELECT now()`), and logs a `WARN` from `ClockSkewCheck` when they differ by more than 1 s, naming the direction and the bound: a `sleep()` armed on that node can wake, and an `awaitSignal()` timeout armed there can expire, up to the skew late (node ahead) or early (node behind). An await's deadline is also compared on the clock of the node running it, so a timeout can still expire on time. A store without a clock of its own is not checked.
+**Timer accuracy is the difference between the database clock and the scheduling node's clock.** Before 3.7 a single node, or a fleet whose nodes agree with one another but not with the database, armed and compared a timer on the same clock, so it fired on time. Now:
+
+- a `sleep()` fires late by the skew on a node ahead of the database and early by the skew on a node behind it: a node 5 minutes ahead of Postgres fires `sleep(1s)` about 5 minutes late;
+- an `awaitSignal()` timeout expires early by the skew on a node behind the database, whose poller fires the row first; on a node ahead it still expires on time, because the await also compares its deadline with the clock of the node running it (traced, not tested).
+
+The store comparison in both directions is pinned by `PostgresDatabaseClockTest` (`aSingleNodeAheadOfTheDatabase_sleepArmedOnItsClockFiresLateByTheSkew`, `aSingleNodeBehindTheDatabase_deadlineArmedOnItsClockFiresEarlyByTheSkew`); the end-to-end `sleep()` and `awaitSignal()` timings are traced, not tested. Arming deadlines on the database clock ([Issue 51](open-issues.md#issue-51)) is the full fix. Postgres-backed tests on a developer machine read the Docker VM's clock, which can drift from the host's; Linux CI shares the host clock.
+
+Each node compares its clock with the database's when its timer poller starts and every 10 minutes (one `SELECT now()`), and logs a `WARN` from `ClockSkewCheck` when they differ by more than 1 s, naming the direction and the bound: the skew it reports is how far that node's timers can be off, as above. A store without a clock of its own is not checked.
 
 ---
 
