@@ -7,6 +7,7 @@ import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostSenderConfiguration;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.LongSerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.AfterEach;
@@ -21,6 +22,8 @@ import org.springframework.boot.test.context.assertj.AssertableApplicationContex
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Import;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.context.annotation.Primary;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
@@ -28,6 +31,7 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Map;
 
 import static io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans.TEMPLATE;
@@ -253,6 +257,75 @@ class ByteArrayTemplateInjectionCheckTest {
         });
     }
 
+    // ── Several host templates: a point counts only against the template it received ──
+
+    @Test
+    void aBeanInjectingTwoHostTemplates_startsAndEachPointHoldsItsTemplate() {
+        // dualSender depends on stringTemplate (StringSerializer) through `strings`;
+        // its unqualified byte[] point `bytes` received bytesTemplate, not stringTemplate.
+        coexistenceRunner().withUserConfiguration(DualSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed().doesNotHaveBean("kafkaTemplate");
+            var sender = ctx.getBean(DualSender.class);
+            assertThat(sender.strings()).isSameAs(ctx.getBean("stringTemplate"));
+            assertThat(sender.bytes()).isSameAs(ctx.getBean("bytesTemplate"));
+            assertThat(ctx.getBeanFactory().getDependentBeans("stringTemplate"))
+                    .as("the check inspects dualSender's points against stringTemplate")
+                    .contains("dualSender");
+            assertThat(ctx.getBeanFactory().containsSingleton("lazyTemplate"))
+                    .as("the check reads bean definitions only: a lazy template stays uncreated")
+                    .isFalse();
+            assertThat(warnings()).isEmpty();
+        });
+    }
+
+    @Test
+    void aBeanInjectingAnUnclassifiableTemplateAndAByteArrayOne_startsWithoutAWarning() {
+        // The WARN path follows the same rule: `bytes` did not receive the JSON template.
+        coexistenceRunner().withUserConfiguration(DualJsonSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var sender = ctx.getBean(DualSender.class);
+            assertThat(sender.strings()).isSameAs(ctx.getBean("stringTemplate"));
+            assertThat(sender.bytes()).isSameAs(ctx.getBean("bytesTemplate"));
+            assertThat(ctx.getBeanFactory().getDependentBeans("stringTemplate")).contains("dualSender");
+            assertThat(warnings()).isEmpty();
+        });
+    }
+
+    @Test
+    void aPrimaryTemplateBesideAQualifiedOne_startsAndWarnsOnceThatItCannotTell() {
+        // `bytes` matches both byte[] templates; Spring picks the @Primary one. The
+        // check cannot tell which one Spring picked, so it does not fail: one WARN.
+        coexistenceRunner().withUserConfiguration(PrimarySenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var sender = ctx.getBean(PrimarySender.class);
+            assertThat(sender.bytes()).isSameAs(ctx.getBean("bytesTemplate"));
+            assertThat(sender.legacy()).isSameAs(ctx.getBean("legacyTemplate"));
+            assertThat(ctx.getBeanFactory().getDependentBeans("legacyTemplate")).contains("primarySender");
+            assertThat(warnings())
+                    .singleElement(InstanceOfAssertFactories.STRING)
+                    .contains("'primarySender'", "constructor parameter 0 of " + PrimarySender.class.getName(),
+                            "several Kafka templates", "bytesTemplate", "legacyTemplate",
+                            StringSerializer.class.getName());
+        });
+    }
+
+    @Test
+    void aBeanInjectingTwoTemplatesByParameterName_startsAndWarnsOnceThatItCannotTell() {
+        // Both templates are declared KafkaTemplate<?, ?>, so both match both points;
+        // Spring falls back to the parameter names.
+        coexistenceRunner().withUserConfiguration(NamedSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            var sender = ctx.getBean(NamedSender.class);
+            assertThat(sender.stringTemplate()).isSameAs(ctx.getBean("stringTemplate"));
+            assertThat(sender.bytesTemplate()).isSameAs(ctx.getBean("bytesTemplate"));
+            assertThat(ctx.getBeanFactory().getDependentBeans("stringTemplate")).contains("namedSender");
+            assertThat(warnings())
+                    .singleElement(InstanceOfAssertFactories.STRING)
+                    .contains("'namedSender'", "constructor parameter 1 of " + NamedSender.class.getName(),
+                            "several Kafka templates", "bytesTemplate", "stringTemplate");
+        });
+    }
+
     // ── Static helpers ───────────────────────────────────────────────────
 
     @Test
@@ -309,6 +382,20 @@ class ByteArrayTemplateInjectionCheckTest {
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
                 ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, serializer)));
+    }
+
+    private static <V> KafkaTemplate<String, V> hostTemplate(Class<?> valueSerializer) {
+        return new KafkaTemplate<>(new DefaultKafkaProducerFactory<String, V>(Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer)));
+    }
+
+    private List<String> warnings() {
+        return logAppender.list.stream()
+                .filter(e -> e.getLevel() == Level.WARN)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
     }
 
     private static Throwable rootCause(AssertableApplicationContext ctx) {
@@ -453,6 +540,90 @@ class ByteArrayTemplateInjectionCheckTest {
         }
 
         TwoConstructors(KafkaTemplate<String, byte[]> template) {
+        }
+    }
+
+    /** A host bean with its own String template and its own byte[] template, both unqualified. */
+    @Component("dualSender")
+    record DualSender(KafkaTemplate<String, String> strings, KafkaTemplate<String, byte[]> bytes) {}
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(DualSender.class)
+    static class DualSenderConfiguration {
+        @Bean
+        KafkaTemplate<String, String> stringTemplate() {
+            return hostTemplate(StringSerializer.class);
+        }
+
+        @Bean
+        KafkaTemplate<String, byte[]> bytesTemplate() {
+            return hostTemplate(ByteArraySerializer.class);
+        }
+
+        /** Never injected anywhere: must stay uncreated. */
+        @Bean
+        @Lazy
+        KafkaTemplate<String, Long> lazyTemplate() {
+            return hostTemplate(LongSerializer.class);
+        }
+    }
+
+    /** {@link DualSender} with a JSON (unclassifiable) String template. */
+    @Configuration(proxyBeanMethods = false)
+    @Import(DualSender.class)
+    static class DualJsonSenderConfiguration {
+        @Bean
+        KafkaTemplate<String, String> stringTemplate() {
+            return hostTemplate(JacksonJsonSerializer.class);
+        }
+
+        @Bean
+        KafkaTemplate<String, byte[]> bytesTemplate() {
+            return hostTemplate(ByteArraySerializer.class);
+        }
+    }
+
+    /** An unqualified byte[] point that two templates match, resolved by {@code @Primary}. */
+    @Component("primarySender")
+    record PrimarySender(KafkaTemplate<String, byte[]> bytes, KafkaTemplate<String, byte[]> legacy) {
+        PrimarySender(KafkaTemplate<String, byte[]> bytes,
+                @Qualifier("legacyTemplate") KafkaTemplate<String, byte[]> legacy) {
+            this.bytes = bytes;
+            this.legacy = legacy;
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(PrimarySender.class)
+    static class PrimarySenderConfiguration {
+        @Bean
+        @Primary
+        KafkaTemplate<String, byte[]> bytesTemplate() {
+            return hostTemplate(ByteArraySerializer.class);
+        }
+
+        /** Declared for byte[] but configured with StringSerializer; injected only by qualifier. */
+        @Bean
+        KafkaTemplate<String, byte[]> legacyTemplate() {
+            return hostTemplate(StringSerializer.class);
+        }
+    }
+
+    /** Two points that both templates match, resolved by parameter name. */
+    @Component("namedSender")
+    record NamedSender(KafkaTemplate<String, String> stringTemplate, KafkaTemplate<String, byte[]> bytesTemplate) {}
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(NamedSender.class)
+    static class NamedSenderConfiguration {
+        @Bean
+        KafkaTemplate<?, ?> stringTemplate() {
+            return hostTemplate(StringSerializer.class);
+        }
+
+        @Bean
+        KafkaTemplate<?, ?> bytesTemplate() {
+            return hostTemplate(ByteArraySerializer.class);
         }
     }
 }

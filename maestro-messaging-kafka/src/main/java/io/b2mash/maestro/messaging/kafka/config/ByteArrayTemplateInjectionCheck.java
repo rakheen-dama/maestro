@@ -8,10 +8,13 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.BeanFactory;
 import org.springframework.beans.factory.BeanFactoryAware;
+import org.springframework.beans.factory.BeanFactoryUtils;
 import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.config.BeanDefinition;
 import org.springframework.beans.factory.config.ConfigurableListableBeanFactory;
+import org.springframework.beans.factory.config.DependencyDescriptor;
 import org.springframework.beans.factory.support.AbstractBeanDefinition;
 import org.springframework.beans.factory.support.RootBeanDefinition;
 import org.springframework.core.MethodParameter;
@@ -57,16 +60,30 @@ import java.util.Map;
  *       points typed {@code KafkaOperations<?, byte[]>} (or a subtype) with no
  *       qualifier — no annotation that is, or is meta-annotated with, Spring's
  *       {@code @Qualifier} or {@code jakarta.inject.Qualifier};</li>
- *   <li>only if one exists, the template's value serializer is classified
+ *   <li>a point counts against this template only if it received it: a
+ *       {@link DependencyDescriptor} is built for the point, and this template
+ *       must be the only default-candidate {@code KafkaOperations} bean that
+ *       {@code isAutowireCandidate} accepts for it (strict generic matches,
+ *       else Spring's fallback matches, as Spring searches). A bean that uses
+ *       a {@code String} template and a separate {@code byte[]} template is
+ *       therefore never blamed for the wrong one. A point several templates
+ *       match (Spring picked by {@code @Primary}, {@code @Priority} or the
+ *       parameter or field name) is never a failure: when this template
+ *       cannot serialize {@code byte[]}, or cannot be classified, one
+ *       {@code WARN} per point says Maestro cannot tell which one it
+ *       received;</li>
+ *   <li>only if a point remains, the template's value serializer is classified
  *       ({@link #valueSerializerTarget}); a violation is a serializer whose
  *       declared target type is not assignable from {@code byte[]}.</li>
  * </ol>
- * <p>The check fails startup only on a confirmed violation. A serializer it
+ * <p>The check fails startup only on a confirmed violation, with one
+ * exception listing every violation. A serializer it
  * cannot classify (a generic serializer such as {@code JacksonJsonSerializer},
  * a lambda, a delegating serializer) is not a failure: it is logged at
  * {@code WARN}, because such a serializer may write {@code byte[]} values
  * differently from {@code ByteArraySerializer}. Any exception while inspecting
- * a bean skips that bean at {@code DEBUG}.
+ * a bean skips that bean at {@code DEBUG}. The check reads bean definitions
+ * and already-created singletons only; it creates no bean.
  *
  * <h2>Reach</h2>
  * <p>Seen: constructor parameters (the {@code @Autowired} constructor, or the
@@ -114,51 +131,102 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         if (bf == null) {
             return;
         }
+        var templates = defaultCandidateTemplates(bf);
         var violations = new ArrayList<String>();
+        var ambiguous = new LinkedHashMap<String, String>();
         for (var templateName : bf.getBeanNamesForType(KafkaOperations.class, true, false)) {
             try {
-                inspectTemplate(bf, templateName, violations);
+                inspectTemplate(bf, templateName, templates, violations, ambiguous);
             }
             catch (RuntimeException | LinkageError ex) {
                 logger.debug("Skipped the byte[] injection check for Kafka template bean '{}'", templateName, ex);
             }
         }
+        ambiguous.values().forEach(logger::warn);
         if (!violations.isEmpty()) {
             throw new IllegalStateException(String.join("\n\n", violations));
         }
     }
 
-    private static void inspectTemplate(ConfigurableListableBeanFactory bf, String templateName, List<String> violations) {
+    /**
+     * Every {@link KafkaOperations} bean an unqualified injection point can
+     * receive: the default autowire candidates, in this factory and its
+     * ancestors. Reads bean definitions only.
+     */
+    private static List<String> defaultCandidateTemplates(ConfigurableListableBeanFactory bf) {
+        var names = new ArrayList<String>();
+        for (var name : BeanFactoryUtils.beanNamesForTypeIncludingAncestors(bf, KafkaOperations.class, true, false)) {
+            try {
+                if (isDefaultCandidate(bf.getMergedBeanDefinition(name))) {
+                    names.add(name);
+                }
+            }
+            catch (RuntimeException ex) {
+                // No definition to read (a manually registered singleton): Spring can still
+                // inject it, so keep it as a possible candidate.
+                names.add(name);
+            }
+        }
+        return names;
+    }
+
+    private static boolean isDefaultCandidate(BeanDefinition definition) {
+        return definition.isAutowireCandidate()
+                && !(definition instanceof AbstractBeanDefinition abstractDefinition
+                        && !abstractDefinition.isDefaultCandidate());
+    }
+
+    private static void inspectTemplate(ConfigurableListableBeanFactory bf, String templateName,
+            List<String> templates, List<String> violations, Map<String, String> ambiguous) {
         if (!bf.containsBeanDefinition(templateName) || !bf.containsSingleton(templateName)) {
             return;
         }
-        var definition = bf.getMergedBeanDefinition(templateName);
-        if (!definition.isAutowireCandidate()
-                || (definition instanceof AbstractBeanDefinition abstractDefinition
-                        && !abstractDefinition.isDefaultCandidate())) {
+        if (!isDefaultCandidate(bf.getMergedBeanDefinition(templateName))) {
             return;
         }
         if (!(bf.getSingleton(templateName) instanceof KafkaOperations<?, ?> template)) {
             return;
         }
         // Dependents first: the serializer is only looked at when a point needs it.
+        // A point counts against this template only if this template is the one
+        // candidate Spring could have injected there; a point several templates
+        // match (resolved by @Primary, @Priority or the parameter/field name) is
+        // never failed, only warned about.
         var pointsByBean = new LinkedHashMap<String, List<String>>();
+        var ambiguousPoints = new ArrayList<AmbiguousPoint>();
         for (var dependent : bf.getDependentBeans(templateName)) {
             try {
-                var points = pointsOf(bf, dependent);
-                if (!points.isEmpty()) {
-                    pointsByBean.put(dependent, points);
+                for (var point : pointsOf(bf, dependent)) {
+                    var candidates = candidatesFor(bf, point.descriptor(), templates);
+                    if (!candidates.contains(templateName)) {
+                        continue;
+                    }
+                    if (candidates.size() == 1) {
+                        pointsByBean.computeIfAbsent(dependent, k -> new ArrayList<>()).add(point.description());
+                    }
+                    else {
+                        ambiguousPoints.add(new AmbiguousPoint(dependent, point.description(), candidates));
+                    }
                 }
             }
             catch (RuntimeException | LinkageError ex) {
                 logger.debug("Skipped the byte[] injection check for bean '{}'", dependent, ex);
             }
         }
-        if (pointsByBean.isEmpty()) {
+        if (pointsByBean.isEmpty() && ambiguousPoints.isEmpty()) {
             return;
         }
         var target = valueSerializerTarget(template);
         var serializerClass = valueSerializerClass(template);
+        if (target != null && target.isAssignableFrom(byte[].class)) {
+            return;
+        }
+        if (serializerClass != null) {
+            for (var point : ambiguousPoints) {
+                ambiguous.putIfAbsent(point.bean() + "\u0000" + point.description(),
+                        ambiguityWarning(point, templateName, serializerClass, target != null));
+            }
+        }
         if (target == null || serializerClass == null) {
             if (serializerClass != null) {
                 warnUnclassified(templateName, serializerClass, pointsByBean);
@@ -169,9 +237,6 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             }
             return;
         }
-        if (target.isAssignableFrom(byte[].class)) {
-            return;
-        }
         for (Map.Entry<String, List<String>> entry : pointsByBean.entrySet()) {
             for (var point : entry.getValue()) {
                 violations.add(violation(entry.getKey(), point, templateName, serializerClass));
@@ -179,7 +244,29 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         }
     }
 
-    private static List<String> pointsOf(ConfigurableListableBeanFactory bf, String beanName) {
+    /**
+     * The templates among {@code templates} that Spring would consider for
+     * {@code descriptor}: the strict generic matches, else (as Spring does when
+     * there are none) the fallback matches. Reads bean definitions only.
+     */
+    private static List<String> candidatesFor(ConfigurableListableBeanFactory bf, DependencyDescriptor descriptor,
+            List<String> templates) {
+        var strict = matching(bf, descriptor, templates);
+        return strict.isEmpty() ? matching(bf, descriptor.forFallbackMatch(), templates) : strict;
+    }
+
+    private static List<String> matching(ConfigurableListableBeanFactory bf, DependencyDescriptor descriptor,
+            List<String> templates) {
+        var matches = new ArrayList<String>();
+        for (var name : templates) {
+            if (bf.isAutowireCandidate(name, descriptor)) {
+                matches.add(name);
+            }
+        }
+        return matches;
+    }
+
+    private static List<InjectionPoint> pointsOf(ConfigurableListableBeanFactory bf, String beanName) {
         if (!bf.containsBeanDefinition(beanName)) {
             return List.of();
         }
@@ -189,7 +276,19 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         if (type == null) {
             return List.of();
         }
-        return unqualifiedByteArrayTemplatePoints(ClassUtils.getUserClass(type), factoryMethod);
+        return unqualifiedByteArrayTemplateInjectionPoints(ClassUtils.getUserClass(type), factoryMethod);
+    }
+
+    private static String ambiguityWarning(AmbiguousPoint point, String templateName, Class<?> serializerClass,
+            boolean classified) {
+        return "Bean '" + point.bean() + "' injects a KafkaTemplate<…, byte[]> without a qualifier ("
+                + point.description() + ") that several Kafka templates match (" + String.join(", ", point.candidates())
+                + "); Maestro does not check which one it received. Among them, '" + templateName
+                + "' has the value serializer " + serializerClass.getName()
+                + (classified ? ", which cannot serialize byte[]." : ", which Maestro cannot classify.")
+                + " Qualify the injection point with the template you mean (Maestro's is "
+                + "@Qualifier(MaestroKafkaBeans.TEMPLATE) (\"" + MaestroKafkaBeans.TEMPLATE + "\")). "
+                + "See docs/configuration.md § Kafka Client Configuration.";
     }
 
     private static String violation(String bean, String point, String templateName, Class<?> serializerClass) {
@@ -282,22 +381,37 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
      * @return the descriptions, in declaration order
      */
     static List<String> unqualifiedByteArrayTemplatePoints(Class<?> beanClass, @Nullable Method factoryMethod) {
-        var points = new ArrayList<String>();
+        return unqualifiedByteArrayTemplateInjectionPoints(beanClass, factoryMethod).stream()
+                .map(InjectionPoint::description)
+                .toList();
+    }
+
+    /**
+     * The same points as {@link #unqualifiedByteArrayTemplatePoints}, each with
+     * the {@link DependencyDescriptor} Spring resolves it through.
+     */
+    private static List<InjectionPoint> unqualifiedByteArrayTemplateInjectionPoints(Class<?> beanClass,
+            @Nullable Method factoryMethod) {
+        var points = new ArrayList<InjectionPoint>();
         if (factoryMethod != null) {
             // Spring resolves a @Bean method on the user class, not on a CGLIB subclass,
             // so its parameter annotations are the declared ones.
             var owner = ClassUtils.getUserClass(factoryMethod.getDeclaringClass()).getName();
             for (int i = 0; i < factoryMethod.getParameterCount(); i++) {
-                if (isUnqualifiedByteArrayTemplate(MethodParameter.forExecutable(factoryMethod, i))) {
-                    points.add("parameter " + i + " of @Bean method " + owner + "." + factoryMethod.getName());
+                var parameter = MethodParameter.forExecutable(factoryMethod, i);
+                if (isUnqualifiedByteArrayTemplate(parameter)) {
+                    points.add(new InjectionPoint("parameter " + i + " of @Bean method " + owner + "."
+                            + factoryMethod.getName(), new DependencyDescriptor(parameter, true)));
                 }
             }
         }
         else {
             for (var constructor : injectionConstructors(beanClass)) {
                 for (int i = 0; i < constructor.getParameterCount(); i++) {
-                    if (isUnqualifiedByteArrayTemplate(MethodParameter.forExecutable(constructor, i))) {
-                        points.add("constructor parameter " + i + " of " + beanClass.getName());
+                    var parameter = MethodParameter.forExecutable(constructor, i);
+                    if (isUnqualifiedByteArrayTemplate(parameter)) {
+                        points.add(new InjectionPoint("constructor parameter " + i + " of " + beanClass.getName(),
+                                descriptor(parameter, beanClass)));
                     }
                 }
             }
@@ -305,7 +419,10 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         ReflectionUtils.doWithFields(beanClass, field -> {
             if (!Modifier.isStatic(field.getModifiers()) && isInjected(field)
                     && isUnqualifiedByteArrayTemplate(field, beanClass)) {
-                points.add("field " + field.getName() + " of " + field.getDeclaringClass().getName());
+                var descriptor = new DependencyDescriptor(field, true);
+                descriptor.setContainingClass(beanClass);
+                points.add(new InjectionPoint("field " + field.getName() + " of "
+                        + field.getDeclaringClass().getName(), descriptor));
             }
         });
         for (var method : ReflectionUtils.getUniqueDeclaredMethods(beanClass, ReflectionUtils.USER_DECLARED_METHODS)) {
@@ -313,13 +430,21 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
                 continue;
             }
             for (int i = 0; i < method.getParameterCount(); i++) {
-                if (isUnqualifiedByteArrayTemplate(MethodParameter.forExecutable(method, i))) {
-                    points.add("parameter " + i + " of method " + method.getDeclaringClass().getName()
-                            + "." + method.getName());
+                var parameter = MethodParameter.forExecutable(method, i);
+                if (isUnqualifiedByteArrayTemplate(parameter)) {
+                    points.add(new InjectionPoint("parameter " + i + " of method "
+                            + method.getDeclaringClass().getName() + "." + method.getName(),
+                            descriptor(parameter, beanClass)));
                 }
             }
         }
         return points;
+    }
+
+    private static DependencyDescriptor descriptor(MethodParameter parameter, Class<?> beanClass) {
+        var descriptor = new DependencyDescriptor(parameter, true);
+        descriptor.setContainingClass(beanClass);
+        return descriptor;
     }
 
     private static List<Constructor<?>> injectionConstructors(Class<?> beanClass) {
@@ -366,4 +491,10 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
     private static boolean isQualified(MergedAnnotations annotations) {
         return annotations.isPresent(Qualifier.class) || annotations.isPresent(JAKARTA_QUALIFIER);
     }
+
+    /** An unqualified {@code byte[]} template injection point: its description and how Spring resolves it. */
+    private record InjectionPoint(String description, DependencyDescriptor descriptor) {}
+
+    /** A point that several default-candidate templates match, among them the one being inspected. */
+    private record AmbiguousPoint(String bean, String description, List<String> candidates) {}
 }
