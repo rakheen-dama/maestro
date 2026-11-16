@@ -156,6 +156,17 @@ class ByteArrayTemplateMissingFailureAnalyzerTest {
     }
 
     @Test
+    void aPointTypedAsATemplateSubclass_isNotAnalyzed() {
+        // Maestro's KafkaTemplate cannot satisfy a MyBytesTemplate point, so its qualifier is no fix.
+        var failed = startFailing(HostStringTemplate.class, SubclassTemplateUser.class);
+
+        assertThat(rootCause(failed.failure())).isInstanceOf(NoSuchBeanDefinitionException.class)
+                .hasMessageContaining(MyBytesTemplate.class.getName());
+        assertThat(analyze(failed)).isNull();
+        assertThat(failed.reported()).noneMatch(report -> report.contains("maestroKafkaTemplate"));
+    }
+
+    @Test
     void aQualifiedByteArrayPoint_isNotAnalyzed() {
         var failed = startFailing(QualifiedMissingTemplateUser.class);
 
@@ -306,6 +317,22 @@ class ByteArrayTemplateMissingFailureAnalyzerTest {
     static class HostDtoTemplateUser {
         @Bean
         Object hostDtoTemplateUser(KafkaTemplate<String, HostDto> template) {
+            return template;
+        }
+    }
+
+    /** A non-generic template subclass, which Maestro's template is not. */
+    static class MyBytesTemplate extends KafkaTemplate<String, byte[]> {
+        MyBytesTemplate(org.springframework.kafka.core.ProducerFactory<String, byte[]> producerFactory) {
+            super(producerFactory);
+        }
+    }
+
+    /** An unqualified point typed as {@link MyBytesTemplate}, with no such bean. */
+    @Configuration(proxyBeanMethods = false)
+    static class SubclassTemplateUser {
+        @Bean
+        Object subclassTemplateUser(MyBytesTemplate template) {
             return template;
         }
     }

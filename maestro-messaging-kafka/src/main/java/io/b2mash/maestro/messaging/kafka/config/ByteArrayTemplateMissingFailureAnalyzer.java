@@ -36,7 +36,9 @@ import java.util.List;
  * so every other missing bean keeps Spring Boot's own analysis:
  * <ul>
  *   <li>the missing bean is a {@link KafkaOperations} whose value type is
- *       {@code byte[]} (not a {@link NoUniqueBeanDefinitionException});</li>
+ *       {@code byte[]} (not a {@link NoUniqueBeanDefinitionException}), typed
+ *       {@code KafkaTemplate} or a supertype of it: Maestro's template cannot
+ *       satisfy a point typed as a {@code KafkaTemplate} subclass;</li>
  *   <li>it is the dependency of an injection point (the
  *       {@link UnsatisfiedDependencyException} that carries it) with no
  *       qualifier — no annotation that is, or is meta-annotated with, Spring's
@@ -94,6 +96,11 @@ final class ByteArrayTemplateMissingFailureAnalyzer extends AbstractFailureAnaly
         return new FailureAnalysis(description, action, cause);
     }
 
+    /**
+     * A {@code byte[]} {@link KafkaOperations} point that Maestro's template
+     * could satisfy: its raw type is {@code KafkaTemplate} or a supertype, never
+     * a subclass of {@code KafkaTemplate}, which Maestro's template is not.
+     */
     private static boolean isByteArrayTemplate(@Nullable ResolvableType type) {
         if (type == null) {
             return false;
@@ -101,6 +108,7 @@ final class ByteArrayTemplateMissingFailureAnalyzer extends AbstractFailureAnaly
         var raw = type.resolve();
         return raw != null
                 && KafkaOperations.class.isAssignableFrom(raw)
+                && raw.isAssignableFrom(KafkaTemplate.class)
                 && type.as(KafkaOperations.class).getGeneric(1).resolve() == byte[].class;
     }
 
