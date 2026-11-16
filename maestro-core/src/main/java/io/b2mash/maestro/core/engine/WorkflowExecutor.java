@@ -1297,7 +1297,9 @@ public final class WorkflowExecutor {
      * — re-running that handling would need the signal again, and the memo
      * does not identify the exact signal row to give back. Retry then writes
      * nothing and returns {@link RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE},
-     * logged at WARN with the sequence.
+     * logged at WARN with the signal's name, its sequence and the remedy
+     * (terminate the workflow or finish it by hand; the signal is not
+     * redelivered).
      *
      * <h2>Mechanics — "make it recoverable again, then recover it"</h2>
      * <ol>
@@ -1324,7 +1326,15 @@ public final class WorkflowExecutor {
      *       so an at-least-once transport redelivers the command against fresh
      *       state. A row purged meanwhile is {@link RetryOutcome#NOT_FOUND}.
      *       The lease epoch is not bumped here; the relaunch's adoption bumps
-     *       it, as for any recovery.</li>
+     *       it, as for any recovery. On every engine path nothing of the failed
+     *       run can still write at its epoch (traced): it wrote {@code FAILED}
+     *       through the fenced terminal write, after every {@code parallel()}
+     *       branch had joined. Two cases outside the engine's own paths can
+     *       append until that adoption fences them: a foreign
+     *       {@link Thread#interrupt()} of a {@code parallel()} join, and an
+     *       abandoned activity attempt that calls through its workflow context.
+     *       The retried run then replays that event or stands down; it never
+     *       records a failure for it.</li>
      *   <li>Relaunch via the same internal path
      *       {@link #resumeWorkflow(WorkflowInstance, Supplier, Method)} uses
      *       ({@code replaying = true}) — identical to crash recovery: every
@@ -1412,9 +1422,10 @@ public final class WorkflowExecutor {
         // recorded after it while handling it (WP3, D-3). Pure; no store call.
         var plan = RetryPlanner.plan(workflowId, events);
         if (plan.refused()) {
-            logger.warn("Workflow '{}' was not retried: the code that handled its failure consumed a signal "
-                    + "at sequence {} that a retry would need again "
-                    + "(RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE)", workflowId, plan.consumedSignalAt());
+            logger.warn("Workflow '{}' was not retried: the code that handled its failure consumed signal '{}' "
+                    + "(sequence {}), which a retry would need again. Terminate the workflow or finish it by "
+                    + "hand; the signal is not redelivered (RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE)",
+                    workflowId, consumedSignalName(events, plan.consumedSignalAt()), plan.consumedSignalAt());
             return RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE;
         }
 
@@ -1462,6 +1473,27 @@ public final class WorkflowExecutor {
         publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
         logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
         return RetryOutcome.RETRIED;
+    }
+
+    /**
+     * The name of the signal whose {@code SIGNAL_RECEIVED} memo sits at
+     * {@code sequence}: its step name without the
+     * {@code $maestro:awaitSignal:} prefix, or the step name as recorded if it
+     * has no such prefix. Only the name, never the payload, goes into a log line.
+     */
+    private static @Nullable String consumedSignalName(List<WorkflowEvent> events, @Nullable Integer sequence) {
+        if (sequence == null) {
+            return null;
+        }
+        for (var event : events) {
+            if (event.sequenceNumber() == sequence && event.eventType() == EventType.SIGNAL_RECEIVED) {
+                var step = event.stepName();
+                return step != null && step.startsWith(SignalManager.STEP_PREFIX)
+                        ? step.substring(SignalManager.STEP_PREFIX.length())
+                        : step;
+            }
+        }
+        return null;
     }
 
     // ── Timer poller ────────────────────────────────────────────────────

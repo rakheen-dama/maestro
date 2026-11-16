@@ -1,5 +1,9 @@
 package io.b2mash.maestro.spring.config;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
@@ -13,9 +17,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
@@ -26,7 +32,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * {@link WorkflowExecutor.RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE} is a
  * handled outcome. The dispatcher returns normally, so the transport
  * acknowledges the command instead of redelivering it to the dead-letter
- * topic, and nothing is written.
+ * topic, and nothing is written. The engine's WARN names the consumed signal
+ * and the remedy.
  */
 @DisplayName("AdminCommandDispatcher acknowledges a refused retry")
 class AdminCommandDispatcherRefusalTest {
@@ -83,7 +90,23 @@ class AdminCommandDispatcherRefusalTest {
                 "{\"exceptionType\":\"io.b2mash.maestro.core.exception.ActivityExecutionException\","
                         + "\"message\":\"x\",\"failedSequences\":[1]}"));
 
-        assertDoesNotThrow(() -> dispatcher.dispatch(new SignalMessage("wf-refused", "$maestro:retry", null)));
+        var engineLog = (Logger) LoggerFactory.getLogger(WorkflowExecutor.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        engineLog.addAppender(appender);
+        try {
+            assertDoesNotThrow(() -> dispatcher.dispatch(new SignalMessage("wf-refused", "$maestro:retry", null)));
+        } finally {
+            engineLog.detachAppender(appender);
+        }
+
+        var warnings = appender.list.stream()
+                .filter(e -> e.getLevel() == Level.WARN)
+                .map(ILoggingEvent::getFormattedMessage)
+                .toList();
+        assertEquals(List.of("Workflow 'wf-refused' was not retried: the code that handled its failure consumed "
+                + "signal 'ack' (sequence 2), which a retry would need again. Terminate the workflow or finish it "
+                + "by hand; the signal is not redelivered (RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE)"), warnings);
 
         var after = store.getInstance("wf-refused").orElseThrow();
         assertEquals(WorkflowStatus.FAILED, after.status());

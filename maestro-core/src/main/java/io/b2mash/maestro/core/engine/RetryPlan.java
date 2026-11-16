@@ -43,9 +43,10 @@ record RetryPlan(
 
     /**
      * Copies both sets into unmodifiable sorted sets. A refused plan
-     * ({@code consumedSignalAt} set) keeps neither: both sets are empty, so a
-     * refusal cannot be applied even by a caller that forgot to check
-     * {@link #refused()}.
+     * ({@code consumedSignalAt} set) keeps neither: both sets are empty, so
+     * applying it deletes nothing. Callers must still check {@link #refused()}:
+     * applying a refused plan through {@code reopenFailedInstance} would still
+     * flip the row to {@code RUNNING}, with its {@code WORKFLOW_FAILED} kept.
      */
     RetryPlan {
         if (consumedSignalAt != null) {
