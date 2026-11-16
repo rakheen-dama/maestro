@@ -9,7 +9,6 @@ import com.zaxxer.hikari.HikariDataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
@@ -23,8 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 /**
  * Issue 38 on real Postgres and a real Hikari pool: closing the wake listener
  * must hand its connection back to the pool intact — no {@code WARN} from
- * {@code com.zaxxer.hikari}, the same physical backend reused, and nothing
- * left {@code LISTEN}ing on it.
+ * {@code com.zaxxer.hikari}, the same physical backend reused, nothing left
+ * {@code LISTEN}ing on it and its network timeout as the pool lent it.
  *
  * <p>The listener the support class starts on a {@code PGSimpleDataSource} is
  * unused here; the support class closes it.
@@ -64,7 +63,6 @@ class PostgresWakeListenerShutdownTest extends PostgresNotifyTestSupport {
     }
 
     @Test
-    @Disabled("red until Task 2 — Issue 38 reproduced: see commit body")
     @DisplayName("closing a connected listener on a Hikari pool logs no WARN from the pool (Issue 38)")
     void closingTheListenerLogsNoWarnFromThePool() {
         var listener = new PostgresWakeListener(pool, WakeChannel.channelFor("shutdown-" + unique()));
@@ -76,7 +74,6 @@ class PostgresWakeListenerShutdownTest extends PostgresNotifyTestSupport {
     }
 
     @Test
-    @Disabled("red until Task 2 — Issue 38 reproduced: see commit body")
     @DisplayName("the listener's connection goes back to the pool and is reused, not evicted")
     void theListenersConnectionGoesBackToThePoolAndIsReused() throws Exception {
         var listener = new PostgresWakeListener(pool, WakeChannel.channelFor("reuse-" + unique()));
@@ -95,6 +92,17 @@ class PostgresWakeListenerShutdownTest extends PostgresNotifyTestSupport {
         await().atMost(Duration.ofSeconds(10)).until(() -> listenBackendPid(listener.channel()) > 0);
         listener.close();
         assertEquals(0, borrowedListeningChannels());
+    }
+
+    @Test
+    @DisplayName("the connection returned to the pool keeps the network timeout it was lent with")
+    void theConnectionReturnedToThePoolKeepsItsNetworkTimeout() throws Exception {
+        var lentWith = borrowedNetworkTimeout();
+        var listener = new PostgresWakeListener(pool, WakeChannel.channelFor("timeout-" + unique()));
+        listener.start();
+        await().atMost(Duration.ofSeconds(10)).until(() -> listenBackendPid(listener.channel()) > 0);
+        listener.close();
+        assertEquals(lentWith, borrowedNetworkTimeout());
     }
 
     // ── Fixtures ────────────────────────────────────────────────────────
@@ -128,6 +136,13 @@ class PostgresWakeListenerShutdownTest extends PostgresNotifyTestSupport {
              var rs = stmt.executeQuery("SELECT pg_backend_pid()")) {
             rs.next();
             return rs.getInt(1);
+        }
+    }
+
+    /** @return the network timeout (ms) of the connection the pool hands out next */
+    private int borrowedNetworkTimeout() throws SQLException {
+        try (var conn = pool.getConnection()) {
+            return conn.getNetworkTimeout();
         }
     }
 
