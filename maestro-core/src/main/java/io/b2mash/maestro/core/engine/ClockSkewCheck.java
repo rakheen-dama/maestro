@@ -159,11 +159,16 @@ final class ClockSkewCheck {
         if (skew.abs().compareTo(WARN_ABOVE) > 0) {
             var ahead = !skew.isNegative();
             var millis = skew.abs().toMillis();
+            // "can ... up to": an awaitSignal() deadline is also compared on the
+            // clock of the node running the await, so a timeout can expire on
+            // time; only the bound and its direction hold for both kinds.
             return Optional.of(("This node's clock is %d ms %s the database clock (warns above 1 s). Due timers "
                     + "are polled on the database clock, but sleep() and awaitSignal() deadlines are armed on "
-                    + "the clock of the node that schedules them, so deadlines armed here fire up to %d ms %s. "
-                    + "Check this node's time synchronisation (NTP).")
-                    .formatted(millis, ahead ? "ahead of" : "behind", millis, ahead ? "late" : "early"));
+                    + "the clock of the node that schedules them, so a deadline armed here is set %d ms %s "
+                    + "than the database clock would set it: a sleep() can wake, and an awaitSignal() timeout "
+                    + "can expire, up to %d ms %s. Check this node's time synchronisation (NTP).")
+                    .formatted(millis, ahead ? "ahead of" : "behind", millis, ahead ? "later" : "earlier",
+                            millis, ahead ? "late" : "early"));
         }
         return Optional.empty();
     }

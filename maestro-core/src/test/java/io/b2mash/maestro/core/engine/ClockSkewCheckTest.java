@@ -62,8 +62,10 @@ class ClockSkewCheckTest {
     void aNodeAheadIsWarnedThatItsDeadlinesFireLate() {
         assertEquals(Optional.of("This node's clock is 1500 ms ahead of the database clock (warns above 1 s). "
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
-                        + "are armed on the clock of the node that schedules them, so deadlines armed here fire "
-                        + "up to 1500 ms late. Check this node's time synchronisation (NTP)."),
+                        + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
+                        + "1500 ms later than the database clock would set it: a sleep() can wake, and an "
+                        + "awaitSignal() timeout can expire, up to 1500 ms late. "
+                        + "Check this node's time synchronisation (NTP)."),
                 warning(Duration.ofMillis(1500)));
     }
 
@@ -71,8 +73,10 @@ class ClockSkewCheckTest {
     void aNodeBehindIsWarnedThatItsDeadlinesFireEarly() {
         assertEquals(Optional.of("This node's clock is 2000 ms behind the database clock (warns above 1 s). "
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
-                        + "are armed on the clock of the node that schedules them, so deadlines armed here fire "
-                        + "up to 2000 ms early. Check this node's time synchronisation (NTP)."),
+                        + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
+                        + "2000 ms earlier than the database clock would set it: a sleep() can wake, and an "
+                        + "awaitSignal() timeout can expire, up to 2000 ms early. "
+                        + "Check this node's time synchronisation (NTP)."),
                 warning(Duration.ofMillis(-2000)));
     }
 
