@@ -71,8 +71,9 @@ import java.util.function.Predicate;
  * a run on this node and is dropped at that run's next park on the key, its
  * end ({@link #clearPending}), a terminate ({@link #abandonWorkflow}) or
  * {@link #shutdown()}. Each wake stores a permit object of its own, so the
- * re-check of a wake can only ever remove the permit that wake stored — never
- * one a later wake stored for a new run of the same workflow id.
+ * re-check of a wake, and its hand-off to a park that raced it, can only ever
+ * remove the permit that wake stored — never one a later wake stored for the
+ * same run's next park or for a new run of the same workflow id.
  *
  * <h2>Shutdown</h2>
  * <p>{@link #shutdown()} abandons every waiter with an
@@ -137,6 +138,9 @@ final class ParkingLot {
      */
     private final Predicate<String> runsHere;
 
+    /** {@link #ParkingLot(Predicate, Runnable)}'s hook; a no-op in production. */
+    private final Runnable beforeHandOff;
+
     /**
      * Sticky per-workflow terminate poison: {@code workflowId → reason}. Mirrors
      * {@link #shuttingDown} but scoped to one workflow, so a park that registers
@@ -166,7 +170,20 @@ final class ParkingLot {
      *                 thread-safe and non-blocking
      */
     ParkingLot(Predicate<String> runsHere) {
+        this(runsHere, () -> { });
+    }
+
+    /**
+     * Test seam: as {@link #ParkingLot(Predicate)}, running {@code beforeHandOff}
+     * in a store that found a raced waiter, after the lookup and before the
+     * hand-off — the only way to hold a wake in that window.
+     *
+     * @param runsHere      whether a workflow (by business ID) runs on this node
+     * @param beforeHandOff run on the waking thread just before the hand-off
+     */
+    ParkingLot(Predicate<String> runsHere, Runnable beforeHandOff) {
         this.runsHere = runsHere;
+        this.beforeHandOff = beforeHandOff;
     }
 
     /**
@@ -430,14 +447,22 @@ final class ParkingLot {
      * but before the permit was stored — if so, hand the wake to it now (it
      * may already have consumed the permit itself; {@code remove()} makes the
      * hand-off exactly-once).
+     *
+     * <p>The hand-off removes this call's {@code permit} only, and completes
+     * the waiter only if that removal succeeded. By then the waiter may have
+     * consumed the permit, or been woken by another wake, and left; a later
+     * wake may then have stored a permit for the run's next park on the key.
+     * Removing whatever the slot held would take that later permit and hand it
+     * to a waiter nobody waits on. A permit this call no longer finds was
+     * consumed, or replaced by a later wake's — which made its own hand-off.
      */
     private void storePermit(ParkKey slot, Permit permit) {
         pendingWakes.put(slot, permit);
         var racedWaiter = futures.get(slot);
         if (racedWaiter != null) {
-            var raced = pendingWakes.remove(slot);
-            if (raced != null) {
-                racedWaiter.future().complete(raced.payload);
+            beforeHandOff.run();
+            if (pendingWakes.remove(slot, permit)) {
+                racedWaiter.future().complete(permit.payload);
             }
         }
     }
