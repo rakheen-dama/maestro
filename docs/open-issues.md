@@ -4062,8 +4062,10 @@ unqualified `KafkaTemplate<…, byte[]>` point could only have received a
 template that cannot serialize `byte[]`. When several default-candidate
 templates match the point, Spring chooses by `@Primary`, `@Priority` or the
 parameter or field name, and the check does not reimplement that choice: it
-never fails, and logs one `WARN` per point only when one of the matching
-templates cannot be confirmed to serialize `byte[]`
+never fails, and logs one `WARN` per point only when a matching template the
+bean depends on cannot serialize `byte[]` or has a serializer it cannot
+classify (a template whose serializer it cannot see at all gets only a
+`DEBUG` line, traced)
 (`ByteArrayTemplateInjectionCheckTest.aPrimaryTemplateBesideAQualifiedOne_startsAndWarnsOnceThatItCannotTell`,
 `aBeanInjectingTwoTemplatesByParameterName_startsAndWarnsOnceThatItCannotTell`).
 So a genuine misinjection that reaches a `StringSerializer` template through

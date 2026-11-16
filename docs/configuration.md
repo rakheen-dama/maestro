@@ -1058,15 +1058,19 @@ names only a type gets Boot's bean. Pinned by
   `spring.kafka.producer.value-serializer` for it), or declare your own
   `ProducerFactory` / `KafkaTemplate` / `ConsumerFactory` beans, exactly as in
   a service without Maestro. Boot's beans back off for yours as they always
-  do; the engine is unaffected. One exception: a `ProducerFactory` of your
-  own **without** a `KafkaTemplate` of your own fails startup, because Boot's
-  `kafkaTemplate` (no longer backing off for Maestro's) cannot use a
-  `ProducerFactory<String, YourDto>`
+  do; the engine is unaffected. One exception: a typed `ProducerFactory` of
+  your own (such as `ProducerFactory<String, YourDto>`) **without** a
+  `KafkaTemplate` of your own fails startup, because Boot's `kafkaTemplate`
+  (no longer backing off for Maestro's) cannot use a factory whose declared
+  generics its `ProducerFactory<Object, Object>` parameter does not match
   (`NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
   raised while creating `kafkaTemplate`). Declare your own `KafkaTemplate`
   over it too, or declare the factory `@Bean(defaultCandidate = false)` and
   inject it by name, so Boot's `kafkaProducerFactory` and `kafkaTemplate`
-  register beside it. Pinned by `KafkaCoexistenceContextTest`.
+  register beside it. A factory declared `ProducerFactory<?, ?>` is used by
+  Boot's `kafkaTemplate` and starts; a raw or `<Object, Object>` one should
+  behave the same (traced, not tested). Pinned by
+  `KafkaCoexistenceContextTest`.
 - **Reusing the engine's `byte[]` template.** Inject it with its qualifier:
   `@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]>`
   (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
@@ -1084,15 +1088,28 @@ names only a type gets Boot's bean. Pinned by
   `spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer`
   to send `byte[]` through Boot's template (a service that sets it starts and
   uses Boot's template). The check (`ByteArrayTemplateInjectionCheck`) sees
-  constructor, field, `@Bean`-method and `@Autowired`-method parameters of
-  beans created at startup, typed `KafkaTemplate<…, byte[]>` or
-  `KafkaOperations<…, byte[]>`. It counts a point against a template only
-  when that template is the one template the point could have received, so a
-  bean that uses a `String` template and a separate `byte[]` template of
-  yours is not blamed for the wrong one. A point that several of your
-  templates match (Spring chose by `@Primary`, `@Priority` or the parameter
-  or field name) never fails startup; it gets one `WARN` instead when one of
-  those templates cannot serialize `byte[]` or cannot be classified.
+  constructor parameters that Spring autowired, and field, `@Bean`-method and
+  `@Autowired`-method parameters, of beans created at startup, typed
+  `KafkaTemplate<…, byte[]>`, `KafkaOperations<…, byte[]>` or a subclass. It
+  counts a point against a template only when that template is the one
+  template of the point's declared type that the point could have received,
+  so a bean that uses a `String` template and a separate `byte[]` template of
+  yours is not blamed for the wrong one, and a point typed with your own
+  `KafkaTemplate` subclass is checked against beans of that subclass only. A
+  point that several of your templates match (Spring chose by `@Primary`,
+  `@Priority` or the parameter or field name) never fails startup. It gets
+  one `WARN` when a matching template the bean depends on cannot serialize
+  `byte[]` or has a serializer the check cannot classify; when that
+  template's serializer is not visible to the check at all (a
+  `KafkaOperations` that is not a `KafkaTemplate`, or a factory with no
+  value serializer), only a `DEBUG` line (traced, not tested).
+  - **Not points, because Spring did not autowire them:** the constructor of
+    a bean built by an instance supplier (a `BeanRegistrar` supplier, or
+    `registerBean(…, Supplier)`, which may call `getBean` itself), and
+    constructor parameters given explicit indexed argument values. For a
+    `FactoryBean`, the FactoryBean's own class is checked, never its
+    product's. A definition with generic (unindexed) argument values exempts
+    every constructor parameter (traced, not tested).
   - **A `@Qualifier` takes a point out of the check.** A point with Spring's
     `@Qualifier` (or a `jakarta.inject` qualifier) is not checked, whichever
     template the qualifier names; `@Qualifier("kafkaTemplate")` on a
@@ -1168,7 +1185,7 @@ keep it; see below for plain ones):
 | Deserializers | `spring.kafka.consumer.key-deserializer` / `value-deserializer` | Always `StringDeserializer` / `ByteArrayDeserializer`, whatever `spring.kafka.consumer.*` says |
 | Group id | Its own (`groupId`, or `spring.kafka.consumer.group-id`) | `maestro-<service>` (or `maestro.messaging.consumer-group`), plus `-<groupIdSuffix>` when set |
 | `spring.kafka.listener.*` | Applies (e.g. `ack-mode`, `auto-startup`) | Does not apply, except `observation-enabled`; always `AckMode.RECORD`, always started |
-| Error handler and DLT | Your `CommonErrorHandler` bean if it is the only one, or the `@Primary` one among several; with neither, Spring Kafka's default `DefaultErrorHandler`. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
+| Error handler and DLT | Your `CommonErrorHandler` bean if it is the only one; among several, the `@Primary` one, else the highest `@Priority` (traced, not tested), else the one named `commonErrorHandler` (Boot resolves it through a parameter of that name); with none of these, no handler is set and Spring Kafka's default `DefaultErrorHandler` applies. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
 | Reply template | Boot's `kafkaTemplate` | None (a `@MaestroSignalListener` returns a `SignalRouting`, not a reply) |
 | `KafkaConnectionDetails` | Applies (bootstrap servers) | Applies (bootstrap servers) |
 

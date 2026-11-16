@@ -211,6 +211,20 @@ class KafkaListenerBoundaryTest {
     }
 
     @Test
+    @DisplayName("of several CommonErrorHandler beans without a @Primary, a plain @KafkaListener gets the one named commonErrorHandler")
+    void ofSeveralHostErrorHandlers_theOneNamedCommonErrorHandlerIsChosen() {
+        // Boot resolves ObjectProvider<CommonErrorHandler>.getIfUnique() through a parameter
+        // named commonErrorHandler, so Spring's name fallback applies among several candidates.
+        runner.withUserConfiguration(NamedSecondErrorHandler.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(ctx.getBeansOfType(CommonErrorHandler.class)).hasSize(2);
+            var host = (ConcurrentMessageListenerContainer<?, ?>)
+                    ctx.getBean(KafkaListenerEndpointRegistry.class).getListenerContainer("host-listener");
+            assertThat(host.getCommonErrorHandler()).isSameAs(ctx.getBean("commonErrorHandler"));
+        });
+    }
+
+    @Test
     @DisplayName("after typed plain-@Bean replacements of Maestro's consumer factory and template, a plain @KafkaListener gets an inline factory and no reply template")
     void afterTypedPlainReplacements_aPlainKafkaListenerGetsAnInlineFactoryAndNoReplyTemplate() {
         runner.withUserConfiguration(TypedPlainReplacements.class, ConnectionDetailsConfiguration.class)
@@ -400,6 +414,16 @@ class KafkaListenerBoundaryTest {
 
         @Bean
         CommonErrorHandler secondErrorHandler() {
+            return new DefaultErrorHandler(new FixedBackOff(0L, 2L));
+        }
+    }
+
+    /** A second host {@code CommonErrorHandler}, not {@code @Primary}, named {@code commonErrorHandler}. */
+    @Configuration(proxyBeanMethods = false)
+    static class NamedSecondErrorHandler {
+
+        @Bean
+        CommonErrorHandler commonErrorHandler() {
             return new DefaultErrorHandler(new FixedBackOff(0L, 2L));
         }
     }

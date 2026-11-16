@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.beans.factory.NoSuchBeanDefinitionException;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.assertj.AssertableApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -148,6 +149,31 @@ class KafkaCoexistenceContextTest {
                             .isSameAs(ctx.getBean("kafkaProducerFactory"));
                     assertEngineHoldsMaestrosBeans(ctx);
                 });
+    }
+
+    @Test
+    void aNonDefaultCandidateHostProducerFactory_isInjectedByName() {
+        coexistenceRunner().withUserConfiguration(NonDefaultCandidateHostProducerFactoryConfiguration.class,
+                        HostFactoryUserConfiguration.class)
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    assertThat(ctx.getBean(HostFactoryUser.class).factory())
+                            .isSameAs(ctx.getBean("hostProducerFactory"));
+                    assertThat(ctx.getBean("kafkaTemplate", KafkaTemplate.class).getProducerFactory())
+                            .isSameAs(ctx.getBean("kafkaProducerFactory"));
+                });
+    }
+
+    @Test
+    void aHostProducerFactoryWithWildcardGenerics_isUsedByBootsTemplate_andStarts() {
+        // Only a factory whose declared generics ProducerFactory<Object, Object> cannot match
+        // fails Boot's kafkaTemplate; a ProducerFactory<?, ?> is picked up by it.
+        coexistenceRunner().withUserConfiguration(WildcardHostProducerFactoryConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed().doesNotHaveBean("kafkaProducerFactory");
+            assertThat(ctx.getBean("kafkaTemplate", KafkaTemplate.class).getProducerFactory())
+                    .isSameAs(ctx.getBean("hostProducerFactory"));
+            assertEngineHoldsMaestrosBeans(ctx);
+        });
     }
 
     @Test
@@ -388,6 +414,29 @@ class KafkaCoexistenceContextTest {
         @Bean(defaultCandidate = false)
         ProducerFactory<String, HostDto> hostProducerFactory() {
             return new DefaultKafkaProducerFactory<>(hostProducerProps());
+        }
+    }
+
+    /** Injects the non-default-candidate host factory by name. */
+    record HostFactoryUser(ProducerFactory<String, HostDto> factory) {}
+
+    @Configuration(proxyBeanMethods = false)
+    static class HostFactoryUserConfiguration {
+
+        @Bean
+        HostFactoryUser hostFactoryUser(
+                @Qualifier("hostProducerFactory") ProducerFactory<String, HostDto> hostProducerFactory) {
+            return new HostFactoryUser(hostProducerFactory);
+        }
+    }
+
+    /** A host factory declared with wildcard generics, and no template. */
+    @Configuration(proxyBeanMethods = false)
+    static class WildcardHostProducerFactoryConfiguration {
+
+        @Bean
+        ProducerFactory<?, ?> hostProducerFactory() {
+            return new DefaultKafkaProducerFactory<String, HostDto>(hostProducerProps());
         }
     }
 
