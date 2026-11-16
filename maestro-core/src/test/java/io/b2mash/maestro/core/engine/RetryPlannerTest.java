@@ -161,6 +161,47 @@ class RetryPlannerTest {
     }
 
     @Test
+    void aJsonNullFailedSequences_takesTheMessagePath() {
+        var payload = MAPPER.createObjectNode().put("exceptionType", AEE)
+                .put("message", "Activity 'p' failed in workflow 'w': down");
+        payload.putNull("failedSequences");
+        var plan = plan(af(1, "p", ISE, "down"), ac(2, "alert"),
+                new WorkflowEvent(UUID.randomUUID(), INSTANCE, 3, WORKFLOW_FAILED, null, payload, Instant.EPOCH));
+        assertPlan(Basis.MATCHED_MESSAGE, Set.of(1, 2, 3), plan);
+    }
+
+    @Test
+    void aLegacyMemoWithoutAMessage_isMatchedThroughItsExceptionType() {
+        // live: the cause had no message, so ActivityExecutionException named its class
+        var plan = plan(ev(1, ACTIVITY_FAILED, "p", "{\"exceptionType\":\"" + ISE + "\"}"), ac(2, "alert"),
+                wf(3, null, AEE, "Activity 'p' failed in workflow 'w': " + ISE));
+        assertPlan(Basis.MATCHED_MESSAGE, Set.of(1, 2, 3), plan);
+    }
+
+    @Test
+    void aConsumedSignalInTheSubtreeOfAForkOnThePath_refuses() {
+        var plan = plan(af(1, "p", ISE, "down"), fork(2, 2), ev(3001, SIGNAL_RECEIVED, AWAIT + "ack", "\"ok\""),
+                ac(4001, "b"), ac(5001, "alert"), wf(5002, "[1]", AEE, "x"));
+        assertTrue(plan.refused(), plan::toString);
+        assertEquals(3001, plan.consumedSignalAt());
+    }
+
+    @Test
+    void lastInLane_deletesAParkedAwaitsTwoSlots() {
+        var plan = plan(ac(1, "a"), awaitPark(2, "go"), ev(3, SIGNAL_TIMEOUT, AWAIT + "go", null),
+                wf(4, "[]", ISE, "x"));
+        assertPlan(Basis.LAST_IN_LANE, Set.of(2, 3, 4), plan);
+        assertTrue(plan.deleteTimerIds().contains("await-signal-2"), plan.deleteTimerIds()::toString);
+    }
+
+    @Test
+    void twoAttributedSequences_deleteBothWithTheirPaths() {
+        // try { p(); } catch (e) { try { q(); } catch (e2) { e.addSuppressed(e2); } throw e; }
+        var plan = plan(af(1, "p", ISE, "down"), af(2, "q", ISE, "down too"), wf(3, "[1, 2]", AEE, "x"));
+        assertPlan(Basis.ATTRIBUTED, Set.of(1, 2, 3), plan);
+    }
+
+    @Test
     void aLegacyPayloadMatchingTwoMemos_fallsToLastInLane() {
         var plan = plan(af(1, "p", ISE, "down"), af(2, "p", ISE, "down"),
                 wf(3, null, AEE, "Activity 'p' failed in workflow 'w': down"));

@@ -228,6 +228,16 @@ class FailureAttributionTest {
         assertEquals(List.of(7), FailureAttribution.sequences(root, escaping));
     }
 
+    @Test
+    @DisplayName("parallel(p, p) with both failing names only the lower branch (the join attaches no sibling)")
+    void bothBranchesFailing_attributeOnlyTheLowerBranch() {
+        start("w11", () -> {
+            List<Callable<String>> tasks = List.of(() -> acts.p(), () -> acts.p());
+            return String.join(",", WorkflowContext.current().parallel(tasks));
+        });
+        assertEquals("[2001]", failed("w11"));
+    }
+
     // ── Fixture ─────────────────────────────────────────────────────────
 
     /** Registers a fresh exception and returns only a weak reference to it. */
