@@ -4,7 +4,10 @@
 # Usage: perf/run.sh <smoke|s1-throughput|s3-parked> [--profile local|full]
 #                    [--replicas N] [--record-baseline]
 #
-# Env:  PERF_ADMIN_EVENTS (true|false, default true)  PERF_KEEP_UP=1 (skip the
+# Env:  PERF_ADMIN_EVENTS (true|false, default false = the engine's default
+#       since 3.11c; every result records it: identity.config
+#       .adminEventsRequested, identity.effective.adminEventsEffective,
+#       validity.adminEvents, summary.md)  PERF_KEEP_UP=1 (skip the
 #       final down -v)  PERF_ENGINE_REF (free-text label)  PERF_NODE_HEAP /
 #       PERF_NODE_CPUS / PERF_NODE_MEM (node container sizing)
 #       PERF_PARK_MODE (s3-parked: signal | sleep, default signal; sleep is
@@ -200,7 +203,9 @@ done
 case "$SCENARIO" in smoke | s1-throughput | s3-parked) ;; *) usage; die "unknown scenario: $SCENARIO" ;; esac
 case "$PROFILE" in local | full) ;; *) die "--profile must be local or full, got '$PROFILE'" ;; esac
 [[ "$REPLICAS" =~ ^[1-9][0-9]*$ ]] || die "--replicas must be a positive integer, got '$REPLICAS'"
-PERF_ADMIN_EVENTS="${PERF_ADMIN_EVENTS:-true}"
+# The engine's default since 3.11c is false; the standard profile runs it. Set
+# PERF_ADMIN_EVENTS=true to measure the cost of publishing lifecycle events.
+PERF_ADMIN_EVENTS="${PERF_ADMIN_EVENTS:-false}"
 case "$PERF_ADMIN_EVENTS" in true | false) ;; *) die "PERF_ADMIN_EVENTS must be true or false, got '$PERF_ADMIN_EVENTS'" ;; esac
 command -v jq >/dev/null 2>&1 || die "jq is required (it writes identity.json)"
 
@@ -255,7 +260,7 @@ jq -n \
   printf '# args: %s --profile %s --replicas %s record-baseline=%s admin-events=%s\n' \
     "$SCENARIO" "$PROFILE" "$REPLICAS" "$RECORD_BASELINE" "$PERF_ADMIN_EVENTS"
 } >"${RESULTS}/harness.log"
-log "run ${RUN_ID}: ${SCENARIO} profile=${PROFILE} replicas=${REPLICAS} → ${RESULTS}"
+log "run ${RUN_ID}: ${SCENARIO} profile=${PROFILE} replicas=${REPLICAS} admin-events=${PERF_ADMIN_EVENTS} → ${RESULTS}"
 
 # ── 2. Preflight ───────────────────────────────────────────────────────────
 command -v docker >/dev/null 2>&1 || die "docker is required"
@@ -471,7 +476,8 @@ if ((RECORD_BASELINE)); then
   jq '{schema: 1, scenario, profile, runId: .identity.runId,
        recordedAtUtc: .identity.startedAtUtc,
        engineCommit: .identity.repo.engineCommit, harnessCommit: .identity.repo.harnessCommit,
-       replicas: .identity.config.replicas} + (.measurements.baselineCandidate // {})' \
+       replicas: .identity.config.replicas,
+       adminEventsEnabled: .identity.config.adminEventsRequested} + (.measurements.baselineCandidate // {})' \
     "${RESULTS}/result.json" >"$BASELINE"
   log "baseline recorded: ${BASELINE}"
 fi

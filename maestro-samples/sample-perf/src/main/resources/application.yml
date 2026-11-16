@@ -3,7 +3,8 @@
 # about what an adopter gets out of the box. So it sets only what Maestro cannot
 # default (service name, store, transport, the signals topic) plus
 # maestro.admin.events.enabled, which the harness sets explicitly per run from
-# PERF_ADMIN_EVENTS (default true, today's engine default) and reads back from
+# PERF_ADMIN_EVENTS (default false, the engine's default since 3.11c; true to
+# measure the cost of publishing lifecycle events) and reads back from
 # GET /perf/info. No maestro.worker.*, maestro.signal.*, maestro.recovery.*,
 # maestro.retention.* or maestro.lock.* property, and no Hikari pool size.
 # Every addition under maestro.* or spring.datasource.hikari.* must be justified
@@ -34,7 +35,7 @@ maestro:
       signals: maestro.signals.perf
   admin:
     events:
-      enabled: ${PERF_ADMIN_EVENTS:true}
+      enabled: ${PERF_ADMIN_EVENTS:false}
 
 management:
   endpoints:

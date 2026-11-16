@@ -102,7 +102,9 @@ services:
       SPRING_DATASOURCE_USERNAME: maestro
       SPRING_DATASOURCE_PASSWORD: maestro
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      PERF_ADMIN_EVENTS: ${PERF_ADMIN_EVENTS:-true}
+      # maestro.admin.events.enabled, set explicitly on every run (run.sh
+      # exports it; false = the engine's default since 3.11c).
+      PERF_ADMIN_EVENTS: ${PERF_ADMIN_EVENTS:-false}
       JAVA_TOOL_OPTIONS: -Xmx${PERF_NODE_HEAP:-1g}
     cpus: ${PERF_NODE_CPUS:-2}
     mem_limit: ${PERF_NODE_MEM:-1536m}
