@@ -35,7 +35,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * (the in-memory test store, a custom store) it is this JVM's clock, as
  * before. A timer's {@code fireAt} itself is still armed by the node that
  * schedules it, on that node's clock; so every node, leader or not, runs a
- * {@link ClockSkewCheck} at the top of each loop iteration (at start, then
+ * {@link ClockSkewCheck} at the end of each loop iteration (at start, then
  * every {@link ClockSkewCheck#INTERVAL}) and logs a {@code WARN} when its clock
  * is more than {@link ClockSkewCheck#WARN_ABOVE} off the store's.
  *
@@ -170,8 +170,11 @@ final class TimerPoller {
         while (running) {
             try {
                 // Leadership first: the skew check's SELECT now() can block on
-                // an exhausted pool for longer than LEADER_TTL, and it must
-                // not delay the renewal or the poll that follows it.
+                // an exhausted pool for longer than LEADER_TTL, so it runs
+                // after this pass's renewal and poll. It still sits between
+                // this renewal and the next one, so a blocked read can delay
+                // the NEXT renewal (at most once per ClockSkewCheck.INTERVAL);
+                // losing the lease is safe, firing a timer is a compare-and-set.
                 var leader = isLeader();
                 try {
                     if (leader) {

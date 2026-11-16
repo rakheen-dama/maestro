@@ -623,8 +623,8 @@ Due timers are compared with the store's clock: on Postgres the poller selects `
 
 **Timer accuracy is the difference between the database clock and the scheduling node's clock.** Before 3.7 a single node, or a fleet whose nodes agree with one another but not with the database, armed and compared a timer on the same clock, so it fired on time. Now:
 
-- a `sleep()` fires late by the skew on a node ahead of the database and early by the skew on a node behind it: a node 5 minutes ahead of Postgres fires `sleep(1s)` about 5 minutes late;
-- an `awaitSignal()` timeout expires early by the skew on a node behind the database, whose poller fires the row first; on a node ahead it still expires on time, because the await also compares its deadline with the clock of the node running it (traced, not tested).
+- a `sleep()` fires late by the skew on a node ahead of the database and early by up to the skew on a node behind it (a timer cannot fire before it is armed): a node 5 minutes ahead of Postgres fires `sleep(1s)` about 5 minutes late;
+- an `awaitSignal()` timeout expires early by up to the skew on a node behind the database, because the database-clock poll fires the row first; on a node ahead it still expires on time, because the await also compares its deadline with the clock of the node running it (traced, not tested).
 
 The store comparison in both directions is pinned by `PostgresDatabaseClockTest` (`aSingleNodeAheadOfTheDatabase_sleepArmedOnItsClockFiresLateByTheSkew`, `aSingleNodeBehindTheDatabase_deadlineArmedOnItsClockFiresEarlyByTheSkew`); the end-to-end `sleep()` and `awaitSignal()` timings are traced, not tested. Arming deadlines on the database clock ([Issue 51](open-issues.md#issue-51)) is the full fix. Postgres-backed tests on a developer machine read the Docker VM's clock, which can drift from the host's; Linux CI shares the host clock.
 

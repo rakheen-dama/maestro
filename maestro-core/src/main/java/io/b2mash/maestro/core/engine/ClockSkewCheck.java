@@ -19,7 +19,8 @@ import java.util.function.LongSupplier;
  * {@code fireAt} and an {@code awaitSignal()} deadline are still armed on the
  * clock of the node that schedules them, so a node whose clock is off arms its
  * deadlines off by the same amount. Every node's {@link TimerPoller} calls
- * {@link #maybeCheck()} at the top of each loop iteration, leader or not.
+ * {@link #maybeCheck()} at the end of each loop iteration, after its
+ * leadership renewal and poll, leader or not.
  *
  * <h2>Cadence</h2>
  * <p>The first call checks; after that a call checks only once

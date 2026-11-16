@@ -509,10 +509,16 @@ final class ParkingLot {
      * registered, not whether it is the run the terminate looked up. A newer
      * run registered in between is poisoned too, and that is correct (traced,
      * not tested): {@code terminateWorkflow} calls this only after its
-     * {@code TERMINATED} write committed, a run registers only after re-reading
-     * the row as active and winning its adoption compare-and-set, and
-     * {@code workflow_id} is unique, so any such run adopted the row before the
-     * terminate's write and belongs to the workflow just terminated. With the
+     * {@code TERMINATED} write committed; a relaunched run registers only after
+     * re-reading the row as active and winning its adoption compare-and-set,
+     * and a fresh start registers only after creating its row; and
+     * {@code workflow_id} is unique while the row exists, so any such run took
+     * the row before the terminate's write and belongs to the workflow just
+     * terminated. The one exception: the terminated row is purged by the
+     * retention sweeper and the id is started again inside this window (which
+     * needs a terminated-retention shorter than the clock difference between
+     * the terminating node and the sweeper leader); that new run stands down
+     * once, writes nothing, and is picked up again by recovery. With the
      * instance lock held it cannot exist at all: the old run's deregistration
      * precedes its lock release, which precedes the new run's adoption.
      *
