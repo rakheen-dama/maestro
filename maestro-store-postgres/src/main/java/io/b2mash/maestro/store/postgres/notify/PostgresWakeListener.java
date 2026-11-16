@@ -124,8 +124,16 @@ public final class PostgresWakeListener implements AutoCloseable {
      * Borrows the connection, issues the {@code LISTEN} and starts the polling
      * thread. Idempotent. Never throws: a failure to connect is logged at
      * {@code WARN} and the polling thread keeps retrying with backoff.
+     *
+     * <p>{@link #close()} is terminal: a listener that was closed cannot be
+     * started again, and a {@code start()} after it does nothing. Create a new
+     * listener instead (Spring does, one per context).
      */
     public void start() {
+        if (stop.getCount() == 0) {
+            logger.debug("start() ignored: the wake listener on channel '{}' was closed", channel);
+            return;
+        }
         if (!running.compareAndSet(false, true)) {
             return;
         }

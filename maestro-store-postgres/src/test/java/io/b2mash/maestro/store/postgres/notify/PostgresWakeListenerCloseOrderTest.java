@@ -70,6 +70,22 @@ class PostgresWakeListenerCloseOrderTest {
     }
 
     @Test
+    @DisplayName("close() is terminal: a start() after it borrows no connection and starts no poll")
+    void aStartAfterCloseDoesNothing() {
+        var listener = scripted.newListener();
+        listener.start();
+        await().atMost(Duration.ofSeconds(5)).until(() -> scripted.pollCalls() >= 1);
+        listener.close();
+        awaitConnectionClosed();
+        var eventsAtClose = scripted.events();
+
+        listener.start();
+
+        assertEquals(eventsAtClose, scripted.events(), "a closed listener must not borrow or LISTEN again");
+        assertFalse(listener.isConnected());
+    }
+
+    @Test
     @DisplayName("once start() returns, only the poll thread touches the connection")
     void theConnectionIsTouchedOnlyByThePollThreadAfterStart() {
         var listener = scripted.newListener();
