@@ -596,7 +596,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
             case ACTIVITY_FAILED -> {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
-                throw reconstructFailure(event, stepName, ctx.workflowId());
+                var replayed = reconstructFailure(event, stepName, ctx.workflowId());
+                WorkflowContextInternals.recordFailureMemo(ctx, replayed, seq);
+                throw replayed;
             }
             // Unreachable: ReplayGuard.requireMatch admits only ACTIVITY_COMPLETED
             // and ACTIVITY_FAILED before handleReplay is called. Kept so the
@@ -906,6 +908,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // (An Error — e.g. a shutdown signal — never reaches this catch
             // and is never observed as a failure.)
             observer.activityFailed(info, elapsed, failureExceptionType(e), false);
+            // WP3: the memo at seq is durable — remember which object carries
+            // it, so WORKFLOW_FAILED can name it (failedSequences).
+            WorkflowContextInternals.recordFailureMemo(ctx, e, seq);
             throw e;
         }
         var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);

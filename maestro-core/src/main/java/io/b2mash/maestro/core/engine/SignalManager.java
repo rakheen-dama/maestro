@@ -660,7 +660,7 @@ final class SignalManager {
         // the next poll fires for nobody.
         if (!timeout.isPositive()) {
             appendTimeout(ctx, seq, stepName, signalName, timeout);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+            throw registeredTimeout(ctx, seq, new SignalTimeoutException(ctx.workflowId(), signalName, timeout));
         }
 
         // No signal yet — subscribe for cross-instance wake, then park.
@@ -728,6 +728,17 @@ final class SignalManager {
     }
 
     /**
+     * Registers {@code timeout} against its durable {@code SIGNAL_TIMEOUT}
+     * memo at {@code seq} in the run's failure-memo registry (WP3), and
+     * returns it for the caller to throw.
+     */
+    private static SignalTimeoutException registeredTimeout(WorkflowContext ctx, int seq,
+                                                            SignalTimeoutException timeout) {
+        WorkflowContextInternals.recordFailureMemo(ctx, timeout, seq);
+        return timeout;
+    }
+
+    /**
      * Replays a memoized outcome — {@code SIGNAL_RECEIVED} returns its
      * payload, {@code SIGNAL_TIMEOUT} re-raises — from the log alone, with no
      * store read and no signal consumption.
@@ -745,7 +756,7 @@ final class SignalManager {
         if (outcome.eventType() == EventType.SIGNAL_TIMEOUT) {
             logger.debug("Replaying timed-out await of '{}' at seq {} — re-raising deterministically",
                     signalName, seq);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+            throw registeredTimeout(ctx, seq, new SignalTimeoutException(ctx.workflowId(), signalName, timeout));
         }
         logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
         observer.signalConsumed(
@@ -975,7 +986,8 @@ final class SignalManager {
                     appendTimeout(ctx, outcomeSeq, stepName, signalName, timeout);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
-                    throw new SignalTimeoutException(workflowId, signalName, timeout);
+                    throw registeredTimeout(ctx, outcomeSeq,
+                            new SignalTimeoutException(workflowId, signalName, timeout));
                 }
 
                 // 3. Park in re-check-interval chunks. Every wake OR chunk

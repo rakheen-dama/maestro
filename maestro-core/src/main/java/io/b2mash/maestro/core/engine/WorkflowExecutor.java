@@ -2897,7 +2897,8 @@ public final class WorkflowExecutor {
         try {
             var errorPayload = serializer.serialize(new WorkflowFailureDetail(
                     failure.getClass().getName(),
-                    failure.getMessage()
+                    failure.getMessage(),
+                    FailureAttribution.sequences(ctx, failure)
             ));
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED,
                     EventType.WORKFLOW_FAILED, errorPayload)) {
