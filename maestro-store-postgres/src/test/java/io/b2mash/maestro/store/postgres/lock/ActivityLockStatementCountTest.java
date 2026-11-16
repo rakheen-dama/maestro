@@ -77,6 +77,10 @@ class ActivityLockStatementCountTest {
         await().atMost(Duration.ofSeconds(15)).until(() -> store.getInstance("lock-count-1")
                 .map(i -> i.status() == WorkflowStatus.COMPLETED).orElse(false));
         await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("lock-count-1"));
+        // The run leaves runningWorkflows before its finally releases the
+        // instance lock, so isRunning can turn false before the release's
+        // DELETE executes: wait for it before reading the exact counts.
+        await().atMost(Duration.ofSeconds(5)).until(() -> counting.executedStartingWith("DELETE") >= 1);
 
         assertEquals("x" + "+".repeat(ACTIVITIES),
                 store.getInstance("lock-count-1").orElseThrow().output().stringValue());
