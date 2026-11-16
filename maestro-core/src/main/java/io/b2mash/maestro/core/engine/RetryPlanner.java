@@ -20,7 +20,8 @@ import java.util.TreeSet;
  * <p>The rule, checked in this order:
  * <ol>
  *   <li><b>{@link RetryPlan.Basis#LEGACY LEGACY}</b> when the {@link LaneTree}
- *       walk leaves any event unplaced: exactly today's delete-by-type set —
+ *       walk leaves any event unplaced, or two lanes claim one slot
+ *       ({@link LaneTree#ambiguous()}): exactly today's delete-by-type set —
  *       every {@code ACTIVITY_FAILED} and {@code WORKFLOW_FAILED}, plus, when
  *       a {@code WORKFLOW_FAILED} names {@link SignalTimeoutException}, the
  *       highest {@code SIGNAL_TIMEOUT} and its same-step {@code TIMER_SCHEDULED}
@@ -84,8 +85,9 @@ final class RetryPlanner {
                 .sorted()
                 .toList();
 
-        // 1. Anything unplaced: the walk cannot be trusted; today's plan.
-        if (!tree.unplaced().isEmpty()) {
+        // 1. Anything unplaced, or a slot two lanes claim: the walk cannot be
+        // trusted; today's plan.
+        if (!tree.unplaced().isEmpty() || tree.ambiguous()) {
             return finish(RetryPlan.Basis.LEGACY, legacyDeletes(bySeq), bySeq);
         }
 

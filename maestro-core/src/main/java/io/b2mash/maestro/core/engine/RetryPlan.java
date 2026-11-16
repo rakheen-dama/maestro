@@ -37,7 +37,7 @@ record RetryPlan(
         MATCHED_MESSAGE,
         /** Nothing attributed: only failures whose propagation path recorded nothing go. */
         LAST_IN_LANE,
-        /** The lane walk left an event unplaced: today's delete-by-type plan. */
+        /** The lane walk left an event unplaced, or two lanes claimed one slot: today's delete-by-type plan. */
         LEGACY
     }
 

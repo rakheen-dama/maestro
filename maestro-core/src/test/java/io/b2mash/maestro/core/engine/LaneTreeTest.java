@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -82,6 +83,43 @@ class LaneTreeTest {
     void aForkMarkerWithoutABranchCountIsNotAFork() {
         var t = LaneTree.of(List.of(ev(1, SIDE_EFFECT, "$maestro:parallel"), ev(2001, ACTIVITY_COMPLETED, "x")));
         assertEquals(new TreeSet<>(Set.of(2001)), t.unplaced());
+    }
+
+    @Test
+    void aSlotTwoLanesClaim_marksTheTreeAmbiguous() {
+        var t = LaneTree.of(issue28Overlap());
+        assertTrue(t.ambiguous(), "4002001 is both branch 1's continuation and the later fork's branch 0");
+    }
+
+    @Test
+    void aTreeWithoutOverlap_isNotAmbiguous() {
+        var t = LaneTree.of(List.of(fork(1, 2), ev(2001, ACTIVITY_COMPLETED, "x"), ev(3001, ACTIVITY_COMPLETED, "y"),
+                ev(4001, ACTIVITY_COMPLETED, "z")));
+        assertFalse(t.ambiguous());
+    }
+
+    /**
+     * Issue 28's ×1000 overlap: root fork at 1 (n=2); branch 1 (3001..3999)
+     * forks at its 999th slot, 3999 (n=2), so it continues at
+     * {@code nextParentSeq(3999, 2) + 1 = 4002001}; the root continues at 4001
+     * and forks there (n=2), whose branch 0 also starts at 4002001.
+     */
+    static List<WorkflowEvent> issue28Overlap() {
+        var history = new ArrayList<WorkflowEvent>();
+        history.add(fork(1, 2));
+        history.add(ev(2001, ACTIVITY_COMPLETED, "b0"));
+        for (int s = 3001; s <= 3998; s++) {
+            history.add(ev(s, ACTIVITY_COMPLETED, "b1"));
+        }
+        history.add(fork(3999, 2));
+        history.add(ev(4000001, ACTIVITY_COMPLETED, "b1sub0"));
+        history.add(ev(4001001, ACTIVITY_COMPLETED, "b1sub1"));
+        history.add(ev(4002001, ACTIVITY_COMPLETED, "shared"));
+        history.add(fork(4001, 2));
+        history.add(ev(4003001, ACTIVITY_COMPLETED, "r2b1"));
+        history.add(ev(4004001, ACTIVITY_FAILED, "tail"));
+        history.add(ev(4004002, WORKFLOW_FAILED, null));
+        return history;
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

@@ -30,8 +30,9 @@ import java.util.TreeSet;
  * which is why the history is walked.
  *
  * <h2>The walk</h2>
- * <p>Each lane is walked slot by slot and stops at its first empty slot (or a
- * slot another lane already took). The walk is iterative, with an explicit
+ * <p>Each lane is walked slot by slot and stops at its first empty slot, or at
+ * a slot another lane already took, which marks the tree
+ * {@linkplain #ambiguous() ambiguous}. The walk is iterative, with an explicit
  * stack, so deep nesting cannot overflow the thread stack. An event no lane
  * reaches is {@linkplain #unplaced() unplaced}, except {@code WORKFLOW_FAILED},
  * which sits at the root's next slot — after a gap whenever the run's last step
@@ -80,12 +81,14 @@ final class LaneTree {
     private final Map<Integer, Lane> laneOfSlot;
     private final Map<Integer, List<Lane>> branchesOfFork;
     private final SortedSet<Integer> unplaced;
+    private final boolean ambiguous;
 
     private LaneTree(Map<Integer, Lane> laneOfSlot, Map<Integer, List<Lane>> branchesOfFork,
-                     SortedSet<Integer> unplaced) {
+                     SortedSet<Integer> unplaced, boolean ambiguous) {
         this.laneOfSlot = laneOfSlot;
         this.branchesOfFork = branchesOfFork;
         this.unplaced = unplaced;
+        this.ambiguous = ambiguous;
     }
 
     /**
@@ -104,6 +107,7 @@ final class LaneTree {
         var laneOfSlot = new HashMap<Integer, Lane>();
         var branchesOfFork = new HashMap<Integer, List<Lane>>();
         var pending = new ArrayDeque<Walk>();
+        var ambiguous = false;
         pending.push(new Walk(new Lane(null, 0), 1, Integer.MAX_VALUE));
 
         while (!pending.isEmpty()) {
@@ -114,7 +118,16 @@ final class LaneTree {
             while (slot <= limit) {
                 var seq = (int) slot;
                 var event = bySeq.get(seq);
-                if (event == null || laneOfSlot.containsKey(seq)) {
+                if (event == null) {
+                    break;
+                }
+                var owner = laneOfSlot.get(seq);
+                if (owner != null) {
+                    // Another lane walked here first (Issue 28): the slot's
+                    // lane cannot be told from the history alone.
+                    if (owner != lane) {
+                        ambiguous = true;
+                    }
                     break;
                 }
                 laneOfSlot.put(seq, lane);
@@ -148,7 +161,7 @@ final class LaneTree {
             }
         }
         return new LaneTree(Map.copyOf(laneOfSlot), Map.copyOf(branchesOfFork),
-                Collections.unmodifiableSortedSet(unplaced));
+                Collections.unmodifiableSortedSet(unplaced), ambiguous);
     }
 
     /**
@@ -183,6 +196,20 @@ final class LaneTree {
      */
     boolean isPlaced(int sequence) {
         return laneOfSlot.containsKey(sequence);
+    }
+
+    /**
+     * Reports whether two lanes claimed one slot: a walk met a slot holding an
+     * event that another lane had already taken (Issue 28's ×1000 overlap,
+     * where a branch that forks at its 999th slot continues exactly where a
+     * later fork's branch 0 starts). The slot was given to whichever lane
+     * walked first, so neither lane's extent is trustworthy; the planner then
+     * uses today's plan.
+     *
+     * @return {@code true} if some slot was claimed by two lanes
+     */
+    boolean ambiguous() {
+        return ambiguous;
     }
 
     /**

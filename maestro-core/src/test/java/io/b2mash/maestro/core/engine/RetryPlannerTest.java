@@ -10,6 +10,7 @@ import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
@@ -161,6 +162,14 @@ class RetryPlannerTest {
         var plan = plan(af(1, "p", ISE, "down"), ac(3, "fallback"), af(4, "finish", ISE, "boom"),
                 wf(5, "[4]", AEE, "x"));
         assertPlan(Basis.LEGACY, Set.of(1, 4, 5), plan);
+    }
+
+    @Test
+    void aSlotTwoLanesClaim_fallsBackToTheLegacyPlan() {
+        var history = new ArrayList<>(LaneTreeTest.issue28Overlap());
+        history.removeLast();
+        history.add(wf(4004002, "[4004001]", AEE, "x"));
+        assertPlan(Basis.LEGACY, Set.of(4004001, 4004002), RetryPlanner.plan("w", history));
     }
 
     @Test
