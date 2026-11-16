@@ -235,8 +235,11 @@ class ProducerFactoryReplacementFailureAnalyzerTest {
     private static final String BOOT_NO_SUCH_BEAN_ANALYZER =
             "org.springframework.boot.autoconfigure.diagnostics.analyzer.NoSuchBeanDefinitionFailureAnalyzer";
 
-    /** Serves {@code META-INF/spring.factories} with spring-boot-autoconfigure's copy first, or as found. */
-    private static final class SpringFactoriesOrderClassLoader extends ClassLoader {
+    /**
+     * Serves {@code META-INF/spring.factories} with spring-boot-autoconfigure's copy first, or as found.
+     * Package-private: {@code ByteArrayTemplateMissingFailureAnalyzerTest} reuses it.
+     */
+    static final class SpringFactoriesOrderClassLoader extends ClassLoader {
 
         private final boolean bootAutoconfigureFirst;
 
