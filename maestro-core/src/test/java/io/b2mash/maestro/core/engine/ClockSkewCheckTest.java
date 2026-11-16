@@ -66,7 +66,9 @@ class ClockSkewCheckTest {
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
                         + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
                         + "1500 ms later than the database clock would set it: a sleep() can wake, and an "
-                        + "awaitSignal() timeout can expire, up to 1500 ms late. "
+                        + "awaitSignal() timeout can expire, up to 1500 ms late by the database clock. "
+                        + "If another node adopts the run, that node compares the awaitSignal() deadline with its own "
+                        + "clock, so the timeout then moves by that node's skew as well. "
                         + "Check this node's time synchronisation (NTP)."),
                 warning(Duration.ofMillis(1500), Duration.ZERO));
     }
@@ -78,7 +80,9 @@ class ClockSkewCheckTest {
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
                         + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
                         + "2000 ms earlier than the database clock would set it: a sleep() can wake, and an "
-                        + "awaitSignal() timeout can expire, up to 2000 ms early. "
+                        + "awaitSignal() timeout can expire, up to 2000 ms early by the database clock. "
+                        + "If another node adopts the run, that node compares the awaitSignal() deadline with its own "
+                        + "clock, so the timeout then moves by that node's skew as well. "
                         + "Check this node's time synchronisation (NTP)."),
                 warning(Duration.ofMillis(-2000), Duration.ZERO));
     }
@@ -90,7 +94,9 @@ class ClockSkewCheckTest {
                         + "Due timers are polled on the database clock, but sleep() and awaitSignal() deadlines "
                         + "are armed on the clock of the node that schedules them, so a deadline armed here is set "
                         + "between 1500 and 1521 ms earlier than the database clock would set it: a sleep() can "
-                        + "wake, and an awaitSignal() timeout can expire, up to 1521 ms early. "
+                        + "wake, and an awaitSignal() timeout can expire, up to 1521 ms early by the database clock. "
+                        + "If another node adopts the run, that node compares the awaitSignal() deadline with its own "
+                        + "clock, so the timeout then moves by that node's skew as well. "
                         + "Check this node's time synchronisation (NTP)."),
                 warning(Duration.ofMillis(-1500), Duration.ofMillis(20).plusNanos(1)));
     }

@@ -179,13 +179,17 @@ final class ClockSkewCheck {
             var range = low == high ? low + " ms" : "between %d and %d ms".formatted(low, high);
             // "can ... up to": an awaitSignal() deadline is also compared on the
             // clock of the node running the await, so a timeout can expire on
-            // time; only the bound and its direction hold for both kinds.
+            // time; only the bound and its direction hold for both kinds, and
+            // only against the database clock: after an adoption the await's own
+            // deadline check runs on the adopting node's clock.
             return Optional.of(("This node's clock is %s %s the database clock (warns above 1 s; the upper "
                     + "bound adds the time the store read took). Due timers are polled on the database clock, "
                     + "but sleep() and awaitSignal() deadlines are armed on the clock of the node that schedules "
                     + "them, so a deadline armed here is set %s %s than the database clock would set it: a "
-                    + "sleep() can wake, and an awaitSignal() timeout can expire, up to %d ms %s. Check this "
-                    + "node's time synchronisation (NTP).")
+                    + "sleep() can wake, and an awaitSignal() timeout can expire, up to %d ms %s by the "
+                    + "database clock. If another node adopts the run, that node compares the awaitSignal() "
+                    + "deadline with its own clock, so the timeout then moves by that node's skew as well. "
+                    + "Check this node's time synchronisation (NTP).")
                     .formatted(range, ahead ? "ahead of" : "behind", range, ahead ? "later" : "earlier",
                             high, ahead ? "late" : "early"));
         }
