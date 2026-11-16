@@ -8,3 +8,5 @@ histogram_quantile(0.95, sum by (le) (rate(maestro_workflow_duration_seconds_buc
 sum by (reason) (increase(maestro_run_abandoned_total[1m]))
 sum by (instance) (jvm_memory_used_bytes{area="heap"})
 process_cpu_usage
+# Wake permits held per node (3.2; an engine older than 525b287 has no series)
+maestro_wake_permits

@@ -178,33 +178,49 @@
 # replicas match this run (otherwise NO_BASELINE, with the reason).
 #
 # relativeAllowance = s1_relative_allowance below: 0.02, from measurements.
-# Evidence: only runs that PASS THIS evaluator (validity.plan included) and
-# that advisory.contention judges quiet. Four cold local runs, one node, 6337
-# workflows each, net statements per completed workflow over the whole load
-# window (unrounded: (maestroCalls - lock-cleaner calls - background) /
-# completed):
-#   r20261112t210341z 36.0028 (228229 calls; VUs 50/200, before 4bf45b6;
+# Every run cited here has its result.json committed under
+# perf/.evidence/wp11/<runId>.result.json (the pre-merge runs re-evaluated by
+# the current evaluator without a baseline; the figures below are derived
+# from their measurements.statements: maestroCalls, lock-cleaner calls,
+# backgroundCallsExpectedInLoadWindow and completed).
+# Today's engine (main 525b287 merged; no per-activity lock, 3.10): cold
+# local runs, one node, 6337 workflows each, net statements per completed
+# workflow over the whole load window, admin events off unless stated:
+#   r20261116t221747z 26.00 (164862 calls)
+#   r20261116t222856z 26.00 (164858 calls)
+#   r20261116t222331z 26.00 (164860 calls; admin events ON, 85644 records)
+#   r20261116t225610z 26.00 (164857 calls; admin events ON, 85644 records)
+# a spread of 5 calls over 6337 workflows (0.0008 per workflow), with admin
+# events on or off: publishing lifecycle events costs no database
+# statement, so the baseline match does not include the setting (the
+# baseline records it as adminEventsEnabled). All four ran on a contended
+# host (advisory.contention: host load 7.7-14.6 per CPU) and the figure did
+# not move with it. The per-activity lock's removal took exactly 10
+# statements per workflow (2 per live activity x 5) off the earlier figure:
+# Before it (engine at 4c930c4..f6518d0), four cold local runs that PASS
+# this evaluator and that advisory.contention judges quiet:
+#   r20261112t210341z 36.00 (228229 calls; VUs 50/200, before 4bf45b6;
 #                              quiet on slot-hold time ALONE: no node CPU
 #                              or host load recorded)
-#   r20261112t213818z 36.0032 (228232 calls; quiet on slot-hold time ALONE)
-#   r20261112t222511z 36.0028 (228229 calls; quiet on every part; host load
+#   r20261112t213818z 36.00 (228232 calls; quiet on slot-hold time ALONE)
+#   r20261112t222511z 36.00 (228229 calls; quiet on every part; host load
 #                              average 12.1 on 10 CPUs at its start)
-#   r20261112t223114z 36.0031 (228232 calls; quiet on every part; host load
+#   r20261112t223114z 36.00 (228232 calls; quiet on every part; host load
 #                              7.8)
-# a spread of 0.0004 (0.001 %): the engine issued 228229 or 228232 calls for
-# the same 6337 workflows. The full profile's PASSing run r20261112t214359z
-# (contended) gave 36.0136 over 42974 workflows. Runs r20261112t203520z,
-# r20261112t204157z and r20261112t204918z (36.00 / 36.01 / 36.00), first
-# cited here, are INVALID under this evaluator (they predate the executed-plan
-# record) and are no longer evidence. The started 0.10 would be a band of
-# +/- 3.6 statements: blind to one added statement per workflow (+2.8 %), the
-# smallest real regression. 0.02 is +/- 0.72: it catches that and is still
-# far above the observed spread. What could move the figure without a code
-# change, and how much: recovery polls page over the backlog (at most about
-# 70 calls a minute at the full profile's peak backlog, about 0.03 per
-# workflow, consistent with the full run's +0.01), CAS retries and lock
-# contention (not observed); lock-cleaner passes are subtracted exactly
-# (validity.sweeps).
+# a spread of 3 calls (0.001 %). The full profile's PASSing run
+# r20261112t214359z (contended) gave 36.01 over 42974 workflows. Runs
+# r20261112t203520z, r20261112t204157z and r20261112t204918z (36.00 / 36.01
+# / 36.00), first cited here, are INVALID under this evaluator (they predate
+# the executed-plan record) and are no longer evidence. The started 0.10
+# would be a band of +/- 2.6 statements at 26: blind to one added statement
+# per workflow (+3.8 %), the smallest real regression. 0.02 is +/- 0.52: it
+# catches that and is still far above the observed spread. What could move
+# the figure without a code change, and how much: recovery polls page over
+# the backlog (at most about 70 calls a minute at the full profile's peak
+# backlog, about 0.03 per workflow, consistent with the full run's +0.01),
+# CAS retries and lock contention (not observed); lock-cleaner passes are
+# subtracted exactly (validity.sweeps); a clock-skew read (perf/run.sh known
+# limit 5) is one call in a window.
 include "common";
 
 def s1_relative_allowance: 0.02;

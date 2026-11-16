@@ -167,9 +167,10 @@ out=$(evaluate_with bg-election-edge "$(bg_ticks '$e' "$replicas"' * ($e - 1)')"
 expect "election upserts = replicas x (ticks - 1): validity.background" PASS "$(jq -r '.checks["validity.background"]' <<<"$out")"
 out=$(evaluate_with bg-calls-contradict '.background.window.maestroCalls = 3')
 expect "maestroCalls below its own poller statements: validity.background" INVALID "$(jq -r '.checks["validity.background"]' <<<"$out")"
-# The due-timer query in both of its forms: today's (cut-off bound as $1,
-# PENDING as $3) and the one a pending engine merge introduces (cut-off on
-# the database clock, PENDING as $2, the batch size as $1).
+# The due-timer query in both of its forms: an older engine's (cut-off bound
+# as $1, PENDING as $3; variable due_today, named before 3.7 merged) and the
+# engine's since 3.7 (cut-off on the database clock, PENDING as $2, the batch
+# size as $1; due_now), the text recorded by r20261116t221546z.
 due_today='SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= $1 AND status = $3 ORDER BY fire_at ASC LIMIT $2 FOR UPDATE SKIP LOCKED'
 due_now='SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED'
 due_form() { # <query text>: the idle window's due-timer entry rewritten to it

@@ -95,17 +95,17 @@ def isnum: type == "number";
 # from its length: a stalled poller, or a database that recorded nothing,
 # must not pass.
 #
-# The tick statement is the timer poller's due-timer query
-# (PostgresWorkflowStore.getDueTimersSql, called only by
-# TimerPoller.pollDueTimers), which pg_stat_statements records as
+# The tick statement is the timer poller's due-timer query (called only by
+# TimerPoller.pollDueTimers). Since 3.7 the Postgres store compares on the
+# database clock (PostgresWorkflowStore.getDueTimersByStoreClockSql), which
+# pg_stat_statements records as (r20261116t221546z and every later run)
 #   SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status,
-#   created_at FROM maestro_workflow_timer WHERE fire_at <= $1 AND status = $3
+#   created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND
+#   status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED
+# ('PENDING' normalised to $2; whitespace collapsed and the text cut at 200
+# characters by pgss-window.sql). An older engine binds the leader's clock:
+#   ... FROM maestro_workflow_timer WHERE fire_at <= $1 AND status = $3
 #   ORDER BY fire_at ASC LIMIT $2 FOR UPDATE SKIP LOCKED
-# ('PENDING' normalised to $3; whitespace collapsed and the text cut at 200
-# characters by pgss-window.sql). A pending engine merge moves the cut-off
-# onto the database clock:
-#   ... FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2
-#   ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED
 # Both forms are matched (self-tested), top-level entries only, by the regex
 # tick_query_re, which needs only the stable head of the WHERE clause
 # (fire_at <= $n or now(), then status =): it survives the normalisation

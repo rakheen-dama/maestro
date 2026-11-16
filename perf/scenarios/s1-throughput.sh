@@ -32,12 +32,13 @@
 # each level's window; see perf/eval/s1-throughput.jq for how levels are
 # judged ("sustains", the ceiling, the ramp and maximum biases), for
 # contention, and for the statement gate's relative allowance and its
-# measured justification: four cold local runs that PASS the final
-# evaluator and are judged quiet, net statements per workflow 36.0028 /
-# 36.0032 / 36.0028 / 36.0031 (r20261112t210341z and r20261112t213818z,
-# quiet on slot-hold time alone: no node CPU or host load was recorded for
-# them; r20261112t222511z and r20261112t223114z, quiet on every recorded
-# part); allowance 0.02.
+# measured justification: net statements per workflow 26.00 in four cold
+# local runs of today's engine (r20261116t221747z, r20261116t222856z,
+# admin events off; r20261116t222331z, r20261116t225610z, on; all on a
+# contended host), 36.00 in four quiet runs before the per-activity lock was
+# removed (r20261112t210341z, r20261112t213818z, r20261112t222511z,
+# r20261112t223114z); allowance 0.02. Every cited run's result.json is
+# committed under perf/.evidence/wp11/.
 #
 # What this scenario measures. The ceiling = busy slots / (activity time +
 # engine overhead per workflow), and the activity time is the sample's own
@@ -59,6 +60,15 @@
 # 20 workflow slots bind before the Hikari pool of 10 does; pinning
 # statements per workflow (the gate); and measuring engine overhead per
 # workflow. It is NOT a measure of engine throughput headroom.
+# Today's engine (no per-activity lock), local, one node, on a contended
+# host (advisory.contention: host load 7.7-14.6 per CPU, so not quiet
+# figures): ceiling 73.01 / 70.61 completions/s with admin events off
+# (r20261116t221747z, r20261116t222856z), 73.16 / 73.48 on
+# (r20261116t222331z, r20261116t225610z); hold-window rate 72.26-75.47/s;
+# engine overhead 17.44 / 27.26 ms off, 15.41 / 15.77 ms on (+/- 1.4-10.9):
+# inside the pre-merge quiet runs' spread, so neither removing the activity
+# lock (2 statements of about 0.06 ms each per activity: r20261112t223114z)
+# nor publishing admin events moved the ceiling detectably here.
 # Past the ceiling, throughput was seen to fall 8-11 % at about 118 offered
 # per second (the L120 level), 1.5 x the ceiling level's offered rate (L80)
 # and about 1.6-1.7 x the measured ceiling (73.7 -> 68.0/s and 70.1 ->

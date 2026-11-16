@@ -10,8 +10,8 @@
 #       validity.adminEvents, summary.md)  PERF_KEEP_UP=1 (skip the
 #       final down -v)  PERF_ENGINE_REF (free-text label)  PERF_NODE_HEAP /
 #       PERF_NODE_CPUS / PERF_NODE_MEM (node container sizing)
-#       PERF_PARK_MODE (s3-parked: signal | sleep, default signal; sleep is
-#       supported, not run: its figures are not measured)
+#       PERF_PARK_MODE (s3-parked: signal | sleep, default signal; sleep
+#       measured once, local profile, one node: perf/eval/s3-parked.jq)
 #       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
 #       PERF_WARMUP_TIMEOUT / PERF_WARMUP_ACTIVITY_MILLIS (force an unfinished
 #       warm-up: validity.warmup INVALID). The run lock's
@@ -38,8 +38,9 @@
 # The idle window's timer-poll ticks are COUNTED from what Postgres recorded
 # in it, never assumed from its length: observedTicks = calls of the timer
 # poller's due-timer query (pattern "FROM maestro_workflow_timer WHERE
-# fire_at <= $n AND status = ", or "fire_at <= now() AND status = " after a
-# pending engine merge; common.jq tick_query_re), which only the
+# fire_at <= now() AND status = ", the engine's form since 3.7, or
+# "fire_at <= $n AND status = " on an older engine; common.jq
+# tick_query_re), which only the
 # leader issues, once per tick. One tick at 1 replica = 1 leader-election
 # upsert + 1 due-timer query; at 2 replicas = 2 upserts (every node tries
 # every tick) + 1 due-timer query. expectedTicks = floor(windowSecs /
