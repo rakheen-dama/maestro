@@ -59,6 +59,13 @@ class RetryPlannerTest {
     }
 
     @Test
+    void aVersionMarkerRecordedBeforeTheFailure_isKept() {
+        var plan = plan(ev(1, EventType.VERSION_MARKER, "$maestro:version:pricing", "2"), af(2, "primary", ISE, "down"),
+                ac(3, "alert"), wf(4, "[2]", AEE, "x"));
+        assertPlan(Basis.ATTRIBUTED, Set.of(2, 3, 4), plan);
+    }
+
+    @Test
     void d10InABranch_truncatesTheRootTailAndKeepsTheSibling() {
         var plan = plan(fork(1, 2), af(2001, "a", ISE, "down"), ac(2002, "alert"), ac(3001, "b1"), ac(3002, "b2"),
                 ac(4001, "rootAlert"), wf(4002, "[2001]", AEE, "x"));
@@ -188,10 +195,20 @@ class RetryPlannerTest {
 
     @Test
     void lastInLane_deletesAParkedAwaitsTwoSlots() {
+        // a timeout escaped with no attribution (e.g. an older build's collectSignals deadline)
         var plan = plan(ac(1, "a"), awaitPark(2, "go"), ev(3, SIGNAL_TIMEOUT, AWAIT + "go", null),
-                wf(4, "[]", ISE, "x"));
+                wf(4, "[]", STE, "x"));
         assertPlan(Basis.LAST_IN_LANE, Set.of(2, 3, 4), plan);
         assertTrue(plan.deleteTimerIds().contains("await-signal-2"), plan.deleteTimerIds()::toString);
+    }
+
+    @Test
+    void lastInLane_keepsACaughtGateWhenTheEscapingExceptionIsNotATimeout() {
+        // SignalTimeoutReplayDeterminismTest's GateThenFlakyWorkflow: the gate's timeout is
+        // caught, then workflow code throws; the caught gate must survive (Issue 19)
+        var plan = plan(awaitPark(1, "gate"), ev(2, SIGNAL_TIMEOUT, AWAIT + "gate", null),
+                wf(3, "[]", "java.lang.RuntimeException", "flaky step failure"));
+        assertPlan(Basis.LAST_IN_LANE, Set.of(3), plan);
     }
 
     @Test

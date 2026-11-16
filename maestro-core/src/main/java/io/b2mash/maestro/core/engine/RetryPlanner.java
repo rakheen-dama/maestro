@@ -40,7 +40,11 @@ import java.util.TreeSet;
  *   <li>{@code A} empty ({@link RetryPlan.Basis#LAST_IN_LANE LAST_IN_LANE}):
  *       every {@code WORKFLOW_FAILED}, and {@code opSlots(F')} of every placed
  *       failure memo whose {@code after(F')} holds nothing but
- *       {@code WORKFLOW_FAILED}. One pass.</li>
+ *       {@code WORKFLOW_FAILED} — an {@code ACTIVITY_FAILED} always, a
+ *       {@code SIGNAL_TIMEOUT} only when the {@code WORKFLOW_FAILED} names
+ *       {@link SignalTimeoutException} (otherwise it is a gate the workflow
+ *       caught before failing some other way, which must survive, as it does
+ *       today: Issue 19). One pass.</li>
  *   <li><b>Refusal</b>: a {@code SIGNAL_RECEIVED} in the delete set sets
  *       {@link RetryPlan#consumedSignalAt()} to the lowest such sequence.</li>
  *   <li><b>Timer ids</b>: the {@code timerId} of every deleted
@@ -126,10 +130,16 @@ final class RetryPlanner {
             return finish(basis, deletes, bySeq);
         }
 
-        // 4. Nothing attributed: a failure whose path recorded nothing.
+        // 4. Nothing attributed: a failure whose path recorded nothing. A
+        // SIGNAL_TIMEOUT only when a timeout escaped: otherwise it is a gate
+        // the workflow caught, which must survive (Issue 19).
+        var timeoutEscaped = terminalPayload != null
+                && SIGNAL_TIMEOUT_EXCEPTION.equals(text(terminalPayload, "exceptionType"));
         for (var event : bySeq.values()) {
             var seq = event.sequenceNumber();
-            if (isFailureMemo(event) && tree.isPlaced(seq) && onlyWorkflowFailed(tree.after(seq), bySeq)) {
+            var candidate = event.eventType() == EventType.ACTIVITY_FAILED
+                    || (event.eventType() == EventType.SIGNAL_TIMEOUT && timeoutEscaped);
+            if (candidate && tree.isPlaced(seq) && onlyWorkflowFailed(tree.after(seq), bySeq)) {
                 deletes.addAll(opSlots(seq, bySeq));
             }
         }
