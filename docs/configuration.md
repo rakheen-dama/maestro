@@ -1169,7 +1169,11 @@ names only a type gets Boot's bean. Pinned by
 
   Any other value serializer it cannot classify (a generic one whose type
   it cannot resolve) does not fail startup; the check logs a `WARN` naming
-  the bean and the fix instead. A serializer named only in the producer
+  the bean and the fix instead. A serializer declared for `Object` passes
+  without a `WARN`, Spring Kafka's `DelegatingSerializer`,
+  `DelegatingByTypeSerializer` and `DelegatingByTopicSerializer` among them
+  (pinned), although what it writes for `byte[]` depends on delegates the
+  check cannot see. A serializer named only in the producer
   configuration (`spring.kafka.producer.value-serializer`) is classified
   from its class, without being instantiated; a serializer instance or
   supplier set on the factory in code is asked for once (it wins over the

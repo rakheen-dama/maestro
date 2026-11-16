@@ -43,6 +43,9 @@ import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaOperations;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.support.serializer.DelegatingByTopicSerializer;
+import org.springframework.kafka.support.serializer.DelegatingByTypeSerializer;
+import org.springframework.kafka.support.serializer.DelegatingSerializer;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.stereotype.Component;
 
@@ -743,6 +746,20 @@ class ByteArrayTemplateInjectionCheckTest {
         assertThat(ByteArrayTemplateInjectionCheck.valueSerializerTarget(new KafkaTemplate<>(instanceWins)))
                 .as("a serializer instance on the factory wins over the config map")
                 .isEqualTo(byte[].class);
+    }
+
+    @Test
+    void springKafkasDelegatingSerializers_passBecauseTheyDeclareObject() {
+        // They are Serializer<Object>, and Object is assignable from byte[]: no WARN, no failure.
+        // What they write for byte[] depends on their delegates; the check cannot see those.
+        assertThat(ByteArrayTemplateInjectionCheck.classify(DelegatingSerializer.class))
+                .isEqualTo(ByteArrayTemplateInjectionCheck.Verdict.WRITES_BYTES);
+        assertThat(ByteArrayTemplateInjectionCheck.classify(DelegatingByTypeSerializer.class))
+                .isEqualTo(ByteArrayTemplateInjectionCheck.Verdict.WRITES_BYTES);
+        assertThat(ByteArrayTemplateInjectionCheck.classify(DelegatingByTopicSerializer.class))
+                .isEqualTo(ByteArrayTemplateInjectionCheck.Verdict.WRITES_BYTES);
+        assertThat(ByteArrayTemplateInjectionCheck.classify(OpaqueSerializer.class))
+                .isEqualTo(ByteArrayTemplateInjectionCheck.Verdict.UNCLASSIFIED);
     }
 
     @Test

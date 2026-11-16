@@ -92,10 +92,14 @@ import java.util.function.IntPredicate;
  * {@code WARN}, with the same text less the way out of last resort, and
  * startup continues; under {@code off} the
  * check does nothing, not even the {@code WARN}s below. A serializer it
- * cannot classify (another generic serializer, a lambda, a delegating
- * serializer) is not a failure: it is logged at
+ * cannot classify (another generic serializer whose type does not resolve, a
+ * lambda) is not a failure: it is logged at
  * {@code WARN}, because such a serializer may write {@code byte[]} values
- * differently from {@code ByteArraySerializer}. Any exception while inspecting
+ * differently from {@code ByteArraySerializer}. A serializer declared for
+ * {@code Object} passes silently, Spring Kafka's {@code DelegatingSerializer},
+ * {@code DelegatingByTypeSerializer} and {@code DelegatingByTopicSerializer}
+ * among them, although what it writes for {@code byte[]} depends on delegates
+ * the check cannot see. Any exception while inspecting
  * a bean skips that bean at {@code DEBUG}. The check reads bean definitions
  * and already-created singletons only; it creates no bean.
  *
