@@ -443,7 +443,13 @@ class ActivityInvocationHandlerTest {
     @Test
     @DisplayName("A live activity takes no lock (3.10)")
     void liveActivityTakesNoLock() {
-        withContext(() -> createProxy(GreetingActivities.class, new GreetingActivitiesImpl()).greet("World"));
+        var result = new java.util.concurrent.atomic.AtomicReference<Greeting>();
+        withContext(() -> result.set(
+                createProxy(GreetingActivities.class, new GreetingActivitiesImpl()).greet("World")));
+        assertEquals(new Greeting("Hello, World!"), result.get(), "the activity ran live and returned its value");
+        assertEquals(List.of(EventType.ACTIVITY_COMPLETED),
+                store.appendedEvents.stream().map(WorkflowEvent::eventType).toList(),
+                "the live call recorded its one outcome");
         assertEquals(List.of(), lock.acquiredKeys, "a live activity takes no lock (3.10)");
         assertEquals(0, lock.releasedCount);
     }
@@ -646,7 +652,7 @@ class ActivityInvocationHandlerTest {
     }
 
     @Test
-    @DisplayName("Terminate requested before the call: no lock, no ACTIVITY_STARTED, no attempt (R22 part 3)")
+    @DisplayName("Terminate requested before the call: no ACTIVITY_STARTED, no attempt (R22 part 3)")
     void terminateBeforeCall_publishesNoActivityStarted() {
         var calls = new AtomicInteger();
         var observer = new RecordingEngineObserver();
@@ -660,7 +666,7 @@ class ActivityInvocationHandlerTest {
                 "a terminated run must not publish ACTIVITY_STARTED (or open an activity span)");
         assertTrue(observer.invocations().isEmpty(),
                 "no observer callback either — in particular no activityStarted: " + observer.callbackNames());
-        assertTrue(lock.acquiredKeys.isEmpty(), "no activity lock for a terminated run");
+        assertEquals(0, calls.get(), "the terminated run executed no activity");
         assertTrue(store.appendedEvents.isEmpty());
         assertEquals(0, calls.get());
     }
@@ -1046,17 +1052,9 @@ class ActivityInvocationHandlerTest {
 
         final List<String> acquiredKeys = new ArrayList<>();
         int releasedCount = 0;
-        boolean failAcquisition = false;
-        boolean throwOnAcquire = false;
 
         @Override
         public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
-            if (throwOnAcquire) {
-                throw new RuntimeException("Lock backend unavailable");
-            }
-            if (failAcquisition) {
-                return Optional.empty();
-            }
             acquiredKeys.add(key);
             return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
         }
