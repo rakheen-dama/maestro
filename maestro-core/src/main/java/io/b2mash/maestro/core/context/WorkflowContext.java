@@ -12,10 +12,10 @@ import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collections;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -97,8 +97,17 @@ public final class WorkflowContext {
      * live or replayed, keyed by identity, mapped to that memo's sequence.
      * Created by the public constructors and shared with every bounded
      * context, so branch and compensation contexts register into the run's
-     * map. Bounded by the run's own failure-memo count; it lives exactly as
-     * long as the run's contexts do.
+     * map.
+     *
+     * <p>The keys are weak: an entry goes once nothing else reaches its
+     * exception, so a long loop that catches failures, or a replay that
+     * re-registers them, does not grow the map for the run's whole life. An
+     * exception still reachable from the one escaping the workflow method (as
+     * itself, a cause or a suppressed exception) keeps its entry, which is all
+     * {@code failedSequences} reads. Identity semantics hold:
+     * {@link Throwable} does not override {@code equals}/{@code hashCode}, and
+     * both registered types ({@code ActivityExecutionException},
+     * {@code SignalTimeoutException}) are final.
      */
     private final Map<Throwable, Integer> failureMemos;
 
@@ -245,7 +254,7 @@ public final class WorkflowContext {
         this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
                 serviceName, initialSequence, replaying, operations, null, cancellation,
                 new RunLease(workflowInstanceId, leaseEpoch),
-                Collections.synchronizedMap(new IdentityHashMap<>()));
+                Collections.synchronizedMap(new WeakHashMap<>()));
     }
 
     private WorkflowContext(

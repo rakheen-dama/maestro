@@ -18,6 +18,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
@@ -28,6 +29,7 @@ import java.util.concurrent.Callable;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 /**
  * WP3 Task 1 — the run that records {@code WORKFLOW_FAILED} names, in the
@@ -199,7 +201,41 @@ class FailureAttributionTest {
         assertEquals(2001, WorkflowContextInternals.failureMemoSequence(root, thrown));
     }
 
+    @Test
+    @DisplayName("the registry does not keep an exception alive once nothing else reaches it")
+    void anExceptionNoLongerReachableIsCollectable() throws InterruptedException {
+        var root = new WorkflowContext(UUID.randomUUID(), "w", UUID.randomUUID(), "T", "q", "svc", 0, false);
+        var ref = registerUnreachable(root, 1);
+        for (int i = 0; i < 100 && ref.get() != null; i++) {
+            System.gc();
+            Thread.sleep(10);
+        }
+        assertNull(ref.get(), "a registered exception nothing else reaches must be collectable");
+    }
+
+    @Test
+    @DisplayName("a registered failure still reachable from the escaping exception keeps its attribution")
+    void aReachableFailureKeepsItsAttributionAcrossCollections() throws InterruptedException {
+        var root = new WorkflowContext(UUID.randomUUID(), "w", UUID.randomUUID(), "T", "q", "svc", 0, false);
+        var memo = new IllegalStateException("down");
+        WorkflowContextInternals.recordFailureMemo(root, memo, 7);
+        var escaping = new IllegalStateException("x", memo);
+        memo = null;
+        for (int i = 0; i < 5; i++) {
+            System.gc();
+            Thread.sleep(10);
+        }
+        assertEquals(List.of(7), FailureAttribution.sequences(root, escaping));
+    }
+
     // ── Fixture ─────────────────────────────────────────────────────────
+
+    /** Registers a fresh exception and returns only a weak reference to it. */
+    private static WeakReference<Throwable> registerUnreachable(WorkflowContext ctx, int sequence) {
+        var thrown = new IllegalStateException("unreachable");
+        WorkflowContextInternals.recordFailureMemo(ctx, thrown, sequence);
+        return new WeakReference<>(thrown);
+    }
 
     private String catchAlertRethrow() {
         try {
