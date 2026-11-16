@@ -2433,7 +2433,13 @@ public final class WorkflowExecutor {
             // can launch and be given a permit, which a later clearPending
             // would erase. Here, after the removal above, any wake that stores
             // a permit fails its re-check (the run is gone) and drops it, and
-            // no new run can be registered until the release below.
+            // no new run can be registered until the release below. That last
+            // step relies on the instance lock: a new run of this id is
+            // registered only by a node that acquired the lock. With no lock
+            // backend, a new run of the id (a recovery or a retry) can
+            // register here between the removal and clearPending, and a permit
+            // stored for it can be erased — it then waits for its wake-recheck
+            // interval: latency, never a lost wake (traced, not tested).
             parkingLot.clearPending(ctx.workflowId());
             instanceLockManager.release(ctx.workflowId());
             // Drop the sticky terminate poison: this run is over, so a future
