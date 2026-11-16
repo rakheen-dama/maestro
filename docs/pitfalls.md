@@ -83,6 +83,8 @@ try {
 
 **Test it:** count provider calls (`assertEquals(1, provider.calls.get())`). To pin the replay path, `env.crashAfterPersisting(e -> e.eventType() == EventType.ACTIVITY_FAILED)` and `crash.recover()` (see `PaymentProcessingWorkflowTest`).
 
+**Admin Retry reads the chain.** Retry re-runs the failure that ended the run, found through the exception that escaped `@WorkflowMethod`. Rethrow the `ActivityExecutionException`, or pass it as the cause (`throw new OrderFailed("…", e)`). A failure thrown without it is found only when nothing was recorded after it; otherwise Retry replays it and the workflow fails again.
+
 ---
 
 ## 3. Every activity must be idempotent

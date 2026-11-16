@@ -163,14 +163,53 @@ already-rebalanced case). The lock backend is not in this path at all — if you
 faster admin-command delivery after a hard node death, tune Kafka's
 `session.timeout.ms`, not anything in Maestro.
 
+**What a Retry deletes.** A Retry deletes the failure that ended the run —
+the one the exception escaping `@WorkflowMethod` carries, as itself, a cause
+or a suppressed exception (recorded in `WORKFLOW_FAILED` as
+`failedSequences`) — together with everything the run recorded after it
+along its path, the whole subtree of any `parallel()` started there, and the
+`WORKFLOW_FAILED`; a failure the workflow caught and recovered from, a
+completed sibling branch, and a second branch's independent failure are kept
+(the run then fails again naming that branch, and a second Retry clears it).
+For a failure recorded by a build before this one (no `failedSequences`),
+the one failure memo whose rebuilt exception message equals the recorded
+message is treated the same way. When nothing is attributed (an exception
+thrown without the activity's exception as its cause), only an
+`ACTIVITY_FAILED` — or, when a `SignalTimeoutException` escaped, a
+`SIGNAL_TIMEOUT` — after which nothing but `WORKFLOW_FAILED` was recorded is
+deleted, so a caught gate timeout survives. When the history has a slot
+Maestro cannot place (a slot consumed without a memo and followed by more
+work, or two lanes claiming one slot), Retry deletes what it always did:
+every `ACTIVITY_FAILED`, the `WORKFLOW_FAILED` and, for an await timeout, the
+highest `SIGNAL_TIMEOUT` with its park memo. Every deleted timer slot takes
+its timer row, of any status; the deletes and the `FAILED → RUNNING`
+compare-and-set are one transaction, and the relaunch bumps the lease epoch
+through the normal adoption. If the deleted region holds a consumed signal
+(`SIGNAL_RECEIVED`) — the failure's handling awaited one — Retry writes
+nothing, logs a `WARN` naming its sequence, and returns
+`SIGNAL_CONSUMED_AFTER_FAILURE`: the signal cannot be given back exactly, so
+terminate the workflow or finish its business outcome by hand. The admin
+command is acknowledged like every other no-op outcome, not redelivered.
+Tests: `AdminRetryTest`, `RetryPlannerTest`, `AdminCommandDispatcherRefusalTest`.
+
+Two cases are traced, not tested. A saga whose `compensate()` met
+`SequenceSpaceExhaustedException` is `FAILED` with no
+`COMPENSATION_STARTED`, so Retry relaunches it, exactly as before this
+change. With a host connection pool at `REPEATABLE READ` or `SERIALIZABLE`, a
+Retry that loses to a concurrent one surfaces as `StoreUnavailableException`
+(SQLSTATE `40001`) instead of `OptimisticLockException`; nothing is deleted
+either way, and the command is redelivered.
+
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only
 *after* the retry. That works because a retry waits the full timeout again,
-counted from the retry: it discards the failed await's spent deadline (its
-`TIMER_SCHEDULED` memo and `await-signal-<seq>` row) together with its
-`SIGNAL_TIMEOUT` (R61). A signal sent before the retry is consumed at once.
-The timeout itself is whatever the run memoized — in the loan sample, node
-A's `PT8S` override (F4) — not the retrying node's configuration.
+counted from the retry: it deletes the failing await's memo, outcome and row
+(its `TIMER_SCHEDULED` memo, its `SIGNAL_TIMEOUT` and its
+`await-signal-<seq>` row; attributed, Issue 33 — the await whose timeout
+propagated, not the latest one) (R61). A signal sent before the retry is
+consumed at once. The timeout itself is whatever the run memoized — in the
+loan sample, node A's `PT8S` override (F4) — not the retrying node's
+configuration.
 
 ---
 
@@ -517,8 +556,9 @@ Operationally, what matters:
   those instances with `UnsupportedWorkflowVersionException` — a genuine,
   deterministic workflow failure: it ends `FAILED` and saga compensation runs.
   Recovery: restore code carrying the old branch, then use the admin **Retry**
-  action. Retry clears the failure memos but never the version marker, so the
-  retried run replays the same recorded version against the restored branch.
+  action. Retry never deletes a version marker recorded before the failure, so
+  the retried run replays the same recorded version against the restored
+  branch (`RetryPlannerTest.aVersionMarkerRecordedBeforeTheFailure_isKept`).
 - `maxSupported` must be a **code constant** — see the rules in
   `docs/concepts.md`.
 
@@ -804,19 +844,9 @@ adopts the instance, stands down again, and emits one WARN plus one counter
 increment — exactly the §10.3 behaviour, and the reason the alert above is a
 rate.
 
-**An admin Retry can surface as drift.** Retry deletes *every*
-`ACTIVITY_FAILED` memo of the instance (plus `WORKFLOW_FAILED`), including one
-the workflow **caught** and recovered from (`try { a.x(); } catch (ActivityExecutionException e) { b.fallback(); }`).
-On the retried run that activity has no memo, so it executes live; if it now
-succeeds, the workflow takes the success path, and the next recorded step — the
-fallback the original run took — no longer matches. That run stands down as
-`nondeterministic_history` instead of continuing. Before this check the same
-retry was *silent corruption*: the success path replayed the fallback's
-recorded payload as its own. No code change or rollback heals it — the history
-genuinely records a path the retried run no longer takes. **Remedy:**
-terminate the instance and complete its business outcome by hand (or start a
-fresh instance); avoid admin Retry on workflows that catch activity failures
-and branch on them.
+Retry keeps a failure the workflow caught and recovered from: it deletes only the failure that ended the run and what the run recorded after it while handling that failure (operations §4). A retry of a workflow that failed without the activity's exception in its chain keeps a caught failure that more work followed, and fails again; rethrow the exception, or wrap it with the cause (pitfalls rule 2).
+
+Tests: `AdminRetryTest`.
 
 **Compensations registered inside `parallel()` branches are not drift.** They
 reach the saga stack in branch-index order, not finish order (see
@@ -1040,12 +1070,18 @@ the workflow itself.
   and is redelivered; the redelivery finds no instance and stores the orphan.
   Nothing is lost; the dead-letter topic is reached only if every redelivery
   fails for some other reason (`docs/configuration.md` § Redelivery).
-- **A concurrent retry never loses its history.** Postgres: the retry's row
-  update blocks on (or is skipped by) the purge's `FOR UPDATE SKIP LOCKED`;
+- **A concurrent retry never loses its history.** Postgres: the retry's one
+  transaction takes the row lock first, so it blocks on (or is skipped by)
+  the purge's `FOR UPDATE SKIP LOCKED`, and a retry that waited on a purged
+  row reports `NOT_FOUND` (tests:
+  `PostgresReopenFailedInstanceTest.aReopenWaitingOnAPurgeFindsTheRowGone`,
+  `AdminRetryTest.aReopenThatFindsTheRowGone_isNotFoundAndLaunchesNothing`);
   the two cannot interleave. A dialect without row locking (the portable base
   SQL in `maestro-store-jdbc`) re-checks the status in the instance delete and
   rolls the whole batch back — children included — when the count falls
-  short, logging a `WARN`.
+  short, logging a `WARN`; and because a retry locks the instance row before
+  its children while that purge deletes the children first, the two can
+  deadlock, and the database aborts one of them whole (traced, not tested).
 
 ### 11.3 Observing it
 
