@@ -41,8 +41,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * workflow — it writes nothing, leaves the instance recoverable and releases
  * the instance lock.
  *
- * <p>Once dead, every <em>write</em> (any method not named {@code get*} or
- * {@code find*}) throws the same error — but only on a thread bound to a
+ * <p>Once dead, every <em>write</em> (any method not named {@code get*},
+ * {@code find*} or {@code storeTime}) throws the same error — but only on a thread bound to a
  * {@link WorkflowContext}, i.e. one of this node's workflow, branch,
  * compensation or activity-attempt threads. The test thread still reaches
  * the store, which is how a signal or a timer "lands while the service is
@@ -161,14 +161,15 @@ final class NodeStoreView implements InvocationHandler {
 
     /**
      * Whether a {@link WorkflowStore} method changes state. Everything except the
-     * {@code get*}/{@code find*} reads does.
+     * {@code get*}/{@code find*} reads and {@code storeTime} (a read of the
+     * store's clock) does.
      *
      * @param method a {@link WorkflowStore} method
      * @return {@code true} for a write
      */
     static boolean isWrite(Method method) {
         var name = method.getName();
-        return !(name.startsWith("get") || name.startsWith("find"));
+        return !(name.startsWith("get") || name.startsWith("find") || name.equals("storeTime"));
     }
 
     @Override

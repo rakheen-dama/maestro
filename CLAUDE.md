@@ -102,6 +102,8 @@ public interface WorkflowStore {
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
+    default List<WorkflowTimer> getDueTimers(int batchSize); // due by the store's clock (Postgres: fire_at <= now()); the timer poller calls this
+    default Optional<Instant> storeTime(); // the store's clock, for the skew WARN; empty = no clock
     Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
     boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
     void markTimerCancelled(UUID timerId);
@@ -205,10 +207,13 @@ Locks are rows in `maestro_distributed_lock` / `maestro_leader_election` (`lock_
 
 ```
 maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
-maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
 maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader_election (15s TTL)
 maestro:leader:retention:{service}            — Retention sweeper leader in maestro_leader_election (15s TTL, re-elected per batch)
 ```
+
+There is no per-activity lock (3.10). With a lock backend, two runners execute a step concurrently only in the window after a node lost its instance lock, or after a node's instance-lock acquire failed and it proceeded unlocked (traced, not tested); lease fencing (V6) rejects the stale runner's outcome append, so the stale runner records nothing, and the adopting node, finding no recorded outcome, runs the step again — so activities must be idempotent. A duplicate Kafka delivery is deduplicated by the signal's message id (V9), not by a lock.
+
+Due timers are polled on the database clock (`fire_at <= now()`); `fire_at` and await deadlines are armed on the scheduling node's clock, and every node WARNs when its clock is more than 1 s from the database's (checked at timer-poller start and every 10 min).
 
 Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
 
