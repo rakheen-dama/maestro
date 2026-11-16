@@ -435,7 +435,7 @@ class ByteArrayTemplateInjectionCheckTest {
 
     private static <V> KafkaTemplate<String, V> hostTemplate(Class<?> valueSerializer) {
         return new KafkaTemplate<>(new DefaultKafkaProducerFactory<String, V>(Map.of(
-                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:1",
                 ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, valueSerializer)));
     }
@@ -651,7 +651,7 @@ class ByteArrayTemplateInjectionCheckTest {
         @Bean
         KafkaTemplate<String, byte[]> countingTemplate(CountingByteArraySerializer serializer) {
             return new KafkaTemplate<>(new DefaultKafkaProducerFactory<String, byte[]>(
-                    Map.of(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:1"),
+                    Map.of(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:1"),
                     new StringSerializer(), serializer));
         }
     }

@@ -1133,7 +1133,9 @@ names only a type gets Boot's bean. Pinned by
   - For `maestroKafkaTemplate` and `maestroKafkaConsumerFactory` it is
     recommended. A plain `@Bean` of that name also replaces the engine's, but
     Boot's `kafkaTemplate` (respectively `kafkaConsumerFactory`) then backs
-    off and your unqualified injection points of that type get yours.
+    off and your unqualified injection points of that type get yours; plain
+    `@KafkaListener`s change too (see **After a plain-`@Bean` replacement**
+    below).
 
   Each combination is pinned by
   `KafkaCoexistenceContextTest.replacingAnEngineBeanByName_matrix`.
@@ -1144,7 +1146,10 @@ names only a type gets Boot's bean. Pinned by
 
 **Plain `@KafkaListener` consumers.** A plain `@KafkaListener` is Spring
 Boot's, configured exactly as in a service without Maestro; a
-`@MaestroSignalListener` is Maestro's. Neither sees the other's settings:
+`@MaestroSignalListener` is Maestro's. Neither sees the other's settings.
+The table holds while Maestro's consumer factory and template are not
+replaced by plain `@Bean`s (replacements declared `defaultCandidate = false`
+keep it; see below for plain ones):
 
 | | Plain `@KafkaListener` | `@MaestroSignalListener` |
 |---|---|---|
@@ -1153,13 +1158,33 @@ Boot's, configured exactly as in a service without Maestro; a
 | Deserializers | `spring.kafka.consumer.key-deserializer` / `value-deserializer` | Always `StringDeserializer` / `ByteArrayDeserializer`, whatever `spring.kafka.consumer.*` says |
 | Group id | Its own (`groupId`, or `spring.kafka.consumer.group-id`) | `maestro-<service>` (or `maestro.messaging.consumer-group`), plus `-<groupIdSuffix>` when set |
 | `spring.kafka.listener.*` | Applies (e.g. `ack-mode`, `auto-startup`) | Does not apply, except `observation-enabled`; always `AckMode.RECORD`, always started |
-| Error handler and DLT | Your `CommonErrorHandler` bean, if there is exactly one. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
+| Error handler and DLT | Your `CommonErrorHandler` bean if it is the only one, or the `@Primary` one among several; with neither, Spring Kafka's default `DefaultErrorHandler`. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
 | Reply template | Boot's `kafkaTemplate` | None (a `@MaestroSignalListener` returns a `SignalRouting`, not a reply) |
 | `KafkaConnectionDetails` | Applies (bootstrap servers) | Applies (bootstrap servers) |
 
 Pinned by `KafkaListenerBoundaryTest` (`maestro-messaging-kafka`), with both
 kinds in one application; `KafkaCoexistenceRoundTripTest` runs them against a
-real broker. Before this release a plain `@KafkaListener` ignored
+real broker, including the dead-letter record's `kafka_dlt-*` headers.
+
+**After a plain-`@Bean` replacement** of `maestroKafkaConsumerFactory` and
+`maestroKafkaTemplate`, Boot's `kafkaConsumerFactory` and `kafkaTemplate` back
+off, and what a plain `@KafkaListener` gets depends on how the replacement is
+declared. Boot's container factory asks for a `ConsumerFactory<Object, Object>`
+and a `KafkaTemplate<Object, Object>`:
+
+- Declared `ConsumerFactory<String, byte[]>` / `KafkaTemplate<String, byte[]>`:
+  neither matches, so a plain `@KafkaListener` rides an inline consumer
+  factory built from `spring.kafka.consumer.*` alone, which ignores
+  `KafkaConnectionDetails`, and has no reply template.
+- Declared with wildcards (`ConsumerFactory<?, ?>`, `KafkaTemplate<?, ?>`):
+  both match, so a plain `@KafkaListener` rides your `byte[]` factory and its
+  deserializers instead of `spring.kafka.consumer.*`, and replies through
+  your `byte[]` template.
+
+`@MaestroSignalListener` uses the replacement either way. Pinned by
+`KafkaListenerBoundaryTest`.
+
+Before this release a plain `@KafkaListener` ignored
 `KafkaConnectionDetails`: Boot's container factory found no consumer factory
 bean it could use and built an inline one from `spring.kafka.*` alone, so a
 Testcontainers `@ServiceConnection` user's plain listeners connected to

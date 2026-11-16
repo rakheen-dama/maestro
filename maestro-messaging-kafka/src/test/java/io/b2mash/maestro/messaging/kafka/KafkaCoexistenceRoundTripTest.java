@@ -13,6 +13,7 @@ import io.b2mash.maestro.spring.annotation.SignalRouting;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.header.Headers;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -24,10 +25,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.kafka.config.KafkaListenerEndpointRegistry;
+import org.springframework.kafka.listener.ListenerExecutionFailedException;
 import org.springframework.kafka.listener.MessageListenerContainer;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.test.util.ReflectionTestUtils;
 import tools.jackson.databind.ObjectMapper;
 
+import java.nio.ByteBuffer;
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
@@ -169,7 +173,27 @@ class KafkaCoexistenceRoundTripTest extends KafkaTestSupport {
             var deadLetter = readOne(POISON + ".DLT");
             assertThat(deadLetter.value()).isEqualTo(poison);
             assertThat(deadLetter.key()).isEqualTo("p");
+            // ... and with the dead-letter headers that say where it came from and why.
+            var headers = deadLetter.headers();
+            assertThat(new String(header(headers, KafkaHeaders.DLT_ORIGINAL_TOPIC), UTF_8)).isEqualTo(POISON);
+            assertThat(ByteBuffer.wrap(header(headers, KafkaHeaders.DLT_ORIGINAL_PARTITION)).getInt()).isZero();
+            assertThat(ByteBuffer.wrap(header(headers, KafkaHeaders.DLT_ORIGINAL_OFFSET)).getLong()).isZero();
+            assertThat(new String(header(headers, KafkaHeaders.DLT_ORIGINAL_CONSUMER_GROUP), UTF_8))
+                    .isEqualTo("maestro-" + svc);
+            assertThat(new String(header(headers, KafkaHeaders.DLT_EXCEPTION_FQCN), UTF_8))
+                    .isEqualTo(ListenerExecutionFailedException.class.getName());
+            // The listener wraps the executor's failure so Kafka error handling sees it.
+            assertThat(new String(header(headers, KafkaHeaders.DLT_EXCEPTION_CAUSE_FQCN), UTF_8))
+                    .isEqualTo(RuntimeException.class.getName());
+            assertThat(new String(header(headers, KafkaHeaders.DLT_EXCEPTION_MESSAGE), UTF_8))
+                    .contains("Signal processing failed — signals must not be discarded");
         });
+    }
+
+    private static byte[] header(Headers headers, String name) {
+        var header = headers.lastHeader(name);
+        assertThat(header).as("dead-letter header %s", name).isNotNull();
+        return header.value();
     }
 
     private static void awaitAssignment(MessageListenerContainer container, String what) {
