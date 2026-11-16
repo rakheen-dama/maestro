@@ -170,15 +170,23 @@ final class TimerPoller {
         logger.debug("Timer poller loop started on thread '{}'", Thread.currentThread().getName());
         while (running) {
             try {
-                // Every node, leader or not: every node arms deadlines (3.7).
-                // Never throws a RuntimeException; at most one store read per
-                // ClockSkewCheck.INTERVAL.
-                skewCheck.maybeCheck();
-                if (isLeader()) {
-                    var fired = pollDueTimers();
-                    if (fired > 0) {
-                        logger.debug("Fired {} due timer(s)", fired);
+                // Leadership first: the skew check's SELECT now() can block on
+                // an exhausted pool for longer than LEADER_TTL, and it must
+                // not delay the renewal or the poll that follows it.
+                var leader = isLeader();
+                try {
+                    if (leader) {
+                        var fired = pollDueTimers();
+                        if (fired > 0) {
+                            logger.debug("Fired {} due timer(s)", fired);
+                        }
                     }
+                } finally {
+                    // Every node, leader or not: every node arms deadlines
+                    // (3.7). Runs even when the poll threw. Never throws a
+                    // RuntimeException; at most one store read per
+                    // ClockSkewCheck.INTERVAL.
+                    skewCheck.maybeCheck();
                 }
                 Thread.sleep(pollInterval);
             } catch (InterruptedException e) {

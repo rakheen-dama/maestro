@@ -18,6 +18,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Finding 3.7: the timer poller asks the store for the timers due by the
@@ -81,7 +82,7 @@ class TimerPollerDatabaseClockTest {
         poller = new TimerPoller(store, executor, new NeverLeaderLock(), "svc", Duration.ofMillis(50), 10);
         var started = System.nanoTime();
         poller.start();
-        var deadline = started + Duration.ofSeconds(2).toNanos();
+        var deadline = started + Duration.ofSeconds(10).toNanos();
         var atLeast = started + Duration.ofSeconds(1).toNanos();
         while (System.nanoTime() < deadline
                 && (store.clockReads.get() == 0 || System.nanoTime() < atLeast)) {
@@ -89,7 +90,43 @@ class TimerPollerDatabaseClockTest {
         }
         poller.stop();
 
+        assertTrue(store.clockReads.get() > 0, "awaited (10 s) the non-leader poller's start-up store-clock read");
         assertEquals(1, store.clockReads.get(), "one check at start, the next only after ClockSkewCheck.INTERVAL");
+    }
+
+    /**
+     * W6: the skew check's {@code SELECT now()} can block on an exhausted
+     * connection pool for longer than the 15 s leader TTL, so each pass
+     * renews the timer-poller leadership before it reads the store clock.
+     */
+    @Test
+    void eachPassRenewsTheLeadershipBeforeItReadsTheStoreClock() throws Exception {
+        var calls = new CopyOnWriteArrayList<String>();
+        var store = new ClockRecordingStore() {
+            @Override
+            public Optional<Instant> storeTime() {
+                calls.add("store-clock");
+                return super.storeTime();
+            }
+        };
+        var lock = new NeverLeaderLock() {
+            @Override
+            public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+                calls.add("leader");
+                return super.trySetLeader(electionKey, candidateId, ttl);
+            }
+        };
+        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        poller = new TimerPoller(store, executor, lock, "svc", Duration.ofMillis(50), 10);
+        poller.start();
+        var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+        while (!calls.contains("store-clock") && System.nanoTime() < deadline) {
+            Thread.sleep(10);
+        }
+        poller.stop();
+
+        assertTrue(calls.contains("store-clock"), "awaited the poller's start-up store-clock read: " + calls);
+        assertEquals("leader", calls.getFirst(), "the leadership is renewed first: " + calls);
     }
 
     @Test
@@ -104,14 +141,15 @@ class TimerPollerDatabaseClockTest {
     }
 
     private static void awaitPolls(ClockRecordingStore store) throws InterruptedException {
-        var deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos();
+        var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         while (store.polls.isEmpty() && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
+        assertFalse(store.polls.isEmpty(), "awaited (10 s) the poller's first due-timer query");
     }
 
     /** A lock under which this node never wins the timer-poller election. */
-    static final class NeverLeaderLock implements DistributedLock {
+    static class NeverLeaderLock implements DistributedLock {
         @Override
         public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
             throw new UnsupportedOperationException("tryAcquire");
@@ -134,7 +172,7 @@ class TimerPollerDatabaseClockTest {
     }
 
     /** Records which due-timer method the poller called, and its store-clock reads. */
-    static final class ClockRecordingStore extends VersionedInMemoryStore {
+    static class ClockRecordingStore extends VersionedInMemoryStore {
         final List<String> polls = new CopyOnWriteArrayList<>();
         final AtomicInteger clockReads = new AtomicInteger();
 
