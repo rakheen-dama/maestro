@@ -144,11 +144,17 @@ class WakePermitLocalityTest {
         TestTerminalWait.awaitStatus(store, "late-notify", WorkflowStatus.WAITING_SIGNAL, Duration.ofSeconds(5));
         executor.deliverSignal("late-notify", "go", "x");
         TestTerminalWait.awaitStatus(store, "late-notify", WorkflowStatus.COMPLETED, Duration.ofSeconds(5));
+        // The run drops its registration before its permit cleanup runs, and a
+        // wake that reached the await between its re-check parks can leave a
+        // permit until that cleanup: wait for both, so the count below can
+        // only be the late notification's.
         var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
-        while (executor.isRunning("late-notify") && System.nanoTime() < deadline) {
+        while ((executor.isRunning("late-notify") || executor.wakePermitCount() != 0)
+                && System.nanoTime() < deadline) {
             Thread.sleep(20);
         }
         assertFalse(executor.isRunning("late-notify"), "the run's finally has not run within 5 s");
+        assertEquals(0, executor.wakePermitCount(), "the run's permit cleanup has not run within 5 s");
 
         notifier.callbacks.get("late-notify").onSignal("late-notify", "go");
         assertEquals(0, executor.wakePermitCount(), "the run is over on this node");
