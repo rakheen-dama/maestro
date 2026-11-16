@@ -219,6 +219,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(ActivityInvocationHandler.class);
 
+    /**
+     * The cause message a replayed failure gets when its {@code ACTIVITY_FAILED}
+     * memo has no (or an empty) message ({@link #reconstructFailure}). The
+     * Retry planner's legacy message match rebuilds it.
+     */
+    static final String REPLAYED_FAILURE_MESSAGE = "Replayed failure";
+
     private final Object activityImpl;
     private final String activityName;
     private final WorkflowStore store;
@@ -789,7 +796,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private ActivityExecutionException reconstructFailure(
             WorkflowEvent event, String stepName, String workflowId
     ) {
-        var message = "Replayed failure";
+        var message = REPLAYED_FAILURE_MESSAGE;
         var exceptionType = (String) null;
 
         if (event.payload() != null) {

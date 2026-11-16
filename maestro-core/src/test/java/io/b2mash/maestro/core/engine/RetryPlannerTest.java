@@ -137,6 +137,30 @@ class RetryPlannerTest {
     }
 
     @Test
+    void aLegacyPayloadWrittenAfterAReplay_matchesAMemoWithoutAMessage() {
+        // the memo has no message, so a replay rebuilt the cause as "Replayed failure"
+        var plan = plan(ev(1, ACTIVITY_FAILED, "p", "{\"exceptionType\":\"" + ISE + "\"}"), ac(2, "alert"),
+                wf(3, null, AEE, "Activity 'p' failed in workflow 'w': Replayed failure"));
+        assertPlan(Basis.MATCHED_MESSAGE, Set.of(1, 2, 3), plan);
+    }
+
+    @Test
+    void aLegacyPayloadWrittenAfterAReplay_matchesAMemoWithAnEmptyMessage() {
+        var plan = plan(af(1, "p", ISE, ""), ac(2, "alert"),
+                wf(3, null, AEE, "Activity 'p' failed in workflow 'w': Replayed failure"));
+        assertPlan(Basis.MATCHED_MESSAGE, Set.of(1, 2, 3), plan);
+    }
+
+    @Test
+    void aLegacyTimeoutPayload_isMatchedByItsMessage() {
+        var plan = plan(awaitPark(1, "go"),
+                ev(2, SIGNAL_TIMEOUT, AWAIT + "go", "{\"signalName\":\"go\",\"timeout\":\"PT1S\"}"),
+                ac(3, "alert"),
+                wf(4, null, STE, "Signal 'go' timed out after PT1S for workflow 'w'"));
+        assertPlan(Basis.MATCHED_MESSAGE, Set.of(1, 2, 3, 4), plan);
+    }
+
+    @Test
     void aLegacyPayloadMatchingTwoMemos_fallsToLastInLane() {
         var plan = plan(af(1, "p", ISE, "down"), af(2, "p", ISE, "down"),
                 wf(3, null, AEE, "Activity 'p' failed in workflow 'w': down"));

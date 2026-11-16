@@ -63,6 +63,7 @@ final class RetryPlanner {
     private static final String SLEEP_TIMER_ID_PREFIX = "sleep-";
     private static final String AWAIT_TIMER_ID_PREFIX = SignalManager.TIMER_ID_PREFIX;
 
+
     private RetryPlanner() {
     }
 
@@ -161,6 +162,20 @@ final class RetryPlanner {
      * The pre-WP3 match: the one placed failure memo whose exception message,
      * rebuilt from the memo exactly as the engine formats it, equals the
      * payload's. Empty when none or several match.
+     *
+     * <p>An {@code ACTIVITY_FAILED} memo is rebuilt both as the live run wrote
+     * the message (its {@code message}, else its {@code exceptionType}) and,
+     * when it has no or an empty {@code message}, as a replay rebuilt it
+     * ({@code "…: Replayed failure"}), because an older build may have written
+     * {@code WORKFLOW_FAILED} on a run that replayed the failure.
+     *
+     * <p>A {@code collectSignals} deadline of an older build throws its own
+     * timeout, with no memo, whose text is the same as that of an earlier
+     * caught {@code awaitSignal} of the same name and timeout; the match then
+     * picks that earlier gate, and the plan truncates from it. That re-runs the
+     * gate and what followed it live, which is safe (every slot after the gate
+     * in its lanes is deleted with it) and no worse than today's plan, which
+     * deletes the highest {@code SIGNAL_TIMEOUT}.
      */
     private static List<Integer> matchByMessage(String workflowId, @Nullable JsonNode payload,
                                                 Map<Integer, WorkflowEvent> bySeq, LaneTree tree) {
@@ -178,17 +193,19 @@ final class RetryPlanner {
                 continue;
             }
             var memo = event.payload();
-            String rebuilt = null;
+            var rebuilt = new ArrayList<String>(2);
             if (ACTIVITY_EXECUTION_EXCEPTION.equals(exceptionType)
-                    && event.eventType() == EventType.ACTIVITY_FAILED && memo != null) {
+                    && event.eventType() == EventType.ACTIVITY_FAILED) {
                 // ActivityExecutionException's format over the memo ActivityInvocationHandler writes.
-                var cause = text(memo, "message");
-                if (cause == null) {
-                    cause = text(memo, "exceptionType");
-                }
+                var memoMessage = memo == null ? null : text(memo, "message");
+                var cause = memoMessage != null ? memoMessage : memo == null ? null : text(memo, "exceptionType");
                 if (cause != null) {
-                    rebuilt = "Activity '%s' failed in workflow '%s': %s"
-                            .formatted(event.stepName(), workflowId, cause);
+                    rebuilt.add(activityFailureMessage(event.stepName(), workflowId, cause));
+                }
+                // A replayed memo with no message (or none at all) is rebuilt
+                // with ActivityInvocationHandler.reconstructFailure's text.
+                if (memoMessage == null || memoMessage.isEmpty()) {
+                    rebuilt.add(activityFailureMessage(event.stepName(), workflowId, ActivityInvocationHandler.REPLAYED_FAILURE_MESSAGE));
                 }
             } else if (SIGNAL_TIMEOUT_EXCEPTION.equals(exceptionType)
                     && event.eventType() == EventType.SIGNAL_TIMEOUT && memo != null) {
@@ -196,15 +213,19 @@ final class RetryPlanner {
                 var signalName = text(memo, "signalName");
                 var timeout = text(memo, "timeout");
                 if (signalName != null && timeout != null) {
-                    rebuilt = "Signal '%s' timed out after %s for workflow '%s'"
-                            .formatted(signalName, timeout, workflowId);
+                    rebuilt.add("Signal '%s' timed out after %s for workflow '%s'"
+                            .formatted(signalName, timeout, workflowId));
                 }
             }
-            if (message.equals(rebuilt)) {
+            if (rebuilt.contains(message)) {
                 candidates.add(event.sequenceNumber());
             }
         }
         return candidates.size() == 1 ? candidates : List.of();
+    }
+
+    private static String activityFailureMessage(String stepName, String workflowId, String cause) {
+        return "Activity '%s' failed in workflow '%s': %s".formatted(stepName, workflowId, cause);
     }
 
     /**
