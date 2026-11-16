@@ -59,8 +59,7 @@ import static org.awaitility.Awaitility.await;
  * Pins that configuration seams actually reach the engine through the
  * real auto-configuration chain (Issues 7 + 9, audit finding F6):
  * {@code maestro.shutdown.timeout}, {@code maestro.signal.wake-recheck-interval},
- * {@code maestro.lock.key-prefix} for the per-activity lock (in addition
- * to the instance lock, which already honoured it), and
+ * {@code maestro.lock.key-prefix}, and
  * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
  * retry policy. {@code maestro.signal.janitor-interval} and
  * {@code maestro.signal.terminal-retention} (C14b) are pinned the same way,
@@ -70,8 +69,7 @@ import static org.awaitility.Awaitility.await;
  * every other queue, its startup validation and INFO line) and
  * {@code maestro.replay.verify-arguments}. {@code maestro.lock.ttl} and
  * {@code maestro.lock.key-prefix} are also pinned on the instance lock the
- * executor acquires (Issue 37), so a prefix that reaches only the activity
- * lock fails a test.
+ * executor acquires (Issue 37).
  *
  * <p>Before this fix, all four had a hardcoded value baked into
  * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
@@ -169,8 +167,8 @@ class MaestroAutoConfigurationConfigSeamsTest {
     }
 
     @Test
-    @DisplayName("maestro.lock.key-prefix reaches the per-activity distributed lock, not just the instance lock")
-    void lockKeyPrefixReachesActivityInvocationHandler() {
+    @DisplayName("A workflow's activities take no lock under a custom maestro.lock.key-prefix; its instance lock uses the prefix")
+    void noActivityLockIsTakenUnderACustomKeyPrefix() {
         var lock = new RecordingLock();
         runner.withBean(DistributedLock.class, () -> lock)
                 .withPropertyValues("maestro.lock.key-prefix=custom:prefix:")
@@ -181,14 +179,9 @@ class MaestroAutoConfigurationConfigSeamsTest {
                     client.newWorkflow(ActivityCallingWorkflow.class, options("lock-prefix-1"))
                             .startAndWait(null, Duration.ofSeconds(10), String.class);
 
-                    var activityKeys = lock.acquiredKeys.stream()
-                            .filter(key -> key.contains(":activity:"))
-                            .toList();
-                    assertThat(activityKeys)
-                            .as("the activity lock key must use the configured prefix, "
-                                    + "not the hardcoded maestro:lock: default — acquired keys were "
-                                    + lock.acquiredKeys)
-                            .containsExactly("custom:prefix:activity:lock-prefix-1:1");
+                    assertThat(lock.acquiredKeys.stream().filter(key -> key.contains(":activity:")).toList())
+                            .as("acquired keys were " + lock.acquiredKeys).isEmpty();
+                    assertThat(lock.acquiredKeys).contains("custom:prefix:workflow:lock-prefix-1");
                 });
     }
 
@@ -653,7 +646,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
         }
     }
 
-    /** Calls a single no-op activity, to drive the activity lock key through the real chain. */
+    /** Calls a single no-op activity, to drive a live activity through the real chain. */
     @DurableWorkflow(name = "ConfigSeamsActivityCallingWorkflow")
     public static class ActivityCallingWorkflow {
 

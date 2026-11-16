@@ -234,7 +234,10 @@ public final class WorkflowExecutor {
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.serviceName = serviceName;
-        this.parkingLot = new ParkingLot();
+        // Assigned before the lot, which reads it: a wake that finds no parked
+        // waiter stores a permit only for a workflow running on this node (3.2).
+        this.runningWorkflows = new ConcurrentHashMap<>();
+        this.parkingLot = new ParkingLot(runningWorkflows::containsKey);
         this.taskQueueGovernor = taskQueueLimits.isEmpty() && defaultTaskQueueLimits == null
                 ? TaskQueueGovernor.UNBOUNDED
                 : new TaskQueueGovernor(taskQueueLimits, defaultTaskQueueLimits);
@@ -255,7 +258,6 @@ public final class WorkflowExecutor {
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
         this.wakeRecheckInterval = wakeRecheckInterval;
-        this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
         // Proactive stand-down (Issue 11): a run whose instance lock was lost
         // is marked stale now, so it stops at its next stop point — live
@@ -504,9 +506,13 @@ public final class WorkflowExecutor {
          * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
          * controllable test clock; production code has no reason to set it.
          * Keep {@link InstantSource#system()} in production: the timer
-         * poller ({@link WorkflowExecutor#startTimerPoller}) still compares
-         * due rows against the system clock, so a non-system source is only
-         * for a test harness that fires timers itself (as
+         * poller ({@link WorkflowExecutor#startTimerPoller}) never reads this
+         * source. It asks the store for the due rows
+         * ({@code WorkflowStore.getDueTimers(int)}), and the store decides
+         * against its own clock: on Postgres the database's {@code now()};
+         * a store that does not override {@code getDueTimers(int)}, the
+         * caller's system clock. So a non-system source is only for a test
+         * harness that fires timers itself (as
          * {@code TestWorkflowEnvironment.advanceTime} does) and never starts
          * the poller.
          *
@@ -541,10 +547,13 @@ public final class WorkflowExecutor {
      * the value a live {@code currentTime()} records (R59).
      *
      * <p>{@link InstantSource#system()} unless {@link Builder#instantSource}
-     * was given another — the Spring starter never does, and the
-     * timer poller compares due rows against the system clock, so a
-     * non-system source is only coherent where the poller is not running and
-     * something else fires the rows ({@code TestWorkflowEnvironment.advanceTime}).
+     * was given another — the Spring starter never does. The timer poller
+     * does not read this source: the store decides which rows are due
+     * ({@code WorkflowStore.getDueTimers(int)}), on Postgres by the database's
+     * {@code now()} and, in a store that does not override that method, by
+     * the caller's system clock. So a non-system source is only coherent where
+     * the poller is not running and something else fires the rows
+     * ({@code TestWorkflowEnvironment.advanceTime}).
      * Replay never re-arms from it: a memoized deadline is read back.
      *
      * @return the instant source, never {@code null}
@@ -891,7 +900,8 @@ public final class WorkflowExecutor {
      * Fires a timer, resuming a sleeping workflow.
      *
      * <p>Called by the timer poller when a due timer is found. Marks the
-     * timer as fired in the store and unparks the workflow's virtual thread.
+     * timer as fired in the store and unparks the workflow's virtual thread,
+     * and stores a permit only when the workflow runs here.
      * The store transition is persisted before unparking to prevent the
      * timer poller from redelivering.
      *
@@ -986,13 +996,15 @@ public final class WorkflowExecutor {
      * await parks on its signal key and is woken through
      * {@link SignalManager#onTimerTransition}. Unparking the {@code :timer:}
      * key for an await would only store a one-shot permit nobody ever
-     * consumes, so it is skipped.
+     * consumes, so it is skipped. A sleep's wake stores a permit only when the
+     * workflow runs on this node (3.2): a sleep parked elsewhere re-reads its
+     * row every wake-recheck interval.
      */
     private void wakeTimerWaiter(String workflowId, String timerId) {
         if (timerId.startsWith(SignalManager.TIMER_ID_PREFIX)) {
             signalManager.onTimerTransition(workflowId, timerId);
         } else {
-            parkingLot.unpark(workflowId + ":timer:" + timerId, null);
+            parkingLot.wake(workflowId, workflowId + ":timer:" + timerId);
         }
     }
 
@@ -1140,7 +1152,11 @@ public final class WorkflowExecutor {
             // abandoned; a remote owner converges via the terminal-status guard.
             // Flag first, then parks: the flag stops the next live activity
             // attempt and abandons a retry backoff; abandoning the parks
-            // unblocks a thread waiting on a signal or timer.
+            // unblocks a thread waiting on a signal or timer. A run of this id
+            // that registers after this lookup adopted the row before the
+            // TERMINATED write above, so abandoning by workflowId (not by this
+            // RunningWorkflow) poisons only runs of the terminated workflow —
+            // see ParkingLot.abandonWorkflow (traced, not tested).
             var running = runningWorkflows.get(workflowId);
             if (running != null) {
                 running.cancellation().requestTermination(reason);
@@ -1829,6 +1845,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the number of wake permits this node holds — wakes that arrived
+     * for a workflow before it parked. A node-local gauge source, like
+     * {@link #parkedCount()}.
+     *
+     * <p><b>Thread safety:</b> thread-safe; reads a concurrent map's size.
+     *
+     * @return the number of wake permits in this executor's parking lot
+     */
+    public int wakePermitCount() {
+        return parkingLot.pendingWakeCount();
+    }
+
+    /**
      * Returns the governor that enforces this executor's per-task-queue
      * concurrency limits ({@code maestro.worker.task-queues}).
      *
@@ -2140,6 +2169,9 @@ public final class WorkflowExecutor {
         } catch (RuntimeException | Error e) {
             if (running != null) {
                 runningWorkflows.remove(instance.workflowId(), running);
+                // A wake that saw this run registered may have stored a permit;
+                // no run will park on it now (3.2).
+                parkingLot.clearPending(instance.workflowId());
             }
             instanceLockManager.release(instance.workflowId());
             throw e;
@@ -2408,10 +2440,26 @@ public final class WorkflowExecutor {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
             runningWorkflows.remove(ctx.workflowId());
-            instanceLockManager.release(ctx.workflowId());
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
-            // that arrived after the last await) now that the run is over
+            // that arrived after the last await) now that the run is over —
+            // BEFORE the release: once the lock is free a new run of this id
+            // can launch and be given a permit, which a later clearPending
+            // would erase. Here, after the removal above, any wake that stores
+            // a permit fails its re-check (the run is gone) and drops it, and
+            // no new run can be registered until the release below. That last
+            // step relies on the instance lock: a new run of this id is
+            // registered only by a node that acquired the lock. It does not
+            // hold when the new run's launch proceeded unlocked — with no lock
+            // backend, or when the lock backend threw during that launch's
+            // acquire (tryAcquire answers NO_BACKEND and the run launches
+            // anyway). Then a new run of the id (a recovery or a retry) can
+            // register here between the removal and clearPending, and a permit
+            // stored for it can be erased. The cost is latency, never a lost
+            // wake: that run's park finds no permit and wakes at its next
+            // re-check, at most one wake-recheck interval later
+            // (traced, not tested).
             parkingLot.clearPending(ctx.workflowId());
+            instanceLockManager.release(ctx.workflowId());
             // Drop the sticky terminate poison: this run is over, so a future
             // run of the same workflowId must be able to park again
             parkingLot.clearTerminated(ctx.workflowId());

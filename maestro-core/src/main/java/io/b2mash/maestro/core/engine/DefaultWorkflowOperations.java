@@ -510,7 +510,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                 // over-hold permanent, deadlocking concurrency=1 whenever the
                 // wake depends on another run of the same queue.
                 governor.parked(ctx.workflowId(), () -> {
-                    parkingLot.parkWithTimeout(parkKey, wakeRecheckInterval);
+                    parkingLot.parkWithTimeout(ctx.workflowId(), parkKey, wakeRecheckInterval);
                     return null;
                 });
                 // Locally unparked — a fire or cancel; the row decides which.

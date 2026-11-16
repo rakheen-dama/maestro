@@ -265,7 +265,11 @@ message, workflow input on Postgres differs between the first run and
 recovery, input is read with the raw parameter class, `collectSignals` throws
 on a null payload, an `Error` from a result deserializer fails the run, an
 unparseable stored payload is logged only at `DEBUG`, nothing checks the
-mapper at startup, and future-typed activity results are accepted. Issues
+mapper at startup, and future-typed activity results are accepted.
+Issues 50 and 51, left by the wake-permit, timer-clock and activity-lock work
+(WP2, 2026-11-16), are filed **open**: the activity proxy keeps two ignored
+lock parameters, and timer deadlines are still armed on the scheduling node's
+clock. Issues
 52–56, found while making Spring Boot's Kafka beans coexist with Maestro's
 (WP7, 2026-11-16), are filed **open**: `maestro-admin-client` has no wired
 component (a decision for the maintainer), the engine's Kafka clients ignore
@@ -341,6 +345,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | Open |
 | [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | Open |
 | [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | Open |
+| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | Open |
+| [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | Open |
 | [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | Open — maintainer to decide |
 | [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | Open |
 | [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | Open |
@@ -800,6 +806,8 @@ claim it does.
 > `ActivityInvocationHandlerTest.lockHonoursCustomKeyPrefix` (asserts the
 > exact acquired key) and
 > `MaestroAutoConfigurationConfigSeamsTest.lockKeyPrefixReachesActivityInvocationHandler`.
+>
+> *Superseded (WP2, 3.10): the activity lock was removed.*
 
 **What's wrong.** `ActivityInvocationHandler` builds its lock key with a
 hardcoded literal:
@@ -3849,6 +3857,94 @@ method, so the starter fails at context start.
 **Done when.** Creating a proxy for an interface with a `CompletableFuture`
 method throws, naming the method, and `ReadBackFormsTest`'s future cases are
 replaced by that test.
+
+---
+
+### Issue 50 — The activity proxy keeps two ignored lock parameters {#issue-50}
+
+> **Open.** Filed by WP2, wake permits, timer clock and activity lock
+> (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
+
+**Kind:** Library gap — API design. **Severity:** Low (dead arguments, no
+behaviour).
+
+**What's wrong.** WP2 removed the per-activity lock (3.10), but kept the
+parameters that configured it so that existing callers compile. The six
+`ActivityInvocationHandler` constructors (`ActivityInvocationHandler.java:249`,
+`:281`, `:325`, `:370`, `:416`, `:463`) and the six
+`ActivityProxyFactory.createProxy` overloads (`ActivityProxyFactory.java:64`,
+`:100`, `:141`, `:187`, `:239`, `:287`) still take `distributedLock` and
+(all but one) `lockKeyPrefix`; the handler stores neither, and each `@param`
+says "ignored". Separately, `DefaultWorkflowOperations` declares a
+`distributedLock` field (`DefaultWorkflowOperations.java:125`) that its
+constructor assigns (`:316`) and nothing reads; that was already so before
+WP2.
+
+**Harm.** A caller that passes a lock or a key prefix to the proxy factory
+believes it configures something, and every caller keeps passing two dead
+arguments: about 60 direct calls in 31 files (58 of them in tests), plus the
+test helpers that wrap them.
+
+**Why not WP2.** Dropping the parameters touches every one of those call
+sites, most of them tests that WP3–WP6 also edit; a mechanical removal belongs
+in its own change, as the executor builder was.
+
+**How to tackle it.** Give `ActivityProxyFactory` a builder with one named
+setter per setting, as Issue 37 did for `WorkflowExecutor`, migrate the call
+sites, and remove the overloads and constructors that take the two parameters.
+Remove the unused field from `DefaultWorkflowOperations` and the constructor
+parameter that feeds it.
+
+**Done when.** No `ActivityInvocationHandler` constructor or proxy-factory
+entry point takes a `DistributedLock` or a lock key prefix, and
+`DefaultWorkflowOperations` has no `distributedLock` field.
+
+---
+
+### Issue 51 — Timer deadlines are armed on the scheduling node's clock {#issue-51}
+
+> **Open.** Filed by WP2, wake permits, timer clock and activity lock
+> (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
+
+**Kind:** Library gap — clock skew. **Severity:** Low (needs a node whose
+clock is off; NTP keeps skew to milliseconds).
+
+**What's wrong.** WP2 makes the timer poller compare `fire_at` with the
+database clock (`fire_at <= now()`), but every deadline is still computed on
+the clock of the node that schedules it: a `sleep()`'s `fire_at` is
+`instantSource.instant().plus(duration)` (`DefaultWorkflowOperations.java:438`),
+and an `awaitSignal()` deadline is computed the same way
+(`SignalManager.java:712`) and memoized in `AwaitSignalDetail.deadline`. The
+node running an await also times it out on its own clock, comparing the
+memoized deadline with its instant source (`SignalManager.java:926`). So a
+node whose clock is N ahead of the database arms deadlines N later than the
+database would, and one N behind arms them N earlier. The skew `WARN`
+(`ClockSkewCheck`, above 1 s, at timer-poller start and every 10 minutes)
+reports this; it does not prevent it.
+
+**Harm.** On a node with a broken clock, a `sleep()` wakes, and an
+`awaitSignal()` timeout can expire, up to the skew early or late. An early
+timeout can decide an await as timed out while a signal was still due to
+arrive; replay repeats that decision (it is memoized), so the workflow stays
+consistent, but it took a branch the author did not intend.
+
+**Why not WP2.** Arming on the database clock changes what is memoized: the
+await's deadline would have to come from the store, and a replay re-arms a
+missing row at the memoized deadline (`SignalManager.java:815-837`), so the
+two must agree. The test kit's controllable clock (`advanceTime`) drives
+`getDueTimers(Instant, int)` with no store clock, and would need its clock
+injected into the in-memory store (plan D-2). That is an M-size change.
+
+**How to tackle it.** Add a store call that arms a timer from a duration on
+the store's own clock and returns the `fire_at` it wrote (Postgres:
+`now() + interval`), memoize that returned deadline, let the kit's in-memory
+store compute it from the controllable clock, and have the await's self-fire
+compare with the store's time (or rely on the poll). Old history keeps its
+memoized deadlines.
+
+**Done when.** A Postgres test with a node clock 5 minutes off fires a
+`sleep(1 s)` and an `awaitSignal(…, 1 s)` timeout about 1 s after the call by
+the database clock, and the kit's `advanceTime` tests pass unchanged.
 
 ---
 

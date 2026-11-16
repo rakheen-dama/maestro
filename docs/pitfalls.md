@@ -87,7 +87,7 @@ try {
 
 ## 3. Every activity must be idempotent
 
-A recorded result is never re-executed. But an activity that ran while its result was not yet recorded runs again on the node that adopts the workflow. This happens when the node crashed between the side effect and the write, when it lost its instance lock, or when an attempt timed out and was retried. Locks are a best-effort guard. The unique `(workflow_instance_id, sequence_number)` index deduplicates the *recorded result*, not the side effect.
+A recorded result is never re-executed. But an activity that ran while its result was not yet recorded runs again on the node that adopts the workflow. This happens when the node crashed between the side effect and the write, when it lost its instance lock, or when an attempt timed out and was retried. The instance lock and lease fencing stop a second runner from *recording* a result, not from executing the step. The unique `(workflow_instance_id, sequence_number)` index deduplicates the *recorded result*, not the side effect.
 
 **Wrong**
 
