@@ -888,13 +888,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // Retries exhausted — persist the failure.
             try {
                 persistFailure(ctx, seq, stepName, argsHash, e);
-            } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
+            } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException notRecorded) {
                 // A concurrent runner already recorded an outcome at this
-                // sequence (Review Focus 4), or the store could not take
-                // the failure memo (the guard has latched the run). Either
-                // propagates INSTEAD of e: this run neither publishes
-                // ACTIVITY_FAILED nor surfaces a failure that is not
-                // durably recorded — it stands down / is abandoned. The
+                // sequence (Review Focus 4), another node adopted the
+                // workflow and the store fenced the append, or the store
+                // could not take the failure memo (the guard has latched
+                // the run). Each propagates INSTEAD of e: this run neither
+                // publishes ACTIVITY_FAILED nor surfaces a failure that is
+                // not durably recorded — it stands down / is abandoned. The
                 // observer still sees the failure this node genuinely
                 // executed: it measures this node's executions, not the
                 // durable record.
@@ -915,9 +916,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         JsonNode stored;
         try {
             stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash, true);
-        } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
+        } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException notRecorded) {
             // The winner is alive and ahead: stand down rather than adopt
-            // its value (class Javadoc, "Idempotency"). Or the store could
+            // its value (class Javadoc, "Idempotency"). Or another node
+            // adopted the workflow and the store fenced the append: stand
+            // down as LEASE_FENCED, nothing written. Or the store could
             // not take the outcome even after the guard's retries (R3): the
             // run is latched and is abandoned, and recovery re-runs this
             // step. No ACTIVITY_COMPLETED lifecycle event — this run did not
