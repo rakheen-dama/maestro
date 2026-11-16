@@ -1,0 +1,119 @@
+name: Perf (k6)
+
+# The k6 load harness (perf/run.sh, docs/test-plan.md § Load suite) on a
+# GitHub-hosted runner. Never on pull requests or pushes: a load run takes
+# 10-40 minutes, and its numbers come from a shared 4-vCPU runner whose
+# neighbours vary from run to run, so a latency or throughput figure measured
+# here is not a merge signal (D4: the harness gates only statement counts and
+# correctness; the rest is reported). It runs on demand and once a week, to
+# keep a standing record against the committed baselines (perf/baselines/).
+#
+# The schedule is subject to GitHub's 60-day inactivity disable. build-test.yml's
+# `keep-nightly-enabled` job re-enables it on every push to main; manual
+# recovery is `gh workflow enable perf.yml`.
+#
+# Verdicts: perf/run.sh exits 0 PASS, 1 FAIL, 2 INVALID, 3 harness error, so a
+# FAIL, INVALID or ERROR verdict fails the job. A gate that had no usable
+# baseline (status NO_BASELINE; the verdict can still be PASS) is reported as
+# a warning annotation and in the step summary, never silently counted as
+# passed. Admin events default to false, the engine's default and the setting
+# the committed baselines were recorded with.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scenario:
+        description: Scenario to run
+        type: choice
+        options: [smoke, s1-throughput, s3-parked]
+        default: s1-throughput
+      profile:
+        description: Load profile
+        type: choice
+        options: [local, full]
+        default: full
+      replicas:
+        description: Node replicas (a positive integer)
+        type: string
+        default: '1'
+      admin_events:
+        description: maestro.admin.events.enabled on the nodes
+        type: choice
+        options: ['true', 'false']
+        default: 'false'
+  schedule:
+    # 04:00 UTC Saturday: clear of the 02:30 nightly E2E and the Sunday 01:00
+    # soak (e2e-nightly.yml).
+    - cron: '0 4 * * 6'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perf
+  cancel-in-progress: false
+
+jobs:
+  perf:
+    name: k6 ${{ matrix.scenario }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: ${{ github.event_name == 'schedule' && fromJSON('["s1-throughput","s3-parked"]') || fromJSON(format('["{0}"]', inputs.scenario)) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # The run's identity stamp reads the last commit touching the engine
+          # and harness paths (git log -- <paths>): it needs the history.
+          fetch-depth: 0
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Run the scenario
+        # Inputs reach the shell as environment variables, never spliced into
+        # the script text.
+        env:
+          PERF_SCENARIO: ${{ matrix.scenario }}
+          PERF_PROFILE: ${{ inputs.profile || 'full' }}
+          PERF_REPLICAS: ${{ inputs.replicas || '1' }}
+          PERF_ADMIN_EVENTS: ${{ inputs.admin_events || 'false' }}
+        run: perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" --replicas "$PERF_REPLICAS"
+
+      - name: Summarise
+        if: always()
+        run: |
+          shopt -s nullglob
+          for s in perf/results/*/summary.md; do cat "$s" >> "$GITHUB_STEP_SUMMARY"; done
+          for r in perf/results/*/result.json; do
+            verdict=$(jq -r '.verdict // "none"' "$r")
+            echo "::notice title=Perf verdict::${verdict} (${r%/result.json})"
+            # One line per check; % CR LF escaped as workflow commands require.
+            jq -r '.checks[] | select(.status == "NO_BASELINE")
+                   | "\(.id)\t\(.detail // "" | tostring | gsub("%"; "%25") | gsub("\r"; "%0D") | gsub("\n"; "%0A"))"' "$r" |
+              while IFS=$'\t' read -r id detail; do
+                echo "::warning title=NO_BASELINE ${id}::${detail}"
+                printf -- "- **NO_BASELINE** \`%s\`: %s\n" "$id" "$detail" >> "$GITHUB_STEP_SUMMARY"
+              done
+          done
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-${{ matrix.scenario }}-${{ github.run_id }}
+          path: perf/results/
+          retention-days: 14
