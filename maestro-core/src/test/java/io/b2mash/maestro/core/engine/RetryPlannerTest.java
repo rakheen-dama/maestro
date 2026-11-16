@@ -113,6 +113,15 @@ class RetryPlannerTest {
     }
 
     @Test
+    void aRefusedPlan_carriesNothingToDelete() {
+        var plan = plan(af(1, "p", ISE, "down"), ev(2, SIGNAL_RECEIVED, AWAIT + "ack", "\"ok\""),
+                wf(3, "[1]", AEE, "x"));
+        assertTrue(plan.refused(), plan::toString);
+        assertEquals(Set.of(), plan.deleteSequences(), plan::toString);
+        assertEquals(Set.of(), plan.deleteTimerIds(), plan::toString);
+    }
+
+    @Test
     void aLegacyPayload_isMatchedByItsMessage() {
         // seed-alert-failed's rows exactly as cbf5a2a recorded them (seeded-history.sql:277-279)
         var history = List.of(

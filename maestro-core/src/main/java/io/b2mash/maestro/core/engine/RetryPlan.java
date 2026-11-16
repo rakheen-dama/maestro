@@ -15,8 +15,9 @@ import java.util.TreeSet;
  * <p><b>Thread safety:</b> immutable record; both sets are unmodifiable copies.
  *
  * @param basis            how the failure to re-run was chosen
- * @param deleteSequences  the event sequences to delete, ascending
- * @param deleteTimerIds   the timer ids ({@code timer_id}) whose rows to delete, any status
+ * @param deleteSequences  the event sequences to delete, ascending; empty when refused
+ * @param deleteTimerIds   the timer ids ({@code timer_id}) whose rows to delete, any
+ *                         status; empty when refused
  * @param consumedSignalAt the lowest sequence of a {@code SIGNAL_RECEIVED} memo in the
  *                         delete set, or {@code null}; when set, the Retry is
  *                         {@linkplain #refused() refused} and writes nothing (MD-1)
@@ -41,11 +42,19 @@ record RetryPlan(
     }
 
     /**
-     * Copies both sets into unmodifiable sorted sets.
+     * Copies both sets into unmodifiable sorted sets. A refused plan
+     * ({@code consumedSignalAt} set) keeps neither: both sets are empty, so a
+     * refusal cannot be applied even by a caller that forgot to check
+     * {@link #refused()}.
      */
     RetryPlan {
-        deleteSequences = Collections.unmodifiableSortedSet(new TreeSet<>(deleteSequences));
-        deleteTimerIds = Collections.unmodifiableSortedSet(new TreeSet<>(deleteTimerIds));
+        if (consumedSignalAt != null) {
+            deleteSequences = Collections.emptySortedSet();
+            deleteTimerIds = Collections.emptySortedSet();
+        } else {
+            deleteSequences = Collections.unmodifiableSortedSet(new TreeSet<>(deleteSequences));
+            deleteTimerIds = Collections.unmodifiableSortedSet(new TreeSet<>(deleteTimerIds));
+        }
     }
 
     /**
