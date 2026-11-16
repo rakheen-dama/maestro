@@ -54,7 +54,6 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * The polling loop runs on its own virtual thread. Concurrent {@code start()}
  * calls are guarded by an {@link AtomicBoolean}.
  *
- * @see TimerManager
  * @see WorkflowExecutor#fireTimer(String, String, UUID)
  */
 final class TimerPoller {
