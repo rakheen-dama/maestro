@@ -77,13 +77,16 @@ import java.util.function.IntPredicate;
  *       such as a {@code KafkaOperations} that is not a {@code KafkaTemplate},
  *       gets a {@code DEBUG} line only);</li>
  *   <li>only if a point remains, the template's value serializer is classified
- *       ({@link #valueSerializerTarget}); a violation is a serializer whose
- *       declared target type is not assignable from {@code byte[]}.</li>
+ *       ({@link #classify}); a violation is one of Spring Kafka's JSON
+ *       serializers ({@code JacksonJsonSerializer}, the deprecated
+ *       {@code JsonSerializer}, or a subclass of either), which write a
+ *       {@code byte[]} value as a base64-encoded JSON string, or a serializer
+ *       whose declared target type is not assignable from {@code byte[]}.</li>
  * </ol>
  * <p>The check fails startup only on a confirmed violation, with one
  * exception listing every violation. A serializer it
- * cannot classify (a generic serializer such as {@code JacksonJsonSerializer},
- * a lambda, a delegating serializer) is not a failure: it is logged at
+ * cannot classify (another generic serializer, a lambda, a delegating
+ * serializer) is not a failure: it is logged at
  * {@code WARN}, because such a serializer may write {@code byte[]} values
  * differently from {@code ByteArraySerializer}. Any exception while inspecting
  * a bean skips that bean at {@code DEBUG}. The check reads bean definitions
@@ -126,6 +129,11 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
     private static final String JAKARTA_QUALIFIER = "jakarta.inject.Qualifier";
 
     private static final String JAKARTA_INJECT = "jakarta.inject.Inject";
+
+    /** Spring Kafka's JSON serializers, by name; either may be absent from the classpath. */
+    private static final Set<String> JSON_SERIALIZERS = Set.of(
+            "org.springframework.kafka.support.serializer.JacksonJsonSerializer",
+            "org.springframework.kafka.support.serializer.JsonSerializer");
 
     private @Nullable ConfigurableListableBeanFactory beanFactory;
 
@@ -233,31 +241,63 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         // Resolved once: on a DefaultKafkaProducerFactory each getValueSerializer()
         // call runs the supplier and configure(...) on the shared serializer.
         var serializerClass = valueSerializerClass(template);
-        var target = valueSerializerTarget(serializerClass);
-        if (target != null && target.isAssignableFrom(byte[].class)) {
+        if (serializerClass == null) {
+            logger.debug("Kafka template bean '{}' has no value serializer the check can see; "
+                    + "unqualified byte[] injection points {} are not checked", templateName, pointsByBean);
             return;
         }
-        if (serializerClass != null) {
-            for (var point : ambiguousPoints) {
-                ambiguous.putIfAbsent(point.bean() + "\u0000" + point.description(),
-                        ambiguityWarning(point, templateName, serializerClass, target != null));
-            }
+        var verdict = classify(serializerClass);
+        if (verdict == Verdict.WRITES_BYTES) {
+            return;
         }
-        if (target == null || serializerClass == null) {
-            if (serializerClass != null) {
-                warnUnclassified(templateName, serializerClass, pointsByBean);
-            }
-            else {
-                logger.debug("Kafka template bean '{}' has no value serializer the check can see; "
-                        + "unqualified byte[] injection points {} are not checked", templateName, pointsByBean);
-            }
+        for (var point : ambiguousPoints) {
+            ambiguous.putIfAbsent(point.bean() + "\u0000" + point.description(),
+                    ambiguityWarning(point, templateName, serializerClass, verdict));
+        }
+        if (verdict == Verdict.UNCLASSIFIED) {
+            warnUnclassified(templateName, serializerClass, pointsByBean);
             return;
         }
         for (Map.Entry<String, List<String>> entry : pointsByBean.entrySet()) {
             for (var point : entry.getValue()) {
-                violations.add(violation(entry.getKey(), point, templateName, serializerClass));
+                violations.add(violation(entry.getKey(), point, templateName, serializerClass, verdict));
             }
         }
+    }
+
+    /**
+     * What a value serializer class does with a {@code byte[]} value: a Spring
+     * Kafka JSON serializer (or a subclass) writes it as a base64-encoded JSON
+     * string, whatever type it declares; otherwise the declared target type of
+     * {@code Serializer<T>} decides, and an unresolvable {@code T} is
+     * {@link Verdict#UNCLASSIFIED}.
+     *
+     * @param serializerClass the serializer class
+     * @return the verdict
+     */
+    static Verdict classify(Class<?> serializerClass) {
+        if (isJsonSerializer(serializerClass)) {
+            return Verdict.WRITES_BASE64_JSON;
+        }
+        var target = valueSerializerTarget(serializerClass);
+        if (target == null) {
+            return Verdict.UNCLASSIFIED;
+        }
+        return target.isAssignableFrom(byte[].class) ? Verdict.WRITES_BYTES : Verdict.CANNOT_SERIALIZE;
+    }
+
+    /**
+     * Whether the class is, or extends, one of Spring Kafka's JSON serializers.
+     * Compared by name, so neither class (the deprecated {@code JsonSerializer}
+     * needs Jackson 2) has to be on the classpath.
+     */
+    private static boolean isJsonSerializer(Class<?> serializerClass) {
+        for (Class<?> type = serializerClass; type != null; type = type.getSuperclass()) {
+            if (JSON_SERIALIZERS.contains(type.getName())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
@@ -325,21 +365,21 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
     }
 
     private static String ambiguityWarning(AmbiguousPoint point, String templateName, Class<?> serializerClass,
-            boolean classified) {
+            Verdict verdict) {
         return "Bean '" + point.bean() + "' injects a KafkaTemplate<…, byte[]> without a qualifier ("
                 + point.description() + ") that several Kafka templates match (" + String.join(", ", point.candidates())
                 + "); Maestro does not check which one it received. Among them, '" + templateName
-                + "' has the value serializer " + serializerClass.getName()
-                + (classified ? ", which cannot serialize byte[]." : ", which Maestro cannot classify.")
+                + "' has the value serializer " + serializerClass.getName() + ", which " + verdict.shortReason + "."
                 + " Qualify the injection point with the template you mean (Maestro's is "
                 + "@Qualifier(MaestroKafkaBeans.TEMPLATE) (\"" + MaestroKafkaBeans.TEMPLATE + "\")). "
                 + "See docs/configuration.md § Kafka Client Configuration.";
     }
 
-    private static String violation(String bean, String point, String templateName, Class<?> serializerClass) {
+    private static String violation(String bean, String point, String templateName, Class<?> serializerClass,
+            Verdict verdict) {
         return "Bean '" + bean + "' injects a KafkaTemplate<…, byte[]> without a qualifier (" + point
                 + ") and received '" + templateName + "', whose value serializer " + serializerClass.getName()
-                + " cannot serialize byte[]: every send through it would fail. Maestro's Kafka beans are not "
+                + " " + verdict.reason + ". Maestro's Kafka beans are not "
                 + "injected by type. Inject Maestro's template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\""
                 + MaestroKafkaBeans.TEMPLATE + "\"), or set spring.kafka.producer.value-serializer="
                 + "org.apache.kafka.common.serialization.ByteArraySerializer to send byte[] through Spring Boot's "
@@ -552,4 +592,27 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
 
     /** A point that several default-candidate templates match, among them the one being inspected. */
     private record AmbiguousPoint(String bean, String description, List<String> candidates) {}
+
+    /** What a value serializer does with a {@code byte[]} value, as far as the check can tell. */
+    enum Verdict {
+        /** Its declared target type is assignable from {@code byte[]}: not a violation. */
+        WRITES_BYTES("can serialize byte[]", "can serialize byte[]"),
+        /** Its declared target type is not assignable from {@code byte[]}: a violation. */
+        CANNOT_SERIALIZE("cannot serialize byte[]", "cannot serialize byte[]: every send through it would fail"),
+        /** A Spring Kafka JSON serializer: a violation, although every send succeeds. */
+        WRITES_BASE64_JSON("writes byte[] as a base64-encoded JSON string",
+                "writes byte[] as a base64-encoded JSON string, not the bytes themselves: every record sent "
+                        + "through it would carry a different payload"),
+        /** Its target type does not resolve: a {@code WARN}, never a failure. */
+        UNCLASSIFIED("Maestro cannot classify", "Maestro cannot classify");
+
+        final String shortReason;
+
+        final String reason;
+
+        Verdict(String shortReason, String reason) {
+            this.shortReason = shortReason;
+            this.reason = reason;
+        }
+    }
 }

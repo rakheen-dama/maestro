@@ -8,6 +8,7 @@ import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostSenderCo
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.LongSerializer;
+import org.apache.kafka.common.serialization.Serializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.assertj.core.api.InstanceOfAssertFactories;
 import org.junit.jupiter.api.AfterEach;
@@ -40,6 +41,7 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -245,17 +247,59 @@ class ByteArrayTemplateInjectionCheckTest {
     @Test
     void aSerializerTheCheckCannotClassify_startsAndWarns() {
         coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
-                .withPropertyValues("spring.kafka.producer.value-serializer="
-                        + "org.springframework.kafka.support.serializer.JacksonJsonSerializer")
+                .withPropertyValues("spring.kafka.producer.value-serializer=" + OpaqueSerializer.class.getName())
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed();
                     assertThat(logAppender.list)
                             .filteredOn(e -> e.getLevel() == Level.WARN)
                             .extracting(ILoggingEvent::getFormattedMessage)
                             .singleElement(InstanceOfAssertFactories.STRING)
-                            .contains("'legacyBytesSender'", "'kafkaTemplate'", JacksonJsonSerializer.class.getName(),
+                            .contains("'legacyBytesSender'", "'kafkaTemplate'", OpaqueSerializer.class.getName(),
                                     "@Qualifier(MaestroKafkaBeans.TEMPLATE)");
                 });
+    }
+
+    // ── Fix wave (B1): Spring Kafka's JSON serializers write byte[] as a base64 JSON string ──
+
+    @Test
+    void aJsonValueSerializer_failsStartupBecauseItWritesBase64() {
+        coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
+                .withPropertyValues("spring.kafka.producer.value-serializer="
+                        + "org.springframework.kafka.support.serializer.JacksonJsonSerializer")
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(rootCause(ctx))
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining("Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> without "
+                                    + "a qualifier (constructor parameter 0 of " + LegacyBytesSender.class.getName()
+                                    + ") and received 'kafkaTemplate', whose value serializer "
+                                    + JacksonJsonSerializer.class.getName()
+                                    + " writes byte[] as a base64-encoded JSON string")
+                            .hasMessageContaining("@Qualifier(MaestroKafkaBeans.TEMPLATE)");
+                });
+    }
+
+    @Test
+    void aSubclassOfAJsonSerializer_failsStartupEvenWhenItDeclaresByteArray() {
+        // Its declared target is byte[], so the type rule alone would pass it.
+        coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
+                .withPropertyValues("spring.kafka.producer.value-serializer=" + ByteArrayJsonSerializer.class.getName())
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(rootCause(ctx))
+                            .isInstanceOf(IllegalStateException.class)
+                            .hasMessageContaining("whose value serializer " + ByteArrayJsonSerializer.class.getName()
+                                    + " writes byte[] as a base64-encoded JSON string");
+                });
+    }
+
+    @Test
+    void aJsonSerializerWritesByteArrayAsABase64String() {
+        // The fact the B1 failure message states.
+        try (var json = new JacksonJsonSerializer<byte[]>()) {
+            assertThat(new String(json.serialize("t", "hello".getBytes(StandardCharsets.UTF_8)),
+                    StandardCharsets.UTF_8)).isEqualTo("\"aGVsbG8=\"");
+        }
     }
 
     @Test
@@ -449,7 +493,7 @@ class ByteArrayTemplateInjectionCheckTest {
             assertThat(warnings())
                     .singleElement(InstanceOfAssertFactories.STRING)
                     .contains("'subclassSender'", "received 'myBytesTemplate'",
-                            JacksonJsonSerializer.class.getName(), "cannot classify")
+                            OpaqueSerializer.class.getName(), "cannot classify")
                     .doesNotContain("several Kafka templates", "stringTemplate");
         });
     }
@@ -940,8 +984,23 @@ class ByteArrayTemplateInjectionCheckTest {
             return new MyBytesTemplate(new DefaultKafkaProducerFactory<>(Map.of(
                     ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "127.0.0.1:1",
                     ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
-                    ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, JacksonJsonSerializer.class)));
+                    ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, OpaqueSerializer.class)));
         }
+    }
+
+    /**
+     * A generic serializer whose target type cannot be resolved and that is no
+     * JSON serializer: genuinely unclassifiable. Never instantiated by the tests.
+     */
+    public static class OpaqueSerializer<T> implements Serializer<T> {
+        @Override
+        public byte[] serialize(String topic, T data) {
+            return new byte[0];
+        }
+    }
+
+    /** A JSON serializer subclass that declares {@code byte[]}: it still writes a base64 JSON string. */
+    public static class ByteArrayJsonSerializer extends JacksonJsonSerializer<byte[]> {
     }
 
     @Configuration(proxyBeanMethods = false)
