@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.upgrade;
 
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -12,10 +13,12 @@ import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Orde
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Receipt;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedActivities;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedFailingActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedFailingWorkflow;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedOrderActivities;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedOrderWorkflow;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedRiskActivities;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedSagaActivities;
+import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedSagaWorkflow;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedTypedActivities;
 import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Seeds;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
@@ -158,6 +161,7 @@ import static org.assertj.core.api.Assumptions.assumeThat;
  *   <li>In {@link #aWorkflowStartedOnThisBuildAdoptsOrphanSignalsStoredAtCbf5a2a}:
  *       the run completing, its charge id {@code charge:seed-orphan-target:1},
  *       and the consumed signal rows ({@code signalRows}).</li>
+ *   <li>In {@link #theFailedRunsCbf5a2aRecordedAreRetriedByThisBuild}: each outcome, status, the appended events, and the invocation counts.</li>
  * </ul>
  * {@link #theJvmRunsInTheZoneTheNonUtcTaskAsksFor} guards the test setup, not
  * the fixture, and is neither.
@@ -496,6 +500,31 @@ class SeededHistoryUpgradeIT {
         var instanceId = instanceId(seeded, Seeds.ORPHAN_TARGET);
         assertThat(signalRows(seeded, Seeds.ORPHAN_TARGET)).containsExactlyInAnyOrder(
                 "approval consumed=true instance=" + instanceId, "note consumed=true instance=" + instanceId);
+    }
+
+    @Test
+    @DisplayName("the FAILED runs cbf5a2a recorded are retried by this build (WP3)")
+    void theFailedRunsCbf5a2aRecordedAreRetriedByThisBuild() throws Exception {
+        for (var id : List.of(Seeds.ACTIVITY_FAILED, Seeds.ALERT_FAILED)) {
+            var seeded = SeededHistory.load().upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
+            var observer = new RecordingObserver();
+            var invocations = new Invocations();
+            try (var node = seeded.node(Seeds.SERVICE, observer, invocations, false)) {
+                assertThat(node.retry(id, SeedFailingWorkflow.class)).as(id).isEqualTo(WorkflowExecutor.RetryOutcome.RETRIED);
+                assertThat(seeded.awaitStatusOrLast(id, COMPLETED, Duration.ofSeconds(30)))
+                        .as("%s; stand-downs: %s", id, observer.standDowns()).isEqualTo(COMPLETED);
+                assertThat(seeded.events(id).stream().map(e -> e.sequenceNumber() + " " + e.eventType() + " " + e.stepName()).toList())
+                        .as(id).containsExactly("1 ACTIVITY_COMPLETED seed-failing.explode", "2 WORKFLOW_COMPLETED null");
+                assertThat(invocations.count("seed-failing.explode")).as(id).isEqualTo(1);
+                assertThat(invocations.count("seed-failing.alert")).as(id).isEqualTo(0);
+                assertThat(observer.standDowns()).as(id).isEmpty();
+            }
+        }
+        var saga = SeededHistory.load().upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
+        try (var node = saga.node(Seeds.SERVICE, new RecordingObserver(), new Invocations(), false)) {
+            assertThat(node.retry(Seeds.SAGA_COMPENSATED, SeedSagaWorkflow.class))
+                    .isEqualTo(WorkflowExecutor.RetryOutcome.COMPENSATED_NOT_RETRYABLE);
+        }
     }
 
     @Test
