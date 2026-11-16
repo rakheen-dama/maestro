@@ -752,7 +752,17 @@ own, or the `@MaestroDataSource` one — see
 [A dedicated connection pool](#a-dedicated-connection-pool)), and each `NOTIFY`
 borrows another briefly — budget for it (effective pool capacity is one less; a configured Hikari
 `leakDetectionThreshold` logs one false positive for this connection) — and
-reconnects with 1 s → 30 s backoff if it drops.
+reconnects with 1 s → 30 s backoff if it drops. At shutdown the listener stops
+polling within one poll (500 ms; bounded at 2 s), issues `UNLISTEN *` and
+returns its connection to the pool intact: it is closed with the application
+context's beans, after the engine has drained (traced, not tested) and before
+the `DataSource` is shut down. If a poll is stuck in a database call past the
+2 s bound, the close returns anyway and the connection is released when that
+call returns, which can be after the pool has begun shutting down. Those up to
+2 s come after
+`maestro.shutdown.timeout`, not out of it. A pooled connection is never
+returned still listening: on a clean stop it is unlistened first; a session
+that failed is handed back broken, for the pool to discard (traced).
 
 `maestro.signal.wake-recheck-interval` is a real operational knob, not just a
 test seam: it is the correctness fallback for that wake. A notification lost
