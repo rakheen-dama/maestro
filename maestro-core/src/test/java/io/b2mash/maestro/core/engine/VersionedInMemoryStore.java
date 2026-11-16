@@ -366,7 +366,8 @@ class VersionedInMemoryStore implements WorkflowStore {
     }
 
     /**
-     * Behaves as the shipped stores do: every check (the instance exists with
+     * Behaves as the shipped stores do: every check ({@code reopened} is
+     * {@code RUNNING} with no {@code completedAt}, the instance exists with
      * this id, its version is {@code reopened.version() - 1}, it is
      * {@code FAILED}) is made under this store's monitor before anything is
      * mutated; then the events, then the timer rows, then the row. Lock order
@@ -378,11 +379,19 @@ class VersionedInMemoryStore implements WorkflowStore {
     @Override
     public synchronized void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
                                                   Set<String> deleteTimerIds) {
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
         var stored = byWorkflowId.get(reopened.workflowId());
         if (stored == null || !stored.id().equals(reopened.id())) {
             throw new WorkflowNotFoundException(reopened.workflowId());
         }
         var expectedPreviousVersion = reopened.version() - 1;
+        // A row at the expected version that is no longer FAILED also throws
+        // here, with "expected version N but found N": unreachable while every
+        // instance write bumps the version.
         if (stored.version() != expectedPreviousVersion || stored.status() != WorkflowStatus.FAILED) {
             throw new OptimisticLockException(reopened.workflowId(), expectedPreviousVersion, stored.version());
         }

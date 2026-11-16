@@ -545,13 +545,16 @@ public interface WorkflowStore {
      *
      * <p><b>The default</b> is the pre-WP3 retry, {@link #deleteFailureEvents}
      * then {@link #updateInstance(WorkflowInstance)}: two writes, by event
-     * type, ignoring both sets, and not atomic. A store should override it, and
-     * a decorating store should forward it. The shipped JDBC store and the
-     * in-memory test store override it.
+     * type, ignoring both sets, and not atomic. The default neither checks
+     * {@code FAILED} nor is all-or-nothing: a losing concurrent call has
+     * already deleted by type before its compare-and-set fails. A store with
+     * concurrent operators should override it, and a decorating store should
+     * forward it. The shipped JDBC store and the in-memory test store override
+     * it.
      *
      * <p><b>Thread safety:</b> as every store method — callable concurrently
      * from any thread. Two concurrent reopens of one instance: at most one
-     * compare-and-set wins, and the loser writes nothing.
+     * compare-and-set wins, and (in an override) the loser writes nothing.
      *
      * @param reopened             the fully-built reopened row ({@code RUNNING},
      *                             {@code completedAt = null}, version already
@@ -564,6 +567,9 @@ public interface WorkflowStore {
      *         row is no longer {@code FAILED}; nothing was written
      * @throws WorkflowNotFoundException if no such instance exists; nothing was
      *         written
+     * @throws IllegalArgumentException (the shipped overrides) if
+     *         {@code reopened} is not {@code RUNNING} with
+     *         {@code completedAt = null}; checked before anything is written
      * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
      */
     default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,

@@ -62,7 +62,8 @@ class PostgresReopenFailedInstanceTest extends PostgresTestSupport {
 
     @Test
     void reopenDeletesExactlyTheNamedEventsAndTimerRowsAndWritesTheRow() throws SQLException {
-        store.reopenFailedInstance(running(w, 4), Set.of(2, 3, 4), Set.of("sleep-3"));
+        // 99 and "nope" have no row: ignored
+        store.reopenFailedInstance(running(w, 4), Set.of(2, 3, 4, 99), Set.of("sleep-3", "nope"));
         assertEquals(List.of(1), seqs(w));
         assertEquals(List.of("sleep-1"), timerIds(w));
         assertEquals(WorkflowStatus.RUNNING, store.getInstance("w").orElseThrow().status());
@@ -95,6 +96,20 @@ class PostgresReopenFailedInstanceTest extends PostgresTestSupport {
     void aMissingInstanceIsNotFound() {
         assertThrows(WorkflowNotFoundException.class,
                 () -> store.reopenFailedInstance(runningUnknown(), Set.of(1), Set.of()));
+    }
+
+    @Test
+    void aReopenedRowThatIsNotRunningIsRefusedBeforeAnyWrite() throws SQLException {
+        var stillFailed = running(w, 4).toBuilder().status(WorkflowStatus.FAILED).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.reopenFailedInstance(stillFailed, Set.of(2, 3, 4), Set.of("sleep-3")));
+        var completed = running(w, 4).toBuilder().completedAt(Instant.now()).build();
+        assertThrows(IllegalArgumentException.class,
+                () -> store.reopenFailedInstance(completed, Set.of(2, 3, 4), Set.of("sleep-3")));
+        assertEquals(List.of(1, 2, 3, 4), seqs(w));
+        assertEquals(List.of("sleep-1", "sleep-3"), timerIds(w));
+        assertEquals(WorkflowStatus.FAILED, store.getInstance("w").orElseThrow().status());
+        assertEquals(3, store.getInstance("w").orElseThrow().version());
     }
 
     @Test
@@ -225,6 +240,40 @@ class PostgresReopenFailedInstanceTest extends PostgresTestSupport {
         store.reopenFailedInstance(running(w, 4), deletes, Set.of());
 
         assertEquals(List.of(1), seqs(w));
+    }
+
+    @Test
+    void aFailingLastChunkRollsBackTheEarlierChunks() throws Exception {
+        try (var conn = dataSource.getConnection(); var stmt = conn.createStatement()) {
+            var id = "'" + w.id() + "'";
+            stmt.executeUpdate("DELETE FROM maestro_workflow_event WHERE workflow_instance_id = " + id);
+            stmt.executeUpdate("INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, "
+                    + "event_type, step_name, payload, created_at) SELECT gen_random_uuid(), " + id
+                    + ", s, 'ACTIVITY_COMPLETED', 'step-' || s, NULL, now() FROM generate_series(1, 1203) s");
+            // Refuses only the delete of 1204, the last sequence of the last chunk.
+            stmt.execute("CREATE FUNCTION maestro_test_refuse_last() RETURNS trigger AS $$ "
+                    + "BEGIN IF OLD.sequence_number = 1204 THEN RAISE EXCEPTION 'refused'; END IF; "
+                    + "RETURN OLD; END $$ LANGUAGE plpgsql");
+            stmt.execute("CREATE TRIGGER maestro_test_refuse_last BEFORE DELETE ON maestro_workflow_event "
+                    + "FOR EACH ROW EXECUTE FUNCTION maestro_test_refuse_last()");
+        }
+        try {
+            store.appendEvent(event(w.id(), 1204, EventType.WORKFLOW_FAILED));
+            var deletes = IntStream.rangeClosed(2, 1204).boxed().collect(Collectors.toSet());
+
+            assertThrows(StoreUnavailableException.class,
+                    () -> store.reopenFailedInstance(running(w, 4), deletes, Set.of("sleep-3")));
+
+            assertEquals(1204, seqs(w).size(), "the first two chunks' deletes are rolled back");
+            assertEquals(List.of("sleep-1", "sleep-3"), timerIds(w));
+            assertEquals(WorkflowStatus.FAILED, store.getInstance("w").orElseThrow().status());
+            assertEquals(3, store.getInstance("w").orElseThrow().version());
+        } finally {
+            try (var conn = dataSource.getConnection(); var stmt = conn.createStatement()) {
+                stmt.execute("DROP TRIGGER IF EXISTS maestro_test_refuse_last ON maestro_workflow_event");
+                stmt.execute("DROP FUNCTION IF EXISTS maestro_test_refuse_last()");
+            }
+        }
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────

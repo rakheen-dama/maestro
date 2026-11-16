@@ -312,7 +312,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * lock the selected rows for the transaction (Postgres
      * {@code LIMIT ? FOR UPDATE SKIP LOCKED}) should override this: it rules
      * that race out and lets two sweepers running at once take disjoint
-     * batches.
+     * batches. It also orders a purge against a concurrent
+     * {@link #reopenFailedInstance}, which locks the instance row before its
+     * children: under the default, which locks the children first, the two
+     * can deadlock, and the database's deadlock detector aborts one of them
+     * whole (traced, not tested).
      *
      * @return the parameterized SQL string
      * @see #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)
@@ -1036,11 +1040,18 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * <ol>
      *   <li>the instance {@code UPDATE ... WHERE id = ? AND version = ? AND
      *       status = 'FAILED'}. It runs first, so the row lock is taken before
-     *       anything is deleted: a concurrent retry, terminate, adoption or
-     *       retention purge orders strictly before or after the whole reopen.
-     *       Zero rows rolls back, and the row is probed once the connection is
-     *       released: missing is {@link WorkflowNotFoundException}, anything
-     *       else {@link OptimisticLockException};</li>
+     *       anything is deleted: a concurrent retry, terminate or adoption
+     *       orders strictly before or after the whole reopen. So does a
+     *       retention purge on a dialect whose purge candidate select locks
+     *       the instance row ({@link #getPurgeCandidatesSql()}; Postgres:
+     *       {@code FOR UPDATE SKIP LOCKED}). On a dialect whose select locks
+     *       nothing (the portable default), the purge deletes the children
+     *       before the instance, the reverse order, so the two can deadlock;
+     *       the database's deadlock detector then aborts one of them, which
+     *       rolls back whole (traced, not tested). Zero rows rolls back, and
+     *       the row is probed once the connection is released: missing is
+     *       {@link WorkflowNotFoundException}, anything else
+     *       {@link OptimisticLockException};</li>
      *   <li>{@code DELETE FROM maestro_workflow_event WHERE workflow_instance_id
      *       = ? AND sequence_number IN (...)}, in chunks of
      *       {@value #REOPEN_DELETE_CHUNK} sequences;</li>
@@ -1059,6 +1070,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
                                      Set<String> deleteTimerIds) {
         Objects.requireNonNull(reopened, "reopened");
+        requireReopened(reopened);
         var sequences = deleteEventSequences.stream().sorted().toList();
         var timerIds = deleteTimerIds.stream().sorted().toList();
 
@@ -1096,12 +1108,29 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         if (!written) {
             // Probed after the transaction's connection is released, so a
             // single-connection pool cannot deadlock on the nested borrow.
+            // A row at the expected version that is no longer FAILED also
+            // lands here, with "expected version N but found N": unreachable
+            // while every instance write bumps the version.
             resolveUpdateFailure(reopened, null);
         }
 
         log.debug("Reopened workflow instance for retry: workflowId={}, version={}→{}, "
                         + "deletedEvents={}, deletedTimers={}", reopened.workflowId(), reopened.version() - 1,
                 reopened.version(), deletedEvents, deletedTimers);
+    }
+
+    /**
+     * The {@link WorkflowStore#reopenFailedInstance} precondition: the
+     * reopened row is {@code RUNNING} with no {@code completedAt}.
+     *
+     * @throws IllegalArgumentException if it is not; nothing was written
+     */
+    private static void requireReopened(WorkflowInstance reopened) {
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
     }
 
     /**
