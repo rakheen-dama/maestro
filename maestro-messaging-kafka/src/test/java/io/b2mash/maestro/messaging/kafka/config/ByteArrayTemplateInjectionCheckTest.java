@@ -118,6 +118,18 @@ class ByteArrayTemplateInjectionCheckTest {
             + "change, set maestro.messaging.template-injection-check=warn (or off) to start anyway. "
             + "See docs/configuration.md § Kafka Client Configuration.";
 
+    /**
+     * The whole failure for a point that received Boot's default {@code StringSerializer} template.
+     *
+     * @param bean  the bean
+     * @param point the injection point's description
+     */
+    static String stringSerializerViolation(String bean, String point) {
+        return LEGACY_VIOLATION
+                .replace("Bean 'legacyBytesSender'", "Bean '" + bean + "'")
+                .replace("(constructor parameter 0 of " + LegacyBytesSender.class.getName() + ")", "(" + point + ")");
+    }
+
     @Test
     void theFailureMessageIsExact() {
         coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class).run(ctx ->
@@ -629,6 +641,16 @@ class ByteArrayTemplateInjectionCheckTest {
                     .hasMessageContaining("constructor parameter 0 of " + JdkProxiedSender.class.getName())
                     .hasMessageContaining("received 'kafkaTemplate'");
         });
+    }
+
+    @Test
+    void aJdkProxiedInterfaceTypedBeanMethod_isCheckedThroughItsParameters() {
+        // Residual 1: the definition resolves to the interface, so no class can be scanned;
+        // the @Bean method's parameters need none.
+        coexistenceRunner().withUserConfiguration(JdkProxiedBeanMethodConfiguration.class).run(ctx ->
+                assertThat(rootCause(ctx)).hasMessage(stringSerializerViolation("jdkProxiedSender",
+                        "parameter 0 of @Bean method " + JdkProxiedBeanMethodConfiguration.class.getName()
+                                + ".jdkProxiedSender")));
     }
 
     @Test
@@ -1191,6 +1213,20 @@ class ByteArrayTemplateInjectionCheckTest {
         @Bean
         static JdkProxyingPostProcessor jdkProxyingPostProcessor() {
             return new JdkProxyingPostProcessor();
+        }
+    }
+
+    /** An interface-typed {@code @Bean} method, its product wrapped in a JDK proxy. */
+    @Configuration(proxyBeanMethods = false)
+    static class JdkProxiedBeanMethodConfiguration {
+        @Bean
+        static JdkProxyingPostProcessor jdkProxyingPostProcessor() {
+            return new JdkProxyingPostProcessor();
+        }
+
+        @Bean
+        BytesSending jdkProxiedSender(KafkaTemplate<String, byte[]> template) {
+            return new JdkProxiedSender(template);
         }
     }
 

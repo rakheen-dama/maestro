@@ -1143,7 +1143,8 @@ names only a type gets Boot's bean. Pinned by
     constructor parameters given explicit indexed argument values. For a
     `FactoryBean`, the FactoryBean's own class is checked, never its
     product's. For a bean wrapped in a JDK dynamic proxy, the class its bean
-    definition names is checked (when that is a class, not an interface). A
+    definition names is checked (when that is a class, not an interface), and
+    a `@Bean` method's parameters are checked either way. A
     definition with generic (unindexed) argument values exempts every
     constructor parameter (traced, not tested).
   - **A `@Qualifier` takes a point out of the check.** A point with Spring's

@@ -105,7 +105,8 @@ import java.util.function.IntPredicate;
  * inherited ones), and {@code @Bean} method parameters, of beans created at
  * startup. For a {@code FactoryBean}, its own class is scanned, never its
  * product's. For a bean wrapped in a JDK dynamic proxy, the class its bean
- * definition resolves to is scanned (when that is a class, not an interface). Not points, because Spring did not autowire them: the
+ * definition resolves to is scanned (when that is a class, not an interface);
+ * a {@code @Bean} method's parameters are scanned either way. Not points, because Spring did not autowire them: the
  * constructor of a bean built by an instance supplier (a
  * {@code BeanRegistrar} supplier or {@code registerBean(…, Supplier)}, which
  * may call {@code getBean} itself), and constructor or factory-method
@@ -367,11 +368,13 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             var target = definition.getResolvableType().resolve();
             type = target != null && !target.isInterface() && !Proxy.isProxyClass(target) ? target : null;
         }
-        if (type == null) {
+        if (type == null && factoryMethod == null) {
             return List.of();
         }
-        return unqualifiedByteArrayTemplateInjectionPoints(ClassUtils.getUserClass(type), factoryMethod,
-                autowiredArguments(definition, factoryMethod));
+        // With no class to scan (a JDK proxy over an interface-typed @Bean method), the
+        // factory method's parameters are still points: they need no class.
+        return unqualifiedByteArrayTemplateInjectionPoints(type != null ? ClassUtils.getUserClass(type) : null,
+                factoryMethod, autowiredArguments(definition, factoryMethod));
     }
 
     /**
@@ -514,9 +517,10 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
      * The same points as {@link #unqualifiedByteArrayTemplatePoints}, each with
      * the {@link DependencyDescriptor} Spring resolves it through; constructor
      * and factory-method parameters only where {@code autowired} accepts their
-     * index.
+     * index. With no {@code beanClass} (none could be resolved), only the
+     * factory method's parameters.
      */
-    private static List<InjectionPoint> unqualifiedByteArrayTemplateInjectionPoints(Class<?> beanClass,
+    private static List<InjectionPoint> unqualifiedByteArrayTemplateInjectionPoints(@Nullable Class<?> beanClass,
             @Nullable Method factoryMethod, IntPredicate autowired) {
         var points = new ArrayList<InjectionPoint>();
         if (factoryMethod != null) {
@@ -531,7 +535,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
                 }
             }
         }
-        else {
+        else if (beanClass != null) {
             for (var constructor : injectionConstructors(beanClass)) {
                 for (int i = 0; i < constructor.getParameterCount(); i++) {
                     var parameter = MethodParameter.forExecutable(constructor, i);
@@ -541,6 +545,9 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
                     }
                 }
             }
+        }
+        if (beanClass == null) {
+            return points;
         }
         ReflectionUtils.doWithFields(beanClass, field -> {
             if (!Modifier.isStatic(field.getModifiers()) && isInjected(field)
