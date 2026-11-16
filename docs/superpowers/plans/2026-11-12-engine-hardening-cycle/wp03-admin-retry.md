@@ -124,7 +124,7 @@ Sibling branches of any lane on the path, and the subtrees of forks *before* the
 
 `RetryPlanner.plan(String workflowId, List<WorkflowEvent> history)` returns a `RetryPlan`. Checks are made in this order:
 
-1. **`LEGACY`**, when the walk leaves any unplaced event. The plan is exactly today's `deleteFailureEvents` set: every `ACTIVITY_FAILED` and `WORKFLOW_FAILED`, plus, when the payload names `SignalTimeoutException`, the highest `SIGNAL_TIMEOUT`, its same-step `TIMER_SCHEDULED` at `seq-1`, and timer id `await-signal-<seq-1>`. Never worse than today, by construction.
+1. **`LEGACY`**, when the walk leaves any unplaced event. The plan's events are exactly today's `deleteFailureEvents` set: every `ACTIVITY_FAILED` and `WORKFLOW_FAILED`, plus, when the payload names `SignalTimeoutException`, the highest `SIGNAL_TIMEOUT` and its same-step `TIMER_SCHEDULED` at `seq-1`. Its timer ids are today's (`await-signal-<seq-1>` of the failing park) plus step 6's derived `sleep-<s>` / `await-signal-<s>` for every deleted slot `s` — a superset naming only rows of slots whose memos are deleted, so no kept memo can reference them (amended after the Tasks 1–3 review; the store treats an id with no row as a no-op). Never worse than today, by construction.
 2. **Attribution set `A`.**
    - **New build.** The `WORKFLOW_FAILED` payload has an array `failedSequences`. `A` is its elements that are placed `ACTIVITY_FAILED` or `SIGNAL_TIMEOUT` events. Basis `ATTRIBUTED`.
    - **Older build.** The array is absent. Match the payload's `message` exactly against one event:
