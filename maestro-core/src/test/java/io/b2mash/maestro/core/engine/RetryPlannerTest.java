@@ -9,6 +9,8 @@ import org.junit.jupiter.api.Test;
 import tools.jackson.databind.json.JsonMapper;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.lang.management.ManagementFactory;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -26,6 +28,7 @@ import static io.b2mash.maestro.core.model.EventType.TIMER_SCHEDULED;
 import static io.b2mash.maestro.core.model.EventType.WORKFLOW_FAILED;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTimeout;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -258,6 +261,23 @@ class RetryPlannerTest {
     void anOverflowingForkMarker_fallsBackToTheLegacyPlan() {
         var plan = plan(fork(1, 2_147_483), af(2, "p", ISE, "down"), ac(2001, "x"), wf(3, "[2]", AEE, "x"));
         assertPlan(Basis.LEGACY, Set.of(2, 3), plan);
+    }
+
+    @Test
+    void aForkMarkerDeclaringMillionsOfBranches_plansLikeTheHonestMarkerInBoundedTimeAndMemory() {
+        // A corrupt marker whose count still fits: only the two branches that recorded anything are lanes.
+        var honest = plan(fork(1, 2), af(2001, "a", ISE, "down"), ac(2002, "alert"), ac(3001, "b"),
+                wf(4001, "[2001]", AEE, "x"));
+        var history = List.of(fork(1, 2_000_000), af(2001, "a", ISE, "down"), ac(2002, "alert"), ac(3001, "b"),
+                wf(4001, "[2001]", AEE, "x"));
+        var threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        var allocatedBefore = threads.getCurrentThreadAllocatedBytes();
+        var corrupt = assertTimeout(Duration.ofSeconds(2), () -> RetryPlanner.plan("w", history));
+        var allocated = threads.getCurrentThreadAllocatedBytes() - allocatedBefore;
+        assertTrue(allocated < 8L * 1024 * 1024,
+                "planning over a marker declaring 2,000,000 branches allocated " + allocated + " bytes");
+        assertPlan(Basis.ATTRIBUTED, Set.of(2001, 2002, 4001), honest);
+        assertEquals(honest, corrupt);
     }
 
     @Test

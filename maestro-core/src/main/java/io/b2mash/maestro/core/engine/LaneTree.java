@@ -33,7 +33,11 @@ import java.util.TreeSet;
  * <p>Each lane is walked slot by slot and stops at its first empty slot, or at
  * a slot another lane already took, which marks the tree
  * {@linkplain #ambiguous() ambiguous}. The walk is iterative, with an explicit
- * stack, so deep nesting cannot overflow the thread stack. An event no lane
+ * stack, so deep nesting cannot overflow the thread stack. A branch lane is
+ * created only when its first slot holds an event, found among the recorded
+ * sequences between the fork's first branch base and its continuation, so the
+ * work is bounded by the history's size, not by the marker's declared
+ * {@code branchCount} (which a corrupt marker can set to millions). An event no lane
  * reaches is {@linkplain #unplaced() unplaced}, except {@code WORKFLOW_FAILED},
  * which sits at the root's next slot — after a gap whenever the run's last step
  * consumed a slot without writing a memo.
@@ -101,6 +105,7 @@ final class LaneTree {
             bySeq.putIfAbsent(event.sequenceNumber(), event);
         }
 
+        var sequences = new TreeSet<>(bySeq.keySet());
         var laneOfSlot = new HashMap<Integer, Lane>();
         var branchesOfFork = new HashMap<Integer, List<Lane>>();
         var pending = new ArrayDeque<Walk>();
@@ -130,17 +135,25 @@ final class LaneTree {
                 laneOfSlot.put(seq, lane);
                 lane.slots.add(seq);
                 if (isForkMarker(event)) {
-                    var branchCount = branchCount(event);
                     // isForkMarker proved the continuation fits in an int, and
                     // every branch base is below it; computed in long anyway.
-                    var continuation = continuation(seq, branchCount);
-                    var branches = new ArrayList<Lane>(branchCount);
-                    for (int i = 0; i < branchCount; i++) {
+                    var continuation = continuation(seq, branchCount(event));
+                    // A lane only for a branch whose first slot holds an event: a
+                    // branch that recorded nothing has no slots, and the declared
+                    // count (corrupt, it may be millions) is never iterated. The
+                    // candidates are the recorded sequences between the first
+                    // branch base and the continuation, in ascending order, so
+                    // lanes are pushed in branch-index order as before.
+                    var branches = new ArrayList<Lane>();
+                    long firstBase = (long) seq * SequenceSpace.BRANCH_MULTIPLIER + SequenceSpace.BRANCH_MULTIPLIER;
+                    for (var first : sequences.subSet((int) (firstBase + 1), true, (int) continuation, false)) {
+                        long offset = first - firstBase - 1;
+                        if (offset % SequenceSpace.BRANCH_MULTIPLIER != 0) {
+                            continue;
+                        }
                         var branch = new Lane(lane, seq);
                         branches.add(branch);
-                        long base = (long) seq * SequenceSpace.BRANCH_MULTIPLIER
-                                + (long) (i + 1) * SequenceSpace.BRANCH_MULTIPLIER;
-                        pending.push(new Walk(branch, base + 1, base + BRANCH_SLOTS));
+                        pending.push(new Walk(branch, first, (long) first - 1 + BRANCH_SLOTS));
                     }
                     branchesOfFork.put(seq, List.copyOf(branches));
                     // The forking lane continues past every branch block, unbounded.
