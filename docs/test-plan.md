@@ -179,6 +179,125 @@ entire integration seams unverified. This plan makes those seams explicit.
 
 Every integration pin gates on the terminal **event** via `TerminalWait` (Review Focus 5), not on the instance row, so it cannot pass on the non-atomic-write window Issue 26 closed.
 
+### Load suite (k6, `perf/`)
+
+A k6 harness that drives `maestro-samples/sample-perf` (Maestro's true
+defaults, unpublished) on a cold Docker Compose stack (Postgres 16 with
+`pg_stat_statements`, Kafka 3.9 with every topic pre-created, Prometheus) and
+judges each run from what Postgres recorded. D4: numbers first — pass/fail
+rests only on statement counts and correctness; throughput, latency, memory
+and slots are reported, never gated.
+
+**Commands** (from the repository root; one run per host at a time — the
+host-wide lock `/tmp/maestro-perf.lock` refuses a second):
+
+| Scenario | Command | What it answers |
+|---|---|---|
+| smoke | `perf/run.sh smoke` | 20 chain runs (2 × 10 ms) complete; every measurement path works |
+| s1-throughput | `perf/run.sh s1-throughput` | one node's throughput ceiling at the defaults; statements per workflow (chain 5 × 50 ms) |
+| s3-parked | `perf/run.sh s3-parked` | the steady store load of 1k–10k parked runs, per parked run per minute; `PERF_PARK_MODE=sleep` parks on a durable `sleep()` instead of a signal |
+
+Options: `--profile local|full` (default `local`), `--replicas N` (default 1),
+`--record-baseline` (writes `perf/baselines/<scenario>.json` from a PASS run
+on a clean tree; refuses otherwise). Environment: `PERF_ADMIN_EVENTS=true|false`
+(default `false`, the engine's default since 3.11c; every result records it in
+`identity.config.adminEventsRequested`, `identity.effective.adminEventsEffective`,
+`validity.adminEvents` and `summary.md`), `PERF_PARK_MODE`, `PERF_KEEP_UP=1`,
+`PERF_ENGINE_REF`, `PERF_NODE_HEAP` / `PERF_NODE_CPUS` / `PERF_NODE_MEM`.
+
+**Prerequisites:** Docker with ≥ 6 GiB of memory (a run below that records a
+WARN note), `docker compose` v2, `jq`, `unzip`, JDK 25 (the run builds and
+stamps the sample's jar with `./gradlew :maestro-samples:sample-perf:bootJar`).
+
+**Profiles:**
+
+| Scenario | local | full |
+|---|---|---|
+| s1-throughput | levels 5 / 20 / 40 / 80 starts/s, ramp 5 s, hold 40 s; about 6 min | levels 5 / 10 / 20 / 40 / 60 / 80 / 120, ramp 10 s, hold 120 s; about 20–25 min |
+| s3-parked | plateaus 1000 / 2000 parked, idle 60 s, hold 120 s; about 12 min | plateaus 1000 / 5000 / 10000, idle 120 s, hold 300 s; about 35 min |
+
+**Check classes and the verdict** (`perf/eval/common.jq`; allow-list, first
+match wins): **ERROR** (exit 3) — a check is ERROR or of an unknown class or
+status, an advisory reports anything but PASS/WARN, or there are no checks;
+**INVALID** (exit 2) — a *validity* check is not PASS (the measurement cannot
+be trusted: identity of the jar on every node, no restart, admin events as
+requested, no `pg_stat_statements` eviction, k6 exit and dropped iterations,
+warm-up drained, the background window, periodic sweeps accounted for, the
+executed plan); **FAIL** (exit 1) — a *correctness* check is not PASS or
+NO_BASELINE, or a *gate* is FAIL or WARN; **INVALID** — a gate could not be
+judged; otherwise **PASS** (NO_BASELINE gates count as pass). *Advisory*
+checks (latency, ceiling, contention, heap, slots, decomposition, …) only
+PASS or WARN and never change the verdict.
+
+**Gate rules:**
+
+- Statement counts are reported gross and **net**: the background rate
+  measured on the idle stack (timer-poll ticks counted from the due-timer
+  query, never assumed) is subtracted; lock-cleaner passes are identified by
+  text and subtracted exactly; a signal-janitor or retention statement in a
+  window makes the run INVALID.
+- `gate.statementsPerWorkflow` (S1) and `gate.parkedCostBaseline` (S3):
+  `statements_gate`, **symmetric** — PASS when |net − expected| ≤ band,
+  band = tolerance (one tick per background poller) + relativeAllowance ×
+  expected, relativeAllowance 0.02 in both scenarios (justified in each
+  evaluator's header); a drop below the band FAILs too ("re-record the
+  baseline deliberately"). INVALID when the tolerance alone exceeds 25 % of
+  expected. NO_BASELINE when no baseline matches (S1: workflow shape, profile,
+  replicas; S3: park mode, wake-recheck and recovery-poll intervals, profile,
+  replicas).
+- `gate.parkedCostLinear` (S3): every plateau's per-parked cost within ± 25 %
+  of the smallest plateau's.
+- `gate.parkedCostArithmetic` (S3, absolute, with or without a baseline):
+  every plateau within ± 5 % (+ tolerance) of the documented arithmetic
+  (`docs/operations.md` §13) at the run's park mode, replicas and bound
+  intervals — centre 6.017 per parked run per minute for `awaitSignal` at one
+  node, 6.032 at two, 4.017 for `sleep` at one node.
+- `gate.statementsMeasured` (smoke): net statements per workflow in [5, 500].
+
+**Results:** `perf/results/<runId>/` (git-ignored): `identity.json` (repo
+head, `engineCommit` and `harnessCommit` — the last commits touching the
+engine modules and the harness paths —, dirty flag, host, images and digests,
+container limits, every node's `/perf/info`, effective settings),
+`measurements.json`, `result.json`, `summary.md`, `prometheus.json`,
+`compose.log`, k6 summaries. `result.json` is schema 1:
+`{schema: 1, identity, scenario, profile, measurements, checks: [{id, class,
+status, value, limit, detail}], verdict}`. The last stdout line is always
+`VERDICT <PASS|FAIL|INVALID|ERROR> <dir>`. Baselines live in `perf/baselines/`
+(committed; each carries its source `runId`, `engineCommit`, `harnessCommit`,
+profile, replicas, `adminEventsEnabled` and the figure). Run evidence cited
+in docs and harness headers is committed as `perf/.evidence/wp11/<runId>.result.json`.
+
+**Self-tests (no Docker):** `perf/eval/selftest.sh <smoke dir> <s1 dir> <s3 dir>`
+doctors recorded runs one fault at a time and asserts the verdict each fault
+must produce; `perf/lib/lock-selftest.sh` races the run lock.
+
+**CI:** `.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
+(scenario, profile, replicas, admin_events; defaults `s1-throughput`,
+`full`, `1`, `false`) and Saturday 04:00 UTC (s1-throughput and s3-parked,
+full profile). Never on pull requests: a load run on a shared 4-vCPU runner is
+not a merge signal. FAIL, INVALID and ERROR fail the job; a NO_BASELINE gate is
+a warning annotation. Results are uploaded for 14 days.
+`gh workflow run perf.yml -f scenario=smoke -f profile=local`.
+
+**Adding a scenario (WP12):** a `perf/scenarios/<name>.sh` defining
+`scenario_run` (writes `measurements.json`), a `perf/eval/<name>.jq` (includes
+`common`, returns `result(...)`) and its k6 script under `perf/k6/` — nothing
+else; `run.sh` dispatches on the file names (add the name to its scenario
+`case` and to `perf.yml`'s choice list).
+
+**An older engine with this harness:**
+
+```bash
+git worktree add --detach ../k6-old <engine-commit>
+cd ../k6-old
+git cherry-pick $(git log --reverse --format=%H --grep='^test(perf)' origin/main)
+perf/run.sh smoke && perf/run.sh s1-throughput
+```
+
+Cite both commits from `identity.repo` (`engineCommit` is the old engine,
+`harnessCommit` the cherry-picked harness). On an engine that predates the
+WP11 meters the advisories that need them say "not available".
+
 ---
 
 ## 2. Ranked gaps (what has NOT been verified to work)
@@ -499,10 +618,12 @@ resurfaces, start there.
 ## 4. Explicitly out of scope (for now)
 
 Valkey beyond existing coverage (best-effort), RabbitMQ parity suite,
-admin dashboard UI tests, performance/load testing. **No longer out of
+admin dashboard UI tests. **No longer out of
 scope, closed 2026-08-01:** chaos testing of >TTL pauses — the multi-instance
 chaos harness's `PAUSE_RESUME` action freezes a real container past the 30s
 instance-lock TTL on every run (mandated ≥2 loan-node occurrences per run);
 split-brain is still accepted-by-design (fencing tokens have not landed —
 `docs/open-issues.md` Issue 11), but its measured consequences are no longer
 unmeasured — see `docs/operations.md` and Issue 11's evidence section.
+
+Performance/load testing moved into scope 2026-11-12 — see §1 *Load suite*.
