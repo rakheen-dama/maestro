@@ -99,18 +99,65 @@ class ByteArrayTemplateInjectionCheckTest {
         });
     }
 
+    /** The whole failure for {@link LegacyBytesSender} over Boot's default template. */
+    static final String LEGACY_VIOLATION = "Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> "
+            + "without a qualifier (constructor parameter 0 of " + LegacyBytesSender.class.getName()
+            + ") and received 'kafkaTemplate', whose value serializer "
+            + "org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send "
+            + "through it would fail. Maestro's Kafka beans are not injected by type. Inject Maestro's "
+            + "template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\"maestroKafkaTemplate\"), or set "
+            + "spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer "
+            + "to send byte[] through Spring Boot's template. Only if the injection point is in code you cannot "
+            + "change, set maestro.messaging.template-injection-check=warn (or off) to start anyway. "
+            + "See docs/configuration.md § Kafka Client Configuration.";
+
     @Test
     void theFailureMessageIsExact() {
         coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class).run(ctx ->
-                assertThat(rootCause(ctx)).hasMessage("Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> "
-                        + "without a qualifier (constructor parameter 0 of " + LegacyBytesSender.class.getName()
-                        + ") and received 'kafkaTemplate', whose value serializer "
-                        + "org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send "
-                        + "through it would fail. Maestro's Kafka beans are not injected by type. Inject Maestro's "
-                        + "template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\"maestroKafkaTemplate\"), or set "
-                        + "spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer "
-                        + "to send byte[] through Spring Boot's template. "
-                        + "See docs/configuration.md § Kafka Client Configuration."));
+                assertThat(rootCause(ctx)).hasMessage(LEGACY_VIOLATION));
+    }
+
+    // ── Fix wave (B2): maestro.messaging.template-injection-check = fail | warn | off ──
+
+    @Test
+    void failMode_set_explicitly_failsStartup() {
+        coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
+                .withPropertyValues("maestro.messaging.template-injection-check=fail")
+                .run(ctx -> assertThat(rootCause(ctx)).hasMessage(LEGACY_VIOLATION));
+    }
+
+    @Test
+    void warnMode_startsAndLogsEveryViolationWithTheFailureText() {
+        coexistenceRunner()
+                .withUserConfiguration(LegacyBytesSenderConfiguration.class, FieldSenderConfiguration.class)
+                .withPropertyValues("maestro.messaging.template-injection-check=warn")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    assertThat(ctx.getBean(LegacyBytesSender.class).template()).isSameAs(ctx.getBean("kafkaTemplate"));
+                    assertThat(warnings()).hasSize(2);
+                    assertThat(warnings()).contains(LEGACY_VIOLATION);
+                    assertThat(warnings()).anySatisfy(w -> assertThat(w)
+                            .startsWith("Bean 'fieldSender' injects a KafkaTemplate<…, byte[]> without a qualifier "
+                                    + "(field template of " + FieldSender.class.getName() + ")"));
+                });
+    }
+
+    @Test
+    void offMode_startsAndTheCheckLogsNothing() {
+        // A violation (fails under fail) and an ambiguous point (WARNs under fail and warn).
+        coexistenceRunner().withUserConfiguration(LegacyBytesSenderConfiguration.class)
+                .withPropertyValues("maestro.messaging.template-injection-check=off")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed().hasSingleBean(ByteArrayTemplateInjectionCheck.class);
+                    assertThat(ctx.getBean(LegacyBytesSender.class).template()).isSameAs(ctx.getBean("kafkaTemplate"));
+                });
+        coexistenceRunner().withUserConfiguration(PrimarySenderConfiguration.class)
+                .withPropertyValues("maestro.messaging.template-injection-check=off")
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    assertThat(ctx.getBean(PrimarySender.class).legacy()).isSameAs(ctx.getBean("legacyTemplate"));
+                });
+        assertThat(logAppender.list).as("no line at any level").isEmpty();
     }
 
     @Test

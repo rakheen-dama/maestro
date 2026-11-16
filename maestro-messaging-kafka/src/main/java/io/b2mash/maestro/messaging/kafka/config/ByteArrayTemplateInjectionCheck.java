@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.kafka.config;
 
 import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
+import io.b2mash.maestro.spring.config.MaestroProperties.MessagingProperties.TemplateInjectionCheck;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.Serializer;
 import org.jspecify.annotations.Nullable;
@@ -36,6 +37,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.function.IntPredicate;
 
@@ -84,7 +86,10 @@ import java.util.function.IntPredicate;
  *       whose declared target type is not assignable from {@code byte[]}.</li>
  * </ol>
  * <p>The check fails startup only on a confirmed violation, with one
- * exception listing every violation. A serializer it
+ * exception listing every violation ({@code maestro.messaging.template-injection-check}
+ * = {@code fail}, the default). Under {@code warn} each violation is logged at
+ * {@code WARN} with the same text and startup continues; under {@code off} the
+ * check does nothing, not even the {@code WARN}s below. A serializer it
  * cannot classify (another generic serializer, a lambda, a delegating
  * serializer) is not a failure: it is logged at
  * {@code WARN}, because such a serializer may write {@code byte[]} values
@@ -130,14 +135,24 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
 
     private static final String JAKARTA_INJECT = "jakarta.inject.Inject";
 
+    /** The property that sets {@link #mode}. */
+    static final String PROPERTY = "maestro.messaging.template-injection-check";
+
     /** Spring Kafka's JSON serializers, by name; either may be absent from the classpath. */
     private static final Set<String> JSON_SERIALIZERS = Set.of(
             "org.springframework.kafka.support.serializer.JacksonJsonSerializer",
             "org.springframework.kafka.support.serializer.JsonSerializer");
 
+    private final TemplateInjectionCheck mode;
+
     private @Nullable ConfigurableListableBeanFactory beanFactory;
 
-    ByteArrayTemplateInjectionCheck() {
+    /**
+     * @param mode {@code maestro.messaging.template-injection-check}: what a
+     *             confirmed violation does
+     */
+    ByteArrayTemplateInjectionCheck(TemplateInjectionCheck mode) {
+        this.mode = Objects.requireNonNull(mode, "mode");
     }
 
     @Override
@@ -150,7 +165,7 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
     @Override
     public void afterSingletonsInstantiated() {
         var bf = this.beanFactory;
-        if (bf == null) {
+        if (bf == null || this.mode == TemplateInjectionCheck.OFF) {
             return;
         }
         var templates = defaultCandidateTemplates(bf);
@@ -165,9 +180,14 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
             }
         }
         ambiguous.values().forEach(logger::warn);
-        if (!violations.isEmpty()) {
-            throw new IllegalStateException(String.join("\n\n", violations));
+        if (violations.isEmpty()) {
+            return;
         }
+        if (this.mode == TemplateInjectionCheck.WARN) {
+            violations.forEach(logger::warn);
+            return;
+        }
+        throw new IllegalStateException(String.join("\n\n", violations));
     }
 
     /**
@@ -383,7 +403,9 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
                 + "injected by type. Inject Maestro's template with @Qualifier(MaestroKafkaBeans.TEMPLATE) (\""
                 + MaestroKafkaBeans.TEMPLATE + "\"), or set spring.kafka.producer.value-serializer="
                 + "org.apache.kafka.common.serialization.ByteArraySerializer to send byte[] through Spring Boot's "
-                + "template. See docs/configuration.md § Kafka Client Configuration.";
+                + "template. Only if the injection point is in code you cannot change, set "
+                + PROPERTY + "=warn (or off) to start anyway. "
+                + "See docs/configuration.md § Kafka Client Configuration.";
     }
 
     private static void warnUnclassified(String templateName, Class<?> serializerClass,

@@ -406,14 +406,18 @@ public class KafkaMessagingAutoConfiguration {
 
     /**
      * Fails startup when a bean injects a {@code KafkaTemplate<…, byte[]>}
-     * without a qualifier and received a template that cannot serialize
-     * {@code byte[]} (Spring Boot's {@code kafkaTemplate} with its default
-     * {@code StringSerializer}). See {@link ByteArrayTemplateInjectionCheck}.
+     * without a qualifier and received a template that cannot send
+     * {@code byte[]} unchanged (Spring Boot's {@code kafkaTemplate} with its
+     * default {@code StringSerializer}, or a JSON serializer). See
+     * {@link ByteArrayTemplateInjectionCheck};
+     * {@code maestro.messaging.template-injection-check} turns it into a
+     * {@code WARN} or off.
      *
+     * @param properties the bound Maestro configuration
      * @return the startup check
      */
     @Bean
-    ByteArrayTemplateInjectionCheck maestroKafkaTemplateInjectionCheck() {
-        return new ByteArrayTemplateInjectionCheck();
+    ByteArrayTemplateInjectionCheck maestroKafkaTemplateInjectionCheck(MaestroProperties properties) {
+        return new ByteArrayTemplateInjectionCheck(properties.getMessaging().templateInjectionCheck());
     }
 }

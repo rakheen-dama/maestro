@@ -267,17 +267,50 @@ public class MaestroProperties {
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
      * @param topics        topic name configuration
      * @param redelivery    handler-failure redelivery and dead-letter policy
+     * @param templateInjectionCheck what happens at startup when a bean injects a
+     *                      byte[] KafkaTemplate without a qualifier and received a
+     *                      template that cannot send byte[] unchanged — see
+     *                      {@link TemplateInjectionCheck}; default
+     *                      {@link TemplateInjectionCheck#FAIL}
      */
     public record MessagingProperties(
             @DefaultValue("kafka") String type,
             @Nullable String consumerGroup,
             @DefaultValue TopicsProperties topics,
-            @DefaultValue RedeliveryProperties redelivery
+            @DefaultValue RedeliveryProperties redelivery,
+            @DefaultValue("fail") TemplateInjectionCheck templateInjectionCheck
     ) {
         /** @return the defaults documented above */
         public static MessagingProperties defaults() {
             return new MessagingProperties("kafka", null,
-                    TopicsProperties.defaults(), RedeliveryProperties.defaults());
+                    TopicsProperties.defaults(), RedeliveryProperties.defaults(), TemplateInjectionCheck.FAIL);
+        }
+
+        /**
+         * Startup policy for an unqualified {@code KafkaTemplate<…, byte[]>}
+         * injection point that received a template whose value serializer
+         * cannot send {@code byte[]} unchanged
+         * ({@code maestro.messaging.template-injection-check}).
+         *
+         * <p>Maestro's Kafka beans are not default candidates, so such a point
+         * receives Spring Boot's template, not Maestro's. The Kafka transport's
+         * check ({@code ByteArrayTemplateInjectionCheck}) finds those points
+         * once, after every singleton is created. The two real fixes are a
+         * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)} on the point, or a
+         * {@code spring.kafka.producer.value-serializer} that writes
+         * {@code byte[]}; this policy is the way out of last resort, for a
+         * point in code the host cannot change.
+         */
+        public enum TemplateInjectionCheck {
+            /**
+             * Each such point is listed in one exception that fails startup.
+             * The default.
+             */
+            FAIL,
+            /** Each such point is logged at WARN, with the same text; startup continues. */
+            WARN,
+            /** The check does nothing. */
+            OFF
         }
     }
 
