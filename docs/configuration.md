@@ -1137,8 +1137,9 @@ source so a dead-lettered record keeps its partition. With
 
 ## Lock Keys
 
-Maestro uses PostgreSQL tables for distributed locking and leader election. The keys below are the `lock_key` values stored in
-`maestro_distributed_lock` and `maestro_leader_election`:
+Maestro uses PostgreSQL tables for distributed locking and leader election.
+The keys below are the `lock_key` values stored in `maestro_distributed_lock`
+and `maestro_leader_election`:
 
 | Key Pattern                                   | Table                       | Purpose                         | TTL               |
 |-----------------------------------------------|-----------------------------|-------------------------------- |--------------------|
@@ -1156,12 +1157,14 @@ including parked waits — and renewed every 10 seconds. If a node crashes, the
 lock expires after 30 seconds, allowing another node's recovery poller to pick
 up the workflow.
 
-There is no per-activity lock. Two runners execute a step concurrently only
-when both hold the same workflow: the window after a node lost its instance
-lock. Lease fencing (V6) rejects the stale runner's outcome append, so the
-adopting node runs the step again. Fencing bounds *persisted progress*, not
-external side effects. Activities must be idempotent. A duplicate Kafka
-delivery is deduplicated by the signal's message id (V9), not by a lock.
+There is no per-activity lock. With a lock backend, two runners execute a
+step concurrently only when both hold the same workflow: the window after a
+node lost its instance lock (traced, not tested). Lease fencing (V6) rejects
+the stale runner's outcome append, so the stale runner records nothing; the
+adopting node, finding no recorded outcome, runs the step again. Fencing
+bounds *persisted progress*, not external side effects. Activities must be
+idempotent. A duplicate Kafka delivery is deduplicated by the signal's message
+id (V9), not by a lock.
 
 The leader election keys ensure that only one node in the cluster runs the timer
 poller, and only one runs the retention sweeper's purge batches. They use a

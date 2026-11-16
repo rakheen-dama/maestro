@@ -475,12 +475,13 @@ signals or timers. If a node crashes, the lock expires after 30 seconds,
 allowing another node's periodic recovery poller (`maestro.recovery.*`) to
 pick up the workflow.
 
-**No activity lock** -- There is no per-activity lock. Two runners execute a
-step concurrently only when both hold the same workflow: the window after a
-node lost its instance lock. Lease fencing (V6) rejects the stale runner's
-outcome append, so the adopting node runs the step again. Activities must be
-idempotent. A duplicate Kafka delivery is deduplicated by the signal's message
-id (V9), not by a lock.
+**No activity lock** -- There is no per-activity lock. With a lock backend,
+two runners execute a step concurrently only when both hold the same workflow:
+the window after a node lost its instance lock (traced, not tested). Lease
+fencing (V6) rejects the stale runner's outcome append, so the stale runner
+records nothing; the adopting node, finding no recorded outcome, runs the step
+again. Activities must be idempotent. A duplicate Kafka delivery is
+deduplicated by the signal's message id (V9), not by a lock.
 
 **Timer leader** -- Ensures only one node in the cluster polls for due timers.
 The 15-second TTL means leadership transfers quickly if the current leader
