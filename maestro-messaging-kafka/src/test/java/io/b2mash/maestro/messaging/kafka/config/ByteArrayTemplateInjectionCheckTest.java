@@ -24,6 +24,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.BeanRegistrar;
 import org.springframework.beans.factory.BeanRegistry;
 import org.springframework.beans.factory.FactoryBean;
+import org.springframework.beans.factory.config.BeanPostProcessor;
 import org.springframework.beans.factory.config.RuntimeBeanReference;
 import org.springframework.beans.factory.support.BeanDefinitionRegistry;
 import org.springframework.beans.factory.support.RootBeanDefinition;
@@ -45,6 +46,7 @@ import org.springframework.kafka.core.ProducerFactory;
 import org.springframework.kafka.support.serializer.JacksonJsonSerializer;
 import org.springframework.stereotype.Component;
 
+import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Map;
@@ -598,6 +600,31 @@ class ByteArrayTemplateInjectionCheckTest {
         }
     }
 
+    // ── Fix wave (B6): a JDK-proxied bean is scanned through its target class ──
+
+    @Test
+    void aJdkProxiedBeanThatMisinjects_failsStartupNamingItsTargetClass() {
+        coexistenceRunner().withUserConfiguration(JdkProxiedSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasFailed();
+            assertThat(rootCause(ctx))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("Bean 'jdkProxiedSender' injects")
+                    .hasMessageContaining("constructor parameter 0 of " + JdkProxiedSender.class.getName())
+                    .hasMessageContaining("received 'kafkaTemplate'");
+        });
+    }
+
+    @Test
+    void aJdkProxiedBeanThatQualifies_startsAndIsAProxy() {
+        // The control: the same proxy over a qualified point starts, so the proxy is what the
+        // failing test above exercises.
+        coexistenceRunner().withUserConfiguration(JdkProxiedQualifiedSenderConfiguration.class).run(ctx -> {
+            assertThat(ctx).hasNotFailed();
+            assertThat(Proxy.isProxyClass(ctx.getBean("jdkProxiedSender").getClass())).isTrue();
+            assertThat(ctx.getBeanFactory().getDependentBeans(TEMPLATE)).contains("jdkProxiedSender");
+        });
+    }
+
     // ── Static helpers ───────────────────────────────────────────────────
 
     @Test
@@ -1084,6 +1111,69 @@ class ByteArrayTemplateInjectionCheckTest {
         @Override
         public byte[] serialize(String topic, T data) {
             return new byte[0];
+        }
+    }
+
+    /** The interface a host's JDK proxy implements. */
+    public interface BytesSending {
+        KafkaTemplate<String, byte[]> template();
+    }
+
+    @Component("jdkProxiedSender")
+    static class JdkProxiedSender implements BytesSending {
+        private final KafkaTemplate<String, byte[]> template;
+
+        JdkProxiedSender(KafkaTemplate<String, byte[]> template) {
+            this.template = template;
+        }
+
+        @Override
+        public KafkaTemplate<String, byte[]> template() {
+            return template;
+        }
+    }
+
+    @Component("jdkProxiedSender")
+    static class JdkProxiedQualifiedSender implements BytesSending {
+        private final KafkaTemplate<String, byte[]> template;
+
+        JdkProxiedQualifiedSender(@Qualifier(TEMPLATE) KafkaTemplate<String, byte[]> template) {
+            this.template = template;
+        }
+
+        @Override
+        public KafkaTemplate<String, byte[]> template() {
+            return template;
+        }
+    }
+
+    /** Wraps {@code jdkProxiedSender} in a JDK dynamic proxy, as an interface-based AOP proxy would. */
+    static class JdkProxyingPostProcessor implements BeanPostProcessor {
+        @Override
+        public Object postProcessAfterInitialization(Object bean, String beanName) {
+            if (!"jdkProxiedSender".equals(beanName)) {
+                return bean;
+            }
+            return Proxy.newProxyInstance(BytesSending.class.getClassLoader(), new Class<?>[] {BytesSending.class},
+                    (proxy, method, args) -> method.invoke(bean, args));
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(JdkProxiedSender.class)
+    static class JdkProxiedSenderConfiguration {
+        @Bean
+        static JdkProxyingPostProcessor jdkProxyingPostProcessor() {
+            return new JdkProxyingPostProcessor();
+        }
+    }
+
+    @Configuration(proxyBeanMethods = false)
+    @Import(JdkProxiedQualifiedSender.class)
+    static class JdkProxiedQualifiedSenderConfiguration {
+        @Bean
+        static JdkProxyingPostProcessor jdkProxyingPostProcessor() {
+            return new JdkProxyingPostProcessor();
         }
     }
 

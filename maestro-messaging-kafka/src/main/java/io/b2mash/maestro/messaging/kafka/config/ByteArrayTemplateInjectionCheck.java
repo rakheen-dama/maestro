@@ -32,6 +32,7 @@ import java.lang.reflect.Executable;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -103,7 +104,8 @@ import java.util.function.IntPredicate;
  * {@code @Autowired}/{@code @Inject} fields and method parameters (including
  * inherited ones), and {@code @Bean} method parameters, of beans created at
  * startup. For a {@code FactoryBean}, its own class is scanned, never its
- * product's. Not points, because Spring did not autowire them: the
+ * product's. For a bean wrapped in a JDK dynamic proxy, the class its bean
+ * definition resolves to is scanned (when that is a class, not an interface). Not points, because Spring did not autowire them: the
  * constructor of a bean built by an instance supplier (a
  * {@code BeanRegistrar} supplier or {@code registerBean(…, Supplier)}, which
  * may call {@code getBean} itself), and constructor or factory-method
@@ -354,10 +356,17 @@ final class ByteArrayTemplateInjectionCheck implements SmartInitializingSingleto
         var definition = bf.getMergedBeanDefinition(beanName);
         var factoryMethod = definition instanceof RootBeanDefinition root ? root.getResolvedFactoryMethod() : null;
         // For a FactoryBean, getType(name) is the product's class, which Spring never
-        // injects into; the FactoryBean itself is what was autowired.
+        // injects into; the FactoryBean itself is what was autowired. Never initialise
+        // a FactoryBean to learn a type (allowFactoryBeanInit = false).
         var type = bf.isFactoryBean(beanName)
-                ? bf.getType(BeanFactory.FACTORY_BEAN_PREFIX + beanName)
-                : bf.getType(beanName);
+                ? bf.getType(BeanFactory.FACTORY_BEAN_PREFIX + beanName, false)
+                : bf.getType(beanName, false);
+        if (type != null && Proxy.isProxyClass(type)) {
+            // A JDK proxy's class declares none of the target's injection points:
+            // read the class the definition says was instantiated and autowired.
+            var target = definition.getResolvableType().resolve();
+            type = target != null && !target.isInterface() && !Proxy.isProxyClass(target) ? target : null;
+        }
         if (type == null) {
             return List.of();
         }
