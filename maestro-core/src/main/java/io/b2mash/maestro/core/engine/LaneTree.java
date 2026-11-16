@@ -54,9 +54,6 @@ final class LaneTree {
     /** The step name of a {@code parallel()} fork marker. */
     static final String FORK_STEP = "$maestro:parallel";
 
-    /** The workflow id {@link SequenceSpace#nextParentSeq} is given; only its exception names it. */
-    private static final String WORKFLOW_ID = "lane-tree";
-
     /** The most slots a branch lane may take before its first fork. */
     private static final int BRANCH_SLOTS = SequenceSpace.BRANCH_MULTIPLIER - 1;
 
@@ -134,18 +131,20 @@ final class LaneTree {
                 lane.slots.add(seq);
                 if (isForkMarker(event)) {
                     var branchCount = branchCount(event);
-                    // A recorded fork already passed this overflow check when it ran.
-                    var continuation = SequenceSpace.nextParentSeq(WORKFLOW_ID, seq, branchCount);
+                    // isForkMarker proved the continuation fits in an int, and
+                    // every branch base is below it; computed in long anyway.
+                    var continuation = continuation(seq, branchCount);
                     var branches = new ArrayList<Lane>(branchCount);
                     for (int i = 0; i < branchCount; i++) {
                         var branch = new Lane(lane, seq);
                         branches.add(branch);
-                        long base = SequenceSpace.branchBase(seq, i);
+                        long base = (long) seq * SequenceSpace.BRANCH_MULTIPLIER
+                                + (long) (i + 1) * SequenceSpace.BRANCH_MULTIPLIER;
                         pending.push(new Walk(branch, base + 1, base + BRANCH_SLOTS));
                     }
                     branchesOfFork.put(seq, List.copyOf(branches));
                     // The forking lane continues past every branch block, unbounded.
-                    slot = (long) continuation + 1;
+                    slot = continuation + 1;
                     limit = Integer.MAX_VALUE;
                 } else {
                     slot++;
@@ -167,9 +166,13 @@ final class LaneTree {
     /**
      * Reports whether {@code e} is a {@code parallel()} fork marker: a
      * {@code SIDE_EFFECT} named {@value #FORK_STEP} whose payload's
-     * {@code branchCount} is an integral number of at least 2. A missing,
-     * non-integral or smaller count is not a fork ({@code parallel()} of 0 or 1
-     * task writes no marker).
+     * {@code branchCount} is an integral number of at least 2 whose
+     * continuation, {@link SequenceSpace#nextParentSeq nextParentSeq(seq, n)},
+     * fits in an {@code int}. A missing, non-integral or smaller count is not a
+     * fork ({@code parallel()} of 0 or 1 task writes no marker), and neither is
+     * a count whose continuation overflows (no engine could have run that
+     * fork): its slot is an ordinary slot, and whatever its branches recorded
+     * is left unplaced.
      *
      * @param e an event
      * @return {@code true} if it is a fork marker
@@ -183,11 +186,22 @@ final class LaneTree {
             return false;
         }
         var count = payload.get("branchCount");
-        return count != null && count.isIntegralNumber() && count.canConvertToInt() && count.intValue() >= 2;
+        return count != null && count.isIntegralNumber() && count.canConvertToInt() && count.intValue() >= 2
+                && continuation(e.sequenceNumber(), count.intValue()) <= Integer.MAX_VALUE;
     }
 
     private static int branchCount(WorkflowEvent forkMarker) {
         return forkMarker.payload().get("branchCount").intValue();
+    }
+
+    /**
+     * {@code seq * 1000 + (n + 1) * 1000} in {@code long}, so neither the
+     * product nor {@code n + 1} can wrap ({@link SequenceSpace#nextParentSeq}
+     * without its throw).
+     */
+    private static long continuation(int seq, int branchCount) {
+        return (long) seq * SequenceSpace.BRANCH_MULTIPLIER
+                + ((long) branchCount + 1) * SequenceSpace.BRANCH_MULTIPLIER;
     }
 
     /**

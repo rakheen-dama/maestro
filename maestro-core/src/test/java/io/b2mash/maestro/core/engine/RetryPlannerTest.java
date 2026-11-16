@@ -173,6 +173,12 @@ class RetryPlannerTest {
     }
 
     @Test
+    void anOverflowingForkMarker_fallsBackToTheLegacyPlan() {
+        var plan = plan(fork(1, 2_147_483), af(2, "p", ISE, "down"), ac(2001, "x"), wf(3, "[2]", AEE, "x"));
+        assertPlan(Basis.LEGACY, Set.of(2, 3), plan);
+    }
+
+    @Test
     void theLegacyPlanKeepsIssue19sTimeoutRule() {
         // slot 3 is empty, so 4 and 5 are unplaced
         var plan = plan(awaitPark(1, "a"), ev(2, SIGNAL_TIMEOUT, AWAIT + "a", null),

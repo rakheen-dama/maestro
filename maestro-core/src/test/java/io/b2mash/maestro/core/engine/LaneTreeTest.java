@@ -98,6 +98,23 @@ class LaneTreeTest {
         assertFalse(t.ambiguous());
     }
 
+    @Test
+    void aForkMarkerWhoseContinuationOverflowsIsNotAFork() {
+        // 1 * 1000 + (2_147_483 + 1) * 1000 > Integer.MAX_VALUE
+        var t = LaneTree.of(List.of(fork(1, 2_147_483), ev(2, ACTIVITY_FAILED, "p"), ev(2001, ACTIVITY_COMPLETED, "x")));
+        assertTrue(t.isPlaced(2), "the marker is an ordinary slot: the root lane continues at 2");
+        assertEquals(new TreeSet<>(Set.of(2001)), t.unplaced());
+    }
+
+    @Test
+    void aForkMarkerWithTheLargestBranchCountIsNotAFork() {
+        // branchCount + 1 overflows int
+        var t = LaneTree.of(List.of(fork(1, Integer.MAX_VALUE), ev(2, ACTIVITY_FAILED, "p"),
+                ev(2001, ACTIVITY_COMPLETED, "x")));
+        assertTrue(t.isPlaced(2));
+        assertEquals(new TreeSet<>(Set.of(2001)), t.unplaced());
+    }
+
     /**
      * Issue 28's ×1000 overlap: root fork at 1 (n=2); branch 1 (3001..3999)
      * forks at its 999th slot, 3999 (n=2), so it continues at
