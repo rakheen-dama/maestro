@@ -173,6 +173,15 @@ public final class WorkflowExecutor {
      */
     volatile Runnable afterLaunchAdmission = () -> { };
 
+    /**
+     * Test seam: runs on the run's own thread before the run body — after
+     * the thread started, before {@code executeWorkflow} is entered. A test
+     * makes it throw to show that a run whose thread dies there still
+     * releases its instance lock, its running entry and its slot reservation
+     * (W9). Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRunBody = () -> { };
+
     /** What the most recent full gated recovery pass deferred; see {@link #recoveryDeferredCount()}. */
     private volatile int recoveryDeferred;
 
@@ -2589,11 +2598,24 @@ public final class WorkflowExecutor {
             var thread = Thread.ofVirtual()
                     .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                     .unstarted(() -> {
-                        WorkflowMDC.populate(ctx);
+                        // W9: set as executeWorkflow is entered. Until then no
+                        // finally of the run owns the lock, the entry or the
+                        // reservation, so a Throwable before it is cleaned up here.
+                        var entered = new boolean[1];
                         try {
+                            WorkflowMDC.populate(ctx);
+                            beforeRunBody.run();
                             ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                                    .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                                            inputPayload, compensationStack, parallelCompensation, reservation));
+                                    .run(() -> {
+                                        entered[0] = true;
+                                        executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                                                inputPayload, compensationStack, parallelCompensation, reservation);
+                                    });
+                        } catch (Throwable t) {
+                            if (!entered[0]) {
+                                runThreadDiedBeforeItsBody(instance.workflowId(), reservation, t);
+                            }
+                            throw t; // control-flow Errors included: cleaned up, then rethrown unchanged
                         } finally {
                             WorkflowMDC.clear();
                         }
@@ -2634,6 +2656,36 @@ public final class WorkflowExecutor {
                     () -> observer.workflowResumed(observed(instance)));
         }
         return true;
+    }
+
+    /**
+     * W9: the run's thread is dying with {@code cause} before
+     * {@code executeWorkflow} was entered, so none of the run's own cleanup
+     * will run. Does what a launch failure does — drops this thread's running
+     * entry and any stored wake permit, gives the slot reservation back and
+     * releases the instance lock — so the workflow is not stranded with a
+     * lock renewed for ever. Every failure here is suppressed on {@code cause}.
+     */
+    private void runThreadDiedBeforeItsBody(String workflowId,
+                                            TaskQueueGovernor.@Nullable SlotReservation reservation,
+                                            Throwable cause) {
+        var self = Thread.currentThread();
+        List<Runnable> steps = List.of(
+                () -> runningWorkflows.computeIfPresent(workflowId, (_, r) -> r.thread() == self ? null : r),
+                () -> parkingLot.clearPending(workflowId),
+                () -> {
+                    if (reservation != null) {
+                        reservation.release();
+                    }
+                },
+                () -> instanceLockManager.release(workflowId));
+        for (var step : steps) {
+            try {
+                step.run();
+            } catch (RuntimeException | Error cleanupFailure) {
+                cause.addSuppressed(cleanupFailure);
+            }
+        }
     }
 
     /** Releases the instance lock this launch acquired, if it did acquire one. */
