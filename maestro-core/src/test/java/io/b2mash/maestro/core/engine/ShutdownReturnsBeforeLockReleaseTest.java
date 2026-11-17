@@ -366,6 +366,32 @@ class ShutdownReturnsBeforeLockReleaseTest {
         }
     }
 
+    /** Two runs of one id still running at the deadline: the WARN counts both and names the id once. */
+    @Test
+    void theDeadlineWarnNamesAWorkflowIdOnce() throws Exception {
+        var go = new CountDownLatch(1);
+        var twin = WorkflowExecutor.builder(store, serializer, SERVICE)
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofMillis(300))
+                .build();
+        try {
+            launchTwins(twin, () -> new LatchWorkflow(go, new AtomicReference<>()), latchMethod());
+
+            try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+                twin.shutdown();
+
+                var warn = logs.records().stream()
+                        .filter(r -> r.message().startsWith("Maestro shutdown hit its 300 ms deadline")).toList();
+                assertEquals(1, warn.size(), logs.records().toString());
+                assertTrue(warn.getFirst().message().contains("2 of 2 run(s) still running [wf-twin];"),
+                        warn.getFirst().message());
+            }
+        } finally {
+            go.countDown();
+            twin.shutdown();
+        }
+    }
+
     /** No lock backend, so two resumes of one workflow id can both launch on this node. */
     private WorkflowExecutor twinExecutor() {
         return WorkflowExecutor.builder(store, serializer, SERVICE)

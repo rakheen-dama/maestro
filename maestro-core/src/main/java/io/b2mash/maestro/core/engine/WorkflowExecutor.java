@@ -2414,7 +2414,7 @@ public final class WorkflowExecutor {
             logger.warn("Maestro shutdown hit its {} ms deadline (maestro.shutdown.timeout): {} of {} run(s) still "
                             + "running {}; shutdown does not interrupt them and records nothing for them; {} ({})",
                     deadline.budget().toMillis(), stillRunning.size(), inFlightAtStart,
-                    workflowIdList(stillRunning), recoveredBy, steps);
+                    workflowIdList(stillRunning.stream().distinct().toList()), recoveredBy, steps);
         }
     }
 
