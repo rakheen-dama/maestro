@@ -38,6 +38,11 @@ gone_within() {
 # would), registers it, writes the loop's pid, then either exits through its
 # trap (mode trap) or blocks until killed (mode block). It exec's bash, so a
 # caller that backgrounds it (`harness … &`) holds the harness's own pid.
+# child.pid is written once the loop's child, its sleep, exists (polled, up
+# to 10 s; empty if it never appeared, which the cases report as no-child;
+# the guard's own short-lived $(date) subshell is a child too, hence the
+# match on the command), and deadline
+# holds the loop's deadline (epoch seconds).
 # Called in the foreground as `(harness …)`.
 harness() { # <mode> <dir> <deadline offset s>
   exec bash -c '
@@ -46,12 +51,19 @@ harness() { # <mode> <dir> <deadline offset s>
     source "$1/lib/common.sh"
     trap "bg_kill_all" EXIT
     deadline=$(($(date +%s) + $4))
+    printf "%s\n" "$deadline" >"$2/deadline"
     ( while bg_should_continue "$deadline"; do sleep 30 || true; done ) &
     loop=$!
     bg_register "$loop"
     printf "%s\n" "$loop" >"$2/loop.pid"
-    sleep 1
-    printf "%s\n" "$(ps -axo pid=,ppid= | awk -v p="$loop" "\$2 == p {print \$1}" | head -1)" >"$2/child.pid"
+    child=""
+    for _ in $(seq 1 100); do
+      child=$(ps -axo pid=,ppid=,comm= | awk -v p="$loop" "\$2 == p && \$3 ~ /(^|\/)sleep\$/ {print \$1}" | head -1)
+      [[ -z "$child" ]] || break
+      sleep 0.1
+    done
+    printf "%s\n" "$child" >"$2/child.pid.tmp"
+    mv "$2/child.pid.tmp" "$2/child.pid"
     if [[ $3 == block ]]; then while :; do sleep 1; done; fi
   ' _ "$PERF_DIR" "$2" "$1" "$3"
 }
@@ -67,7 +79,7 @@ expect "harness exits: the loop's child (its sleep) is gone" gone "$([[ -n "$chi
 mkdir "$work/t2"
 harness block "$work/t2" 600 &
 h=$!
-for _ in $(seq 1 50); do [[ -s "$work/t2/child.pid" ]] && break; sleep 0.1; done
+for _ in $(seq 1 150); do [[ -e "$work/t2/child.pid" ]] && break; sleep 0.1; done
 loop=$(cat "$work/t2/loop.pid")
 kill -9 "$h" 2>/dev/null || true
 wait "$h" 2>/dev/null || true
@@ -82,9 +94,16 @@ expect "harness SIGKILLed: the loop ends by itself (parent-alive guard)" gone "$
 mkdir "$work/t3"
 harness block "$work/t3" 1 &
 h=$!
-for _ in $(seq 1 50); do [[ -s "$work/t3/child.pid" ]] && break; sleep 0.1; done
+for _ in $(seq 1 150); do [[ -e "$work/t3/child.pid" ]] && break; sleep 0.1; done
 loop=$(cat "$work/t3/loop.pid")
 child=$(cat "$work/t3/child.pid")
+expect "loop past its deadline: its child ran" yes "$([[ -n "$child" ]] && echo yes || echo no-child)"
+# Release the loop's sleep only once the deadline has observably passed
+# (bg_should_continue: now < deadline), so its next guard is the deadline's.
+deadline=$(cat "$work/t3/deadline")
+for _ in $(seq 1 50); do (($(date +%s) >= deadline)) && break; sleep 0.1; done
+expect "loop past its deadline: the deadline had passed before the child was released" yes \
+  "$( (($(date +%s) >= deadline)) && echo yes || echo no)"
 [[ -z "$child" ]] || kill "$child" 2>/dev/null || true
 expect "loop past its deadline ends by itself" gone "$(gone_within "$loop" 5)"
 expect "loop past its deadline: the harness was still alive (not the guard's other arm)" alive "$(alive "$h")"
