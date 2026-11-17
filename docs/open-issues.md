@@ -369,6 +369,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
 | [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
 | [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
+| [75](#issue-75) | On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN` | Docs gap — health and probes | Low–Medium | Open |
+| [76](#issue-76) | Retention purged other services' rows with this service's cutoffs | Library bug — store hygiene | Medium | **Resolved** |
 | [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | Open |
 | [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | Open |
 | [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | Open |
@@ -5067,6 +5069,65 @@ now when no lock backend is configured.
 
 **Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
 the just-started row.
+
+### Issue 75 — On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN` {#issue-75}
+
+> **Open.** Filed by WP12 (2026-11-17, branch `test/k6-finding-scenarios`)
+> from the k6 scenario `s5-pool-health`. Measured, not fixed.
+
+**Kind:** Docs gap — health and probes. **Severity:** Low–Medium.
+
+**What happens.** When the host's own database work holds every connection of
+the shared pool (the database healthy), Maestro's own component answers
+`UNKNOWN` (HTTP 200) within its 2 s store-probe bound — WP4's fix (3.5a). The
+root `/actuator/health` also aggregates Boot's `db` indicator
+(`DataSourceHealthIndicator`, through `JdbcTemplate` on the same pool), which
+waits for a connection, up to Hikari's `connectionTimeout` (30 s). Measured on
+`main` bd583f06 (run `r20261117t153355z`, `perf/.evidence/wp12/`): in the
+exhausted window the `maestro` component answered every one of 36 probes (32
+`UNKNOWN`, 4 `UP`, 0 `DOWN`), while the root aggregate went **unanswered
+within 5 s 12 times of 36** (24 `UP`, never `DOWN`). On the pre-WP4 engine
+(`r20261117t155013z`) the root read 14 `DOWN` and 14 unanswered of 36.
+
+**Where.** `docs/operations.md` §14 ("an `UNKNOWN` `maestro` leaves the
+aggregate `UP`") is true only when no other contributor waits on the
+exhausted pool.
+
+**Harm.** A readiness probe on the root (or on any group that also includes
+`db`) with a `timeoutSeconds` below the pool wait fails on a busy, healthy
+pool and takes the pod out of the Service — the outcome WP4 removed from
+Maestro's own component.
+
+**What would have to change.** Documentation, in §14: a readiness group that
+includes `maestro` should leave `db` out (or point `db` at a separate,
+short-timeout `DataSource`), and the probe's `timeoutSeconds` must exceed the
+longest pool wait of every member it includes. No engine change: Boot's `db`
+indicator is not Maestro's. A load re-check: `perf/run.sh s5-pool-health`
+(`advisory.rootHealth`).
+
+### Issue 76 — Retention purged other services' rows with this service's cutoffs {#issue-76}
+
+> **Resolved** by the store-hygiene package (PR #63, merged as 40aa3c21):
+> retention and the signal janitor are scoped to the node's own
+> `service_name`. Filed by WP12 (2026-11-17) with the measurement before the
+> fix and the confirmation after it.
+
+**Kind:** Library bug — store hygiene. **Severity:** Medium.
+
+**What happened.** The retention sweeper selected its candidates with no
+`service_name` filter (`SELECT id FROM maestro_workflow_instance WHERE status =
+? AND completed_at < ? ORDER BY completed_at ASC FETCH FIRST ? ROWS ONLY`), so a
+node of service A purged service B's terminal workflows, with their whole
+history, by A's `maestro.retention.*` cutoffs, and spent A's batch budget
+doing it. Measured by the k6 scenario `s6-retention` (`perf/.evidence/wp12/`):
+
+| Run | Engine | `perf-foreign` TERMINATED rows, 40 days old | Verdict |
+|---|---|---|---|
+| `r20261117t161125z` (before) | `main` d1600bf1 | **1,000 of 1,000 purged** by a `perf` node's startup sweep (events, timer and signal rows with them) | FAIL (3.11a/b gates) |
+| `r20261117t163846z` (after) | `main` 40aa3c21 | **0 purged, 1,000 kept** | PASS |
+
+The same before run also deleted all 10,000 unconsumed signals of
+`perf-foreign` completed runs (the janitor, 3.11b); the after kept them.
 
 ### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
 
