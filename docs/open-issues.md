@@ -313,7 +313,8 @@ filed; 75 and 76 are held for the load-test package (WP12).
 Issues 80–86, filed by the housekeeping package (WP13) from findings the
 cycle's reviews deferred, are **open**: the shutdown drain can miss a late
 launch, an observer `Error` escapes the engine's guard, two branches cannot
-await one signal name at once, orphaned-signal adoption has two owners, the
+await one signal name at once, orphaned-signal adoption has two owners and an
+unadopted signal is never purged, the
 wake listener leaves autocommit on, the upgrade fixtures have no procedure
 for a breaking core API change, and retried store faults are invisible.
 
@@ -412,7 +413,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | Open |
 | [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | Open |
 | [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | Open |
-| [83](#issue-83) | Orphaned-signal adoption has two owners, and the executor's call is unpinned over the in-memory store | Testing gap — SPI contract | Low | Open |
+| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | Open |
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | Open |
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
@@ -5503,12 +5504,12 @@ documented and the error names it.
 
 <a id="issue-83"></a>
 
-### Issue 83 — Orphaned-signal adoption has two owners, and the executor's call is unpinned over the in-memory store {#issue-83}
+### Issue 83 — Orphaned-signal adoption has two owners; an unadopted signal is never purged {#issue-83}
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
-> final review.
+> final review; rewritten after the WP13 review. Traced, not tested.
 
-**Kind:** Testing gap — SPI contract. **Severity:** Low.
+**Kind:** Library gap — SPI contract, retention. **Severity:** Low.
 
 **What happens.** The `WorkflowStore` Javadoc gives the duty of adopting
 pre-delivered signals (self-recovery case 2) to two parties:
@@ -5516,28 +5517,46 @@ pre-delivered signals (self-recovery case 2) to two parties:
 creating the row, and `adoptOrphanedSignals` says it "should be called during
 workflow instance creation". Both happen: the JDBC store adopts inside
 `createInstance`, and `WorkflowExecutor.startWorkflow` calls
-`signalManager.adoptOrphanedSignals` right after `createInstance`.
-`InMemoryWorkflowStore.createInstance` does not adopt, so over the test kit
-only the executor's call does it. A mutation that deletes the executor's
-call survives every suite, because the JDBC store covers for it on Postgres
-and no in-memory test sends a signal before the start.
+`signalManager.adoptOrphanedSignals` right after it. (The executor's call is
+pinned: `AdoptionLockLeakTest` injects a failure into it over a store whose
+`createInstance` does not adopt.)
+
+Adoption matters for cleanup, not for delivery. `getUnconsumedSignals`
+selects by `workflow_id` (JDBC and in-memory alike), so an await consumes a
+signal whose `workflow_instance_id` is still `NULL`. But the signal janitor
+and the retention purge select signals by `workflow_instance_id`
+(`deleteUnconsumedSignalsForTerminalInstancesBefore` joins the instance;
+`purgeTerminalInstancesBefore` deletes `WHERE workflow_instance_id IN (…)`),
+so a row left unadopted is never deleted by either. Two ways a row stays
+unadopted:
+
+- a signal to a workflow id that is never started (or whose instance was
+  already purged by retention) is stored with a `NULL` instance and kept for
+  ever;
+- `SignalManager.deliverSignal` looks the instance up and then saves the row;
+  a start that creates the instance and adopts between the lookup and the
+  insert leaves that row `NULL` although its workflow exists.
 
 **Where.** `WorkflowStore.createInstance` and `adoptOrphanedSignals` Javadoc;
-`WorkflowExecutor.startWorkflow`; `AbstractJdbcWorkflowStore.createInstance`;
-`InMemoryWorkflowStore.createInstance`.
+`WorkflowExecutor.startWorkflow`; `SignalManager.deliverSignal`;
+`AbstractJdbcWorkflowStore.deleteUnconsumedSignalsForTerminalInstancesBefore`
+and `purgeTerminalInstancesBefore`; the same methods in
+`InMemoryWorkflowStore`.
 
-**Harm.** A third-party store that follows `adoptOrphanedSignals`' wording
-and does not adopt in `createInstance` depends on the executor's call, which
-nothing pins: removing it would lose pre-delivered signals on such stores
-(they stay unconsumed until the janitor purges them).
+**Harm.** `maestro_workflow_signal` grows by every signal sent to an id that
+never runs, and by the rare row lost to the race, with nothing that removes
+them; the documented 7-day `maestro.signal.terminal-retention` does not apply
+to them.
 
-**How to tackle it.** Give the duty one owner: the executor's call (the store
-then only implements `adoptOrphanedSignals`), and say so in both Javadocs.
-Add a kit test that signals a workflow id before starting it and asserts the
-await consumes it.
+**How to tackle it.** Give adoption one owner and say so in both Javadocs.
+Then either adopt on read (consuming a `NULL`-instance row sets its instance)
+or let the janitor also delete unconsumed `NULL`-instance rows older than a
+retention of their own.
 
-**Done when.** The Javadoc names one owner and that kit test fails with the
-executor's call removed.
+**Done when.** A store test leaves an unconsumed signal with a `NULL`
+instance for a workflow id that completed past the retention, runs the
+janitor, and the row is gone; and the SPI Javadoc names one owner of
+adoption.
 
 ---
 
