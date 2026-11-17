@@ -47,19 +47,25 @@ const START_RETRIES = new Counter('start_retries');
  * when the first attempt got 202, or the retry got 202 or 409 (409 = the
  * first attempt had created the row). Any other status is never retried. One
  * check per start either way, so passed checks == iterations still holds.
+ *
+ * Returns { res, durationMs, retried }: res is the last response, durationMs
+ * the time of EVERY attempt (a slow failed first attempt plus its retry), so
+ * a caller timing the start does not lose the attempt that failed.
  */
 export function startWorkflow(base, body, tags) {
   const payload = JSON.stringify(body);
   const params = { headers: JSON_HEADERS, tags: tags };
   let res = http.post(`${base}/perf/workflows`, payload, params);
+  let durationMs = res.timings.duration;
   let retried = false;
   if (res.status === 0) {
     START_RETRIES.add(1);
     retried = true;
     res = http.post(`${base}/perf/workflows`, payload, params);
+    durationMs += res.timings.duration;
   }
   check(res, { 'start 202': (r) => r.status === 202 || (retried && r.status === 409) }, tags);
-  return res;
+  return { res: res, durationMs: durationMs, retried: retried };
 }
 
 /** POST /perf/workflows/{id}/signals/{name}, no payload; 202 even for an unknown id. */

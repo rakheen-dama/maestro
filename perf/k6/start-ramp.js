@@ -126,9 +126,11 @@ export default function () {
   const i = exec.scenario.iterationInTest;
   const level = levelAt(Date.now() - exec.scenario.startTime);
   const body = Object.assign({}, BODY, { workflowId: `${PREFIX}L${level}-${i}` });
-  const res = startWorkflow(nodeFor(i), body, { name: 'start' });
-  START_MS[level].add(res.timings.duration);
-  START_OVER_1S[level].add(res.timings.duration > 1000 ? 1 : 0);
+  // Every attempt counts toward the start's time (a retried start includes
+  // its failed first attempt), at the level the iteration began in.
+  const start = startWorkflow(nodeFor(i), body, { name: 'start' });
+  START_MS[level].add(start.durationMs);
+  START_OVER_1S[level].add(start.durationMs > 1000 ? 1 : 0);
 }
 
 // The plan this run actually executed, next to its summary: the harness
