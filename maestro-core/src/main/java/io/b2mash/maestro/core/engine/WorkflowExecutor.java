@@ -179,8 +179,8 @@ public final class WorkflowExecutor {
      * Test seam: runs on the run's own thread before the run body — after
      * the thread started, before {@code executeWorkflow} is entered. A test
      * makes it throw to show that a run whose thread dies there still
-     * releases its instance lock, its running entry and its slot reservation
-     * (W9). Package-private; production never assigns it.
+     * releases its instance lock, its running entry and its slot reservation.
+     * Package-private; production never assigns it.
      */
     volatile Runnable beforeRunBody = () -> { };
 
@@ -779,8 +779,11 @@ public final class WorkflowExecutor {
             return launched;
         } finally {
             if (!launched && reservation != null) {
-                // W1–W8: the run will never claim it. Never releaseWorkflowSlot
-                // here — before the claim that could free another run's slot.
+                // Not launched (shutting down, already running here, lock held
+                // elsewhere or refused, turned terminal, adoption lost, a store
+                // fault, or a failure before the thread started): the run will
+                // never claim it. Never releaseWorkflowSlot here — before the
+                // claim that could free another run's slot.
                 reservation.release();
             }
         }
@@ -1086,7 +1089,7 @@ public final class WorkflowExecutor {
     }
 
     /**
-     * Adopts what it can of one recovery page, in D-1's order per instance:
+     * Adopts what it can of one recovery page, in this order per instance:
      * drop it if it is running here; drop it if — by one advisory
      * {@code heldKeys} read for the page — another node holds its lock; drop
      * it if no registration names its type; under {@link RecoveryGate#GATED},
@@ -2814,7 +2817,7 @@ public final class WorkflowExecutor {
             var thread = Thread.ofVirtual()
                     .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                     .unstarted(() -> {
-                        // W9: set as executeWorkflow is entered. Until then no
+                        // Set as executeWorkflow is entered. Until then no
                         // finally of the run owns the lock, the entry or the
                         // reservation, so a Throwable before it is cleaned up here.
                         var entered = new boolean[1];
@@ -2875,7 +2878,7 @@ public final class WorkflowExecutor {
     }
 
     /**
-     * W9: the run's thread is dying with {@code cause} before
+     * The run's thread is dying with {@code cause} before
      * {@code executeWorkflow} was entered, so none of the run's own cleanup
      * will run. Does what a launch failure does — drops this thread's running
      * entry and any stored wake permit, gives the slot reservation back and

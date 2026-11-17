@@ -198,7 +198,7 @@ final class RecoveryPoller implements StoppableLoop {
         return BackgroundLoopGuard.RECOVERY_POLLER;
     }
 
-    /** MD-4: the default spacing of capacity passes, {@code min(1 s, pollInterval)}. */
+    /** The default spacing of capacity passes, {@code min(1 s, pollInterval)}: at most one per second. */
     static Duration defaultCapacitySpacing(@Nullable Duration pollInterval) {
         var oneSecond = Duration.ofSeconds(1);
         if (pollInterval == null || pollInterval.isNegative() || pollInterval.isZero()) {
@@ -296,7 +296,7 @@ final class RecoveryPoller implements StoppableLoop {
                     break;
                 }
                 // Read before the pass: a release during it moves the count,
-                // so the wait after it returns at once (D-3).
+                // so the wait after it returns at once (no lost wake-up).
                 seen = signal.epoch();
                 lastPassStart = System.nanoTime();
                 WorkflowExecutor.RecoveryPass pass;
