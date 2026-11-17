@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -81,6 +82,34 @@ class MaestroObservabilityAutoConfigurationTest {
      * application depending on {@code spring-boot-starter-actuator} gets, so
      * it fails exactly the way production would if the ordering were wrong.
      */
+    /**
+     * An application that builds its own {@link WorkflowExecutor} and keeps
+     * its {@link WorkflowStore} out of the context: {@link
+     * MaestroAutoConfiguration} is then skipped (it is
+     * {@code @ConditionalOnBean(WorkflowStore.class)}), so no {@code
+     * WorkflowRegistrar} exists. The observer and the engine gauges need only
+     * the registry and the executor and must still register; the task-queue
+     * gauges need the registrar and must step aside instead of failing
+     * startup with an unsatisfied dependency.
+     */
+    @Test
+    @DisplayName("a hand-built WorkflowExecutor without a WorkflowStore bean: starts, no task-queue gauges")
+    void handBuiltExecutorWithoutStoreBeanStartsWithoutTaskQueueGauges() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withBean(WorkflowExecutor.class, () -> WorkflowExecutor.builder(
+                        new InMemoryWorkflowStore(), new PayloadSerializer(new ObjectMapper()), "hand-built").build())
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(MaestroAutoConfiguration.class);
+                    assertThat(context).hasSingleBean(MicrometerEngineObserver.class);
+                    assertThat(context).hasSingleBean(MaestroEngineGauges.class);
+                    assertThat(context).doesNotHaveBean(MaestroTaskQueueGauges.class);
+                });
+    }
+
     @Test
     @DisplayName("registers through the real Boot metrics auto-configuration chain, not a withBean MeterRegistry stub")
     void wiresThroughRealBootMetricsAutoConfigurationChain() {

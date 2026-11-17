@@ -153,10 +153,14 @@ public class MaestroObservabilityAutoConfiguration {
          * @param registrar the registered workflows, whose task queues get a gauge
          * @return a {@link MaestroTaskQueueGauges} listener — it registers the
          *         gauges on {@code ContextRefreshedEvent}, once every workflow
-         *         is registered
+         *         is registered. Requires the {@link WorkflowRegistrar} too:
+         *         an application that builds its own {@code WorkflowExecutor}
+         *         without a {@code WorkflowStore} bean skips {@link
+         *         MaestroAutoConfiguration}, so no registrar exists, and these
+         *         gauges step aside instead of failing startup
          */
         @Bean
-        @ConditionalOnBean({MeterRegistry.class, WorkflowExecutor.class})
+        @ConditionalOnBean({MeterRegistry.class, WorkflowExecutor.class, WorkflowRegistrar.class})
         MaestroTaskQueueGauges maestroTaskQueueGauges(MeterRegistry registry, WorkflowExecutor executor,
                                                       WorkflowRegistrar registrar) {
             return new MaestroTaskQueueGauges(registry, executor, registrar);
