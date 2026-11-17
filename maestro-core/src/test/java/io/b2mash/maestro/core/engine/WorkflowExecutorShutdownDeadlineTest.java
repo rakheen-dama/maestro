@@ -36,6 +36,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
@@ -43,6 +44,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -149,18 +151,86 @@ class WorkflowExecutorShutdownDeadlineTest {
                 && store.getInstance("wf-park").orElseThrow().status() == WorkflowStatus.WAITING_SIGNAL);
         var overrunRunningWhenSecondReturned = new AtomicBoolean(true);
 
-        var first = Thread.ofVirtual().start(executor::shutdown);
-        await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-park")); // the first call is draining
-        var second = Thread.ofVirtual().start(() -> {
-            executor.shutdown();
-            overrunRunningWhenSecondReturned.set(executor.isRunning("wf-overrun"));
-        });
-        second.join(Duration.ofMillis(500)); // today it has already returned; after the fix it is still waiting
-        latch.countDown();                    // wf-overrun completes, so the first call's drain ends
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var first = Thread.ofVirtual().start(executor::shutdown);
+            await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-park")); // the first call is draining
+            var second = Thread.ofVirtual().start(() -> {
+                executor.shutdown();
+                overrunRunningWhenSecondReturned.set(executor.isRunning("wf-overrun"));
+            });
+            awaitSecondCallerWaiting(logs);       // the second call is inside shutdown(), waiting
+            latch.countDown();                    // wf-overrun completes, so the first call's drain ends
 
-        assertTrue(first.join(Duration.ofSeconds(5)) && second.join(Duration.ofSeconds(5)));
+            assertTrue(first.join(Duration.ofSeconds(5)) && second.join(Duration.ofSeconds(5)));
+        }
         assertFalse(overrunRunningWhenSecondReturned.get(),
                 "the second call (Spring's destroy method) returned while the first was still draining");
+    }
+
+    /**
+     * D-5's bound is what is left of the first call's deadline plus 2 s, not
+     * the 2 s alone: a first call that drains for its whole 5 s deadline
+     * still holds a second call that arrived at once.
+     */
+    @Test
+    void aSecondCallWaitsForAFirstCallDrainingLongerThanTheGrace() throws Exception {
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .build();
+        start("wf-overrun", new BlockingWorkflow(proxy())); // never released before teardown
+        await().atMost(5, SECONDS).until(() -> started.get() == 1);
+        var firstFinishedWhenSecondReturned = new AtomicBoolean();
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var first = Thread.ofVirtual().start(executor::shutdown);
+            await().atMost(5, SECONDS).until(() -> logged(logs, "Maestro shutdown started"));
+            var second = Thread.ofVirtual().start(() -> {
+                executor.shutdown();
+                firstFinishedWhenSecondReturned.set(logged(logs, "Maestro shutdown hit its 5000 ms deadline"));
+            });
+            awaitSecondCallerWaiting(logs);
+
+            assertTrue(first.join(Duration.ofSeconds(10)) && second.join(Duration.ofSeconds(10)));
+        }
+        assertTrue(firstFinishedWhenSecondReturned.get(),
+                "the second call returned before the first call's 5 s drain had finished");
+    }
+
+    /** A first call that throws still releases a second caller at once (the latch counts down in a finally). */
+    @Test
+    void aSecondCallerIsReleasedWhenTheFirstShutdownThrows() throws Exception {
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .build(); // the default 20 s deadline: a second caller left waiting would wait 22 s
+        var secondWaiting = new CountDownLatch(1);
+        executor.beforeShutdownDrain = () -> {
+            try {
+                secondWaiting.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            throw new IllegalStateException("the first shutdown() fails");
+        };
+        var firstThrew = new AtomicReference<@Nullable Throwable>();
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var first = Thread.ofVirtual().start(() -> {
+                try {
+                    executor.shutdown();
+                } catch (Throwable t) {
+                    firstThrew.set(t);
+                }
+            });
+            await().atMost(5, SECONDS).until(() -> logged(logs, "Maestro shutdown started"));
+            var second = Thread.ofVirtual().start(executor::shutdown);
+            awaitSecondCallerWaiting(logs);
+            secondWaiting.countDown();
+
+            assertTrue(first.join(Duration.ofSeconds(5)), "the first call ended");
+            assertTrue(second.join(Duration.ofSeconds(3)), "the second caller was released when the first call threw");
+        }
+        assertInstanceOf(IllegalStateException.class, firstThrew.get());
     }
 
     /**
@@ -299,6 +369,15 @@ class WorkflowExecutorShutdownDeadlineTest {
     }
 
     // ── helpers ────────────────────────────────────────────────────────
+
+    private static boolean logged(CapturingSlf4jProvider.Capture logs, String prefix) {
+        return logs.records().stream().anyMatch(r -> r.message().startsWith(prefix));
+    }
+
+    /** Waits until a second {@code shutdown()} call has logged that it is waiting for the first. */
+    private static void awaitSecondCallerWaiting(CapturingSlf4jProvider.Capture logs) {
+        await().atMost(5, SECONDS).until(() -> logged(logs, "Shutdown already in progress — waiting up to"));
+    }
 
     private BlockingActivities proxy() {
         return new ActivityProxyFactory().createProxy(

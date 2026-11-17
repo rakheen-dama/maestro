@@ -172,6 +172,14 @@ public final class WorkflowExecutor {
      * Package-private; production never assigns it.
      */
     volatile Runnable afterLaunchAdmission = () -> { };
+
+    /**
+     * Test seam: runs on the shutting-down thread just before the drain
+     * (D-2's step 5). A test makes it throw to show that a second
+     * {@link #shutdown()} caller is released when the first call fails.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeShutdownDrain = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
@@ -1888,6 +1896,7 @@ public final class WorkflowExecutor {
         taskQueueGovernor.shutdown();
 
         // Step 5: drain in-flight runs until the deadline. Never interrupted.
+        beforeShutdownDrain.run();
         var drainStart = System.nanoTime();
         for (var entry : runningWorkflows.entrySet()) {
             try {
