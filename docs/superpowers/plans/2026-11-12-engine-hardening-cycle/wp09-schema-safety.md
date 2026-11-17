@@ -68,18 +68,18 @@ Tooling and docs: `scripts/capture-upgrade-fixture.sh` (new top-level `scripts/`
 ## Regeneration rules (read before touching any frozen file)
 
 - `upgrade/cbf5a2a/**` and `upgrade/c01d498/**` record what those commits shipped and wrote. They are evidence about the past. Regenerating them at a later commit would turn them into "what the newer build writes", and the guard would then pass against exactly the regression it exists to catch.
-- `scripts/capture-upgrade-fixture.sh` refuses to write into an existing fixture directory. Re-capturing `cbf5a2a` happens only if the committed fixture itself is defective. It needs the maintainer's explicit approval, is run at `cbf5a2a` with the script, goes in its own commit, and must produce a diff a reviewer can read (for the dump: only UUIDs and timestamps may differ).
+- `scripts/capture-upgrade-fixture.sh` refuses to write into an existing fixture directory. Re-capturing `cbf5a2a` happens only if the committed fixture itself is defective. It needs the maintainer's explicit approval, is run at `cbf5a2a` with the script, goes in its own commit, and must produce a diff a reviewer can read (for the dump: a re-capture is NOT byte-identical — UUIDs, timestamps, timer due times, `Set.of` iteration order and parallel-branch row order all vary; the committed dump is pinned by SHA-256 in `SeededHistory`, and `RELEASING.md` § Upgrade fixtures is the authoritative procedure — corrected 2026-11-12 after the Task 3 review).
 - `SeededHistoryWorkflows.java` is frozen once the dump is committed (Task 3, step 9). It defines how the seeded history was produced, so changing it voids the fixture. `theDumpWasCapturedAtCbf5a2a` fails on any byte change.
 - A later release adds a *new* fixture: a new directory, a new frozen package, and a new `SeededHistory` factory. Existing fixtures are never replaced (`RELEASING.md` § Upgrade fixtures, Task 5).
 
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b test/schema-upgrade-safety \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp9-schema-safety origin/main
-WT=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp9-schema-safety
-git -C "$WT" status && git -C /Users/rakheendama/Projects/2026/maestro status   # prove which tree you are in
+git fetch origin
+git worktree add -b test/schema-upgrade-safety \
+    .claude/worktrees/wp9-schema-safety origin/main
+WT=.claude/worktrees/wp9-schema-safety
+git -C "$WT" status && git status   # prove which tree you are in
 ```
 
 Run every command from `$WT`. Never `cd` into the main checkout (lessons, 2026-07-31). All paths below are relative to `$WT`.
@@ -345,7 +345,7 @@ git commit -m "test(schema): pin outOfOrder for databases holding the retired V2
 - Produces `SeededHistory` (the signatures under "Added surface").
   - `load()` uses one static `postgres:16-alpine` container per JVM. It copies the dump in once (`copyFileToContainer(MountableFile.forClasspathResource("upgrade/cbf5a2a/seeded-history.sql"), "/tmp/seeded-history-cbf5a2a.sql")`). Each call creates a fresh database and runs `psql -v ON_ERROR_STOP=1 -q -U test -d <db> -f /tmp/seeded-history-cbf5a2a.sql` with `execInContainer`. A non-zero exit throws with stderr in the message.
   - `node(...)` builds `MaestroEngineHarness.builder(store, JsonMapper.builder().build())` with `.serviceName(serviceName)`, `.lock(new PostgresDistributedLock(dataSource))`, `.wakeRecheckInterval(Duration.ofMillis(500))` and `.observer(observer)`. It registers every frozen workflow class and registers one `new SeedActivities(invocations, StepGate.OPEN, true)` for all five activity interfaces. Callers may re-register an activity interface to override it (WP3 will).
-  - `awaitStatusOrLast` polls every 100 ms until the status equals `expected` or `within` elapses, and returns the last status it saw. An assertion on it then reads "expected COMPLETED but was WAITING_SIGNAL", not a `ConditionTimeoutException` (lessons, 2026-08-03).
+  - `awaitStatusOrLast` polls every 100 ms until the status equals `expected` or `within` elapses, and returns the last status it saw (as built after the Task 3 fix round: it throws `IllegalStateException` when the status is terminal but its terminal event never appeared). An assertion on it then reads "expected COMPLETED but was WAITING_SIGNAL", not a `ConditionTimeoutException` (lessons, 2026-08-03).
 
 **The frozen workflows** (exact step order matters; it decides which event types the history holds):
 

@@ -198,9 +198,9 @@ public final class DeterminismChecker {
                 throw new AssertionError(("%s never reached a crash %s although the uninterrupted run "
                         + "completed %d — its path is not reproducible").formatted(name, where, completions), e);
             }
-            env.recover();
+            var adopted = env.recover();
 
-            var status = awaitTerminalOrStandDown(handle, timeout, name, where);
+            var status = awaitTerminalOrStandDown(handle, timeout, name, where, adopted);
             var standDowns = handle.standDowns();
             if (!standDowns.isEmpty()) {
                 var standDown = standDowns.getFirst();
@@ -231,7 +231,7 @@ public final class DeterminismChecker {
     }
 
     private static WorkflowStatus awaitTerminalOrStandDown(
-            TestWorkflowHandle handle, Duration timeout, String name, String where) {
+            TestWorkflowHandle handle, Duration timeout, String name, String where, int adopted) {
         var deadline = Instant.now().plus(timeout);
         while (Instant.now().isBefore(deadline)) {
             if (!handle.standDowns().isEmpty()) {
@@ -251,8 +251,11 @@ public final class DeterminismChecker {
                 throw new IllegalStateException("Interrupted while waiting for a recovered run", e);
             }
         }
-        throw new AssertionError("%s did not finish within %s of recovering from a crash %s (status: %s)"
-                .formatted(name, timeout, where, handle.getStatus()));
+        // The adoption count tells "never re-adopted" (0, e.g. the instance lock
+        // was still held when the recovery pass ran) from "re-adopted and stuck".
+        throw new AssertionError(("%s did not finish within %s of recovering from a crash %s (status: %s; "
+                + "recover() re-adopted %d workflow(s); this run was recovered %d time(s))")
+                .formatted(name, timeout, where, handle.getStatus(), adopted, handle.recoveries()));
     }
 
     private static List<String> sorted(List<String> steps) {

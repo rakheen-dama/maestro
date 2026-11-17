@@ -40,8 +40,9 @@ final class MaestroDataSources {
             // Not chained: the message carries everything Spring's does, and a
             // chained cause would become the root cause a user reads first.
             throw new IllegalStateException("Maestro found " + e.getNumberOfBeansFound()
-                    + " @MaestroDataSource beans and none is @Primary: " + e.getBeanNamesFound()
-                    + ". Keep one, or mark the one Maestro should use @Primary.");
+                    + " @MaestroDataSource beans, none @Primary and none named maestroDataSource: "
+                    + e.getBeanNamesFound() + ". Keep one, mark the one Maestro should use @Primary, "
+                    + "or name its bean maestroDataSource.");
         }
         if (maestro != null) {
             return maestro;

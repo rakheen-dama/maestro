@@ -470,6 +470,7 @@ Coordination lives in the same Postgres database as the workflow state, in two t
 |---|---|---|---|
 | `maestro_distributed_lock` | `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
 | `maestro_leader_election` | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
+| `maestro_leader_election` | `maestro:leader:retention:{service}` | Retention sweeper leader election, re-elected per batch | 15s |
 
 **CAS semantics.** `tryAcquire` is one statement: `INSERT ... ON CONFLICT (lock_key) DO UPDATE` whose update predicate requires the existing row's `expires_at` to be in the past (database clock). An unexpired row held by another node is never stolen; an expired one is taken over atomically. The handle carries a random owner token, and `release` and `renew` are conditioned on that token, so a holder whose lock expired and was re-acquired elsewhere cannot release or extend the new owner's row. `trySetLeader` applies the same predicate to `maestro_leader_election`. A cleaner on every node deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (default 10m); expired rows are already takeable, so this only bounds table growth.
 
@@ -611,20 +612,24 @@ Services publish to the topic through the engine's own `WorkflowMessaging` (`mae
 ```mermaid
 flowchart TD
     A["Spring Boot starts"] --> B["Maestro auto-config"]
-    B --> C["Flyway migrations"]
-    C --> D["Scan @DurableWorkflow<br/>@MaestroActivities"]
-    D --> E["Create activity proxies"]
-    E --> F["Start Kafka consumers"]
-    F --> G["Timer leader election"]
-    G --> H["Query recoverable workflows"]
-    H --> I{"Any?"}
-    I -- "Yes" --> J["Replay + resume each"]
-    J --> K["Adopt orphaned signals"]
-    I -- "No" --> K
-    K --> L["Ready"]
+    B --> C["Flyway migrations<br/>(maestro.store.schema.mode)"]
+    C --> E["Create activity proxies"]
+    E --> D["Register @DurableWorkflow types"]
+    D --> F["Start Kafka consumers"]
+    F --> G["StartupRecoveryRunner starts the loops:<br/>recovery poller, timer poller,<br/>signal janitor, retention sweeper,<br/>service-name check"]
+    G --> L["Ready"]
+    G -.-> R["Recovery poller's first pass,<br/>on its own thread: this service's<br/>active workflows, pages of 200"]
+    R --> J["Adopt as task-queue capacity allows;<br/>replay + resume each"]
 
-    style I fill:#F5A623,color:#fff
+    style R fill:#F5A623,color:#fff
 ```
+
+Readiness does not wait for the first recovery pass: the runner only starts
+loops (`StartupRecoveryRunner`), and the pass adopts on the recovery poller's
+thread, gated by task-queue capacity. With `maestro.recovery.enabled=false`
+it is one ungated pass on its own thread, retried every
+`maestro.recovery.poll-interval` until it completes. Orphaned signals are
+adopted when a workflow starts, not at node startup.
 
 ### Graceful Shutdown
 
@@ -649,7 +654,7 @@ failed compensation step.
 | **JVM crash** | Recovery replays from Postgres. At-least-once activities. |
 | **Activity timeout** | Each attempt is bounded by `startToCloseTimeout` on its own virtual thread; a timed-out attempt is interrupted and counts as a retryable failure (`ActivityTimeoutException`). Exhausted → saga or fail. |
 | **External API down** | Activity retries with backoff (configurable: attempts, backoff, max interval). The attempt counter is in-memory: after a restart the activity restarts at attempt 1 with the full schedule; a completed attempt is never re-executed. |
-| **Kafka rebalance** | In-progress workflows continue. New tasks reroute. |
+| **Kafka rebalance** | In-progress workflows continue: they run in-process, not from a Kafka task. The new owner of a signal partition may receive records again; each is deduplicated by its message id (see *Duplicate Kafka delivery*). |
 | **Postgres lost** | Execution blocks until restored. No activity without persistence; locks and the wake channel live in the same database. |
 | **Lock expired / renewal lost** | A lost renewal marks the run stale: it stands down at its next live activity (`STALE_RUN`, "instance lock lost") and the instance stays recoverable (`WorkflowExecutorTest.lostLock_standsTheRunDownBeforeItsNextActivity`). A peer may adopt the instance after the TTL; the adoption bumps the lease epoch, so lease fencing (V6) rejects the stale runner's later run-scoped writes and it stands down as `LEASE_FENCED` (`TwoNodeActivityRaceTest`). The unique `(workflow_instance_id, sequence_number)` index is the second line. The activity in flight at adoption can still run twice — activities must be idempotent. |
 | **NOTIFY listener disconnected** | Cross-node signal wake falls back to the 30s store re-check; the listener reconnects with backoff. No signal is lost. |

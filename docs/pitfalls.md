@@ -1,6 +1,6 @@
 # Pitfalls
 
-Twelve rules whose violations pass every test that runs a workflow straight through and fail in production, usually on the first restart, the first retry or the first traffic peak. Each rule shows the wrong code, the right code, what you see when you get it wrong, and how a test catches it.
+Thirteen rules whose violations pass every test that runs a workflow straight through and fail in production, usually on the first restart, the first retry or the first traffic peak. Each rule shows the wrong code, the right code, what you see when you get it wrong, and how a test catches it.
 
 [← Back to README](../README.md)
 
@@ -432,6 +432,33 @@ public interface Couriers {
 - **`currentTime()`** under a mapper that misreads its own timestamps: a `WARN` from `DefaultWorkflowOperations`, "Workflow '…': currentTime() at sequence N reads back S seconds from the time it recorded: the configured ObjectMapper does not read back the timestamp it wrote (for example, epoch milliseconds written while integer timestamps are read as seconds), so this run continues with the clock value and live and replayed times will differ — make the mapper read its own timestamps (docs/pitfalls.md, rule 12)", once per `PayloadSerializer` (with the starter, once per process), then at `DEBUG`.
 
 **Test it:** a plain kit test shows the read-back value: assert on what the workflow saw, not on what the activity returned (`ReadBackFormsTest` in `maestro-test` covers the forms above). For a result that reads back as another class, or a future, the first run looks right: `env.crashAfter(n)` past the step that uses the value, then `crash.recover()`, shows what a restart does (`ActivityResultReadBackTest.subtypeDeclaredAsItsSupertype_*`), and `handle.awaitStandDown(...)` shows a stand-down. Map order and exponent numbers show only against Postgres.
+
+---
+
+## 13. Never call workflow operations from inside an activity body
+
+An activity body runs on an attempt thread of its own, but the engine re-binds the calling run's `WorkflowContext` there for compatibility, so `WorkflowContext.current()` answers inside an activity and its operations appear to work. They are unsupported there: `sleep`, `awaitSignal`, `collectSignals`, `parallel`, `addCompensation`, `version`, `currentTime`, `randomUUID`, and calls to other activity stubs. Starting or signalling *another* workflow through `MaestroClient` is not a workflow operation and is fine (rule 11 covers waiting on one).
+
+**Wrong**
+
+```java
+public Receipt charge(Payment payment) {                      // an activity method
+    var receipt = gateway.charge(payment);
+    WorkflowContext.current().sleep(Duration.ofSeconds(5));    // a workflow operation inside the activity
+    return receipt;
+}
+```
+
+**Right:** do it in the workflow method, between activity calls.
+
+```java
+var receipt = payments.charge(payment);
+workflow.sleep(Duration.ofSeconds(5));
+```
+
+**What you see** (traced, not tested): the first run looks right, as long as the operation finishes within the activity's `startToCloseTimeout` (30 s by default); past it the attempt times out and is retried, and the activity's own work runs again. Most of these operations take the run's next sequence number and record an event there, so the operation inside the activity takes the slot after the activity's own and records its event in it. `sleep` takes two (`TIMER_SCHEDULED`, then the timer's outcome), and while it waits it sets the instance to `WAITING_TIMER` and hands the run's task-queue workflow slot back, although the workflow is still inside the activity. A replay returns the activity's recorded result without running its body, so that slot is not taken again: the workflow's next step reads the event the activity body recorded, and the run stands down as `nondeterministic_history` on its first recovery and on every one after it. Changing the code does not help a run already recorded this way: it stays active until it is terminated. The body also runs outside the engine's store-fault handling: a database error in such an operation fails the activity attempt and is retried under the activity's `RetryPolicy` instead of abandoning the run for recovery. A `parallel()` branch's compensation buffer is not re-bound on the attempt thread, and an attempt that outlives its timeout still holds the run's context.
+
+**Test it:** catch it in review: no `WorkflowContext.current()`, and no field holding a `WorkflowContext` or an activity stub, in a class that implements an `@Activity` interface. A crash test that crashes after the activity and recovers (`env.crashAfter(n)`, `crash.recover()`, `handle.awaitStandDown(...)`) should show the stand-down (traced, not tested).
 
 ---
 

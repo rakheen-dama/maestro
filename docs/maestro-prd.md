@@ -373,19 +373,25 @@ workflow.addCompensation(() -> activity.undo(args));
 
 ```
 maestro/
+├── maestro-bom                     # Platform aligning every module's version
 ├── maestro-core                    # Engine: state machine, memoization, timers, signals, saga
 ├── maestro-spring-boot-starter     # Auto-configuration, annotations, Spring integration
 ├── maestro-store-jdbc              # JDBC WorkflowStore abstraction
-├── maestro-store-postgres          # Postgres implementation + Flyway migrations
-├── maestro-messaging-kafka         # Kafka WorkflowMessaging implementation
-├── maestro-lock-valkey             # Valkey/Redis distributed locking (removed 2026-11-04; lock now in maestro-store-postgres)
+├── maestro-store-postgres          # Postgres store, lock and LISTEN/NOTIFY wake + Flyway migrations
+├── maestro-messaging-kafka         # Kafka WorkflowMessaging implementation (the only transport)
 ├── maestro-admin                   # Standalone dashboard (Spring Boot + Thymeleaf + HTMX)
 ├── maestro-admin-client            # A plain AdminEventPublisher class, not auto-configured; services do not need it (Issue 52)
 ├── maestro-test                    # In-memory engine, time control, TestWorkflowEnvironment
+├── maestro-integration-tests       # Real-backend suites (not published)
 ├── maestro-samples/
 │   ├── sample-order-service        # Order fulfilment workflow
-│   └── sample-payment-gateway      # Payment processing with retry policies and a declined-card catch
+│   ├── sample-payment-gateway      # Payment processing with retry policies and a declined-card catch
+│   ├── sample-loan-origination     # Three services, the nightly multi-node E2E
+│   └── sample-perf                 # k6 load-test target (not published)
 └── docs/
+
+The Valkey lock module (`maestro-lock-valkey`) planned here was built and then
+removed (2026-11-04); the lock lives in `maestro-store-postgres`.
 ```
 
 ---
@@ -399,7 +405,8 @@ maestro:
 
   store:
     type: postgres
-    schema: maestro
+    schema:
+      mode: flyway                # flyway | validate | none
 
   messaging:
     type: kafka
@@ -409,7 +416,7 @@ maestro:
       admin-events: maestro.admin.events
 
   lock:
-    type: valkey   # since 2026-11-04: postgres (the only value)
+    type: postgres  # the only value (Valkey was planned, then removed 2026-11-04)
     key-prefix: "maestro:lock:"
     ttl: 30s
 
@@ -431,8 +438,7 @@ maestro:
 
   admin:
     events:
-      enabled: true
-      topic: maestro.admin.events
+      enabled: true               # default false; every service the dashboard shows sets it
 
   retention:                      # shipped as maestro.retention.* (this block was planned as `archival`)
     enabled: true
@@ -546,7 +552,7 @@ class OrderFulfilmentWorkflowTest {
 - Non-JVM languages
 - CQRS / Event Sourcing
 - Full workflow versioning / migration tooling
-- ~~Messaging backends beyond Kafka~~ (Now available: a Postgres messaging backend has been implemented as an SPI alternative to Kafka.)
+- Messaging backends beyond Kafka (a Postgres messaging backend was built and then removed on 2026-11-04; Kafka is the only transport)
 
 ---
 

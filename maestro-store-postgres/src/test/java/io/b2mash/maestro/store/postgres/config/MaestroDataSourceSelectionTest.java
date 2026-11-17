@@ -246,9 +246,10 @@ class MaestroDataSourceSelectionTest {
                     assertThat(ctx).hasFailed();
                     assertThat(ctx.getStartupFailure())
                             .rootCause()
-                            .hasMessageContaining("Maestro found 2 @MaestroDataSource beans and none is @Primary: "
-                                    + "[firstMaestroDataSource, secondMaestroDataSource]. Keep one, or mark the one "
-                                    + "Maestro should use @Primary.");
+                            .hasMessageContaining("Maestro found 2 @MaestroDataSource beans, none @Primary and "
+                                    + "none named maestroDataSource: [firstMaestroDataSource, "
+                                    + "secondMaestroDataSource]. Keep one, mark the one Maestro should use @Primary, "
+                                    + "or name its bean maestroDataSource.");
                 });
     }
 

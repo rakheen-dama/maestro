@@ -741,5 +741,5 @@ stateDiagram-v2
 - [Self-Recovery](self-recovery.md) -- How signals survive crashes
 - [Cross-Service Patterns](cross-service.md) -- Multi-service coordination
 - [Testing](testing.md) -- Using `maestro-test`, including crash-recovery tests
-- [Pitfalls](pitfalls.md) -- Twelve rules whose violations pass every straight-through test and fail in production
+- [Pitfalls](pitfalls.md) -- Thirteen rules whose violations pass every straight-through test and fail in production
 - [Admin Dashboard](admin.md) -- Monitoring and management

@@ -748,6 +748,6 @@ assertTrue(handle.getEvents().stream()
 ## See Also
 
 - [Concepts](concepts.md) -- Core concepts: memoization, replay, determinism constraints
-- [Pitfalls](pitfalls.md) -- Twelve rules whose violations pass every straight-through test and fail in production, and how a test catches each
+- [Pitfalls](pitfalls.md) -- Thirteen rules whose violations pass every straight-through test and fail in production, and how a test catches each
 - [Configuration](configuration.md) -- Runtime configuration reference
 - [Architecture](maestro-architecture.md) -- System architecture and failure modes

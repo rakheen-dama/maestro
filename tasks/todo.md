@@ -1,26 +1,72 @@
 # Milestone: Engine-hardening cycle (planned 2026-11-12)
 
 Spec, evidence and plans: `docs/superpowers/plans/2026-11-12-engine-hardening-cycle/`.
+Merge dates below are UTC (`gh pr view N --json mergedAt`).
 Driver: the handover's remaining findings, re-verified on `cbf5a2a`, plus a k6 load suite.
 Maven Central blockers and the §6.4 feature gaps are out of scope.
 
 - [x] Four audits re-verified every finding (3.2, 3.3, 3.8 reproduced with failing tests)
 - [x] Spec written, builder-checked, approved by the maintainer with D1–D11 (2026-11-12)
-- [ ] WP0 Executor builder (Issue 37) — Lane A — PR #50 open at 9c1cfbf: 5 tasks reviewed, whole-branch review + fix wave done, uncached full build green; awaiting CI and merge
-- [ ] WP1 Replay fidelity (3.8, exact decimals) — Lane A, after WP9
-- [ ] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A
-- [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
-- [ ] WP4 Loop liveness and health (3.5) — Lane A
-- [ ] WP5 Shutdown (Issue 29, 3.6) — Lane A
-- [ ] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A
-- [ ] WP9 Schema safety and upgrade fixture — Lane B, first
-- [ ] WP7 Kafka coexistence (3.4, 3.11c) — Lane B
-- [ ] WP10 Wake-listener shutdown (Issue 38) — Lane B
-- [ ] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B, after WP6
-- [ ] WP11 k6 load-test foundation (perf/, sample-perf, meters, scenarios 1 and 3) — Lane C
-- [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C
-- [ ] WP13 Docs and housekeeping — Lane D
-- [ ] Review section added here after the last merge
+- [x] WP0 Executor builder (Issue 37) — Lane A — PR #50 merged 2026-11-12 (56e9c00): 5 tasks reviewed, whole-branch review + fix wave, uncached full build green on 9c1cfbf, CI Build & Test green
+- [x] WP1 Replay fidelity (3.8, exact decimals, stored-input rounding) — Lane A — PR #53 merged 2026-11-13 (834a9da): 9 tasks, whole-branch review + fix wave, uncached full build green; NOT yet run on it: nightly E2E, chaos PR-gate x3, 2 h soak; Issues 42-49 filed
+- [x] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A — PR #54 merged 2026-11-16 (c925661): 6 tasks, whole-branch review + fix wave + re-review, uncached full build green twice (7306235, ff11be1), CodeRabbit 9 comments (8 fixed incl. three engine defects, 1 tracked as Issue 51); Issues 50-51 filed; timer accuracy now = DB clock minus scheduling node's clock until Issue 51; NOT yet run: nightly E2E, chaos x3, soak
+- [x] WP3 Admin retry (3.3, Issue 33) — Lane A — PR #57 merged 2026-11-17 (bdcc074d): four reviews, uncached build green, 2 h soak passed on the second run (the first failed because the host slept)
+- [x] WP4 Loop liveness and health (3.5) — Lane A — PR #59 merged 2026-11-17 (0ca95927): uncached build green; soak not required
+- [x] WP5 Shutdown (Issue 29, 3.6) — Lane A — PR #60 merged 2026-11-17 (9ad0d458), 2 h soak passed before main was merged in; follow-up PR #61 (bd583f06) fixed two shutdown crashes its review comments had found (merged before they were read — see lessons)
+- [x] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A — PR #62 merged 2026-11-17 (d1600bf1): 2 h soak passed, uncached build green on the final head; load Scenario 2 preview: two-node drain 269 s vs 510 s
+- [x] WP9 Schema safety and upgrade fixture — Lane B — PR #52 merged 2026-11-12 (6c8248b); Issues 40-41 filed
+- [x] WP7 Kafka coexistence (3.4, 3.11c) — Lane B — PR #55 merged 2026-11-16 (525b287): 7 tasks, three review rounds on the byte[] template check, whole-branch review + fix wave + residuals, uncached full build green on e871b70 (main merged in), CI green; CodeRabbit rate-limited, merged without its review on the maintainer's say-so; new property maestro.messaging.template-injection-check; admin events default false; Issues 52-58 filed; NOT yet run: nightly E2E, chaos x3
+- [x] WP10 Wake-listener shutdown (Issue 38) — Lane B — PR #56 merged 2026-11-16 (17811ab0)
+- [x] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B — PR #63 merged 2026-11-17 (40aa3c21): retention and janitor scoped to the node's service (maintainer decision taken as recommended), manual purge statement, uncached build green; soak not required
+- [x] WP11 k6 load-test foundation — Lane C — PR #58 merged 2026-11-17 (5b170009): scenarios 1 and 3, 26 statements per workflow
+- [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C — Tasks 1-6 done (S2, S4, S5, S6 before FAIL / after PASS per its ledger); Tasks 7-9 in progress
+- [ ] WP13 Docs and housekeeping — Lane D — done on branch `docs/housekeeping`, not yet merged (see Review below)
+- [ ] Gates on this cycle's merges: the scheduled nightly on `main` ran E2E 1–10 and chaos PR-gate ×3 green on `834a9da8` (2026-11-13 to 11-16: WP0, WP9, WP1) and on `17811ab0` (2026-11-17: adds WP2, WP7, WP10), and the weekly 2 h soak green on `834a9da8` (2026-11-15, run 43661077480). Nothing yet on the merges after 2026-11-17 02:32 UTC (WP3, WP4, WP11, WP5 + #61, WP6, WP8; `main` @ `40aa3c21`). WP2 has had no 2 h soak.
+- [x] Review section added (below), before WP12 and WP13 merge
+
+## Review (2026-11-17, engine-hardening cycle)
+
+Merged to `main` (`git log --merges --first-parent origin/main`):
+
+| WP | PR | Merge | What shipped |
+|---|---|---|---|
+| WP0 | #50 | `56e9c00a` | `WorkflowExecutor.builder(...)`; the ten constructors removed (Issue 37) |
+| WP9 | #52 | `6c8248b8` | `outOfOrder` comment and V200–V202 test; frozen migration and seeded-history fixtures at `cbf5a2a`; schema-mode and DDL-privilege guidance; Issues 40–41 |
+| WP1 | #53 | `834a9da8` | live activity results equal their replay (read back from the store); exact `BigDecimal` reads; stored-input rounding fixed; pitfalls rule 12; Issues 42–49 |
+| WP2 | #54 | `c925661b` | wake permits only for runs on this node; due timers on the database clock with a skew WARN; the activity lock removed; Issues 50–51 |
+| WP7 | #55 | `525b2877` | Maestro's Kafka beans no longer suppress Boot's; `byte[]` template check; admin events off by default; Issues 52–58 |
+| WP10 | #56 | `17811ab0` | wake listener closes without an interrupt (Issue 38) |
+| WP3 | #57 | `bdcc074d` | admin Retry deletes only the failure that ended the run (3.3, Issue 33); Issues 59–63 |
+| WP4 | #59 | `0ca95927` | one guard for every background loop; a probe timeout reads `UNKNOWN`; Issues 64–68 |
+| WP11 | #58 | `5b170009` | `perf/` k6 suite, `sample-perf`, scenarios 1 and 3, new meters |
+| WP5 | #60, #61 | `9ad0d458`, `bd583f06` | one shutdown deadline, 20 s default; slot waiters released (Issue 29); #61 fixed two joins on unstarted threads; Issues 69–70 |
+| WP6 | #62 | `d1600bf1` | recovery gated by task-queue capacity, off the runner thread (Issue 30); kit limits (Issue 36); Issues 72–73 |
+| WP8 | #63 | `40aa3c21` | retention and janitor paced and scoped to the node's service; startup WARN for other service names (Issue 39); manual purge; Issues 74, 77–79 |
+
+Not merged: WP12 (k6 scenarios 2, 4, 5, 6; in progress on `test/k6-finding-scenarios`, holds Issues 75–76) and WP13 (this branch, Issues 80–86).
+
+WP13 changes outside documentation (branch `docs/housekeeping`):
+- Tests: `CrashRecoveryTest` made deterministic (`9a321182`); four test store wrappers forward the paged recovery read (`79526f9c`).
+- Build: the starter compiles non-incrementally and passes the config processor its additional metadata (`e4199739`).
+- Production code: one failure message. `MaestroDataSources` now names both tie-breakers when several `@MaestroDataSource` beans exist, with its test. It went in under a `docs:` subject (`d5ca8716`) by mistake; history is not rewritten, so it is recorded here.
+- CI: action pins moved to their Node 24 majors (`358629c7`, and setup-gradle v5 plus the Pages actions in a second commit). `gradle/actions/setup-gradle@v6` is left for the maintainer: it accepts new, proprietary terms of use for its caching component.
+
+Not run on what merged:
+- The nightly E2E and chaos PR-gate ×3 have not yet run on WP3, WP4, WP11, WP5 + #61, WP6 or WP8 (all merged on 2026-11-17 after that night's run). They did run green on `main` after WP0, WP9, WP1 and after WP2, WP7, WP10.
+- 2 h soak: WP3, WP5 and WP6 passed it on their branches before merge; WP1 passed it only through the weekly scheduled soak on `main` (`834a9da8`, 2026-11-15); WP2 has had none. WP4 and WP8 were not required to.
+
+Decisions taken as recommended, waiting for the maintainer's word (from the package ledgers' "Ruling:" lines):
+- WP1: Tasks 4, 5 and 7 (surface beyond the spec) went ahead with no objection received; no recursive walk of element classes inside untyped `Map`/`List` results.
+- WP2: two new default SPI methods, `getDueTimers(int)` and `storeTime()`.
+- WP3 MD-1–MD-4: a Retry over a consumed signal is refused (`SIGNAL_CONSUMED_AFTER_FAILURE`); two independently failed branches need two Retries; an unattributed failure with later work replays to the same failure; `reopenFailedInstance` has a non-atomic default.
+- WP5 MD-1–MD-5: Issue 64 fixed for the renewer only; 20 s default in core and the kit too; a free activity slot is still taken during the drain.
+- WP6 MD-1–MD-6: `recoverWorkflows` stays ungated; the disabled-poller startup pass retries each poll interval; readiness does not wait for recovery (Issue 73).
+- WP7: `AdminClientAutoConfiguration` removed; the module's fate is Issue 52.
+- WP8 MD-1–MD-6: retention scoped to the node's service, with a manual purge for abandoned names (Issue 77); janitor capped at 1,000 batches per sweep; Issue 79's false positive accepted.
+- WP11: PR #58 merged as a merge commit so WP12 could cherry-pick.
+- WP12 MD-1–MD-11: harness overlay for old engines instead of C4's cherry-pick, and the rest as the planner recommended.
+
+What remains: WP12, then the gates above on `main`. Maven Central (handover §5) is out of this cycle's scope.
 
 # Milestone: Host-safety cycle (planned 2026-11-11)
 
