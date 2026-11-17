@@ -32,11 +32,13 @@ import java.util.UUID;
 public record RecoveryCursor(Instant startedAt, UUID id) {
 
     /**
-     * {@code (startedAt, id)} ascending, with {@link UUID#compareTo} breaking
-     * ties — the order of a recovery page for a store that sorts in Java.
+     * {@code (startedAt, id)} ascending, with {@link #compareIds} breaking
+     * ties — the order of a recovery page for a store that sorts in Java, and
+     * the order PostgreSQL gives {@code ORDER BY started_at, id}.
      */
     public static final Comparator<WorkflowInstance> ORDER =
-            Comparator.comparing(WorkflowInstance::startedAt).thenComparing(WorkflowInstance::id);
+            Comparator.comparing(WorkflowInstance::startedAt)
+                    .thenComparing(WorkflowInstance::id, RecoveryCursor::compareIds);
 
     /**
      * Creates a cursor.
@@ -57,6 +59,21 @@ public record RecoveryCursor(Instant startedAt, UUID id) {
     }
 
     /**
+     * Compares two instance ids as PostgreSQL orders {@code uuid}: unsigned,
+     * byte by byte — the high 64 bits, then the low 64 bits, each unsigned.
+     * {@link UUID#compareTo} compares them signed, so an id whose top bit is
+     * set would sort first there and last in Postgres.
+     *
+     * @param a one id
+     * @param b another id
+     * @return negative, zero or positive as {@code a} sorts before, with or after {@code b}
+     */
+    public static int compareIds(UUID a, UUID b) {
+        var high = Long.compareUnsigned(a.getMostSignificantBits(), b.getMostSignificantBits());
+        return high != 0 ? high : Long.compareUnsigned(a.getLeastSignificantBits(), b.getLeastSignificantBits());
+    }
+
+    /**
      * Whether {@code instance} comes strictly after this cursor in {@link #ORDER}.
      *
      * @param instance the instance to place
@@ -64,6 +81,6 @@ public record RecoveryCursor(Instant startedAt, UUID id) {
      */
     public boolean precedes(WorkflowInstance instance) {
         var byStart = startedAt.compareTo(instance.startedAt());
-        return byStart < 0 || (byStart == 0 && id.compareTo(instance.id()) < 0);
+        return byStart < 0 || (byStart == 0 && compareIds(id, instance.id()) < 0);
     }
 }

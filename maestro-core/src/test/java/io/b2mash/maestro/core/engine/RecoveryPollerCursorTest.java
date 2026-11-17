@@ -99,6 +99,17 @@ class RecoveryPollerCursorTest {
                         "a full queue's earlier cursor is not used"));
     }
 
+    /** On a {@code started_at} tie the poller orders ids as Postgres does: unsigned. */
+    @Test
+    void onATieTheEarliestCursorIsTheUnsignedSmallerId() {
+        var low = new RecoveryCursor(BASE, new UUID(0x0000_0000_0000_0001L, 0L));
+        var high = new RecoveryCursor(BASE, new UUID(0x8000_0000_0000_0000L, 0L));
+        var cursors = new HashMap<String, @Nullable RecoveryCursor>();
+        cursors.put("high", high);
+        cursors.put("low", low);
+        assertEquals(low, RecoveryPoller.earliest(cursors, Set.of("high", "low")));
+    }
+
     @Test
     void aQueueResumingAtTheFirstRowStartsThePassThere() {
         var cursors = new HashMap<String, @Nullable RecoveryCursor>();

@@ -365,7 +365,7 @@ final class RecoveryPoller implements StoppableLoop {
             return false;
         }
         var byStart = a.startedAt().compareTo(b.startedAt());
-        return byStart < 0 || (byStart == 0 && a.id().compareTo(b.id()) < 0);
+        return byStart < 0 || (byStart == 0 && RecoveryCursor.compareIds(a.id(), b.id()) < 0);
     }
 
     /**
