@@ -221,6 +221,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void backgroundLoopError(String loop, String errorType) {
+        fanOut("backgroundLoopError", d -> d.backgroundLoopError(loop, errorType));
+    }
+
+    @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         fanOut("standDown", d -> d.standDown(reason, workflowId, detail));
     }

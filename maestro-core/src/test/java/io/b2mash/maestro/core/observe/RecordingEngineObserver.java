@@ -30,6 +30,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record RetentionPassCall(io.b2mash.maestro.core.spi.PurgeResult purged) {}
     public record AbandonCall(WorkflowInfo info, AbandonReason reason) {}
     public record WorkflowFailure(WorkflowInfo info, String exceptionType) {}
+    public record LoopErrorCall(String loop, String errorType) {}
 
     private final List<Invocation> invocations = new CopyOnWriteArrayList<>();
 
@@ -58,6 +59,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<StandDownCall> standDowns = new CopyOnWriteArrayList<>();
     private final List<RetentionPassCall> retentionPasses = new CopyOnWriteArrayList<>();
     private final List<AbandonCall> abandoned = new CopyOnWriteArrayList<>();
+    private final List<LoopErrorCall> loopErrors = new CopyOnWriteArrayList<>();
 
     // ── EngineObserver callbacks ──────────────────────────────────────
 
@@ -201,6 +203,12 @@ public final class RecordingEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void backgroundLoopError(String loop, String errorType) {
+        record("backgroundLoopError", loop, errorType);
+        loopErrors.add(new LoopErrorCall(loop, errorType));
+    }
+
+    @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         record("standDown", reason, workflowId, String.valueOf(detail));
         standDowns.add(new StandDownCall(reason, workflowId, detail));
@@ -241,6 +249,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<RecoveryPassCall> recoveryPasses() { return List.copyOf(recoveryPasses); }
     public List<StandDownCall> standDowns() { return List.copyOf(standDowns); }
     public List<RetentionPassCall> retentionPasses() { return List.copyOf(retentionPasses); }
+    public List<LoopErrorCall> loopErrors() { return List.copyOf(loopErrors); }
 
     /** The reasons {@code workflowId} stood down for, in arrival order. */
     public List<StandDownReason> standDownReasons(String workflowId) {
