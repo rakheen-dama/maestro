@@ -9,17 +9,18 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [x] WP0 Executor builder (Issue 37) — Lane A — PR #50 merged 2026-11-12 (56e9c00): 5 tasks reviewed, whole-branch review + fix wave, uncached full build green on 9c1cfbf, CI Build & Test green
 - [x] WP1 Replay fidelity (3.8, exact decimals, stored-input rounding) — Lane A — PR #53 merged 2026-11-13 (834a9da): 9 tasks, whole-branch review + fix wave, uncached full build green; NOT yet run on it: nightly E2E, chaos PR-gate x3, 2 h soak; Issues 42-49 filed
 - [x] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A — PR #54 merged 2026-11-16 (c925661): 6 tasks, whole-branch review + fix wave + re-review, uncached full build green twice (7306235, ff11be1), CodeRabbit 9 comments (8 fixed incl. three engine defects, 1 tracked as Issue 51); Issues 50-51 filed; timer accuracy now = DB clock minus scheduling node's clock until Issue 51; NOT yet run: nightly E2E, chaos x3, soak
-- [ ] WP3 Admin retry (3.3, Issue 33) — Lane A
-- [ ] WP4 Loop liveness and health (3.5) — Lane A
-- [ ] WP5 Shutdown (Issue 29, 3.6) — Lane A
-- [ ] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A
+- [x] WP3 Admin retry (3.3, Issue 33) — Lane A — PR #57 merged 2026-11-16 (bdcc074d): four reviews, uncached build green, 2 h soak passed on the second run (the first failed because the host slept)
+- [x] WP4 Loop liveness and health (3.5) — Lane A — PR #59 merged 2026-11-17 (0ca95927): uncached build green; soak not required
+- [x] WP5 Shutdown (Issue 29, 3.6) — Lane A — PR #60 merged 2026-11-17 (9ad0d458), 2 h soak passed before main was merged in; follow-up PR #61 (bd583f06) fixed two shutdown crashes its review comments had found (merged before they were read — see lessons)
+- [x] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A — PR #62 merged 2026-11-17 (d1600bf1): 2 h soak passed, uncached build green on the final head; load Scenario 2 preview: two-node drain 269 s vs 510 s
 - [x] WP9 Schema safety and upgrade fixture — Lane B — PR #52 merged 2026-11-12 (6c8248b); Issues 40-41 filed
 - [x] WP7 Kafka coexistence (3.4, 3.11c) — Lane B — PR #55 merged 2026-11-16 (525b287): 7 tasks, three review rounds on the byte[] template check, whole-branch review + fix wave + residuals, uncached full build green on e871b70 (main merged in), CI green; CodeRabbit rate-limited, merged without its review on the maintainer's say-so; new property maestro.messaging.template-injection-check; admin events default false; Issues 52-58 filed; NOT yet run: nightly E2E, chaos x3
-- [ ] WP10 Wake-listener shutdown (Issue 38) — Lane B
-- [ ] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B, after WP6
-- [ ] WP11 k6 load-test foundation — Lane C — Tasks 1-5 done (3 meters, sample-perf, harness after 5 review rounds); Task 6 (Scenario 1) in fix round 2; Tasks 7-9 remain; first numbers: ~71-73 completions/s on one node at 20/20 (slot-limited, 5x50 ms activities), 36.00 net statements per workflow
-- [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C
+- [x] WP10 Wake-listener shutdown (Issue 38) — Lane B — PR #56 merged 2026-11-16 (17811ab0)
+- [x] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B — PR #63 merged 2026-11-17 (40aa3c21): retention and janitor scoped to the node's service (maintainer decision taken as recommended), manual purge statement, uncached build green; soak not required
+- [x] WP11 k6 load-test foundation — Lane C — PR #58 merged 2026-11-17 (5b170009): scenarios 1 and 3, 26 statements per workflow
+- [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C — Tasks 1-3 done (S2 before FAIL as predicted / preview PASS); Tasks 4-9 in progress
 - [ ] WP13 Docs and housekeeping — Lane D (also: explicit `<a id="issue-N">` anchors for every heading in docs/open-issues.md — GitHub ignores `{#issue-N}`, CodeRabbit on PR #50)
+- [ ] Gates never run on this cycle's merges: nightly E2E, chaos PR-gate ×3 (WP1 and WP2 also merged without the 2 h soak)
 - [ ] Review section added here after the last merge
 
 # Milestone: Host-safety cycle (planned 2026-11-11)
