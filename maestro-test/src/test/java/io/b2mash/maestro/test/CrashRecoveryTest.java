@@ -15,6 +15,8 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -135,9 +137,15 @@ class CrashRecoveryTest {
     @Test
     void withTwoWorkflowsRunning_nothingLandsOnceTheCrashHasFired() throws Exception {
         for (var round = 0; round < 5; round++) {
+            // Hold every step1 until both workflows are started: otherwise a
+            // slow runner can let workflow a complete 40 activities before b
+            // is started, so the crash fires first and the second start
+            // throws on the dead node.
+            var bothStarted = steps.holdStep1();
             var crash = env.crashAfter(40);
             var a = env.startWorkflow("loop-a-" + round, Looping.class, 60);
             var b = env.startWorkflow("loop-b-" + round, Looping.class, 60);
+            bothStarted.countDown();
 
             var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
             while (!crash.hasCrashed()) {
@@ -269,6 +277,14 @@ class CrashRecoveryTest {
 
     static final class CountingSteps implements Steps {
         private final ConcurrentHashMap<String, AtomicInteger> calls = new ConcurrentHashMap<>();
+        private volatile CountDownLatch step1Gate = new CountDownLatch(0);
+
+        /** Makes every later step1 call wait until the returned latch is counted down. */
+        CountDownLatch holdStep1() {
+            var gate = new CountDownLatch(1);
+            step1Gate = gate;
+            return gate;
+        }
 
         int calls(String step) {
             var count = calls.get(step);
@@ -282,6 +298,14 @@ class CrashRecoveryTest {
 
         @Override
         public String step1(String in) {
+            try {
+                if (!step1Gate.await(10, TimeUnit.SECONDS)) {
+                    throw new IllegalStateException("step1 gate was never opened");
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted waiting for the step1 gate", e);
+            }
             return record("step1", in, ">1");
         }
 
