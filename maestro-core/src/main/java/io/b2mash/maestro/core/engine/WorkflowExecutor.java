@@ -1814,26 +1814,47 @@ public final class WorkflowExecutor {
     /**
      * Starts the background recovery poller.
      *
-     * <p>The poller periodically re-runs {@link #recoverWorkflows(Map)} so
-     * that workflows whose owning node has died (instance lock expired) or
-     * shut down are adopted without requiring a restart of this node. Every
-     * node polls — safety comes from the per-instance distributed lock and
-     * the in-JVM running-workflow check, not from leader election.
+     * <p>The poller periodically runs a recovery pass so that workflows whose
+     * owning node has died (instance lock expired) or shut down are adopted
+     * without requiring a restart of this node. Every node polls — safety
+     * comes from the per-instance distributed lock and the in-JVM
+     * running-workflow check, not from leader election.
      *
-     * <p>The Spring Boot starter calls this automatically after startup
-     * recovery (configurable via {@code maestro.recovery.*}).
+     * <p>Its passes are <b>gated</b> (Issue 30): an instance is locked only when
+     * its task queue has a free slot on this node, or room in the queue's
+     * bounded line of recovered runs; the rest are deferred, unlocked, for a
+     * peer or for later. Its first pass runs at once, and a pass that deferred
+     * for lack of capacity is followed by another as soon as capacity frees,
+     * at most once per {@code min(1 s, pollInterval)}. Full passes from the
+     * first row run every {@code pollInterval}.
+     *
+     * <p>The Spring Boot starter calls this automatically at startup
+     * (configurable via {@code maestro.recovery.*}).
      *
      * @param registrations map of workflow type → registration metadata
-     * @param pollInterval  interval between recovery cycles (e.g., 60 seconds)
+     * @param pollInterval  interval between full recovery passes (e.g., 60 seconds)
      * @throws IllegalStateException if the poller is already started or the
      *                               executor is shutting down
      */
     public void startRecoveryPoller(Map<String, WorkflowRegistration> registrations, Duration pollInterval) {
+        startRecoveryPoller(registrations, pollInterval, RecoveryPoller.defaultCapacitySpacing(pollInterval));
+    }
+
+    /**
+     * {@link #startRecoveryPoller(Map, Duration)} with an explicit spacing of
+     * capacity passes; a test seam.
+     *
+     * @param capacitySpacing the least time between the starts of two passes
+     *                        when the second is a capacity pass
+     */
+    void startRecoveryPoller(Map<String, WorkflowRegistration> registrations, Duration pollInterval,
+                             Duration capacitySpacing) {
         if (shuttingDown.get()) {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
-        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer);
+        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer,
+                taskQueueGovernor.capacitySignal(), capacitySpacing);
         installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
         recoveryPollerStarted.set(true);
     }

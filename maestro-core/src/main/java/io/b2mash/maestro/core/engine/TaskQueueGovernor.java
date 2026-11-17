@@ -460,6 +460,19 @@ public final class TaskQueueGovernor {
         return free + bucket.recoveryTickets().get();
     }
 
+    /**
+     * Returns how many threads are waiting for a workflow slot of
+     * {@code taskQueue} right now. Advisory (a snapshot); for tests and
+     * diagnostics.
+     *
+     * @param taskQueue the task queue
+     * @return the waiting threads; {@code 0} for an unbounded queue
+     */
+    int workflowSlotWaiters(String taskQueue) {
+        var bucket = bucket(taskQueue);
+        return bucket == null ? 0 : bucket.workflowSlots().getQueueLength();
+    }
+
     /** @return the event count bumped whenever a workflow permit or a recovery ticket is given back */
     CapacitySignal capacitySignal() {
         return capacitySignal;

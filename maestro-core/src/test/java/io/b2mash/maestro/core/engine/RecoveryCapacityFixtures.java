@@ -75,12 +75,11 @@ final class RecoveryCapacityFixtures {
 
     /** Polls {@code read} until it equals {@code wanted} or {@code within} elapses; returns the last value read. */
     static <T> T valueWithin(Supplier<T> read, T wanted, Duration within) {
-        Predicate<? super T> equal = wanted::equals;
-        return valueWithin(read, equal, within);
+        return valueMatching(read, wanted::equals, within);
     }
 
     /** Polls {@code read} until it satisfies {@code wanted} or {@code within} elapses; returns the last value read. */
-    static <T> T valueWithin(Supplier<T> read, Predicate<? super T> wanted, Duration within) {
+    static <T> T valueMatching(Supplier<T> read, Predicate<? super T> wanted, Duration within) {
         var deadline = System.nanoTime() + within.toNanos();
         var value = read.get();
         while (!wanted.test(value) && System.nanoTime() < deadline) {
