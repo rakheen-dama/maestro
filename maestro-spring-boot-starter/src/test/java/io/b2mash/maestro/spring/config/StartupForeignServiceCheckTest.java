@@ -91,16 +91,36 @@ class StartupForeignServiceCheckTest {
     }
 
     @Test
-    void aCleanNodeLogsNoWarning() throws Exception {
-        var delegate = new InMemoryWorkflowStore();
-        seed(delegate, "own-1", SERVICE, WorkflowStatus.RUNNING);
-        var checked = new CountDownLatch(1);
-        var store = onCountsRead(delegate, () -> { }, checked);
+    void aCleanNodeLogsNothingAboveDebug() {
+        var store = new InMemoryWorkflowStore();
+        seed(store, "own-1", SERVICE, WorkflowStatus.RUNNING);
 
         runnerFor(node(store), holdRegistrations(), recovery(true, Duration.ofSeconds(60))).run(null);
 
-        assertTrue(checked.await(5, SECONDS), "the service-name check ran");
-        assertEquals(List.of(), warnings());
+        // The check's last act on a clean result is this DEBUG line: once it
+        // is logged, the check has finished.
+        var finished = valueWithin(() -> messagesAt(Level.DEBUG).stream()
+                .anyMatch(m -> m.startsWith("Maestro service-name check: no other service name")), true,
+                Duration.ofSeconds(5));
+        assertTrue(finished, "the service-name check finished: " + messagesAt(Level.DEBUG));
+        assertEquals(List.of(), messagesAboveDebug());
+    }
+
+    @Test
+    void moreThanTwentyForeignNamesWarnAboutTwentyAndSayThereAreMore() {
+        var names = new java.util.LinkedHashMap<String, Long>();
+        for (int i = 0; i < 21; i++) {
+            names.put("orders-%02d".formatted(i), 21L - i);
+        }
+        var store = answering(new InMemoryWorkflowStore(), names);
+
+        runnerFor(node(store), holdRegistrations(), recovery(true, Duration.ofSeconds(60))).run(null);
+
+        var more = valueWithin(() -> infos().stream().anyMatch(m -> m.startsWith("More than 20 other service names")),
+                true, Duration.ofSeconds(5));
+        assertTrue(more, "an INFO says there are more: " + infos());
+        assertEquals(20, warnings().size());
+        assertTrue(warnings().getLast().contains("'orders-19'"), warnings().getLast());
     }
 
     @Test
@@ -170,6 +190,33 @@ class StartupForeignServiceCheckTest {
                         throw e.getCause();
                     }
                 });
+    }
+
+    /**
+     * A {@link WorkflowStore} proxy over {@code delegate} whose service-name
+     * read answers {@code counts}.
+     */
+    private static WorkflowStore answering(InMemoryWorkflowStore delegate, Map<String, Long> counts) {
+        return (WorkflowStore) Proxy.newProxyInstance(WorkflowStore.class.getClassLoader(),
+                new Class<?>[]{WorkflowStore.class}, (proxy, method, args) -> {
+                    if (method.getName().equals("getActiveInstanceCountsUnderOtherServices")) {
+                        return counts;
+                    }
+                    try {
+                        return method.invoke(delegate, args);
+                    } catch (InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+    }
+
+    private List<String> messagesAboveDebug() {
+        synchronized (appender) {
+            return appender.list.stream()
+                    .filter(e -> e.getLevel().isGreaterOrEqual(Level.INFO))
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+        }
     }
 
     private List<String> warnings() {
