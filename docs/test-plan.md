@@ -204,7 +204,9 @@ old and new values side by side; see *Re-recording a baseline* below). Environme
 (default `false`, the engine's default since 3.11c; every result records it in
 `identity.config.adminEventsRequested`, `identity.effective.adminEventsEffective`,
 `validity.adminEvents` and `summary.md`), `PERF_PARK_MODE`, `PERF_KEEP_UP=1`,
-`PERF_ENGINE_REF`, `PERF_NODE_HEAP` / `PERF_NODE_CPUS` / `PERF_NODE_MEM`.
+`PERF_ENGINE_REF`, `PERF_NODE_HEAP` / `PERF_NODE_CPUS` / `PERF_NODE_MEM`,
+`PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1` (with `--record-baseline`: allow a
+baseline of other settings to replace the old one).
 
 **Prerequisites:** Docker with ≥ 6 GiB of memory (a run below that records a
 WARN note), `docker compose` v2, `jq`, `unzip`, JDK 25 (the run builds and
@@ -286,7 +288,13 @@ against the old baseline, by design):
    baselines are `local`, 1 replica). The run is judged without the old
    baseline: validity and correctness must PASS, and every absolute gate
    (S3's linearity and arithmetic) still judges; a run that does not PASS
-   leaves the file untouched (exit 3, "--record-baseline refused").
+   leaves the file untouched (exit 3, "--record-baseline refused"). So does
+   a run whose matched settings differ from the old baseline's (profile,
+   replicas, `adminEventsEnabled`, workflow shape; S3 also park mode, the
+   wake-recheck and recovery-poll intervals, lock TTL, plateaus, Pmax): the
+   weekly CI gates against that file. To change the settings on purpose, set
+   `PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1` (exactly `1`) for that run; the
+   change is printed.
 3. On PASS the file is rewritten and the old and new values are printed side
    by side (also in `perf/results/<runId>/baseline-record.txt`). Review
    `git diff perf/baselines/` and commit it on its own, with the reason.

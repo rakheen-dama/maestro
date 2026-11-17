@@ -16,7 +16,11 @@
 # the new baseline (atomically, through a temporary file beside it) from
 # result.json's identity and measurements.baselineCandidate, and prints the
 # old and new values side by side. The old file may be absent or unreadable:
-# re-recording replaces it either way. A scenario that judges no gate
+# re-recording replaces it either way. When the old file is a readable
+# schema-1 baseline, the run's matched settings (profile, replicas,
+# adminEventsEnabled, workflowShape; S3: parkMode, wakeRecheckInterval,
+# recoveryPollInterval, lockTtl, plateaus, Pmax) must equal its, or the record
+# is refused unless PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1. A scenario that judges no gate
 # against a baseline (the smoke) is refused. Returns 1, writing nothing, when
 # it refuses. Overwrites result.json and summary.md with the no-baseline
 # evaluation, and says so in identity.notes.
@@ -62,6 +66,26 @@ record_baseline() {
     :
   else
     old='{"__state": "unreadable: not valid JSON or not one object"}'
+  fi
+  # The settings a baseline gate matches on (evaluators: s1_baseline_match,
+  # the S3 $noBase chain). Replacing a readable schema-1 baseline with one of
+  # other settings would silently move what the weekly CI gates against, so
+  # it needs PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1 (exactly 1).
+  local changed
+  changed=$(jq -r -n --argjson old "$old" --slurpfile new "$tmp" '
+    ["profile", "replicas", "adminEventsEnabled", "workflowShape", "parkMode",
+     "wakeRecheckInterval", "recoveryPollInterval", "lockTtl", "plateaus", "Pmax"] as $keys
+    | if ($old.__state // null) != null or $old.schema != 1 then empty
+      else $new[0] as $n | $keys[] as $k | select(($old | has($k)) or ($n | has($k))) | select($old[$k] != $n[$k])
+           | "\($k) \($old[$k] | tojson) -> \($n[$k] | tojson)" end') || changed="(the settings could not be compared)"
+  if [[ -n "$changed" ]]; then
+    if [[ "${PERF_BASELINE_ALLOW_SETTINGS_CHANGE:-}" != 1 ]]; then
+      rm -f "$tmp"
+      restore_traps "$prev_traps"
+      log "--record-baseline refused: this run's settings differ from ${baseline##*/}'s ($(tr '\n' ';' <<<"$changed" | sed 's/;$//; s/;/; /g')); the baseline gates match on them, so the weekly CI would gate against other settings. Set PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1 to record anyway; ${baseline##*/} unchanged"
+      return 1
+    fi
+    log "PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1: recording with other settings than ${baseline##*/}'s ($(tr '\n' ';' <<<"$changed" | sed 's/;$//; s/;/; /g'))"
   fi
   log "baseline ${baseline##*/}: old and new (key, old, new; * = changed):"
   jq -r -n --argjson old "$old" --slurpfile new "$tmp" '

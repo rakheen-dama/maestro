@@ -9,7 +9,10 @@
 #       of the figure can be recorded (the symmetric gate FAILs it against
 #       the old baseline); validity and correctness must still PASS. Then
 #       replaces the file and prints old and new values side by side
-#       (baseline-record.txt). Review the diff and commit it.
+#       (baseline-record.txt). Review the diff and commit it. Refused when the
+#       run's matched settings (profile, replicas, admin events, workflow
+#       shape; S3 also park mode, intervals, lock TTL, plateaus, Pmax) differ
+#       from the old baseline's, unless PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1.
 #
 # Env:  PERF_ADMIN_EVENTS (true|false, default false = the engine's default
 #       since 3.11c; every result records it: identity.config
@@ -17,6 +20,8 @@
 #       validity.adminEvents, summary.md)  PERF_KEEP_UP=1 (skip the
 #       final down -v)  PERF_ENGINE_REF (free-text label)  PERF_NODE_HEAP /
 #       PERF_NODE_CPUS / PERF_NODE_MEM (node container sizing)
+#       PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1 (with --record-baseline: allow
+#       a baseline of other settings to replace the old one)
 #       PERF_PARK_MODE (s3-parked: signal | sleep, default signal; sleep
 #       measured once, local profile, one node: perf/eval/s3-parked.jq)
 #       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
@@ -497,7 +502,7 @@ case "$VERDICT" in
   ERROR) die "the evaluator returned ERROR: a check is misconfigured (status ERROR), has an unknown class or status, or is an advisory reporting something other than PASS/WARN, or there are no checks (see result.json)" ;;
   *) die "result.json has no verdict" ;;
 esac
-((RECORD_REFUSED == 0)) || die "--record-baseline refused (verdict ${VERDICT} without the existing baseline, or a scenario without a baseline gate); perf/baselines/${SCENARIO}.json unchanged"
+((RECORD_REFUSED == 0)) || die "--record-baseline refused (verdict ${VERDICT} without the existing baseline, a scenario without a baseline gate, or other settings than the old baseline's without PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1: see the log above); perf/baselines/${SCENARIO}.json unchanged"
 
 FINAL_VERDICT="$VERDICT"
 FINAL_RC=$rc

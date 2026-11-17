@@ -132,6 +132,41 @@ base="${work}/smoke.baseline.json"
 expect "smoke: record_baseline refuses (no gate uses a baseline)" 1 "$(record "$dir" smoke "$base")"
 expect "smoke: nothing written" absent "$(sum "$base")"
 
+# 7b. Re-recording with other settings than the old baseline's (the one the
+# weekly CI gates against) is refused unless PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1.
+settings_case() { # <case> <scenario> <runId> <old baseline jq edit> <setting name>
+  local dir base before rc
+  dir=$(canned "$1" "$3")
+  base="${work}/$1.baseline.json"
+  jq -c "$4" "${PERF_DIR}/baselines/$2.json" >"$base"
+  before=$(sum "$base")
+  expect "$1: other ${5} than the old baseline: record_baseline refuses" 1 "$(record "$dir" "$2" "$base")"
+  expect "$1: old baseline byte-identical" "$before" "$(sum "$base")"
+  expect "$1: the refusal names ${5} and the override" yes "$(has "$dir" "${5}.*PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1")"
+  expect "$1: no temporary file beside it" 0 "$(find "$work" -maxdepth 1 -name "$1.baseline.json.*" | wc -l | tr -d ' ')"
+}
+settings_case set-profile s1-throughput "$S1_RUN" '.profile = "full"' profile
+settings_case set-replicas s1-throughput "$S1_RUN" '.replicas = 2' replicas
+settings_case set-admin s1-throughput "$S1_RUN" '.adminEventsEnabled = true' adminEventsEnabled
+settings_case set-shape s1-throughput "$S1_RUN" '.workflowShape.activities = 3' workflowShape
+settings_case set-ttl s3-parked "$S3_RUN" '.lockTtl = "PT60S"' lockTtl
+settings_case set-plateaus s3-parked "$S3_RUN" '.plateaus = [1000, 5000, 10000] | .Pmax = 10000' plateaus
+settings_case set-mode s3-parked "$S3_RUN" '.parkMode = "sleep"' parkMode
+dir=$(canned set-override "$S1_RUN")
+base="${work}/set-override.baseline.json"
+jq -c '.profile = "full"' "${PERF_DIR}/baselines/s1-throughput.json" >"$base"
+rc=0
+(PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1 record_baseline "$dir" s1-throughput "$base") >"${dir}/record.out" 2>&1 || rc=$?
+expect "override PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1: recorded" "0 \"local\"" "${rc} $(jq .profile "$base")"
+expect "override: the settings change is printed" yes "$(has "$dir" 'profile +full +local')"
+expect "override: the log says the override was used" yes "$(has "$dir" 'PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1: recording with other settings')"
+dir=$(canned set-override-bad "$S1_RUN")
+base="${work}/set-override-bad.baseline.json"
+jq -c '.profile = "full"' "${PERF_DIR}/baselines/s1-throughput.json" >"$base"
+rc=0
+(PERF_BASELINE_ALLOW_SETTINGS_CHANGE=yes record_baseline "$dir" s1-throughput "$base") >"${dir}/record.out" 2>&1 || rc=$?
+expect "override set to something other than 1: still refused" 1 "$rc"
+
 # 8. A jq that fails while writing the new baseline (or the identity note)
 # leaves the old baseline byte-identical and no temporary file. run.sh calls
 # record_baseline through `||`, which disables set -e inside it, so every
