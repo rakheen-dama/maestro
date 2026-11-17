@@ -111,7 +111,7 @@ entire integration seams unverified. This plan makes those seams explicit.
 | StartupRecoveryRunner, SignalSubscriptionRunner ordering | ✅ | — | ✅ | |
 | SignalSubscriptionRunner against a **real** maestro.signals.* topic | — | ✅ | — | `KafkaSignalChannelIT` — the channel is fed for the first time |
 | MaestroClient (startAsync, startAndWait, signal, query handles) | ✅ | — | ✅ | `MaestroClientTest` (8) through the real auto-config chain |
-| Health indicator | ✅ | — | — | **Implemented** (post-audit). `io.b2mash.maestro.spring.health.MaestroHealthIndicator`, auto-configured with Actuator; bounded 2s store probe, three-state poller reporting (`starting`/running/`disabled`). `MaestroHealthAutoConfigurationTest`, `MaestroHealthIndicatorTest` |
+| Health indicator | ✅ | — | — | **Implemented** (post-audit). `io.b2mash.maestro.spring.health.MaestroHealthIndicator`, auto-configured with Actuator; bounded 2s store probe, three-state poller reporting (`starting`/running/`disabled`); a probe timeout is `UNKNOWN` (3.5a). `MaestroHealthAutoConfigurationTest`, `MaestroHealthIndicatorTest` |
 
 ### Kafka (must-work) — maestro-messaging-kafka (11 test classes, 59 tests)
 

@@ -1285,7 +1285,24 @@ P × d / `maestro.signal.wake-recheck-interval` workflow slots busy, where d is
 one re-check's duration (its 2–3 reads). In the worked example above, and
 assuming 5 ms per re-check, 2,000 × 5 ms / 30 s ≈ 0.3 slots, so re-checks rarely crowd out runs; with
 slow reads or a short interval, check the product. A pool that runs dry shows up as `STORE_UNAVAILABLE` abandons
-(§10.9), not as workflow failures.
+(§10.9), not as workflow failures, and as `store: "timed out"` with status `UNKNOWN` on `/actuator/health` (§14).
+
+## 14. Health checks and Kubernetes probes
+
+**Maestro's health indicator is a readiness signal at most, never liveness.** The `maestro` contributor (`MaestroHealthIndicator`) reports `DOWN` when the store refused the probe (`store: "unreachable"`) or a background loop that started has stopped (`timerPollerRunning`, `recoveryPollerRunning`, `retentionSweeperRunning`: `false`). It reports `UNKNOWN` when the probe (`getInstance` on a sentinel id) did not finish within 2 s (`store: "timed out"`) — usually a pool whose connections are all borrowed, which is the node doing its job. Spring Boot orders statuses `DOWN`, `OUT_OF_SERVICE`, `UP`, `UNKNOWN`, so an `UNKNOWN` `maestro` leaves the aggregate `UP`, and only `DOWN` and `OUT_OF_SERVICE` answer 503.
+
+- **Liveness.** Spring Boot's `liveness` group contains only `livenessState`; keep it that way, and never point a liveness probe at `/actuator/health`. Restarting a busy pod abandons its in-flight runs to the lock TTL and adds a recovery pass to the fleet's load.
+- **Readiness.** Add `maestro` only if this pod's HTTP traffic needs Maestro's store: `management.endpoint.health.group.readiness.include=readinessState,maestro`. A shared database that is down then takes every pod out of the Service, which is what you want only if the pods cannot serve without it.
+- **A dead loop.** Since 3.5b a loop contains every `Error` except Maestro's control-flow signals, so a loop that stops is a bug: the log carries `Background loop '<name>' stopped: …` at `ERROR`, health reads `DOWN`, and the remedy is restarting the node — readiness does not do that for you.
+
+**`UNKNOWN` answers HTTP 200 by default.** That holds for `/actuator/health/maestro` too, and for a group whose only member is `maestro`. A host that wants a timed-out probe to answer 503 maps the status, and, for an aggregate or a group that also has an `UP` member, ranks `UNKNOWN` above `UP` — otherwise the aggregate stays `UP` and the mapping never applies:
+
+```properties
+management.endpoint.health.status.http-mapping.unknown=503
+management.endpoint.health.status.order=DOWN,OUT_OF_SERVICE,UNKNOWN,UP
+```
+
+Think twice before doing this for readiness: a pool that is busy, not broken, then takes the pod out of the Service. `MaestroHealthIndicatorTest` pins Spring Boot's defaults (`bootsDefaultsLeaveAnUnknownMaestroAt200`) and the effect of both properties on Boot's aggregator and status mapper (`aHostCanMapUnknownTo503`); the full actuator endpoint with these properties set is traced, not tested. The status rule itself is pinned by `returnsPromptlyWhenStoreBlocksIndefinitely` (`UNKNOWN` within the bound), `aStoreThatThrowsWithinTheBoundIsDown` and `aTimedOutProbeDoesNotHideADeadLoop`.
 
 ---
 

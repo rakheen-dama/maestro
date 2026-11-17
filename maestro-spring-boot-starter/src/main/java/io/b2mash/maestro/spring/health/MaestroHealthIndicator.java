@@ -18,21 +18,25 @@ import java.util.concurrent.TimeoutException;
  * Reports Maestro's health for Spring Boot Actuator's {@code /actuator/health}
  * endpoint.
  *
- * <p>Status is {@code DOWN} when either:
+ * <p>The status is one of three:
  * <ul>
- *   <li>the configured {@link WorkflowStore} cannot be reached within
- *       {@link #STORE_PROBE_TIMEOUT} — a cheap
- *       {@link WorkflowStore#getInstance(String)} lookup for a sentinel
- *       workflow ID that is never expected to exist either throws or does
- *       not complete in time. The probe runs on a separate virtual thread
- *       and is abandoned (best-effort interrupted) on timeout, so a store
- *       that is merely slow — not cleanly unreachable — cannot hang this
- *       method or, by extension, the {@code /actuator/health} endpoint; or</li>
- *   <li>a poller that is <em>enabled by configuration</em> has been started
- *       at least once but is not currently running — a real fault, such as
- *       a crashed poller thread.</li>
+ *   <li>{@code DOWN} when the configured {@link WorkflowStore} refused the
+ *       probe — a cheap {@link WorkflowStore#getInstance(String)} lookup for a
+ *       sentinel workflow ID that is never expected to exist threw
+ *       ({@code store: "unreachable"}) — or when a loop that is <em>enabled by
+ *       configuration</em> has been started at least once but is not
+ *       currently running: a real fault, such as a dead loop thread. A dead
+ *       loop is {@code DOWN} even when the probe also timed out;</li>
+ *   <li>{@code UNKNOWN} when, with no such fault, the probe did not finish
+ *       within {@link #STORE_PROBE_TIMEOUT} ({@code store: "timed out"}).
+ *       Since 3.5a a probe that does not finish within the bound reports
+ *       {@code UNKNOWN}: a busy pool is not a broken store. The probe runs on
+ *       a separate virtual thread and is abandoned (best-effort interrupted)
+ *       on timeout, so a store that is merely slow cannot hang this method or,
+ *       by extension, the {@code /actuator/health} endpoint;</li>
+ *   <li>{@code UP} otherwise.</li>
  * </ul>
- * A poller that has never been started yet is <b>not</b> treated as a fault:
+ * A loop that has never been started yet is <b>not</b> treated as a fault:
  * the timer and recovery pollers are only started by the Spring Boot
  * starter's {@code StartupRecoveryRunner}, an {@code ApplicationRunner}
  * that runs after the web server (and therefore the actuator endpoint) is
@@ -42,8 +46,24 @@ import java.util.concurrent.TimeoutException;
  * actual crash. Instead such a poller is reported as {@code "starting"}
  * and does not affect status.
  *
- * <p>Otherwise the status is {@code UP}. In every case the details map
- * reports:
+ * <h2>Readiness, never liveness</h2>
+ * <p>This indicator is a readiness signal at most (Operations §14):
+ * <ul>
+ *   <li>never add {@code maestro} to the {@code liveness} group, and never
+ *       point a liveness probe at the aggregate {@code /actuator/health} —
+ *       restarting a busy node abandons its in-flight runs to the lock TTL;</li>
+ *   <li>add it to {@code readiness} only if the pod's HTTP traffic needs
+ *       Maestro's store
+ *       ({@code management.endpoint.health.group.readiness.include=readinessState,maestro});</li>
+ *   <li>a dead loop reads {@code DOWN} and its thread's end is logged at
+ *       {@code ERROR}; the remedy is restarting the node, which readiness does
+ *       not do.</li>
+ * </ul>
+ * Spring Boot's default status order is {@code DOWN, OUT_OF_SERVICE, UP,
+ * UNKNOWN}, so an {@code UNKNOWN} {@code maestro} leaves an aggregate that has
+ * an {@code UP} member {@code UP}, and {@code UNKNOWN} answers HTTP 200.
+ *
+ * <p>In every case the details map reports:
  * <ul>
  *   <li>{@code store} — {@code "reachable"}, {@code "unreachable"}, or {@code "timed out"}</li>
  *   <li>{@code timerPollerRunning} — {@code true}/{@code false} once the timer poller has
@@ -85,6 +105,19 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * {@code StartupRecoveryRunner} has run.
      */
     static final String STARTING = "starting";
+
+    /** {@code store} detail: the probe returned within the bound. */
+    static final String REACHABLE = "reachable";
+
+    /** {@code store} detail: the probe threw within the bound. Makes the status {@code DOWN}. */
+    static final String UNREACHABLE = "unreachable";
+
+    /**
+     * {@code store} detail: the probe did not finish within
+     * {@link #STORE_PROBE_TIMEOUT}. Makes the status {@code UNKNOWN} unless a
+     * loop fault makes it {@code DOWN}.
+     */
+    static final String TIMED_OUT = "timed out";
 
     /**
      * Upper bound on how long the store reachability probe may take. A
@@ -137,10 +170,10 @@ public class MaestroHealthIndicator implements HealthIndicator {
         var retention = pollerState(executor.hasRetentionSweeperStarted(), executor.isRetentionSweeperRunning(),
                 !retentionSweeperEnabled);
 
-        var status = (storeProbe.status().equals("reachable") && !timer.fault() && !recovery.fault()
-                && !retention.fault())
-                ? Status.UP
-                : Status.DOWN;
+        var loopFault = timer.fault() || recovery.fault() || retention.fault();
+        var status = (loopFault || storeProbe.status().equals(UNREACHABLE)) ? Status.DOWN
+                : storeProbe.status().equals(TIMED_OUT) ? Status.UNKNOWN
+                : Status.UP;
 
         var builder = Health.status(status)
                 .withDetail("store", storeProbe.status())
@@ -185,16 +218,16 @@ public class MaestroHealthIndicator implements HealthIndicator {
         var future = PROBE_EXECUTOR.submit(() -> store.getInstance(HEALTH_CHECK_WORKFLOW_ID));
         try {
             future.get(STORE_PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
-            return new StoreProbe("reachable", null);
+            return new StoreProbe(REACHABLE, null);
         } catch (TimeoutException e) {
             future.cancel(true);
-            return new StoreProbe("timed out", null);
+            return new StoreProbe(TIMED_OUT, null);
         } catch (ExecutionException e) {
             var cause = e.getCause();
-            return new StoreProbe("unreachable", cause != null ? cause : e);
+            return new StoreProbe(UNREACHABLE, cause != null ? cause : e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new StoreProbe("unreachable", e);
+            return new StoreProbe(UNREACHABLE, e);
         }
     }
 

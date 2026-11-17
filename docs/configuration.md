@@ -909,6 +909,8 @@ wire format reverts to byte-identical to a pre-tracing build.
 
 The whole block is additionally gated by `maestro.enabled`.
 
+`/actuator/health`'s `maestro` component is described in [Operations §14](operations.md#14-health-checks-and-kubernetes-probes): it is a readiness signal at most, and a probe timeout reads `UNKNOWN`.
+
 ```yaml
 maestro:
   observability:
