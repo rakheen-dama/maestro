@@ -1,5 +1,7 @@
 # WP8 Store Hygiene Implementation Plan
 
+> **As built (added by WP13, 2026-11-17).** Merged as PR #63 (`40aa3c21`). Where this plan and the code differ, the code is: the signal janitor stops after **1,000 batches per sweep** (`SignalJanitor.MAX_BATCHES_PER_SWEEP`; the plan's "No cap per sweep" below was overruled in review, R2); the manual purge for names no node runs is one data-modifying-CTE statement, verified on PostgreSQL 16 only; MD-1 to MD-6 were taken as recommended, so retention is scoped to the node's service and WP12 does not file its Issue 76 for it. The plan below is kept as written.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The engine's three housekeeping paths stop leaning on the host's database in bursts and stop touching other services' rows.

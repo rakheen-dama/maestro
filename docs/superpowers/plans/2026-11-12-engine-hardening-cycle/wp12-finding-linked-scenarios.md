@@ -1,5 +1,7 @@
 # WP12 Finding-Linked Load Scenarios Implementation Plan
 
+> **Status note (added by WP13, 2026-11-17, while this package is still in progress).** The table below is the state when the plan was written. Since then WP6 merged as PR #62 (`d1600bf1`) and WP8 as PR #63 (`40aa3c21`); WP8's MD-1 scoped retention to the node's service, so S6's `perf-foreign` rows are kept after the fix and Issue 76 is not filed for the retention scope (see WP8's MD-1). This package's own Review section is authoritative for its runs.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Four k6 scenarios, each tied to one finding and run against the engine **before** its fix and **after** it, with both results recorded in this plan's Review section:
