@@ -61,6 +61,8 @@ class WorkflowExecutorShutdownDeadlineTest {
     /** Releases every stuck store call and the stuck publisher. */
     private final CountDownLatch release = new CountDownLatch(1);
     private final RecordingEngineObserver recorder = new RecordingEngineObserver();
+    /** A lock whose next renewal blocks until {@code renewLock.release} opens. */
+    private final BlockingRenewLock renewLock = new BlockingRenewLock();
 
     private StuckStore store;
     private PayloadSerializer serializer;
@@ -75,6 +77,7 @@ class WorkflowExecutorShutdownDeadlineTest {
     @AfterEach
     void tearDown() {
         release.countDown();
+        renewLock.release.countDown();
         latch.countDown();
         if (executor != null) {
             executor.shutdown();
@@ -106,13 +109,16 @@ class WorkflowExecutorShutdownDeadlineTest {
     }
 
     @Test
-    @DisplayName("shutdown() returns within maestro.shutdown.timeout even when every loop, a run and the publisher are stuck (3.6)")
+    @DisplayName("shutdown() returns within maestro.shutdown.timeout even when every loop, a run, the lock renewer and the publisher are stuck (3.6)")
     void shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck() throws Exception {
         executor = WorkflowExecutor.builder(store, serializer, "node-a")
                 .messaging(new StuckMessaging(entered, release))
                 .lifecycleEventsEnabled(true)
+                .distributedLock(renewLock)
+                .instanceLockTtl(Duration.ofMillis(300))
                 .shutdownTimeout(Duration.ofSeconds(1))
                 .build();
+        renewLock.blockNextRenew();
         start("wf-overrun", new BlockingWorkflow(proxy()));
         executor.startTimerPoller(LOOP_INTERVAL, 10);
         executor.startRecoveryPoller(Map.of(), LOOP_INTERVAL);
@@ -120,6 +126,7 @@ class WorkflowExecutorShutdownDeadlineTest {
         executor.startRetentionSweeper(new WorkflowExecutor.RetentionSettings(
                 LOOP_INTERVAL, Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1));
         assertTrue(entered.await(10, SECONDS), "every loop and the publisher are inside a call");
+        assertTrue(renewLock.inRenew.await(10, SECONDS), "the lock renewer is inside renewAll");
         await().atMost(5, SECONDS).until(() -> started.get() == 1);
 
         var t0 = System.nanoTime();
