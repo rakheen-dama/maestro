@@ -66,7 +66,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * @see WorkflowExecutor#startRetentionSweeper(WorkflowExecutor.RetentionSettings)
  */
-final class RetentionSweeper {
+final class RetentionSweeper implements StoppableLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(RetentionSweeper.class);
 
@@ -96,7 +96,7 @@ final class RetentionSweeper {
     private volatile boolean sweepSwallowedAFailure;
     private final AtomicBoolean started = new AtomicBoolean(false);
     /**
-     * Set by {@link #stop()} and never cleared; distinct from {@code running}
+     * Set by {@link #requestStop()} and never cleared; distinct from {@code running}
      * so a direct {@link #sweepOnce()} on a sweeper that was never started
      * still sweeps.
      */
@@ -160,26 +160,69 @@ final class RetentionSweeper {
                 settings.failedRetention(), settings.batchSize(), settings.maxBatchesPerSweep(), serviceName);
     }
 
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
+
     /**
-     * Stops the sweep loop.
-     *
-     * <p>Interrupts the sweeper thread and waits up to 5 seconds for it to
-     * terminate. After stopping, the sweeper cannot be restarted.
+     * Stops the sweep loop: {@link #requestStop()}, then
+     * {@link #awaitStopped(Duration) awaitStopped(STOP_JOIN)} — waits up to
+     * {@link #STOP_JOIN} (5 seconds) for the thread to end. After stopping,
+     * the sweeper cannot be restarted.
      */
-    synchronized void stop() {
+    void stop() {
+        requestStop();
+        awaitStopped(STOP_JOIN);
+    }
+
+    @Override
+    public String loopName() {
+        return BackgroundLoopGuard.RETENTION_SWEEPER;
+    }
+
+    /**
+     * Asks the sweep loop to stop and returns at once: no new iteration starts,
+     * and the thread is interrupted (Issue 64 tracks that interrupt, which
+     * can land inside a store call). Never joins. Idempotent.
+     */
+    @Override
+    public synchronized void requestStop() {
         stopRequested.set(true);
         running = false;
         var thread = sweeperThread;
         if (thread != null) {
             thread.interrupt();
-            try {
-                thread.join(Duration.ofSeconds(5));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Waits at most {@code bound} for the sweep loop's thread to end. Once it
+     * has ended, logs that the sweeper stopped (once) and forgets the thread.
+     *
+     * @param bound the longest to wait; zero or negative only checks
+     * @return {@code true} if the thread has ended or was never started,
+     *         {@code false} if it is still running — nothing is logged then
+     */
+    @Override
+    public boolean awaitStopped(Duration bound) {
+        var thread = sweeperThread;
+        if (thread == null) {
+            return true;
+        }
+        try {
+            thread.join(bound);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (thread.isAlive()) {
+            return false;
+        }
+        synchronized (this) {
+            if (sweeperThread == thread) {
+                sweeperThread = null;
+                logger.info("Retention sweeper stopped");
             }
         }
-        sweeperThread = null;
-        logger.info("Retention sweeper stopped");
+        return true;
     }
 
     /**

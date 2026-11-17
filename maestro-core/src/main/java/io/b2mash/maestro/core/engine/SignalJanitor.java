@@ -48,7 +48,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * @see WorkflowExecutor#startSignalJanitor(Duration, Duration)
  */
-final class SignalJanitor {
+final class SignalJanitor implements StoppableLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(SignalJanitor.class);
 
@@ -132,25 +132,68 @@ final class SignalJanitor {
         logger.info("Signal janitor started (interval={}, terminalRetention={})", interval, retention);
     }
 
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
+
     /**
-     * Stops the sweep loop.
-     *
-     * <p>Interrupts the janitor thread and waits up to 5 seconds for it to
-     * terminate. After stopping, the janitor cannot be restarted.
+     * Stops the sweep loop: {@link #requestStop()}, then
+     * {@link #awaitStopped(Duration) awaitStopped(STOP_JOIN)} — waits up to
+     * {@link #STOP_JOIN} (5 seconds) for the thread to end. After stopping,
+     * the janitor cannot be restarted.
      */
-    synchronized void stop() {
+    void stop() {
+        requestStop();
+        awaitStopped(STOP_JOIN);
+    }
+
+    @Override
+    public String loopName() {
+        return BackgroundLoopGuard.SIGNAL_JANITOR;
+    }
+
+    /**
+     * Asks the sweep loop to stop and returns at once: no new iteration starts,
+     * and the thread is interrupted (Issue 64 tracks that interrupt, which
+     * can land inside a store call). Never joins. Idempotent.
+     */
+    @Override
+    public synchronized void requestStop() {
         running = false;
         var thread = janitorThread;
         if (thread != null) {
             thread.interrupt();
-            try {
-                thread.join(Duration.ofSeconds(5));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Waits at most {@code bound} for the sweep loop's thread to end. Once it
+     * has ended, logs that the janitor stopped (once) and forgets the thread.
+     *
+     * @param bound the longest to wait; zero or negative only checks
+     * @return {@code true} if the thread has ended or was never started,
+     *         {@code false} if it is still running — nothing is logged then
+     */
+    @Override
+    public boolean awaitStopped(Duration bound) {
+        var thread = janitorThread;
+        if (thread == null) {
+            return true;
+        }
+        try {
+            thread.join(bound);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (thread.isAlive()) {
+            return false;
+        }
+        synchronized (this) {
+            if (janitorThread == thread) {
+                janitorThread = null;
+                logger.info("Signal janitor stopped");
             }
         }
-        janitorThread = null;
-        logger.info("Signal janitor stopped");
+        return true;
     }
 
     /**
