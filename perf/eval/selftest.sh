@@ -326,7 +326,7 @@ expect "gate: net missing" FAIL "$(gate_of null 0.25 20)"
 expect "gate: net 0 without a baseline (FAIL beats NO_BASELINE)" FAIL "$(gate_of 0 0.25 null)"
 expect "gate: no expected value" NO_BASELINE "$(gate_of 21 0.25 null)"
 expect "gate: below-band message asks for a deliberate re-record" yes \
-  "$(gate 5 0.25 20 0 .detail | grep -q 're-record the baseline deliberately (perf/run.sh <scenario> --record-baseline on a clean tree)' && echo yes || echo no)"
+  "$(gate 5 0.25 20 0 .detail | grep -q "re-record the baseline: perf/run.sh <scenario> --profile <this run's> --replicas <this run's> --record-baseline on a clean tree (it judges the run without the old baseline" && echo yes || echo no)"
 # Relative allowance 0.10 on expected 20, tolerance 0.15: band 0.15 + 2 = 2.15.
 expect "gate: allowance 0.10 x 20 + tolerance 0.15 = band 2.15" 2.15 "$(gate 20 0.15 20 0.10 .limit.band)"
 expect "gate: tolerance, relativeAllowance, allowance and band recorded apart" '{"tolerance":0.15,"relativeAllowance":0.1,"allowance":2,"band":2.15,"min":17.85,"max":22.15}' \

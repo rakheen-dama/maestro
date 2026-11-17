@@ -55,8 +55,9 @@
 # is ERROR). INVALID when the tolerance alone exceeds 25 % of the expected
 # value (too few workflows completed for the figure to mean anything). FAIL
 # for a null, zero or negative net, and a drop below the band FAILs with a
-# message to re-record the baseline deliberately if the improvement is
-# intended. The smoke has no expected value and gates only a wide absolute
+# message to re-record the baseline if the improvement is intended
+# (perf/run.sh --record-baseline, which judges the run without the old
+# baseline: lib/baseline.sh). The smoke has no expected value and gates only a wide absolute
 # range ([5, 500] net statements per workflow) that proves the measurement
 # works; it does not call statements_gate, so neither the allowance nor the
 # 25 % cap applies to it.
@@ -288,9 +289,10 @@ def statement_figures($bg; $w0; $completed; $replicas):
 #               workflows completed for the per-workflow figure to mean
 #               anything, so the gate cannot be judged either way;
 #   PASS        |net - expected| <= band;
-#   FAIL        otherwise; below the band the detail says to re-record the
-#               baseline deliberately (--record-baseline on a clean tree) if
-#               the improvement is intended.
+#   FAIL        otherwise; below the band the detail says how to re-record
+#               the baseline (--record-baseline on a clean tree, judged
+#               without the old baseline: lib/baseline.sh) if the
+#               improvement is intended.
 # band = tolerance + relativeAllowance x expected, the same on both sides.
 # tolerance = netTolerancePerWorkflow: one tick per background poller.
 # relativeAllowance: variance the background model does not explain (CAS
@@ -341,7 +343,7 @@ def statements_gate($id; $s; $expected; $relativeAllowance):
           elif $delta > 0 then
             "net \($net) is above expected \($expected) + \($band | round4): more statements per workflow than the baseline"
           else
-            "net \($net) is below expected \($expected) - \($band | round4): fewer statements per workflow than the baseline. If this improvement is intended, re-record the baseline deliberately (perf/run.sh <scenario> --record-baseline on a clean tree) so it is reviewed; otherwise work is missing or the window is mis-measured"
+            "net \($net) is below expected \($expected) - \($band | round4): fewer statements per workflow than the baseline. If this improvement is intended, re-record the baseline: perf/run.sh <scenario> --profile <this run's> --replicas <this run's> --record-baseline on a clean tree (it judges the run without the old baseline, so validity and correctness must PASS, prints old and new side by side and rewrites perf/baselines/<scenario>.json), then review and commit the diff; otherwise work is missing or the window is mis-measured"
           end)
     end;
 def statements_gate($id; $s; $expected): statements_gate($id; $s; $expected; 0);

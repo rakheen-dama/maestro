@@ -4,6 +4,13 @@
 # Usage: perf/run.sh <smoke|s1-throughput|s3-parked> [--profile local|full]
 #                    [--replicas N] [--record-baseline]
 #
+# --record-baseline (S1, S3; clean tree only): judges the run WITHOUT the
+#       existing perf/baselines/<scenario>.json, so that an intended change
+#       of the figure can be recorded (the symmetric gate FAILs it against
+#       the old baseline); validity and correctness must still PASS. Then
+#       replaces the file and prints old and new values side by side
+#       (baseline-record.txt). Review the diff and commit it.
+#
 # Env:  PERF_ADMIN_EVENTS (true|false, default false = the engine's default
 #       since 3.11c; every result records it: identity.config
 #       .adminEventsRequested, identity.effective.adminEventsEffective,
@@ -464,9 +471,22 @@ http_get "$(node_url 1)/actuator/prometheus" >"${RESULTS}/node-1-scrape.txt" || 
 psql_json pg-settings | jq . >"${RESULTS}/pg-settings.json"
 identity_set '.postgres = $p' --argjson p "$(jq -c . "${RESULTS}/pg-settings.json")"
 
-# ── 9. Evaluate ────────────────────────────────────────────────────────────
+# ── 9. Evaluate; with --record-baseline, record (lib/baseline.sh) ─────────
+# Recording judges the run WITHOUT the existing baseline (so an intended
+# change of the figure can be recorded; validity and correctness must still
+# PASS), then replaces the baseline and prints old and new side by side. A
+# dirty tree was already refused in preflight.
 BASELINE="${PERF_DIR}/baselines/${SCENARIO}.json"
-bash "${PERF_DIR}/lib/evaluate.sh" "$RESULTS" "$SCENARIO" "$BASELINE"
+RECORD_REFUSED=0
+if ((RECORD_BASELINE)); then
+  # shellcheck source=lib/baseline.sh
+  source "${PERF_DIR}/lib/baseline.sh"
+  mkdir -p "${PERF_DIR}/baselines"
+  record_baseline "$RESULTS" "$SCENARIO" "$BASELINE" || RECORD_REFUSED=1
+  [[ ! -f "${RESULTS}/summary.md" ]] || cat "${RESULTS}/summary.md"
+else
+  bash "${PERF_DIR}/lib/evaluate.sh" "$RESULTS" "$SCENARIO" "$BASELINE"
+fi
 VERDICT=$(jq -r .verdict "${RESULTS}/result.json")
 rc=$(verdict_rc "$VERDICT")
 case "$VERDICT" in
@@ -474,21 +494,7 @@ case "$VERDICT" in
   ERROR) die "the evaluator returned ERROR: a check is misconfigured (status ERROR), has an unknown class or status, or is an advisory reporting something other than PASS/WARN, or there are no checks (see result.json)" ;;
   *) die "result.json has no verdict" ;;
 esac
-
-# ── 10. Baseline (a dirty tree was already refused in preflight) ───────────
-if ((RECORD_BASELINE)); then
-  if [[ "$VERDICT" != PASS ]]; then
-    die "--record-baseline refused: verdict is ${VERDICT}, not PASS"
-  fi
-  mkdir -p "${PERF_DIR}/baselines"
-  jq '{schema: 1, scenario, profile, runId: .identity.runId,
-       recordedAtUtc: .identity.startedAtUtc,
-       engineCommit: .identity.repo.engineCommit, harnessCommit: .identity.repo.harnessCommit,
-       replicas: .identity.config.replicas,
-       adminEventsEnabled: .identity.config.adminEventsRequested} + (.measurements.baselineCandidate // {})' \
-    "${RESULTS}/result.json" >"$BASELINE"
-  log "baseline recorded: ${BASELINE}"
-fi
+((RECORD_REFUSED == 0)) || die "--record-baseline refused (verdict ${VERDICT} without the existing baseline, or a scenario without a baseline gate); perf/baselines/${SCENARIO}.json unchanged"
 
 FINAL_VERDICT="$VERDICT"
 FINAL_RC=$rc

@@ -198,8 +198,9 @@ host-wide lock `/tmp/maestro-perf.lock` refuses a second):
 | s3-parked | `perf/run.sh s3-parked` | the steady store load of 1k–10k parked runs, per parked run per minute; `PERF_PARK_MODE=sleep` parks on a durable `sleep()` instead of a signal |
 
 Options: `--profile local|full` (default `local`), `--replicas N` (default 1),
-`--record-baseline` (writes `perf/baselines/<scenario>.json` from a PASS run
-on a clean tree; refuses otherwise). Environment: `PERF_ADMIN_EVENTS=true|false`
+`--record-baseline` (S1, S3; clean tree only: judges the run *without* the
+existing `perf/baselines/<scenario>.json`, and on PASS replaces it, printing
+old and new values side by side; see *Re-recording a baseline* below). Environment: `PERF_ADMIN_EVENTS=true|false`
 (default `false`, the engine's default since 3.11c; every result records it in
 `identity.config.adminEventsRequested`, `identity.effective.adminEventsEffective`,
 `validity.adminEvents` and `summary.md`), `PERF_PARK_MODE`, `PERF_KEEP_UP=1`,
@@ -241,8 +242,8 @@ PASS or WARN and never change the verdict.
   `statements_gate`, **symmetric** — PASS when |net − expected| ≤ band,
   band = tolerance (one tick per background poller) + relativeAllowance ×
   expected, relativeAllowance 0.02 in both scenarios (justified in each
-  evaluator's header); a drop below the band FAILs too ("re-record the
-  baseline deliberately"). INVALID when the tolerance alone exceeds 25 % of
+  evaluator's header); a drop below the band FAILs too, and its detail says
+  how to re-record the baseline if the drop is intended. INVALID when the tolerance alone exceeds 25 % of
   expected. NO_BASELINE when no baseline matches (S1: workflow shape, profile,
   replicas; S3: park mode, wake-recheck and recovery-poll intervals, lock TTL,
   plateaus and Pmax, profile, replicas). A baseline file of another `schema`
@@ -273,9 +274,30 @@ status, value, limit, detail}], verdict}`. The last stdout line is always
 profile, replicas, `adminEventsEnabled` and the figure). Run evidence cited
 in docs and harness headers is committed as `perf/.evidence/wp11/<runId>.result.json`.
 
+**Re-recording a baseline** (after an intended change of a gated figure,
+e.g. an engine change that removes statements — the symmetric gate FAILs it
+against the old baseline, by design):
+
+1. Commit the change; the tree must be clean (`git status` shows nothing
+   outside `perf/results/`).
+2. `perf/run.sh <scenario> --profile <profile> --replicas <n> --record-baseline`
+   with the profile and replicas of the baseline you replace (both committed
+   baselines are `local`, 1 replica). The run is judged without the old
+   baseline: validity and correctness must PASS, and every absolute gate
+   (S3's linearity and arithmetic) still judges; a run that does not PASS
+   leaves the file untouched (exit 3, "--record-baseline refused").
+3. On PASS the file is rewritten and the old and new values are printed side
+   by side (also in `perf/results/<runId>/baseline-record.txt`). Review
+   `git diff perf/baselines/` and commit it on its own, with the reason.
+4. To record a second scenario, commit the first baseline before its run
+   (the new file makes the tree dirty).
+
 **Self-tests (no Docker):** `perf/eval/selftest.sh <smoke dir> <s1 dir> <s3 dir>`
 doctors recorded runs one fault at a time and asserts the verdict each fault
-must produce; `perf/lib/lock-selftest.sh` races the run lock.
+must produce; `perf/lib/lock-selftest.sh` races the run lock;
+`perf/lib/baseline-selftest.sh` exercises the record path on committed
+evidence (an intended improvement recorded, an INVALID or FAIL run refused
+with the old file untouched).
 
 **CI:** `.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
 (scenario, profile, replicas, admin_events; defaults `s1-throughput`,
