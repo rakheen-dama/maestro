@@ -87,6 +87,7 @@ class ShutdownReleasesSlotWaitersTest {
         await().atMost(5, SECONDS).until(() -> started.get() == 1);
         start("wf-queued", new WorkWorkflow(activities));
         await().during(DURING).atMost(5, SECONDS).until(() -> started.get() == 1);
+        var eventsBefore = eventCount("wf-queued");
 
         executor.shutdown();
 
@@ -98,7 +99,9 @@ class ShutdownReleasesSlotWaitersTest {
                 () -> assertEquals(1, started.get(), "the queued run never started"),
                 () -> assertTrue(executor.isRunning("wf-running"),
                         "the holder overruns the drain and is not interrupted"),
-                () -> assertEquals(List.of(AbandonReason.SHUTDOWN), abandonReasonsOf("wf-queued")));
+                () -> assertEquals(List.of(AbandonReason.SHUTDOWN), abandonReasonsOf("wf-queued")),
+                () -> assertEquals(eventsBefore, eventCount("wf-queued"), "the queued run appended no event"),
+                () -> assertTrue(observer.failed().isEmpty(), observer.failed().toString()));
     }
 
     @Test
@@ -110,6 +113,7 @@ class ShutdownReleasesSlotWaitersTest {
         await().atMost(5, SECONDS).until(() -> started.get() == 1);
         start("wf-waiting", new WorkWorkflow(activities));
         await().during(DURING).atMost(5, SECONDS).until(() -> started.get() == 1);
+        var eventsBefore = eventCount("wf-waiting");
 
         executor.shutdown();
 
@@ -121,7 +125,9 @@ class ShutdownReleasesSlotWaitersTest {
                 () -> assertEquals(1, started.get(), "the queued activity never started"),
                 () -> assertTrue(executor.isRunning("wf-holding"),
                         "the holder overruns the drain and is not interrupted"),
-                () -> assertEquals(List.of(AbandonReason.SHUTDOWN), abandonReasonsOf("wf-waiting")));
+                () -> assertEquals(List.of(AbandonReason.SHUTDOWN), abandonReasonsOf("wf-waiting")),
+                () -> assertEquals(eventsBefore, eventCount("wf-waiting"), "the queued run appended no event"),
+                () -> assertTrue(observer.failed().isEmpty(), observer.failed().toString()));
     }
 
     @Test
@@ -220,6 +226,10 @@ class ShutdownReleasesSlotWaitersTest {
 
     private WorkflowStatus status(String workflowId) {
         return store.getInstance(workflowId).orElseThrow().status();
+    }
+
+    private int eventCount(String workflowId) {
+        return store.getEvents(store.getInstance(workflowId).orElseThrow().id()).size();
     }
 
     private long count(String workflowId, EventType type) {
