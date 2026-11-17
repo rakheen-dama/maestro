@@ -1487,6 +1487,8 @@ P = workflows parked on this node):
 | Signal janitor (every node) | ⌈(U + 1) / 1,000⌉ deletes for U stale unconsumed signals of this service, at most 1,000 per sweep, paced the same way | `maestro.signal.janitor-interval` = **1 h** |
 | Service-name check | 1 read, over the active rows of every service in the tables | once per node start |
 
+**The janitor's steady state.** Once the backlog is gone, every node's sweep is one statement that deletes nothing. That statement took 149 ms with the planner's custom plan, and 795 ms with the generic plan a server-side prepared statement can switch to in a pool. The old single, unscoped statement took 194 ms on the same state. That cost is paid once per node per `janitor-interval`. These figures were measured on the planning probe: Postgres 16, 412,500 instances, 42,060 unconsumed signals left to scan, not production-sized.
+
 Worked example (arithmetic): a node holding 2,000 parked workflows of a
 service with 10,000 active instances spread over five nodes renews them with
 ⌈2,000 / 500⌉ = 4 statements every 10 s (one per lock before this release:

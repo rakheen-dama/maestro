@@ -2004,7 +2004,8 @@ public final class WorkflowExecutor {
      * @param retention how long after a workflow finished its unconsumed
      *                  signals are kept; must be positive
      * @throws IllegalArgumentException if either duration is {@code null},
-     *                                  zero or negative
+     *                                  zero or negative, or this executor's
+     *                                  service name is blank
      * @throws IllegalStateException    if the janitor is already started or
      *                                  the executor is shutting down
      */
