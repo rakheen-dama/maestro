@@ -3,7 +3,7 @@
 #   perf/eval/selftest-wp12.sh <s2-recovery-drain dir>
 #       [<s5-pool-health after dir> <s5-pool-health before dir>]
 #       [<s4-signals after dir> <s4-signals before dir>] [<s6-retention before dir>]
-#       [<s6-retention after dir>]
+#       [<s6-retention after dir>] [<s2 WP6 preview dir> <s2 WP6 after-of-record dir>]
 # Each source is a real result directory (identity.json, measurements.json);
 # pass "" to skip a scenario. perf/eval/selftest-evidence.sh rebuilds them
 # from perf/.evidence/wp12/.
@@ -27,6 +27,8 @@ s4after=${4:-}
 s4before=${5:-}
 s6before=${6:-}
 s6after=${7:-}
+s2preview=${8:-}
+s2after=${9:-}
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest-wp12.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 failures=0
@@ -96,14 +98,17 @@ expect "s2: the real before run: verdict" FAIL "$(jq -r .verdict <<<"$out")"
 expect "s2: the real before run: gate.twoNodeDrain" FAIL "$(st "$out" gate.twoNodeDrain)"
 expect "s2: the real before run: gate.noHoard" FAIL "$(st "$out" gate.noHoard)"
 expect "s2: the real before run: gate.freshStartsNotStarved" FAIL "$(st "$out" gate.freshStartsNotStarved)"
-expect "s2: the real before run: gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
+for v in gate.lockAcquisitionsPerAdoption gate.lostLockRaces gate.recoveryPassRate; do
+  expect "s2: the real before run: ${v}" PASS "$(st "$out" "$v")"
+done
+expect "s2: the real before run: the combined figure is an advisory" PASS "$(st "$out" advisory.recoveryStatements)"
 for v in validity.template validity.seeded validity.rollingStart validity.recoveryClassifier validity.hoardSeries correctness.allRecovered; do
   expect "s2: the real before run: ${v}" PASS "$(st "$out" "$v")"
 done
 
 out=$(s2 s2-after "$(ratio_b 0.55) | ${after_shape}")
 expect "s2: doctored to the after shape (0.55, hoard 18, probe p95 5 s): verdict" PASS "$(jq -r .verdict <<<"$out")"
-for v in gate.twoNodeDrain gate.noHoard gate.freshStartsNotStarved gate.recoveryStatements; do
+for v in gate.twoNodeDrain gate.noHoard gate.freshStartsNotStarved gate.lockAcquisitionsPerAdoption gate.lostLockRaces gate.recoveryPassRate; do
   expect "s2: after shape: ${v}" PASS "$(st "$out" "$v")"
 done
 
@@ -149,31 +154,66 @@ out=$(s2 s2-ratio-066 "$(ratio_b 0.66) | ${after_shape}")
 expect "s2: drainB / drainA = 0.66: gate.twoNodeDrain" FAIL "$(st "$out" gate.twoNodeDrain)"
 out=$(s2 s2-ratio-065 "$(ratio_b 0.65) | ${after_shape}")
 expect "s2: drainB / drainA = 0.65 (the boundary): gate.twoNodeDrain" PASS "$(st "$out" gate.twoNodeDrain)"
-out=$(s2 s2-hoard-23 "$(ratio_b 0.55) | ${after_shape} | .phases[1].hoardSamples[-1] |= (.running = (.parked // 0) + .slotsWorkflow + 23)")
-expect "s2: one sample with hoard C + 3: gate.noHoard" FAIL "$(st "$out" gate.noHoard)"
-out=$(s2 s2-hoard-edge "$(ratio_b 0.55) | ${after_shape} | .phases[1].hoardSamples[-1] |= (.running = (.parked // 0) + .slotsWorkflow + 22)")
-expect "s2: one sample with hoard C + 2 (the bound): gate.noHoard" PASS "$(st "$out" gate.noHoard)"
+out=$(s2 s2-hoard-41 "$(ratio_b 0.55) | ${after_shape} | .phases[1].hoardSamples[-1] |= (.running = (.parked // 0) + .slotsWorkflow + 41)")
+expect "s2: one sample with hoard 2C + 1: gate.noHoard" FAIL "$(st "$out" gate.noHoard)"
+out=$(s2 s2-hoard-edge "$(ratio_b 0.55) | ${after_shape} | .phases[1].hoardSamples[-1] |= (.running = (.parked // 0) + .slotsWorkflow + 40)")
+expect "s2: one sample with hoard 2C (the documented bound): gate.noHoard" PASS "$(st "$out" gate.noHoard)"
 out=$(s2 s2-probe-quarter "$(ratio_b 0.55) | ${after_shape} | (.phases[0] | ((.status.lastCompletedAt | fromdate) - (.t0 | fromdate))) as \$a | .phases[0].probes.latency.p95Ms = (0.26 * \$a * 1000)")
 expect "s2: phase A probe p95 = 0.26 x drainA: gate.freshStartsNotStarved" FAIL "$(st "$out" gate.freshStartsNotStarved)"
 
-out=$(s2 s2-stmts-251 "$(ratio_b 0.55) | ${after_shape} | $(stmts_at 2.51)")
-expect "s2: recovery statements 2.51 per run: gate.recoveryStatements" FAIL "$(st "$out" gate.recoveryStatements)"
-out=$(s2 s2-stmts-250 "$(ratio_b 0.55) | ${after_shape} | $(stmts_at 2.5)")
-expect "s2: recovery statements 2.5 per run (the bound): gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
-
-# Phase B (two nodes) has its own limit, 3.0 (coordinator's ruling,
-# s2-recovery-drain.jq): lock attempts lost to the peer are expected there.
-stmts_b() { # <x>: phase B alone at exactly x recovery statements per run, phase A untouched
-  printf '.phases[1] |= (((.components.components.lockAcquire.calls // 0) - .probes.started
-       + (.components.components.recoveryPage.calls // 0) + (.components.components.heldKeys.calls // 0)) as $other
-      | .recovery.adoptCas.calls = (%s * .rows - $other | round))' "$1"
+# The three recovery-statement gates (review r2). Phase B of the after shape.
+# lock_b <rows> <calls>: the lock-acquire statement's rows and calls in phase B
+# (pg_stat_statements' list and the component count kept consistent).
+lock_b() { # <rows expr> <calls expr>, over $n (the phase's seeded runs) and $pr (its probe starts)
+  printf '.phases[1] |= (.rows as $n | .probes.started as $pr
+     | (.window.top |= map(if (.query | test("^INSERT INTO maestro_distributed_lock")) then .rows = (%s) | .calls = (%s) else . end))
+     | .components.components.lockAcquire.calls = (%s))' "$1" "$2" "$2"
 }
-out=$(s2 s2-stmts-b-300 "$(ratio_b 0.55) | ${after_shape} | $(stmts_b 3.0)")
-expect "s2: phase B recovery statements 3.0 per run (its bound): gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
-out=$(s2 s2-stmts-b-301 "$(ratio_b 0.55) | ${after_shape} | $(stmts_b 3.01)")
-expect "s2: phase B recovery statements 3.01 per run: gate.recoveryStatements" FAIL "$(st "$out" gate.recoveryStatements)"
-out=$(s2 s2-stmts-b-260 "$(ratio_b 0.55) | ${after_shape} | $(stmts_b 2.6)")
-expect "s2: phase B 2.6 per run (above the one-node 2.5, below 3.0): gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
+base="$(ratio_b 0.55) | ${after_shape}"
+out=$(s2 s2-acq-102 "${base} | $(lock_b '$n + $pr + 102' '$n + $pr + 102')")
+expect "s2: lock successes + adoptCas = 2.0204 per adoption: gate.lockAcquisitionsPerAdoption" FAIL "$(st "$out" gate.lockAcquisitionsPerAdoption)"
+out=$(s2 s2-acq-100 "${base} | $(lock_b '$n + $pr + 100' '$n + $pr + 100')")
+expect "s2: lock successes + adoptCas = 2.02 per adoption (the bound): gate.lockAcquisitionsPerAdoption" PASS "$(st "$out" gate.lockAcquisitionsPerAdoption)"
+out=$(s2 s2-lost-1250 "${base} | $(lock_b '$n + $pr' '$n + $pr + 1250')")
+expect "s2: lost lock races = 0.25 per seeded run (the bound): gate.lostLockRaces" PASS "$(st "$out" gate.lostLockRaces)"
+out=$(s2 s2-lost-1251 "${base} | $(lock_b '$n + $pr' '$n + $pr + 1251')")
+expect "s2: lost lock races = 0.2502 per seeded run: gate.lostLockRaces" FAIL "$(st "$out" gate.lostLockRaces)"
+# Pass rate: scale phase B's page and heldKeys reads to just inside / outside
+# the designed rate x slack, from the evaluator's own ratio on the unscaled run.
+out=$(s2 s2-rate-base "${base}")
+rate_b=$(field s2-rate-base gate.recoveryPassRate '.value[] | select(.phase == "B") | .ratio')
+pass_rate() { # <factor of the limit>
+  printf '.phases[1].components.components.recoveryPage.calls |= (. * %s / %s | floor)
+    | .phases[1].components.components.heldKeys.calls |= (. * %s / %s | floor)' "$1" "$rate_b" "$1" "$rate_b"
+}
+out=$(s2 s2-rate-in "${base} | $(pass_rate 1.24)")
+expect "s2: recovery reads at 1.24 x the designed pass rate: gate.recoveryPassRate" PASS "$(st "$out" gate.recoveryPassRate)"
+out=$(s2 s2-rate-out "${base} | $(pass_rate 1.27)")
+expect "s2: recovery reads at 1.27 x the designed pass rate (a re-poll storm): gate.recoveryPassRate" FAIL "$(st "$out" gate.recoveryPassRate)"
+# Review r3: every statement component must be matched, and agree.
+out=$(s2 s2-heldkeys-lost "${base} | .phases[1].components.components.heldKeys.calls = 0")
+expect "s2: heldKeys unmatched in phase B only: validity.recoveryClassifier" INVALID "$(st "$out" validity.recoveryClassifier)"
+out=$(s2 s2-adopt-mismatch "${base} | .phases[0].recovery.adoptCas.calls -= 1")
+expect "s2: adoptCas != the nodes' adoptions: validity.recoveryClassifier" INVALID "$(st "$out" validity.recoveryClassifier)"
+out=$(s2 s2-acquire-short "${base} | .phases[0].components.components.lockAcquire.calls = (.phases[0].rows - 1)")
+expect "s2: lockAcquire calls below N: validity.recoveryClassifier" INVALID "$(st "$out" validity.recoveryClassifier)"
+# Review r9 and r12.
+out=$(s2 s2-node2-unready "${base} | .phases[1].starts[1].readyAt = null")
+expect "s2: node 2 never read ready in phase B: validity.rollingStart" INVALID "$(st "$out" validity.rollingStart)"
+out=$(s2 s2-probe-edge "${base} | (.phases[0] | ((.status.lastCompletedAt | fromdate) - (.t0 | fromdate))) as \$a | .phases[0].probes.latency.p95Ms = (0.25 * \$a * 1000)")
+expect "s2: phase A probe p95 = 0.25 x drainA (the bound): gate.freshStartsNotStarved" PASS "$(st "$out" gate.freshStartsNotStarved)"
+
+# Review r11: the WP6 preview and the after of record must stay PASS.
+for src in "$s2preview" "$s2after"; do
+  [[ -n "$src" ]] || continue
+  source_is "$src" s2-recovery-drain
+  name=$(jq -r .runId "${src}/identity.json")
+  out=$(eval_case "$src" s2-recovery-drain "s2-real-${name}" '.')
+  expect "s2: the WP6 run ${name}: verdict" PASS "$(jq -r .verdict <<<"$out")"
+  for v in gate.twoNodeDrain gate.noHoard gate.freshStartsNotStarved gate.lockAcquisitionsPerAdoption gate.lostLockRaces gate.recoveryPassRate; do
+    expect "s2: the WP6 run ${name}: ${v}" PASS "$(st "$out" "$v")"
+  done
+done
 
 out=$(s2 s2-full-noc '.' '.profile = "full"')
 expect "s2: full profile without phase C: advisory.c2Stream" WARN "$(st "$out" advisory.c2Stream)"
@@ -207,6 +247,10 @@ if [[ -n "$s5after" ]]; then
   expect "s5: the real before run: validity.poolExhausted" PASS "$(st "$out" validity.poolExhausted)"
   out=$(s5 s5-half '.phases[1].sampler.matchingSamples = (.phases[1].sampler.samples * 0.5 | floor)')
   expect "s5: exhausted busy samples at 50 %: validity.poolExhausted" INVALID "$(st "$out" validity.poolExhausted)"
+  out=$(s5 s5-busy-080 '.phases[1].sampler.samples = 375 | .phases[1].sampler.matchingSamples = 300')
+  expect "s5: exhausted busy samples at exactly 80 % (the bound): validity.poolExhausted" PASS "$(st "$out" validity.poolExhausted)"
+  out=$(s5 s5-busy-079 '.phases[1].sampler.samples = 375 | .phases[1].sampler.matchingSamples = 299')
+  expect "s5: exhausted busy samples at 79.7 %: validity.poolExhausted" INVALID "$(st "$out" validity.poolExhausted)"
   out=$(s5 s5-no-pending '.pendingMax.value = 0')
   expect "s5: Hikari pending never above 0: validity.poolExhausted" INVALID "$(st "$out" validity.poolExhausted)"
   out=$(s5 s5-timeout '.hikari.end.timeouts = (.hikari.start.timeouts + 1)')
@@ -261,6 +305,18 @@ if [[ -n "$s4after" ]]; then
   expect "s4: one accepted signal without a row: correctness.allSignalsConsumed" FAIL "$(st "$out" correctness.allSignalsConsumed)"
   out=$(s4 s4-sleep '.timer.status.results.slept -= 1')
   expect "s4: one sleep run not slept: correctness.allSignalsConsumed" FAIL "$(st "$out" correctness.allSignalsConsumed)"
+  # Review r6: per-node deltas, never a sum that cancels.
+  out=$(s4 s4-cancel '.permits.P2.nodes[0].value += 3 | .permits.P2.nodes[1].value -= 3 | .permits.P3.nodes[0].value += 3 | .permits.P3.nodes[1].value -= 3')
+  expect "s4: +3 on one node and -3 on the other in the cross phase: gate.noStrayPermits" FAIL "$(st "$out" gate.noStrayPermits)"
+  out=$(s4 s4-local-stray '.permits |= (.P1.nodes[0].value += 1 | .P2.nodes[0].value += 1 | .P3.nodes[0].value += 1)')
+  expect "s4: one stray permit in the local phase: gate.noStrayPermits" FAIL "$(st "$out" gate.noStrayPermits)"
+  # Review r5: both phases set up as planned before signalling.
+  out=$(s4 s4-not-parked '.phases[0].parked.timedOut = true | .phases[0].parked.byStatus = {WAITING_SIGNAL: (.phases[0].w - 1), RUNNING: 1}')
+  expect "s4: the local phase signalled before every run parked: validity.phases" INVALID "$(st "$out" validity.phases)"
+  out=$(s4 s4-not-cross '.phases[1].plan.crossNode = false')
+  expect "s4: the cross phase did not route across nodes: validity.phases" INVALID "$(st "$out" validity.phases)"
+  out=$(s4 s4-local-routed '.phases[0].route = "next" | .phases[0].plan.route = "next"')
+  expect "s4: the local phase routed to the next node: validity.phases" INVALID "$(st "$out" validity.phases)"
   out=$(s4 s4-stray '.permits.P3.nodes[0].value += 1')
   expect "s4: one stray permit after the timer phase: gate.noStrayPermits" FAIL "$(st "$out" gate.noStrayPermits)"
   # Parity: the cross window made a copy of the local one, plus extra calls

@@ -24,6 +24,8 @@ S4_AFTER_RUN=r20261117t155519z  # S4 local, 2 replicas, the WP2 after (main d160
 S4_BEFORE_RUN=r20261117t160028z # S4 local, 2 replicas, the WP2 before (0c710a1e)
 S6_BEFORE_RUN=r20261117t161125z # S6 local, the WP8 before (main d1600bf1, without WP8)
 S6_AFTER_RUN=r20261117t163846z  # S6 local, the WP8 after of record (main 40aa3c21)
+S2_PREVIEW_RUN=r20261117t122039z # S2 local, the WP6 preview (fix/recovery-capacity 25e84962), PASS
+S2_AFTER_RUN=r20261117t162103z   # S2 local, the WP6 after of record (main d1600bf1), PASS
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest-evidence.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 for run in "$SMOKE_RUN" "$S1_RUN" "$S3_RUN"; do
@@ -36,12 +38,12 @@ for run in "$SMOKE_RUN" "$S1_RUN" "$S3_RUN"; do
 done
 rc=0
 bash "${PERF_DIR}/eval/selftest.sh" "${work}/${SMOKE_RUN}" "${work}/${S1_RUN}" "${work}/${S3_RUN}" || rc=1
-for run in "$S2_RUN" "$S5_AFTER_RUN" "$S5_BEFORE_RUN" "$S4_AFTER_RUN" "$S4_BEFORE_RUN" "$S6_BEFORE_RUN" "$S6_AFTER_RUN"; do
+for run in "$S2_RUN" "$S5_AFTER_RUN" "$S5_BEFORE_RUN" "$S4_AFTER_RUN" "$S4_BEFORE_RUN" "$S6_BEFORE_RUN" "$S6_AFTER_RUN" "$S2_PREVIEW_RUN" "$S2_AFTER_RUN"; do
   mkdir "${work}/${run}"
   jq .identity "${EVIDENCE12}/${run}.result.json" >"${work}/${run}/identity.json"
   jq .measurements "${EVIDENCE12}/${run}.result.json" >"${work}/${run}/measurements.json"
 done
 bash "${PERF_DIR}/eval/selftest-wp12.sh" "${work}/${S2_RUN}" "${work}/${S5_AFTER_RUN}" "${work}/${S5_BEFORE_RUN}" \
   "${work}/${S4_AFTER_RUN}" "${work}/${S4_BEFORE_RUN}" "${work}/${S6_BEFORE_RUN}" \
-  "${work}/${S6_AFTER_RUN}" || rc=1
+  "${work}/${S6_AFTER_RUN}" "${work}/${S2_PREVIEW_RUN}" "${work}/${S2_AFTER_RUN}" || rc=1
 exit "$rc"
