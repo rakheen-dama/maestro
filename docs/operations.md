@@ -1308,7 +1308,7 @@ P = workflows parked on this node):
 | Instance-lock renewal | ⌈H / 500⌉ `UPDATE ... FROM unnest(...)`, on one connection; none when H = 0 | `maestro.lock.ttl` / 3 = **10 s** |
 | Recovery pass — instance reads | ⌊A / 200⌋ + 1 page reads, i.e. ⌈A / 200⌉ plus one empty page when A is a multiple of 200 (A = 0 costs one read) | `maestro.recovery.poll-interval` = **60 s** |
 | Recovery pass — lock reads | at most 1 `heldKeys` read of `maestro_distributed_lock` per non-empty page, ≤ ⌈A / 200⌉ | same pass |
-| Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) and that its task queue has room for on this node; with bounded queues, at most 2 × `concurrency` per queue | same pass |
+| Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) and that its task queue has room for on this node; with bounded queues, at most 2 × `concurrency` per queue for runs that are running or queued (a recovered run that parks gives its slot back, so a later pass can adopt more) | same pass |
 | Recovery capacity pass | 0 statements with no free room; otherwise ⌈rows read / page⌉ page reads (a page is twice the free room, 20 to 200 rows) + as many `heldKeys` reads + 3 per adoption | at most once per second per node, only while a recovery backlog drains |
 | Parked-workflow wake re-check | 2 reads per parked `sleep()` (instance status, timer row), 3 per parked `awaitSignal()` (status, signals, deadline row): 2P–3P reads | `maestro.signal.wake-recheck-interval` = **30 s** (unchanged by this cycle) |
 | Clock-skew check | 1 `SELECT now()` | at timer-poller start, then every **10 min** |
@@ -1336,8 +1336,9 @@ pass.
 activities per node** (`maestro.worker.default-concurrency` /
 `default-activity-concurrency`; each unlisted queue has its own pools, so Q
 unlisted queues allow up to 20·Q of each). Recovery adopts per queue at most
-C running plus C queued runs on a node (C = the queue's `concurrency`) and
-leaves the rest unlocked for a peer or a later pass, so after a deploy the
+C running plus C queued runs on a node at a time (C = the queue's
+`concurrency`; a recovered run that parks frees its slot and keeps its lock,
+so parked runs come on top) and leaves the rest unlocked for a peer or a later pass, so after a deploy the
 backlog drains at the queue bound on every node that has room, not all at
 once and not on one node. Both defaults `0` restores unbounded queues, and
 unbounded recovery.

@@ -558,9 +558,12 @@ node, without waiting. Per queue, a node adopts at most its free slots plus
 instance is left unlocked, for another node of the service or for this node
 once capacity frees, and the poller looks again as soon as a slot or a queued
 place frees here, not a whole `poll-interval` later. A node therefore holds at
-most 2 × `concurrency` instance locks per queue for recovery (its running and
-its queued runs), and a restarted fleet shares a backlog instead of the first
-node locking all of it (`RecoveryCapacityTest`, `RecoveryPollerCapacityTest`,
+most 2 × `concurrency` instance locks per queue for recovered runs that are
+running or queued for a slot at the same time. A recovered run that parks
+(`sleep()`, `awaitSignal()`) gives its slot back and keeps its lock, like any
+parked run, so the node adopts more and its locks for parked runs are not
+bounded by this (traced, not tested). A restarted fleet shares a backlog
+instead of the first node locking all of it (`RecoveryCapacityTest`, `RecoveryPollerCapacityTest`,
 `MultiNodeRecoveryCapacityIT`). Queued recovered runs wait in the same
 first-in-first-out line as new starts, so neither starves the other: a
 recovered run waits as long as a new start submitted at the same moment, and
