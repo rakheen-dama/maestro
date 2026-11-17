@@ -66,9 +66,11 @@ export const options = {
       rate: 1,
       timeUnit: '1s',
       duration: `${DURATION_SECS}s`,
-      preAllocatedVUs: 4,
       // Both requests run in parallel, so an iteration lasts at most 5 s:
-      // 5 VUs carry 1/s; the margin keeps a slow iteration from dropping one.
+      // 5 busy VUs carry 1/s. All 8 are pre-allocated: with the plan's 4,
+      // k6 grew the pool mid-test too slowly when the root aggregate stalled
+      // 5 s and dropped 2 of 35 iterations (r20261117t125408z, exhausted).
+      preAllocatedVUs: 8,
       maxVUs: 12,
     },
   },
