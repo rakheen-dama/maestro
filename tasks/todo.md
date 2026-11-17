@@ -45,6 +45,12 @@ Merged to `main` (`git log --merges --first-parent origin/main`):
 
 Not merged: WP12 (k6 scenarios 2, 4, 5, 6; in progress on `test/k6-finding-scenarios`, holds Issues 75–76) and WP13 (this branch, Issues 80–86).
 
+WP13 changes outside documentation (branch `docs/housekeeping`):
+- Tests: `CrashRecoveryTest` made deterministic (`9a321182`); four test store wrappers forward the paged recovery read (`79526f9c`).
+- Build: the starter compiles non-incrementally and passes the config processor its additional metadata (`e4199739`).
+- Production code: one failure message. `MaestroDataSources` now names both tie-breakers when several `@MaestroDataSource` beans exist, with its test. It went in under a `docs:` subject (`d5ca8716`) by mistake; history is not rewritten, so it is recorded here.
+- CI: action pins moved to their Node 24 majors (`358629c7`, and setup-gradle v5 plus the Pages actions in a second commit). `gradle/actions/setup-gradle@v6` is left for the maintainer: it accepts new, proprietary terms of use for its caching component.
+
 Not run on what merged:
 - The nightly E2E and chaos PR-gate ×3 have not yet run on WP3, WP4, WP11, WP5 + #61, WP6 or WP8 (all merged on 2026-11-17 after that night's run). They did run green on `main` after WP0, WP9, WP1 and after WP2, WP7, WP10.
 - 2 h soak: WP3, WP5 and WP6 passed it on their branches before merge; WP1 passed it only through the weekly scheduled soak on `main` (`834a9da8`, 2026-11-15); WP2 has had none. WP4 and WP8 were not required to.
