@@ -36,6 +36,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
@@ -45,6 +46,7 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -270,6 +272,147 @@ class WorkflowExecutorShutdownDeadlineTest {
      * flush step starts: only a flush that waits for what is left of the
      * deadline publishes it.
      */
+    /**
+     * PR #60 review (Major): a run registered in {@code runningWorkflows} but
+     * whose thread is not started yet — a launch that passed its shutting-down
+     * check just before shutdown began — is waited for, not joined while
+     * {@code NEW} ({@code Thread.join(Duration)} throws
+     * {@code IllegalThreadStateException} for an unstarted thread) and not
+     * skipped: once its launch starts it, the drain joins it, and the rest of
+     * shutdown runs.
+     */
+    @Test
+    void aRunRegisteredButNotYetStartedIsWaitedForByTheDrain() throws Exception {
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .build();
+        var registered = new CountDownLatch(1);
+        var go = new CountDownLatch(1);
+        executor.beforeRunThreadStart = () -> {
+            registered.countDown();
+            awaitQuietly(go);
+        };
+        var launchFailure = new AtomicReference<@Nullable Throwable>();
+        var launcher = Thread.ofVirtual().start(() -> {
+            try {
+                start("wf-unstarted", new QuickWorkflow());
+            } catch (Throwable t) {
+                launchFailure.set(t);
+            }
+        });
+        assertTrue(registered.await(5, SECONDS), "the run is registered, its thread not started");
+        var drainStarting = new CountDownLatch(1);
+        executor.beforeShutdownDrain = drainStarting::countDown;
+        var shutdownFailure = new AtomicReference<@Nullable Throwable>();
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var shutter = Thread.ofVirtual().start(() -> {
+                try {
+                    executor.shutdown();
+                } catch (Throwable t) {
+                    shutdownFailure.set(t);
+                }
+            });
+            assertTrue(drainStarting.await(5, SECONDS), "shutdown reached its drain");
+            // The drain either threw at the unstarted run or is waiting for it.
+            await().atMost(5, SECONDS).until(() -> shutter.getState() != Thread.State.RUNNABLE);
+            go.countDown();
+
+            assertTrue(shutter.join(Duration.ofSeconds(10)) && launcher.join(Duration.ofSeconds(10)));
+            assertNull(shutdownFailure.get(), () -> "shutdown() threw: " + shutdownFailure.get());
+            assertNull(launchFailure.get(), () -> "the launch threw: " + launchFailure.get());
+            assertTrue(logged(logs, "Maestro shutdown finished in"), logs.records().toString());
+        }
+        assertFalse(executor.isRunning("wf-unstarted"), "the drain waited for the run to end");
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance("wf-unstarted").orElseThrow().status());
+    }
+
+    /**
+     * A launch still not started when the deadline passes is counted as still
+     * running, like a run that overruns the drain, and the rest of shutdown
+     * runs.
+     */
+    @Test
+    void aRunStillUnstartedAtTheDeadlineIsReportedAsStillRunning() throws Exception {
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofMillis(300))
+                .build();
+        var registered = new CountDownLatch(1);
+        var go = new CountDownLatch(1);
+        executor.beforeRunThreadStart = () -> {
+            registered.countDown();
+            awaitQuietly(go);
+        };
+        var launcher = Thread.ofVirtual().start(() -> {
+            try {
+                start("wf-unstarted", new QuickWorkflow());
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        });
+        assertTrue(registered.await(5, SECONDS));
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            try {
+                executor.shutdown();
+            } finally {
+                go.countDown();
+            }
+            var warn = logs.records().stream()
+                    .filter(r -> r.message().startsWith("Maestro shutdown hit its 300 ms deadline")).toList();
+            assertEquals(1, warn.size(), logs.records().toString());
+            assertTrue(warn.getFirst().message().contains("[wf-unstarted]"), warn.getFirst().message());
+        }
+        assertTrue(launcher.join(Duration.ofSeconds(10)));
+    }
+
+    /**
+     * A launch that fails after registering its run and before starting its
+     * thread unregisters the run and releases a drain waiting for it at once,
+     * instead of leaving the drain to wait out the deadline.
+     */
+    @Test
+    void aLaunchThatFailsBeforeItsThreadStartsReleasesTheDrainAtOnce() throws Exception {
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .build();
+        var registered = new CountDownLatch(1);
+        var fail = new CountDownLatch(1);
+        executor.beforeRunThreadStart = () -> {
+            registered.countDown();
+            awaitQuietly(fail);
+            throw new IllegalStateException("the launch fails before its thread starts");
+        };
+        var launcher = Thread.ofVirtual().start(() -> {
+            try {
+                start("wf-failed-launch", new QuickWorkflow());
+            } catch (Exception expected) {
+                // the launch's own failure reaches its caller
+            }
+        });
+        assertTrue(registered.await(5, SECONDS));
+        var drainStarting = new CountDownLatch(1);
+        executor.beforeShutdownDrain = drainStarting::countDown;
+        var took = new AtomicLong(-1);
+
+        var shutter = Thread.ofVirtual().start(() -> {
+            var t0 = System.nanoTime();
+            executor.shutdown();
+            took.set((System.nanoTime() - t0) / 1_000_000);
+        });
+        assertTrue(drainStarting.await(5, SECONDS));
+        await().atMost(5, SECONDS).until(() -> shutter.getState() != Thread.State.RUNNABLE);
+        fail.countDown();
+
+        assertTrue(shutter.join(Duration.ofSeconds(10)) && launcher.join(Duration.ofSeconds(10)));
+        assertTrue(took.get() >= 0 && took.get() < 3_000,
+                "shutdown() took " + took.get() + " ms of its 5 s deadline waiting for a launch that failed");
+        assertFalse(executor.isRunning("wf-failed-launch"));
+    }
+
     @Test
     void theLifecyclePublisherStillFlushesWhenTimeIsLeft() throws Exception {
         var gate = new CountDownLatch(1);
@@ -399,6 +542,14 @@ class WorkflowExecutorShutdownDeadlineTest {
     }
 
     // ── helpers ────────────────────────────────────────────────────────
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     private static boolean logged(CapturingSlf4jProvider.Capture logs, String prefix) {
         return logs.records().stream().anyMatch(r -> r.message().startsWith(prefix));

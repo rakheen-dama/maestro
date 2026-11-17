@@ -390,7 +390,14 @@ final class WorkflowInstanceLockManager {
         }
         stop.countDown();
         var thread = renewerThread;
-        if (thread != null && thread != Thread.currentThread() && join.isPositive()) {
+        // NEW: startRenewerIfNeeded published the thread and has not started it
+        // yet (or its start failed). Thread.join(Duration) throws
+        // IllegalThreadStateException for an unstarted thread, and there is
+        // nothing to wait for: closed is already set, so a renewer started
+        // after this point leaves renewLoop at once. A state seen past NEW
+        // never goes back, so the join below cannot meet an unstarted thread.
+        if (thread != null && thread != Thread.currentThread() && join.isPositive()
+                && thread.getState() != Thread.State.NEW) {
             try {
                 thread.join(join);
             } catch (InterruptedException e) {
@@ -411,7 +418,12 @@ final class WorkflowInstanceLockManager {
             try {
                 var thread = renewerThreadStarter.get();
                 renewerThread = thread;
-                thread.start();
+                try {
+                    thread.start();
+                } catch (RuntimeException | Error startFailure) {
+                    renewerThread = null; // never started: nothing for close() to wait for
+                    throw startFailure;
+                }
             } catch (RuntimeException | Error e) {
                 // Un-latch: if we left renewerStarted=true here, the CAS
                 // above would stay burned for the rest of the process's

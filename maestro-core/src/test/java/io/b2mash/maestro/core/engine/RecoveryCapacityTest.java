@@ -239,6 +239,20 @@ class RecoveryCapacityTest {
                     throw new AssertionError("injected after admission");
                 };
             }
+        },
+        /**
+         * The run is registered but its thread is never started: the launch's
+         * catch removes the entry and releases the lock (then counts the drain
+         * latch down — pinned by the shutdown tests), and the not-launched
+         * path gives the reservation back, once.
+         */
+        ERROR_BEFORE_THREAD_START {
+            @Override
+            void arm(RecoveryCapacityTest t, WorkflowExecutor a) {
+                a.beforeRunThreadStart = () -> {
+                    throw new AssertionError("injected before the thread start");
+                };
+            }
         };
 
         final int slots;

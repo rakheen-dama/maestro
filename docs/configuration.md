@@ -574,9 +574,14 @@ most about one run's length of extra wait (arithmetic). With both defaults
 (`RecoveryCapacityTest.anUnboundedNodeAdoptsEveryInstanceAsBefore`).
 
 A recovered run still queued for a slot when shutdown begins leaves at once: it
-stands down, recoverable, and hands its instance lock back before shutdown
-returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). There are at most
-`concurrency` such runs per queue. Nothing is written or lost.
+stands down, recoverable, and normally hands its instance lock back before
+shutdown returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). There are at
+most `concurrency` such runs per queue. That is not a guarantee: the drain
+waits for the run's unwind only for what is left of
+`maestro.shutdown.timeout`, so a run still unwinding when the deadline passes
+(for example behind a run that overran the drain) can release its lock after
+shutdown returns, and a lock it has not released by the time the JVM exits
+expires after `maestro.lock.ttl`. Nothing is written or lost either way.
 
 On a saturated queue, a parked run's periodic re-check (which picks up a
 terminate issued on another node and is the fallback for a missed wake) waits

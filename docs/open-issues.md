@@ -2858,7 +2858,11 @@ removed.
 > `ExecutorShutdownException`, which wakes the next waiter. Nothing is
 > interrupted: the run stands down recoverable through the existing
 > `ExecutorShutdownException` arm, writes nothing, and its `finally` releases
-> its instance lock before `shutdown()` returns. After the drain the governor
+> its instance lock — normally before `shutdown()` returns, but the drain waits
+> for that unwind only for what is left of the shutdown deadline, so a run
+> still unwinding when it passes (behind a run that overran the drain, say)
+> releases its lock after `shutdown()` returns, or by TTL if the JVM exits
+> first. After the drain the governor
 > takes its loans back from every pool with no thread still queued, so its
 > slot counts are exact again. A free activity
 > slot is still taken during the drain, so a bounded pool can run one activity
@@ -2867,7 +2871,7 @@ removed.
 > lost or gained once the loan is reclaimed) and `ShutdownReleasesSlotWaitersTest`
 > (a fresh start, an activity, `parallel()` branches, a compensation and a
 > park's reacquire, each queued at shutdown, leave before `shutdown()` returns
-> and release their locks). The interrupt fix proposed below was rejected: a
+> and release their locks, within the tests' deadline). The interrupt fix proposed below was rejected: a
 > restored interrupt flag on the unwinding thread could fail the JDBC release
 > of its instance lock in the run's `finally` (Audit A, "Surprises" 5).
 > Since WP6 at most `concurrency` recovered runs per queue can be queued at
@@ -4839,9 +4843,16 @@ registering them as Spring lifecycle beans, so no lifecycle phase stops them:
 - `MaestroSignalListenerBeanPostProcessor` is a `BeanPostProcessor`, created
   before ordinary singletons, so it is destroyed after the `DataSource`. A
   record in flight in that window fails with `StoreUnavailableException` and
-  goes to the container's error handler, whose back-off is cut short by the
-  stop: the record is redelivered after the restart, not dead-lettered
-  (traced from Spring Kafka's `DefaultErrorHandler`; not run).
+  goes to the container's error handler (`KafkaRedeliveryErrorHandlers`:
+  a `DefaultErrorHandler` with `max-attempts − 1` back-off intervals and a
+  dead-letter recoverer). If attempts remain, the back-off is cut short by the
+  stop and the record is redelivered after the restart. With the default
+  `maestro.messaging.redelivery.max-attempts` of 10 (about 151 s of back-off)
+  that is the expected case, since the container stops within seconds. With
+  `max-attempts: 1` there is no back-off: the first failure goes to
+  `<topic>.DLT`. With `maestro.messaging.redelivery.enabled: false` the record
+  is logged and skipped (traced from the handler wiring and Spring Kafka's
+  `DefaultErrorHandler`; not run).
 
 **Where.** `KafkaWorkflowMessaging.subscribeSignals` (creates and starts the
 engine's container) and `KafkaWorkflowMessaging.destroy()` (stops it);
@@ -4852,8 +4863,10 @@ engine's container) and `KafkaWorkflowMessaging.destroy()` (stops it);
 **Harm.** Partitions move to peers only after the drain and after bean
 destruction reaches the containers, up to 10 s per container later than they
 could. A `@MaestroSignalListener` record in flight while the `DataSource` is
-already closed fails once and is redelivered after the restart. Nothing is
-lost.
+already closed fails once and is redelivered after the restart while its
+redelivery budget lasts (the default); with `max-attempts: 1` it is
+dead-lettered to `<topic>.DLT`, still durable, and with redelivery disabled it
+is skipped, the at-most-once behaviour that setting chooses.
 
 **How to tackle it.** A `SmartLifecycle` in the messaging module, in phase
 `MAX_VALUE - 100` (the phase of a host's `@KafkaListener` containers), that
