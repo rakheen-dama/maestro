@@ -11,6 +11,7 @@ import org.springframework.boot.health.contributor.Status;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -23,8 +24,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * <ul>
  *   <li>{@code DOWN} when the configured {@link WorkflowStore} refused the
  *       probe — a cheap {@link WorkflowStore#getInstance(String)} lookup for a
- *       sentinel workflow ID that is never expected to exist threw
- *       ({@code store: "unreachable"}) — or when a loop that is <em>enabled by
+ *       sentinel workflow ID that is never expected to exist threw, a
+ *       control-flow {@code Error} included ({@code store: "unreachable"}) —
+ *       or when a loop that is <em>enabled by
  *       configuration</em> has been started at least once but is not
  *       currently running: a real fault, such as a dead loop thread. A dead
  *       loop is {@code DOWN} even when the probe also timed out;</li>
@@ -37,7 +39,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *       by extension, the {@code /actuator/health} endpoint. At most one probe
  *       is in flight per indicator: a call that finds one still running joins
  *       it, so a store call that ignores the interrupt holds one thread, not
- *       one per health call;</li>
+ *       one per health call. A call that finds the probe already timed out by
+ *       an earlier call answers {@code "timed out"} at once rather than
+ *       waiting the bound again. If the probe thread cannot be started, the
+ *       call throws that failure and the next call probes afresh;</li>
  *   <li>{@code UP} otherwise.</li>
  * </ul>
  * A loop that has never been started yet is <b>not</b> treated as a fault:
@@ -93,10 +98,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * </ul>
  *
  * <p><b>Thread safety:</b> safe for concurrent use. The only state is the
- * reference to the probe in flight, swapped atomically. Every
- * {@link #health()} call re-reads the executor's current loop and
- * running-workflow state, and re-probes the store unless a probe is still in
- * flight, which it joins.
+ * reference to the probe in flight, swapped atomically (lock-free); no call
+ * blocks beyond {@link #STORE_PROBE_TIMEOUT} and no call starts a second probe
+ * thread while one is in flight. Every {@link #health()} call re-reads the
+ * executor's current loop and running-workflow state, and re-probes the store
+ * unless a probe is still in flight, which it joins.
  *
  * @see MaestroHealthAutoConfiguration
  */
@@ -157,6 +163,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
     private final WorkflowExecutor executor;
     private final boolean recoveryPollerEnabled;
     private final boolean retentionSweeperEnabled;
+    private final ThreadFactory probeThreads;
 
     /**
      * The probe whose store call has not returned yet, if any. At most one
@@ -180,10 +187,21 @@ public class MaestroHealthIndicator implements HealthIndicator {
      */
     public MaestroHealthIndicator(WorkflowStore store, WorkflowExecutor executor, boolean recoveryPollerEnabled,
                                   boolean retentionSweeperEnabled) {
+        this(store, executor, recoveryPollerEnabled, retentionSweeperEnabled,
+                Thread.ofVirtual().name(PROBE_THREAD_NAME).factory());
+    }
+
+    /**
+     * Test seam: {@code probeThreads} builds (unstarted) the thread each probe
+     * runs on, instead of a named virtual thread.
+     */
+    MaestroHealthIndicator(WorkflowStore store, WorkflowExecutor executor, boolean recoveryPollerEnabled,
+                           boolean retentionSweeperEnabled, ThreadFactory probeThreads) {
         this.store = store;
         this.executor = executor;
         this.recoveryPollerEnabled = recoveryPollerEnabled;
         this.retentionSweeperEnabled = retentionSweeperEnabled;
+        this.probeThreads = probeThreads;
     }
 
     @Override
@@ -268,6 +286,12 @@ public class MaestroHealthIndicator implements HealthIndicator {
      */
     private StoreProbe probeStore() {
         var probe = inFlightOrNewProbe();
+        if (probe.abandoned && !probe.result.isDone()) {
+            // An earlier call already waited the full bound for this probe and gave
+            // up on it; waiting the bound again for the same stuck call tells
+            // nothing new and only slows the endpoint down.
+            return new StoreProbe(TIMED_OUT, null);
+        }
         try {
             probe.result.get(STORE_PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             return new StoreProbe(REACHABLE, null);
@@ -296,7 +320,16 @@ public class MaestroHealthIndicator implements HealthIndicator {
             }
             var fresh = new Probe();
             if (inFlight.compareAndSet(null, fresh)) {
-                fresh.thread.start();
+                try {
+                    fresh.thread.start();
+                } catch (Throwable t) {
+                    // A probe that never ran must not stay in flight: every later call
+                    // would join it and read "timed out" for ever. A call that joined it
+                    // meanwhile learns of the failure at once.
+                    inFlight.compareAndSet(fresh, null);
+                    fresh.result.completeExceptionally(t);
+                    throw t;
+                }
                 return fresh;
             }
         }
@@ -309,7 +342,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
     private final class Probe {
 
         final CompletableFuture<@Nullable Void> result = new CompletableFuture<>();
-        final Thread thread = Thread.ofVirtual().name(PROBE_THREAD_NAME).unstarted(this::run);
+        final Thread thread = probeThreads.newThread(this::run);
         volatile boolean abandoned;
 
         private void run() {
@@ -317,11 +350,13 @@ public class MaestroHealthIndicator implements HealthIndicator {
                 store.getInstance(HEALTH_CHECK_WORKFLOW_ID);
                 finish(null);
             } catch (Throwable t) {
+                // Completed first in every case, so no caller waits the bound for a
+                // probe that has already ended; a control-flow Error is then still
+                // rethrown and ends this thread, as the engine's rule requires.
+                finish(t);
                 if (t instanceof MaestroControlFlowError controlFlow) {
-                    inFlight.compareAndSet(this, null);
                     throw controlFlow;
                 }
-                finish(t);
             }
         }
 

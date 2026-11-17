@@ -3,6 +3,7 @@ package io.b2mash.maestro.spring.health;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
@@ -29,10 +30,12 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 /**
@@ -346,6 +349,90 @@ class MaestroHealthIndicatorTest {
         assertThat(first.get(10, TimeUnit.SECONDS).getDetails()).containsEntry("store", "timed out");
         assertThat(second.getDetails()).containsEntry("store", "timed out");
         assertThat(second.getStatus()).isEqualTo(Status.UNKNOWN);
+    }
+
+    // ── Fix wave e1: the single-flight probe's edge cases ──────────────────
+
+    /**
+     * A call that finds the probe in flight already abandoned by an earlier
+     * call — which waited the full bound for it — answers {@code "timed out"}
+     * at once instead of waiting its own bound for the same stuck probe.
+     */
+    @Test
+    void aCallThatFindsAnAbandonedProbeAnswersTimedOutAtOnce() throws Exception {
+        var store = new UninterruptibleBlockingStore();
+        var indicator = new MaestroHealthIndicator(store, executor, false, false);
+        try {
+            assertThat(indicator.health().getDetails()).as("the first call waits the bound")
+                    .containsEntry("store", "timed out");
+
+            var start = Instant.now();
+            var second = indicator.health();
+            var elapsed = Duration.between(start, Instant.now());
+
+            assertThat(second.getStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(second.getDetails()).containsEntry("store", "timed out");
+            assertThat(elapsed).as("a call that joins an abandoned probe does not wait the bound again")
+                    .isLessThan(Duration.ofMillis(500));
+            assertThat(store.entered.get()).as("still the one stuck probe").isEqualTo(1);
+        } finally {
+            store.release.countDown();
+        }
+    }
+
+    /**
+     * If the probe thread cannot be started, the call fails with that
+     * throwable and the in-flight slot is cleared, so the next call probes
+     * afresh instead of joining a probe that never ran (which would read
+     * {@code UNKNOWN} for ever).
+     */
+    @Test
+    void aProbeThreadThatFailsToStartDoesNotLeaveTheIndicatorStuck() {
+        var built = new AtomicInteger();
+        ThreadFactory threads = task -> built.getAndIncrement() == 0
+                ? new Thread(task) {
+                    @Override
+                    public void start() {
+                        throw new OutOfMemoryError("unable to create thread (injected)");
+                    }
+                }
+                : Thread.ofVirtual().name(MaestroHealthIndicator.PROBE_THREAD_NAME).unstarted(task);
+        var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false, threads);
+
+        assertThatThrownBy(indicator::health).isInstanceOf(OutOfMemoryError.class)
+                .hasMessageContaining("injected");
+
+        var start = Instant.now();
+        var health = indicator.health();
+        assertThat(Duration.between(start, Instant.now())).isLessThan(Duration.ofMillis(500));
+        assertThat(health.getDetails()).containsEntry("store", "reachable");
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+    }
+
+    /**
+     * A control-flow {@code Error} from the store call still completes the
+     * probe, so the caller (and any call that joined it) learns at once that
+     * the probe failed instead of waiting the bound and reading
+     * {@code UNKNOWN}.
+     */
+    @Test
+    void aControlFlowErrorInTheProbeCompletesItAtOnce() {
+        var store = new DelegatingWorkflowStore() {
+            @Override
+            public Optional<WorkflowInstance> getInstance(String workflowId) {
+                throw new ExecutorShutdownException("injected in the probe");
+            }
+        };
+        var indicator = new MaestroHealthIndicator(store, executor, false, false);
+
+        var start = Instant.now();
+        var health = indicator.health();
+        var elapsed = Duration.between(start, Instant.now());
+
+        assertThat(elapsed).as("the caller does not wait the bound for a probe that already ended")
+                .isLessThan(Duration.ofMillis(500));
+        assertThat(health.getDetails()).containsEntry("store", "unreachable");
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
     }
 
     /**
