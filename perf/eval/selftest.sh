@@ -898,11 +898,13 @@ if [[ -n "$s3src" ]]; then
   expect "s3: rows outside the run's id space: correctness.noForeignRows" FAIL "$(s3st "$out" correctness.noForeignRows)"
 
   # gate.parkedCostLinear: rewrite the largest plateau's calls so its
-  # per-parked figure is <ratio> x the smallest's.
+  # per-parked figure is <ratio> x the smallest's. ($k is bound in
+  # parentheses: jq 1.7 and 1.8 parse an unparenthesised `a / b as $k | …`
+  # differently; CI runs jq 1.7.)
   linear_at() { # <ratio>
     printf '(.background.window | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) as $c0
       | %s as $i | %s as $j
-      | ((.windows[$i] | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) - $c0) / .windows[$i].P as $k
+      | ((((.windows[$i] | (.maestroCalls - .sweepCalls.lockCleaner) / .windowSecs) - $c0) / .windows[$i].P)) as $k
       | .windows[$j] |= (.maestroCalls = (($c0 + %s * $k * .P) * .windowSecs + .sweepCalls.lockCleaner | round)
                          | .maestroCallsTopLevel = .maestroCalls)' "$first_plateau" "$last_plateau" "$1"
   }
