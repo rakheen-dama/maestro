@@ -20,13 +20,17 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 
@@ -54,8 +58,13 @@ class BackgroundLoopErrorTest {
             .observer(observer)
             .build();
 
+    private final FaultyRenewLock lock = new FaultyRenewLock();
+    private final WorkflowInstanceLockManager manager = new WorkflowInstanceLockManager(
+            lock, "svc", "maestro:lock:", Duration.ofSeconds(30), Duration.ofMillis(50), observer);
+
     @AfterEach
     void tearDown() {
+        manager.close();
         executor.shutdown();
     }
 
@@ -245,6 +254,135 @@ class BackgroundLoopErrorTest {
         assertFalse(sweeper.isRunning());
     }
 
+    // ── Instance-lock renewer ─────────────────────────────────────────
+
+    @ParameterizedTest
+    @MethodSource("survivableErrors")
+    void renewer_anErrorFromRenewAll_isContainedAndTheNextPassRenews(Supplier<Error> error) throws Exception {
+        lock.answer = () -> { throw error.get(); };
+        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-1"));
+        assertTrue(lock.renewCalls.await(5, TimeUnit.SECONDS), "the renewer made no second pass");
+        assertTrue(manager.isHeld("wf-1"), "an Error loses nothing: the handle is kept");
+        assertTrue(manager.isRenewerRunning());
+    }
+
+    @Test
+    void aControlFlowErrorStopsTheRenewer() {
+        lock.answer = () -> { throw new ExecutorShutdownException("test"); };
+        manager.tryAcquire("wf-1");
+        await("the renewer thread to end").atMost(Duration.ofSeconds(5)).until(() -> !manager.isRenewerRunning());
+        assertTrue(manager.hasRenewerStarted());
+        assertEquals(1, lock.calls.get(), "the control-flow Error ended the renewer; it made no second pass");
+    }
+
+    /**
+     * After an {@code Error}, a later pass still acts on what the backend
+     * reports: a handle reported lost is dropped and the run is told to stand
+     * down, exactly as without the {@code Error}.
+     */
+    @Test
+    void renewer_aLossReportedByAPassAfterAnError_standsTheRunDown() throws Exception {
+        var lost = new CountDownLatch(1);
+        manager.onLockLost(workflowId -> lost.countDown());
+        lock.alwaysFail = true;                                        // keep the answer until replaced below
+        lock.answer = () -> {
+            lock.answer = () -> Set.copyOf(lock.acquired);             // the second pass: every handle lost
+            throw new AssertionError("x");
+        };
+        manager.tryAcquire("wf-1");
+        assertTrue(lost.await(5, TimeUnit.SECONDS), "no pass after the Error reported the loss");
+        assertFalse(manager.isHeld("wf-1"), "the lost handle is dropped");
+    }
+
+    @Test
+    void aRenewalBackendFailureKeepsEveryHandleAndGoesThroughTheGuard() {
+        lock.alwaysFail = true;
+        lock.answer = () -> { throw new IllegalStateException("db down"); };
+        manager.tryAcquire("wf-1");
+        await().atMost(Duration.ofSeconds(5)).until(() -> manager.renewFailureStreak() >= 3);
+        assertTrue(manager.isHeld("wf-1"), "nothing known, nothing lost");
+        assertTrue(observer.lockRenewFailed().size() >= 3, "still one instanceLockRenewFailed per lock per failed pass");
+    }
+
+    @Test
+    void aSuccessfulPassAfterFailuresEndsTheStreak() {
+        lock.answer = () -> { throw new IllegalStateException("db down"); };
+        manager.tryAcquire("wf-1");
+        await().atMost(Duration.ofSeconds(5)).until(() -> lock.calls.get() >= 2 && manager.renewFailureStreak() == 0);
+        assertTrue(manager.isHeld("wf-1"));
+    }
+
+    /** An Error is counted for the renewer and reported under its loop name. */
+    @Test
+    void renewer_anErrorIsCountedAndReportedForTheRenewer() {
+        lock.alwaysFail = true;
+        lock.answer = () -> { throw new AssertionError("x"); };
+        manager.tryAcquire("wf-1");
+        await("two consecutive failed passes").atMost(Duration.ofSeconds(5))
+                .until(() -> manager.renewFailureStreak() >= 2);
+        assertEquals(new RecordingEngineObserver.LoopErrorCall("instance-lock-renewer", "java.lang.AssertionError"),
+                observer.loopErrors().getFirst());
+        assertTrue(manager.isHeld("wf-1"));
+        assertTrue(manager.isRenewerRunning());
+    }
+
+    /** close() during a failing streak ends the renewer thread. */
+    @Test
+    void renewer_closeDuringAFailingStreak_endsTheRenewer() throws Exception {
+        var thread = captureRenewerThread();
+        lock.alwaysFail = true;
+        lock.answer = () -> { throw new AssertionError("every pass fails"); };
+        manager.tryAcquire("wf-1");
+        await("two consecutive failed passes").atMost(Duration.ofSeconds(5))
+                .until(() -> manager.renewFailureStreak() >= 2);
+
+        manager.close();
+
+        assertTrue(thread.get().join(Duration.ofSeconds(4)), "the renewer thread outlived close()");
+        assertFalse(manager.isRenewerRunning());
+    }
+
+    /**
+     * close() while renewAll swallows the interrupt and then throws: the guard
+     * sees the renewer stopping, does not count or report the failure, and the
+     * thread ends.
+     */
+    @Test
+    void renewer_closeWhileRenewAllSwallowsTheInterruptAndThrows_endsUncounted() throws Exception {
+        var thread = captureRenewerThread();
+        var entered = new CountDownLatch(1);
+        lock.alwaysFail = true;
+        lock.answer = () -> {
+            entered.countDown();
+            try {
+                new CountDownLatch(1).await();                   // until close() interrupts
+            } catch (InterruptedException swallowed) {
+                // a driver that swallows the interrupt (flag cleared) and then fails
+            }
+            throw new AssertionError("interrupted renewal");
+        };
+        manager.tryAcquire("wf-1");
+        assertTrue(entered.await(5, TimeUnit.SECONDS), "the renewer never reached renewAll");
+
+        manager.close();
+
+        assertTrue(thread.get().join(Duration.ofSeconds(4)), "the renewer thread outlived close()");
+        assertEquals(0, manager.renewFailureStreak(), "a failure while stopping is not counted");
+        assertEquals(List.of(), observer.loopErrors(), "a failure while stopping is not reported");
+    }
+
+    /** Records the renewer thread the manager builds, so a test can join it. */
+    private AtomicReference<Thread> captureRenewerThread() {
+        var captured = new AtomicReference<Thread>();
+        var starter = manager.renewerThreadStarter;
+        manager.renewerThreadStarter = () -> {
+            var thread = starter.get();
+            captured.set(thread);
+            return thread;
+        };
+        return captured;
+    }
+
     // ── Fixtures ──────────────────────────────────────────────────────
 
     /** Saves a {@code PENDING} timer that is already due (fire_at = now - 1 s). */
@@ -356,6 +494,52 @@ class BackgroundLoopErrorTest {
     @SuppressWarnings("unchecked")
     private static <T extends Throwable> T sneaky(Throwable t) throws T {
         throw (T) t;
+    }
+
+    /**
+     * A lock backend that grants every lock and answers {@link #renewAll} from
+     * {@link #answer}, which may throw. After its first use the answer becomes
+     * "nothing lost", unless {@link #alwaysFail} is set.
+     */
+    static final class FaultyRenewLock implements DistributedLock {
+
+        final AtomicInteger calls = new AtomicInteger();
+        final CountDownLatch renewCalls = new CountDownLatch(2);
+        final List<LockHandle> acquired = new CopyOnWriteArrayList<>();
+        volatile Supplier<Set<LockHandle>> answer = Set::of;
+        volatile boolean alwaysFail;
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            var handle = new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl));
+            acquired.add(handle);
+            return Optional.of(handle);
+        }
+
+        @Override
+        public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+            calls.incrementAndGet();
+            renewCalls.countDown();
+            var current = answer;
+            if (!alwaysFail) {
+                answer = Set::of;
+            }
+            return current.get();
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            return true;
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return true;
+        }
     }
 
     /** A lock backend whose leader election always throws; nothing else is expected to be called. */

@@ -2041,6 +2041,29 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns whether this node's instance-lock renewer thread is alive. It
+     * starts with the first instance lock this node acquires, so it is
+     * {@code false} before then, on a node without a {@code DistributedLock},
+     * and after {@link #shutdown()}.
+     *
+     * @return {@code true} while the instance-lock renewer thread runs
+     */
+    public boolean isInstanceLockRenewerRunning() {
+        return instanceLockManager.isRenewerRunning();
+    }
+
+    /**
+     * Returns whether this node's instance-lock renewer has been started.
+     * Monotonic in practice; see {@link #hasTimerPollerStarted()} for the
+     * startup-vs-fault rationale.
+     *
+     * @return {@code true} once the instance-lock renewer has been started
+     */
+    public boolean hasInstanceLockRenewerStarted() {
+        return instanceLockManager.hasRenewerStarted();
+    }
+
+    /**
      * Returns whether the background signal janitor is currently running on
      * this executor.
      *
