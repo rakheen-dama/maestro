@@ -114,9 +114,12 @@ def isnum: type == "number";
 # statement (and nothing of the harness, which runs as postgres and is not in
 # the engine's list) reads maestro_workflow_timer by fire_at.
 #
-# What one tick looks like (idle windows of 60.3 s at a 5 s poll, results
-# r20261112t170809z / r20261112t165400z at 1 replica, r20261112t153828z /
-# r20261112t154022z at 2):
+# What one tick looks like (idle windows of 60.3 s at a 5 s poll, smoke runs
+# that PASS this evaluator: r20261116t221546z at 1 replica, r20261116t231624z
+# at 2; the earlier r20261112t170809z / r20261112t165400z (1 replica) and
+# r20261112t153828z / r20261112t154022z (2) recorded the same counts but are
+# INVALID here, validity.sweeps: their nodes predate the sweep intervals in
+# /perf/info):
 #   1 replica:  1 leader-election upsert + 1 due-timer query  (12 + 12);
 #   2 replicas: 2 leader-election upserts (every node tries every tick)
 #               + 1 due-timer query (only the leader polls) (24 + 12).
