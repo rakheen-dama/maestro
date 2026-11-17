@@ -361,7 +361,11 @@ public final class TaskQueueGovernor {
 
     /**
      * Returns whether {@link #shutdown} has closed this governor. Always
-     * {@code false} for a governor that can never bound anything.
+     * {@code false} for a governor that can never bound anything
+     * ({@link #UNBOUNDED}, shared by every executor without limits), so it
+     * does not answer "is the executor shutting down?": code that needs that
+     * (WP6's recovery admission, for one) must read the executor's own
+     * shutting-down flag.
      *
      * @return {@code true} once shut down
      */

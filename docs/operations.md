@@ -1353,10 +1353,12 @@ Think twice before doing this for readiness: a pool that is busy, not broken, th
 engine shutdown, not only the drain. Every step that waits takes what is left
 of it, measured on the monotonic clock. With every step stuck at once — four
 background loops inside a store call that ignores the interrupt, a run inside
-an activity, and a stalled lifecycle-event transport — `shutdown()` returns
-within the timeout plus under 500 ms (`WorkflowExecutorShutdownDeadlineTest.shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`,
-1 s timeout; before WP5 the same set-up took 26 s, because every step had a
-timeout of its own).
+an activity, the lock renewer inside `renewAll`, and a stalled lifecycle-event
+transport — `shutdown()` returns within the timeout plus under 1 s, the bound
+`WorkflowExecutorShutdownDeadlineTest.shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`
+asserts at a 1 s timeout; it measured 1,002–1,008 ms. Before WP5 the same
+set-up without the renewer took 26 s, because every step had a timeout of its
+own.
 
 ### 15.1 The sequence
 
@@ -1467,7 +1469,7 @@ spring.lifecycle.timeout-per-shutdown-phase ≥ maestro.shutdown.timeout + 2 s
 ```
 
 Maestro's own term is bounded by `shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`
-(timeout + < 500 ms). Every other term is traced from the Spring, Spring Kafka
+(timeout + under 1 s asserted; about 5 ms over the timeout measured). Every other term is traced from the Spring, Spring Kafka
 and Kubernetes sources and documentation, not run.
 
 - **Defaults, no preStop — the typical case:** 20 (`maestro.shutdown.timeout`,
