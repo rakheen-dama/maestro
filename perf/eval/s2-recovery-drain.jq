@@ -13,41 +13,72 @@
 #                                exactly N rows, all RUNNING, N x k events,
 #                                0 instance-lock rows
 #   validity.rollingStart        phase B: node 2 started after node 1 read
-#                                ready (both recorded) and within 15 s of it
-#   validity.recoveryClassifier  recovery statements >= 1.5 per seeded run in
-#                                every phase: below that the statement texts
-#                                did not match (INVALID, never a vacuous PASS)
+#                                ready (both recorded) and within 15 s of it,
+#                                and node 2 read ready too
+#   validity.recoveryClassifier  every statement the gates count was matched
+#                                in every phase (lockAcquire, adoptCas,
+#                                recoveryPage, heldKeys each >= 1; the lock
+#                                statement's rows recorded), adoptCas == the
+#                                nodes' own adoption counters == N, and
+#                                lockAcquire calls >= N: a changed statement
+#                                text would otherwise zero a term silently
+#                                (review r3). INVALID, never a vacuous PASS
 #   validity.hoardSeries         running, parked and workflow-slot gauges for
 #                                every node of every drain (>= 3 samples each)
 #   correctness.allRecovered     every phase row COMPLETED with output 2, none
 #                                FAILED, none open, no drain timed out; every
 #                                probe COMPLETED
 #   gate.twoNodeDrain     (3.1)  drainB / drainA <= 0.65
-#   gate.noHoard          (3.1)  max hoard per node, phases A and B, <= C + 2
+#   gate.noHoard          (3.1)  max hoard per node, phases A and B, <= 2C
 #                                (hoard = running - parked - workflow slots
-#                                used; 2 = sampling slack between the gauges)
+#                                used: runs queued for a slot). The bound the
+#                                engine documents (operations.md, the recovery
+#                                pass row): at most 2 x concurrency runs per
+#                                queue running or queued, so at most 2C queued
+#                                at any instant, sampling skew between the
+#                                three gauges included. The WP6 runs measured
+#                                21; the before 4,883-4,941 (review r4: C + 2
+#                                left a one-run margin)
 #   gate.freshStartsNotStarved (3.1)  phase A probe p95 <= 0.25 x drainA
-#   gate.recoveryStatements      (lockAcquire - probe starts + adoptCas +
-#                                recoveryPage + heldKeys) / N: phase A (one
-#                                node) <= 2.5, phase B (two nodes) <= 3.0.
-#                                Why two limits (coordinator's ruling,
-#                                2026-11-17): on two nodes the excess over
-#                                one node is lock attempts lost to the peer
-#                                between its heldKeys read and its lock call,
-#                                inherent while the store has no claim
-#                                protocol; measured 2.41 (preview
-#                                r20261117t122039z) and 2.45 (after of record
-#                                r20261117t162103z: 677 lockAcquire calls
-#                                beyond one per run and per probe, about 670
-#                                pages and 670 heldKeys reads), so 2.5 was a
-#                                coin flip on a loaded host. Hoarding (one
-#                                node adopting everything and re-polling) or
-#                                a re-poll storm would still exceed 3.0.
+#   Recovery statements, three gates (review r2, replacing one combined
+#   figure that mixed per-run cost, lost lock races and per-node-second pass
+#   cost, so it moved with drain time and N; it stays as
+#   advisory.recoveryStatements). Lock rows/calls come from the window's
+#   pg_stat_statements entry for INSERT INTO maestro_distributed_lock (the
+#   acquire is an upsert that returns a row only when it takes the lock).
+#   gate.lockAcquisitionsPerAdoption  (successful acquisitions - probe starts
+#                                + adoptCas) / adoptions <= 2.02: one lock and
+#                                one compare-and-set per adopted run (measured
+#                                2.0000 in every run)
+#   gate.lostLockRaces           (lock calls - lock rows) / N <= 0.25: attempts
+#                                lost to the peer between its heldKeys read
+#                                and its lock call, inherent on two nodes
+#                                while the store has no claim protocol
+#                                (measured B: 0 before, 622 = 0.124 preview,
+#                                923 = 0.185 after of record; A: 0)
+#   gate.recoveryPassRate        (recoveryPage + heldKeys) / designed <= 1.25,
+#                                designed = R x node-seconds + one full pass
+#                                per node start, R = 2 / 1 s (capacity passes:
+#                                at most once per second per node, one page +
+#                                one heldKeys read, RecoveryPoller.java:201,
+#                                operations.md's capacity-pass row) + 2 x
+#                                ceil(N / 200) / pollInterval (a full pass
+#                                every recovery poll interval reads every page
+#                                and its heldKeys; 200 = the page,
+#                                WorkflowExecutor RECOVERY_PAGE_SIZE); a full
+#                                pass = 2 x ceil(N / 200). node-seconds: each
+#                                node's start (startIssuedAt) to the phase's
+#                                last completion. 1.25 is slack for the
+#                                clocks and the drain's tail; a re-poll storm
+#                                (passes faster than the spacing) exceeds it
 #   advisory.readiness           readiness delay over the empty-database
 #                                start, per phase start (WARN above 5 s)
 #   advisory.adoptionShare       per-node adoptions in phase B (WARN when one
 #                                node adopted more than 80 %)
 #   advisory.decomposition       component calls per seeded run
+#   advisory.recoveryStatements  the former combined figure, (lockAcquire -
+#                                probe starts + adoptCas + recoveryPage +
+#                                heldKeys) / N, recorded, never a verdict
 #   advisory.c2Stream            full: recovered completions in every minute of
 #                                phase C > 0; local: not measured
 #
@@ -56,12 +87,12 @@
 include "common";
 
 def s2_max_ratio: 0.65;
-def s2_hoard_slack: 2;
 def s2_probe_fraction: 0.25;
-def s2_max_statements: 2.5;
-def s2_max_statements_two_nodes: 3.0;
-def s2_statement_limit($phase): if $phase == "B" then s2_max_statements_two_nodes else s2_max_statements end;
-def s2_min_statements: 1.5;
+def s2_max_acquisitions_per_adoption: 2.02;
+def s2_max_lost_per_run: 0.25;
+def s2_pass_rate_slack: 1.25;
+def s2_page_rows: 200;
+def s2_capacity_spacing_secs: 1;
 def s2_rolling_max_secs: 15;
 def s2_min_hoard_samples: 3;
 
@@ -69,7 +100,7 @@ def phase($m; $name): ($m.phases // [] | if type == "array" then map(select(type
 def drain_secs: if type != "object" then null
   else ((.status.lastCompletedAt | ts_secs) as $e | (.t0 | ts_secs) as $s
         | if $e == null or $s == null then null else $e - $s end) end;
-def comp($p; $k): ($p.components.components[$k].calls // 0) | if isnum then . else 0 end;
+def comp($p; $k): ((try $p.components.components[$k].calls catch null) // 0) | if isnum then . else 0 end;
 # Recovery statements of a phase per seeded run, and their parts.
 def recovery_stmts($p):
   (try ({lockAcquire: comp($p; "lockAcquire"), probeStarts: ($p.probes.started // 0),
@@ -86,6 +117,39 @@ def hoard_by_node($p):
    | map({key: .[0].container, value: {samples: length, max: (map(.running - .parked - .slotsWorkflow) | max)}})
    | from_entries);
 def phase_containers($p): ($p.starts // [] | map(.container));
+# The lock-acquire statement's calls and rows in a phase's window (null when
+# the window's list has no such entry).
+def lock_stat($p):
+  ([$p.window.top // [] | .[]? | select(type == "object" and (.query | type) == "string"
+                                       and (.query | test("^INSERT INTO maestro_distributed_lock ")) and .toplevel != false)]) as $e
+  | if ($e | length) == 0 then {calls: null, rows: null}
+    else {calls: ($e | map(.calls) | add), rows: ($e | map(.rows) | add)} end;
+def adopted_by_nodes($p): ($p.nodesEnd // [] | map(.adopted) | if length > 0 and all(isnum) then add else null end);
+# The three statement figures of a phase (null parts when unmeasured).
+def stmt_figures($p; $pollSecs):
+  (try (
+    lock_stat($p) as $l
+    | ($p.probes.started // 0) as $pr
+    | ($p.recovery.adoptCas.calls // null) as $cas
+    | adopted_by_nodes($p) as $ad
+    | ($p.rows) as $n
+    | ($p.status.lastCompletedAt | ts_secs) as $end
+    | ([$p.starts[]? | .startIssuedAt | select(isnum) | $end - .] ) as $alive
+    | (if ($n | isnum) then ($n / s2_page_rows | ceil) * 2 else null end) as $fullPass
+    | (2 / s2_capacity_spacing_secs + (if ($fullPass | isnum) and ($pollSecs | isnum) and $pollSecs > 0 then $fullPass / $pollSecs else 0 end)) as $rate
+    | (($alive | add) // null) as $nodeSecs
+    | (if ($nodeSecs | isnum) and ($fullPass | isnum) then $rate * $nodeSecs + $fullPass * ($alive | length) else null end) as $designed
+    | (comp($p; "recoveryPage") + comp($p; "heldKeys")) as $reads
+    | {phase: $p.name, rows: $n, adoptions: $ad, adoptCas: $cas, probeStarts: $pr,
+       lockCalls: $l.calls, lockRows: $l.rows,
+       acquisitionsPerAdoption: (if ($l.rows | isnum) and ($cas | isnum) and ($ad | isnum) and $ad > 0
+                                 then ($l.rows - $pr + $cas) / $ad | round4 else null end),
+       lost: (if ($l.calls | isnum) and ($l.rows | isnum) then $l.calls - $l.rows else null end),
+       lostPerRun: (if ($l.calls | isnum) and ($l.rows | isnum) and ($n | isnum) and $n > 0
+                    then ($l.calls - $l.rows) / $n | round4 else null end),
+       pageAndHeldKeysReads: $reads, nodeSeconds: ($nodeSecs | round2), designedReads: ($designed | round2),
+       ratio: (if ($designed | isnum) and $designed > 0 then $reads / $designed | round4 else null end)})
+   catch {phase: $p.name});
 
 $identity[0] as $id
 | $measurements[0] as $m
@@ -116,21 +180,28 @@ $identity[0] as $id
          elif $a == null or $b == null then "phases A and B are not both recorded"
          else "phase(s) \($bad | map(.name) | join(", ")) not seeded as planned" end)),
     (($b.starts // []) as $s
-     | ($s[0].readyAt // null) as $r1 | ($s[1].startIssuedAt // null) as $s2
-     | (($r1 | isnum) and ($s2 | isnum) and $s2 > $r1 and ($s2 - $r1) <= s2_rolling_max_secs) as $ok
+     | ($s[0].readyAt // null) as $r1 | ($s[1].startIssuedAt // null) as $s2 | ($s[1].readyAt // null) as $r2
+     | (($r1 | isnum) and ($s2 | isnum) and ($r2 | isnum) and $s2 > $r1 and ($s2 - $r1) <= s2_rolling_max_secs) as $ok
      | check("validity.rollingStart"; "validity"; if $ok then "PASS" else "INVALID" end;
-         {node1ReadyAt: $r1, node2StartIssuedAt: $s2,
+         {node1ReadyAt: $r1, node2StartIssuedAt: $s2, node2ReadyAt: $r2,
           gapSecs: (if ($r1 | isnum) and ($s2 | isnum) then ($s2 - $r1 | round2) else null end)};
-         {gapSecs: "in (0, \(s2_rolling_max_secs)]"};
-         if $ok then "node 2 started \($s2 - $r1 | round2) s after node 1 read ready"
+         {gapSecs: "in (0, \(s2_rolling_max_secs)]", node2ReadyAt: "a time"};
+         if $ok then "node 2 started \($s2 - $r1 | round2) s after node 1 read ready, and read ready itself"
          elif ($r1 | isnum | not) or ($s2 | isnum | not) then "phase B did not record node 1's readiness and node 2's start"
+         elif ($r2 | isnum | not) then "node 2 never read ready in phase B"
          else "node 2 started \($s2 - $r1 | round2) s after node 1 read ready: not a rolling start" end)),
-    ([$ab[] | {phase: .name} + recovery_stmts(.)] as $v
-     | (($v | length) == 2 and ($v | all((.perRun | isnum) and .perRun >= s2_min_statements))) as $ok
+    ([$ab[] | . as $p | lock_stat($p) as $l
+      | {phase: .name, rows: .rows, lockAcquire: comp($p; "lockAcquire"), lockRows: $l.rows,
+         adoptCas: (.recovery.adoptCas.calls // 0), recoveryPage: comp($p; "recoveryPage"), heldKeys: comp($p; "heldKeys"),
+         nodesAdopted: adopted_by_nodes($p)}] as $v
+     | ($v | map(select(.lockAcquire < 1 or .adoptCas < 1 or .recoveryPage < 1 or .heldKeys < 1
+                        or (.lockRows | isnum | not) or .adoptCas != .nodesAdopted or .adoptCas != .rows
+                        or .lockAcquire < .rows))) as $bad
+     | (($v | length) == 2 and ($bad | length) == 0) as $ok
      | check("validity.recoveryClassifier"; "validity"; if $ok then "PASS" else "INVALID" end; $v;
-         {perRun: ">= \(s2_min_statements)"};
-         if $ok then "the recovery statements matched their texts in every phase"
-         else "recovery statements below \(s2_min_statements) per seeded run: the statement texts did not match this engine's SQL, so the statement gate would be vacuous" end)),
+         {each: ">= 1", adoptCas: "= nodes' adoptions = N", lockAcquire: ">= N"};
+         if $ok then "every recovery statement matched its text in every phase, and the counts agree"
+         else "phase(s) \($bad | map(.phase) | join(", ")): a recovery statement was not matched (a changed SQL text?) or the counts disagree, so the statement gates would judge nothing" end)),
     ([$ab[] | . as $p | hoard_by_node($p) as $h
       | phase_containers($p)[] | {phase: $p.name, container: ., samples: ($h[.].samples // 0)}] as $v
      | (($v | length) >= 3 and ($v | all(.samples >= s2_min_hoard_samples))) as $ok
@@ -161,8 +232,8 @@ $identity[0] as $id
     ([$ab[] | . as $p | hoard_by_node($p) | to_entries[] | {phase: $p.name, container: .key, max: .value.max}] as $v
      | ($v | map(.max) | max) as $mx
      | check("gate.noHoard"; "gate";
-         if ($v | length) == 0 or ($c | isnum | not) then "INVALID" elif $mx <= $c + s2_hoard_slack then "PASS" else "FAIL" end;
-         $v; {maxHoard: "<= C + \(s2_hoard_slack) = \(if $c | isnum then $c + s2_hoard_slack else null end)"};
+         if ($v | length) == 0 or ($c | isnum | not) then "INVALID" elif $mx <= 2 * $c then "PASS" else "FAIL" end;
+         $v; {maxHoard: "<= 2C = \(if $c | isnum then 2 * $c else null end) (the documented running-or-queued bound)"};
          if ($v | length) == 0 then "no hoard series"
          else "max hoard \($mx) (running - parked - workflow slots used) against C = \($c)" end)),
     (($a | drain_secs) as $da | ($a.probes.latency.p95Ms // null) as $p95
@@ -173,14 +244,30 @@ $identity[0] as $id
          {fraction: "<= \(s2_probe_fraction)"};
          if $f == null then "phase A has no probe p95 or no drain time"
          else "a fresh start during phase A took \($f | round4) of the drain at p95" end)),
-    ([$ab[] | {phase: .name} + recovery_stmts(.) + {limit: s2_statement_limit(.name)}] as $v
-     | ($v | map(select((.perRun | isnum) and .perRun > .limit))) as $over
-     | check("gate.recoveryStatements"; "gate";
-         if ($v | length) < 2 or ($v | any(.perRun | isnum | not)) then "INVALID"
-         elif ($over | length) == 0 then "PASS" else "FAIL" end;
-         $v; {perRunA: "<= \(s2_max_statements) (one node)", perRunB: "<= \(s2_max_statements_two_nodes) (two nodes: lock attempts lost to the peer are expected)"};
-         "recovery statements per seeded run (lockAcquire - probe starts + adoptCas + recoveryPage + heldKeys): \($v | map("\(.phase) \(.perRun) (<= \(.limit))") | join(", "))"
-         + (if ($over | length) > 0 then "; over the limit: \($over | map(.phase) | join(", "))" else "" end))),
+    ([$ab[] | stmt_figures(.; ($id.nodes[0].recoveryPollInterval | duration_secs))] as $f
+     | ($f | map(.acquisitionsPerAdoption)) as $x
+     | check("gate.lockAcquisitionsPerAdoption"; "gate";
+         if ($f | length) < 2 or ($x | any(isnum | not)) then "INVALID"
+         elif ($x | all(. <= s2_max_acquisitions_per_adoption)) then "PASS" else "FAIL" end;
+         ($f | map({phase, adoptions, lockRows, probeStarts, adoptCas, acquisitionsPerAdoption}));
+         {acquisitionsPerAdoption: "<= \(s2_max_acquisitions_per_adoption)"};
+         "(successful lock acquisitions - probe starts + adoption CAS) per adopted run: \($f | map("\(.phase) \(.acquisitionsPerAdoption)") | join(", "))")
+     ,
+     ($f | map(.lostPerRun)) as $y
+     | check("gate.lostLockRaces"; "gate";
+         if ($f | length) < 2 or ($y | any(isnum | not)) then "INVALID"
+         elif ($y | all(. <= s2_max_lost_per_run)) then "PASS" else "FAIL" end;
+         ($f | map({phase, lockCalls, lockRows, lost, lostPerRun}));
+         {lostPerRun: "<= \(s2_max_lost_per_run)"};
+         "lock attempts lost to a peer per seeded run: \($f | map("\(.phase) \(.lost) (\(.lostPerRun))") | join(", "))")
+     ,
+     ($f | map(.ratio)) as $z
+     | check("gate.recoveryPassRate"; "gate";
+         if ($f | length) < 2 or ($z | any(isnum | not)) then "INVALID"
+         elif ($z | all(. <= s2_pass_rate_slack)) then "PASS" else "FAIL" end;
+         ($f | map({phase, pageAndHeldKeysReads, nodeSeconds, designedReads, ratio}));
+         {ratio: "<= \(s2_pass_rate_slack) x the designed page + heldKeys reads"};
+         "recovery page + heldKeys reads against the engine's designed pass rate: \($f | map("\(.phase) \(.ratio)") | join(", "))")),
     # ── advisories ──
     advisory_guarded("advisory.readiness";
       ($m.emptyStarts | map({key: (.node | tostring), value: .readinessDelaySecs}) | from_entries) as $e
@@ -202,6 +289,11 @@ $identity[0] as $id
           {nodes: $v, maxShare: ($share | round4)}; {maxShare: "<= 0.8"};
           if $share == null then "phase B's adoptions per node were not recorded"
           else "phase B adoptions per node: \($v | map("\(.container) \(.adopted)") | join(", "))" end)),
+    advisory_guarded("advisory.recoveryStatements";
+      [$ab[] | {phase: .name} + recovery_stmts(.)] as $v
+      | check("advisory.recoveryStatements"; "advisory"; if ($v | all(.perRun | isnum)) then "PASS" else "WARN" end;
+          $v; null;
+          "the former combined figure (lockAcquire - probe starts + adoptCas + recoveryPage + heldKeys) / N, recorded only: \($v | map("\(.phase) \(.perRun)") | join(", "))")),
     advisory_guarded("advisory.decomposition";
       [$ab[] | . as $p | {phase: .name, rows,
         perRun: ($p.components.components | to_entries | map({key, value: (.value.calls / $p.rows | round4)}) | from_entries),
