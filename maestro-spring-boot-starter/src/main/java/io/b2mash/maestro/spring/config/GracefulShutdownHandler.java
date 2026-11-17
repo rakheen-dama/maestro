@@ -10,7 +10,7 @@ import org.springframework.context.SmartLifecycle;
  * Shuts the Maestro workflow engine down when the Spring context closes, by
  * calling {@link WorkflowExecutor#shutdown()}: stop taking work, drain the
  * runs in flight, stop renewing instance locks, flush lifecycle events — all
- * within one deadline, {@code maestro.shutdown.timeout}.
+ * within one deadline, {@code maestro.shutdown.timeout} (default 20 seconds).
  *
  * <h2>Phase</h2>
  * <p>{@code Integer.MAX_VALUE - 1024}, Spring Boot's

@@ -632,17 +632,21 @@ public class MaestroProperties {
     /**
      * Graceful shutdown configuration.
      *
-     * @param timeout how long {@code WorkflowExecutor.shutdown()} waits for
-     *                in-flight workflows to drain before returning; workflows
-     *                that overrun it are left running and their instance
-     *                locks expire by TTL
+     * @param timeout the deadline for the whole engine shutdown (default 20 s;
+     *                below Spring Boot's 30 s
+     *                {@code spring.lifecycle.timeout-per-shutdown-phase} and
+     *                Kubernetes' 30 s grace — see Operations §15): the drain of
+     *                in-flight workflows, the background loops, the
+     *                instance-lock renewer and the lifecycle-event flush all
+     *                share it; workflows that overrun it are left running and
+     *                their instance locks expire by TTL
      */
     public record ShutdownProperties(
-            @DefaultValue("30s") Duration timeout
+            @DefaultValue("20s") Duration timeout
     ) {
         /** @return the defaults documented above */
         public static ShutdownProperties defaults() {
-            return new ShutdownProperties(Duration.ofSeconds(30));
+            return new ShutdownProperties(Duration.ofSeconds(20));
         }
     }
 

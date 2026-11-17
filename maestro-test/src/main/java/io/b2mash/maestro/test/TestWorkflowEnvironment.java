@@ -374,7 +374,7 @@ public final class TestWorkflowEnvironment {
      *
      * <p>The retiring node is shut down synchronously: its parked workflows
      * unwind writing nothing, and a workflow still executing an activity is
-     * waited for (up to the engine's 30-second shutdown timeout) and then stops
+     * waited for (up to the engine's 20-second shutdown timeout) and then stops
      * at its next write.
      *
      * @return the number of workflows the new node re-adopted

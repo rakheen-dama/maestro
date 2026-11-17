@@ -126,12 +126,14 @@ public final class WorkflowExecutor {
     private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
 
     /**
-     * Default wait for in-flight workflows to drain during {@link #shutdown()},
-     * used when no explicit {@code shutdownTimeout} is set with
+     * Default deadline for the whole of {@link #shutdown()} — 20 seconds,
+     * below Spring Boot's 30 s {@code spring.lifecycle.timeout-per-shutdown-phase}
+     * and Kubernetes' 30 s grace period, so the rest of a host's shutdown
+     * still fits — used when no explicit {@code shutdownTimeout} is set with
      * {@link Builder#shutdownTimeout}. Corresponds to
      * {@code maestro.shutdown.timeout} in the Spring Boot starter.
      */
-    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(20);
 
     /**
      * How many times a terminal-status write is retried against a fresh read
@@ -436,7 +438,7 @@ public final class WorkflowExecutor {
          * background loops, the lock renewer and the lifecycle-event flush —
          * not only the drain: {@link WorkflowExecutor#shutdown()} returns
          * within it. Corresponds to {@code maestro.shutdown.timeout}.
-         * Default: 30 seconds. {@link #build()} rejects {@code null}, zero or
+         * Default: 20 seconds. {@link #build()} rejects {@code null}, zero or
          * negative with an {@link IllegalArgumentException}.
          *
          * @param shutdownTimeout the deadline for the whole of
@@ -1772,7 +1774,7 @@ public final class WorkflowExecutor {
      * Gracefully shuts down the executor.
      *
      * <h2>One deadline</h2>
-     * <p>The configured shutdown timeout (default 30 seconds;
+     * <p>The configured shutdown timeout (default 20 seconds;
      * {@code maestro.shutdown.timeout}) is the deadline for the whole call,
      * measured on the monotonic clock ({@link System#nanoTime()}, never the
      * executor's {@code InstantSource}). Every step that waits takes what is

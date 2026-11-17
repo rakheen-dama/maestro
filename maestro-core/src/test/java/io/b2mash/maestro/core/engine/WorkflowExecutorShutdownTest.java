@@ -539,9 +539,9 @@ class WorkflowExecutorShutdownTest {
     }
 
     @Test
-    @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 30s default")
+    @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 20 s default")
     void shutdown_withConfiguredTimeout_returnsAfterTheConfiguredWaitNotTheDefault() throws Exception {
-        executor.shutdown(); // discard the default, 30s-timeout executor from setUp
+        executor.shutdown(); // discard the default, 20 s-timeout executor from setUp
         executor = WorkflowExecutor.builder(store, serializer, SERVICE)
                 .shutdownTimeout(Duration.ofMillis(300))
                 .build();
@@ -559,7 +559,7 @@ class WorkflowExecutorShutdownTest {
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(5)) < 0,
                 "shutdown must return once the configured 300ms timeout elapses, not wait out the "
-                        + "default 30s — took " + elapsed);
+                        + "default 20 s — took " + elapsed);
         assertTrue(executor.isRunning("shutdown-timeout"),
                 "work that overruns the configured timeout is left running rather than killed");
     }

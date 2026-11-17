@@ -106,7 +106,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
     }
 
     @Test
-    @DisplayName("maestro.shutdown.timeout bounds WorkflowExecutor#shutdown() instead of the 30s default")
+    @DisplayName("maestro.shutdown.timeout bounds WorkflowExecutor#shutdown() instead of the 20 s default")
     void shutdownTimeoutReachesWorkflowExecutor() {
         runner.withPropertyValues("maestro.shutdown.timeout=300ms")
                 .run(context -> {
@@ -126,7 +126,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
 
                     assertThat(elapsed)
                             .as("shutdown must return once the configured 300ms timeout elapses, "
-                                    + "not wait out the 30s default — took " + elapsed)
+                                    + "not wait out the 20 s default — took " + elapsed)
                             .isLessThan(Duration.ofSeconds(5));
                 });
     }
