@@ -202,6 +202,19 @@ class OneShotRecoveryTest {
                 () -> assertEquals(1, lock.heldCount(), "only wf-0, adopted before the stop"));
     }
 
+    /**
+     * Shutdown's "did not stop within the deadline" WARN names the loop by
+     * {@code loopName()}: the one-shot pass names itself, not the recovery
+     * poller. Its failures still count on {@code maestro.loop.errors} under the
+     * fixed {@code recovery-poller} tag (its guard's name).
+     */
+    @Test
+    void itNamesItselfInShutdownsLogNotAsTheRecoveryPoller() {
+        var a = node(new CountingStore(), 1);
+        var recovery = new OneShotRecovery(a, Map.of(), SERVICE, Duration.ofHours(1), EngineObserver.NOOP);
+        assertEquals("startup-recovery", recovery.loopName());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────
 
     /** Fails its first {@code failures} recovery-page reads with what {@code failure} supplies. */

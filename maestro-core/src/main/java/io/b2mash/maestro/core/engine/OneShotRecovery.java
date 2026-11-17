@@ -40,6 +40,9 @@ final class OneShotRecovery implements StoppableLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(OneShotRecovery.class);
 
+    /** This loop's name in shutdown's log ({@link #loopName()}). */
+    static final String LOOP_NAME = "startup-recovery";
+
     /** How long {@link #stop()} waits for the thread to end. */
     static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
@@ -108,9 +111,15 @@ final class OneShotRecovery implements StoppableLoop {
         awaitStopped(STOP_JOIN);
     }
 
+    /**
+     * {@value #LOOP_NAME}, the name shutdown's log uses for this loop. Its
+     * guard keeps the name {@value BackgroundLoopGuard#RECOVERY_POLLER}, so its
+     * failures are logged and counted under that fixed
+     * {@code maestro.loop.errors} tag value.
+     */
     @Override
     public String loopName() {
-        return BackgroundLoopGuard.RECOVERY_POLLER;
+        return LOOP_NAME;
     }
 
     /**
