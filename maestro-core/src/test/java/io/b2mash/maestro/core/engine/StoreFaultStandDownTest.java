@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
+import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -14,12 +15,16 @@ import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
+import io.b2mash.maestro.core.saga.SagaManager;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.slf4j.event.Level;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
@@ -351,6 +356,22 @@ class StoreFaultStandDownTest {
                 "a failed log-only read must not swallow the runAbandoned callback");
     }
 
+    @Test
+    @DisplayName("workflow code that turns the latched store fault into an AssertionError is abandoned, not failed")
+    void anErrorThrownAfterTheLatchAbandonsTheRun() throws Exception {
+        faulty.failWhen("getEventBySequence", args -> (Integer) args[1] == 1);
+        var impl = new CountingSteps();
+        var workflow = new SwallowsThenThrowsAssertionError(proxy(StepActivities.class, impl, guarded, RetryPolicy.noRetry()));
+        var instanceId = executor.startWorkflow("sf-error-after-latch", "SwallowsThenThrowsAssertionError", "default", "in",
+                () -> workflow, SwallowsThenThrowsAssertionError.class.getMethod("run", String.class));
+        awaitRunEnded("sf-error-after-latch");
+        assertAll(
+                () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                () -> assertEquals(WorkflowStatus.RUNNING, status("sf-error-after-latch")),
+                () -> assertEquals(0, count(instanceId, EventType.WORKFLOW_FAILED)),
+                () -> assertTrue(observer.failed().isEmpty(), "workflowFailed must not fire"));
+    }
+
     // ── Store calls an activity body makes on its own account ────────
 
     @Nested
@@ -505,6 +526,71 @@ class StoreFaultStandDownTest {
                     () -> assertEquals(2, impl.step2.get(),
                             "branch 1's side effect happened but its outcome never landed, so it runs again"),
                     () -> assertEquals(0, impl.undoStep1.get()));
+        }
+
+        /**
+         * {@code @Saga(parallelCompensation = true)}: a store fault in a
+         * compensation branch is a stand-down, never a failed reversal. Two
+         * passes in {@code SagaManager.executeParallel} see to it — R1
+         * rethrows a branch's raw {@code StoreUnavailableException}, R2 checks
+         * the run's latch when a branch converted the fault into another
+         * exception.
+         *
+         * <p>The fixtures differ from the plan's single saga on purpose. The
+         * {@code @Compensate} refund is itself an activity call (its
+         * {@code ACTIVITY_COMPLETED} lands in the branch), and a latched run
+         * refuses every later append, so any sibling branch would throw the raw
+         * fault and R1 would fire before R2 is reached. {@code CONVERTED_FAULT}
+         * therefore runs one compensation only — {@code convertingRefund},
+         * which calls the {@code refund} activity and converts its fault — and
+         * faults that call's {@code ACTIVITY_COMPLETED}, the first append the
+         * branch makes. {@code RAW_FAULT} unwinds {@code release} and
+         * {@code refund} and faults refund's {@code COMPENSATION_STEP_COMPLETED}.
+         *
+         * <p>What gives R1 and R2 their teeth is the log, not the event count:
+         * without them the branch's failure is logged at {@code ERROR} as a
+         * failed compensation, and only then does the guard refuse the latched
+         * run's {@code COMPENSATION_STEP_FAILED} append, so the durable outcome
+         * is the same. A store fault must never be reported as a failed
+         * reversal, in the log either.
+         */
+        @ParameterizedTest(name = "{0}")
+        @EnumSource(ParallelCompensationFault.class)          // RAW_FAULT (R1), CONVERTED_FAULT (R2)
+        @DisplayName("a store fault in a parallel compensation branch leaves the run COMPENSATING with no failed step")
+        void aStoreFaultInAParallelCompensationBranchIsNotAFailedReversal(ParallelCompensationFault mode)
+                throws Exception {
+            faulty.failWhen("appendEvent", switch (mode) {
+                case RAW_FAULT -> args -> args[0] instanceof WorkflowEvent e
+                        && e.eventType() == EventType.COMPENSATION_STEP_COMPLETED
+                        && e.stepName() != null && e.stepName().endsWith(".refund");
+                case CONVERTED_FAULT -> completedOutcomeOf("refund");
+            });
+            var impl = new CountingSagaSteps();
+            var workflow = new ParallelCompensationSaga(proxy(SagaSteps.class, impl, guarded, RetryPolicy.noRetry()),
+                    mode);
+            var id = "sf-parallel-compensation-" + mode;
+            List<CapturingSlf4jProvider.CapturedLog> sagaLog;
+            UUID instanceId;
+            try (var logs = CapturingSlf4jProvider.watch(SagaManager.class)) {
+                instanceId = executor.startWorkflow(id, "ParallelCompensationSaga", "default", "in",
+                        () -> workflow, ParallelCompensationSaga.class.getMethod("run", String.class));
+                awaitRunEnded(id);
+                sagaLog = logs.records();
+            }
+            var failedCompensationLines = sagaLog.stream()
+                    .filter(r -> r.level() == Level.ERROR && r.message().contains("' failed for workflow '"))
+                    .map(CapturingSlf4jProvider.CapturedLog::message)
+                    .toList();
+            assertAll(
+                    () -> assertEquals(List.of(), failedCompensationLines,
+                            "a store fault is not logged as a failed compensation"),
+                    () -> assertEquals(List.of(AbandonReason.STORE_UNAVAILABLE), abandonReasons()),
+                    () -> assertEquals(WorkflowStatus.COMPENSATING, status(id)),
+                    () -> assertEquals(0, count(instanceId, EventType.COMPENSATION_STEP_FAILED),
+                            "a store fault is not a failed reversal"),
+                    () -> assertEquals(0, count(instanceId, EventType.WORKFLOW_FAILED)),
+                    () -> assertEquals(1, impl.refund.get(), "the faulted compensation's refund ran once"),
+                    () -> assertTrue(observer.failed().isEmpty(), "workflowFailed must not fire"));
         }
     }
 
@@ -806,6 +892,67 @@ class StoreFaultStandDownTest {
                 var id = WorkflowContext.current().randomUUID();
                 return steps.step2(in + ":" + id);
             }
+        }
+    }
+
+    /** Catches the latched store fault around {@code step1} and throws an {@code AssertionError} instead. */
+    public static class SwallowsThenThrowsAssertionError {
+        private final StepActivities steps;
+
+        public SwallowsThenThrowsAssertionError(StepActivities steps) {
+            this.steps = steps;
+        }
+
+        public String run(String in) {
+            try {
+                return steps.step1(in);
+            } catch (Exception e) {
+                throw new AssertionError("workflow code converted the store fault: " + e);
+            }
+        }
+    }
+
+    /** Which pass of {@code executeParallel} a fault must reach. */
+    enum ParallelCompensationFault {
+        /** The branch throws the raw {@code StoreUnavailableException}: R1. */
+        RAW_FAULT,
+        /** The branch converts the fault into another exception: R2. */
+        CONVERTED_FAULT
+    }
+
+    /**
+     * {@code @Saga(parallelCompensation = true)}; {@code ship} always fails, so
+     * the unwind runs in parallel branches. {@code RAW_FAULT}: {@code reserve},
+     * {@code charge}, {@code ship} (compensations {@code release} and
+     * {@code refund}). {@code CONVERTED_FAULT}: one manual compensation,
+     * {@code convertingRefund}, that calls the {@code refund} activity and
+     * turns its store fault into an {@code IllegalStateException}, then
+     * {@code ship}.
+     */
+    public static class ParallelCompensationSaga {
+        private final SagaSteps steps;
+        private final ParallelCompensationFault mode;
+
+        ParallelCompensationSaga(SagaSteps steps, ParallelCompensationFault mode) {
+            this.steps = steps;
+            this.mode = mode;
+        }
+
+        @Saga(parallelCompensation = true)
+        public String run(String in) {
+            if (mode == ParallelCompensationFault.RAW_FAULT) {
+                steps.reserve(in);
+                steps.charge(in);
+            } else {
+                WorkflowContext.current().addCompensation("convertingRefund", () -> {
+                    try {
+                        steps.refund(in);
+                    } catch (StoreUnavailableException e) {
+                        throw new IllegalStateException("converted: " + e.getMessage());
+                    }
+                });
+            }
+            return steps.ship(in);
         }
     }
 

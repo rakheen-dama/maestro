@@ -163,14 +163,107 @@ already-rebalanced case). The lock backend is not in this path at all — if you
 faster admin-command delivery after a hard node death, tune Kafka's
 `session.timeout.ms`, not anything in Maestro.
 
+**What a Retry deletes.** A Retry deletes the failure that ended the run —
+the one the exception escaping `@WorkflowMethod` carries, as itself, a cause
+or a suppressed exception (recorded in `WORKFLOW_FAILED` as
+`failedSequences`) — together with everything the run recorded after it
+along its path, the whole subtree of any `parallel()` started there, and the
+`WORKFLOW_FAILED`; a failure the workflow caught and recovered from, a
+completed sibling branch, and a second branch's independent failure are kept
+(the run then fails again naming that branch, and a second Retry clears it).
+For a failure recorded by a build before this one (no `failedSequences`),
+the one failure memo whose rebuilt exception message equals the recorded
+message is treated the same way. When nothing is attributed (an exception
+thrown without the activity's exception as its cause), only an
+`ACTIVITY_FAILED` — or, when a `SignalTimeoutException` escaped, a
+`SIGNAL_TIMEOUT` — after which nothing but `WORKFLOW_FAILED` was recorded is
+deleted, so a caught gate timeout survives. When the history has a slot
+Maestro cannot place (a slot consumed without a memo and followed by more
+work, or two lanes claiming one slot), Retry deletes what it always did:
+every `ACTIVITY_FAILED`, the `WORKFLOW_FAILED` and, for an await timeout, the
+highest `SIGNAL_TIMEOUT` with its park memo. Every deleted timer slot takes
+its timer row, of any status. In the shipped JDBC/Postgres store and the
+in-memory test store, the deletes and the `FAILED → RUNNING` compare-and-set
+are one transaction (`PostgresReopenFailedInstanceTest`,
+`InMemoryWorkflowStoreTest`). A third-party store that inherits the SPI
+default `WorkflowStore.reopenFailedInstance` is not atomic and does not apply
+this plan: the default ignores both delete sets and runs the old two-step
+Retry, `deleteFailureEvents` then `updateInstance`, as separate operations
+(`WorkflowStoreReopenDefaultTest`; Issue 62). The relaunch bumps the lease
+epoch through the normal adoption. If the deleted region holds a consumed signal
+(`SIGNAL_RECEIVED`) — the failure's handling awaited one — Retry writes
+nothing and returns `SIGNAL_CONSUMED_AFTER_FAILURE`, and the engine logs a
+`WARN` naming the workflow, the signal, its sequence and the remedy
+(`AdminCommandDispatcherRefusalTest` asserts the line): the signal cannot be
+given back exactly and is not redelivered, so terminate the workflow or
+finish its business outcome by hand. Over Kafka the admin command is then
+acknowledged like every other no-op outcome — its offset is committed and
+nothing reaches the `.DLT` — and the instance row, its events, its signal
+row and its timer rows are unchanged
+(`AdminCommandKafkaIT.retry_refusedForAConsumedSignal_isAcknowledgedAndWritesNothing`).
+The dashboard still reports "Retry command sent" and the row stays `FAILED`;
+no refusal reaches the operator there (Issue 63). A `$maestro:retry`
+redelivered after its reopen committed does nothing
+(`AdminCommandKafkaIT.retry_redeliveredAfterACommittedReopen_doesNothing`).
+Tests: `AdminRetryTest`, `RetryPlannerTest`, `AdminCommandDispatcherRefusalTest`,
+`AdminCommandKafkaIT`, `SeededHistoryUpgradeIT.theFailedRunsCbf5a2aRecordedAreRetriedByThisBuild`.
+
+The rest of this paragraph is traced, not tested. A saga whose `compensate()` met
+`SequenceSpaceExhaustedException` is `FAILED` with no
+`COMPENSATION_STARTED`, so Retry relaunches it, exactly as before this
+change. With a host connection pool at `REPEATABLE READ` or `SERIALIZABLE`, a
+Retry that loses to a concurrent one surfaces as `StoreUnavailableException`
+(SQLSTATE `40001`) instead of `OptimisticLockException`; nothing is deleted
+either way, and the command is redelivered. On every engine path nothing of
+the failed run can still write once `FAILED` is committed: it wrote
+`FAILED` through the fenced terminal write, after every `parallel()` branch
+had joined. Two cases outside the engine's own paths can append until the
+relaunch's adoption fences them — a foreign `Thread.interrupt()` of a
+`parallel()` join, and an abandoned activity attempt that calls through its
+workflow context; the retried run then replays that event or stands down,
+and never records a failure for it. If a reopen commits but the command
+handler then throws (so Kafka redelivers the command) and the retried run
+fails again before the redelivery arrives, the redelivery retries it again:
+an admin command is not deduplicated by its message id, only by the row's
+status. A retry whose relaunch finds the row already terminated, or loses
+the adoption compare-and-set to another node, also returns
+`LOCK_HELD_ELSEWHERE`.
+
+**A Retry that lands as the failed run finishes.** A run commits `FAILED`
+(and its `WORKFLOW_FAILED`) first, then reports `workflowFailed` to the
+observer, hands the lifecycle event to its publisher and only in its
+`finally` leaves the node's local running registry and then releases its
+instance lock. A Retry on the same node in the gap before the registry
+removal still finds the row `FAILED`: it commits the reopen (the planned
+deletes and `RUNNING`), then finds the run registered locally, launches
+nothing and returns `ALREADY_RUNNING_LOCALLY`. The row is then `RUNNING`
+with no run anywhere until a recovery pass adopts it; that pass re-runs the
+deleted failure and completes
+(`AdminRetryTest.aRetryBeforeTheFailedRunLeavesThisNode_reopensTheRowAndRecoveryRelaunchesIt`).
+The rest of this paragraph is traced, not tested. `AdminCommandDispatcher`
+logs that outcome as a `WARN` no-op and acknowledges the command. With a
+lock backend, a Retry after the registry removal but before the lock release
+returns `LOCK_HELD_ELSEWHERE` with the same end state. The first recovery
+pass on any node once the failed run has left the registry (and, with a lock
+backend, released its lock) adopts it, so the retried run starts within one
+`maestro.recovery.poll-interval` (default 60 s) of the failed run's end; no
+`WORKFLOW_RETRIED` lifecycle event is published for it. The build before
+this change behaved the same way: it deleted the failure memos and wrote
+`RUNNING` before the same local check. The check is not moved ahead of the
+reopen because the dispatcher acknowledges `ALREADY_RUNNING_LOCALLY`: a
+Retry refused before writing would leave the workflow `FAILED` and the
+operator's Retry lost.
+
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only
 *after* the retry. That works because a retry waits the full timeout again,
-counted from the retry: it discards the failed await's spent deadline (its
-`TIMER_SCHEDULED` memo and `await-signal-<seq>` row) together with its
-`SIGNAL_TIMEOUT` (R61). A signal sent before the retry is consumed at once.
-The timeout itself is whatever the run memoized — in the loan sample, node
-A's `PT8S` override (F4) — not the retrying node's configuration.
+counted from the retry: it deletes the failing await's memo, outcome and row
+(its `TIMER_SCHEDULED` memo, its `SIGNAL_TIMEOUT` and its
+`await-signal-<seq>` row; attributed, Issue 33 — the await whose timeout
+propagated, not the latest one) (R61). A signal sent before the retry is
+consumed at once. The timeout itself is whatever the run memoized — in the
+loan sample, node A's `PT8S` override (F4) — not the retrying node's
+configuration.
 
 ---
 
@@ -460,6 +553,16 @@ measured:
 measured numbers — it is a behaviour playbook, and every statement in it is
 traceable to engine code and its pinning tests rather than to a timing run.*
 
+*Admin Retry in a mixed fleet: a node of the previous build retries the old
+way (it deletes failure memos by type and ignores `failedSequences`); a node of
+this build retries history an older node wrote by matching the recorded
+message. An older node reads the new `failedSequences` field of a newer
+`WORKFLOW_FAILED` by ignoring it (Jackson's default) — except in a host whose
+`ObjectMapper` enables `FAIL_ON_UNKNOWN_PROPERTIES`, where
+`WorkflowHandle.failure()` throws on the older node until the deploy completes
+(traced, not tested). The details are in `docs/release-notes.md`, "Mixed
+fleets", under the admin Retry entry.*
+
 ### 10.1 The deploy rule has not changed: upgrade all nodes together
 
 **Upgrade every node of a service together, or drain the service first.** The
@@ -517,8 +620,9 @@ Operationally, what matters:
   those instances with `UnsupportedWorkflowVersionException` — a genuine,
   deterministic workflow failure: it ends `FAILED` and saga compensation runs.
   Recovery: restore code carrying the old branch, then use the admin **Retry**
-  action. Retry clears the failure memos but never the version marker, so the
-  retried run replays the same recorded version against the restored branch.
+  action. Retry never deletes a version marker recorded before the failure, so
+  the retried run replays the same recorded version against the restored
+  branch (`RetryPlannerTest.aVersionMarkerRecordedBeforeTheFailure_isKept`).
 - `maxSupported` must be a **code constant** — see the rules in
   `docs/concepts.md`.
 
@@ -804,19 +908,9 @@ adopts the instance, stands down again, and emits one WARN plus one counter
 increment — exactly the §10.3 behaviour, and the reason the alert above is a
 rate.
 
-**An admin Retry can surface as drift.** Retry deletes *every*
-`ACTIVITY_FAILED` memo of the instance (plus `WORKFLOW_FAILED`), including one
-the workflow **caught** and recovered from (`try { a.x(); } catch (ActivityExecutionException e) { b.fallback(); }`).
-On the retried run that activity has no memo, so it executes live; if it now
-succeeds, the workflow takes the success path, and the next recorded step — the
-fallback the original run took — no longer matches. That run stands down as
-`nondeterministic_history` instead of continuing. Before this check the same
-retry was *silent corruption*: the success path replayed the fallback's
-recorded payload as its own. No code change or rollback heals it — the history
-genuinely records a path the retried run no longer takes. **Remedy:**
-terminate the instance and complete its business outcome by hand (or start a
-fresh instance); avoid admin Retry on workflows that catch activity failures
-and branch on them.
+Retry keeps a failure the workflow caught and recovered from: it deletes only the failure that ended the run and what the run recorded after it while handling that failure (operations §4). A retry of a workflow that failed without the activity's exception in its chain keeps a caught failure that more work followed, and fails again; rethrow the exception, or wrap it with the cause (pitfalls rule 2).
+
+Tests: `AdminRetryTest`.
 
 **Compensations registered inside `parallel()` branches are not drift.** They
 reach the saga stack in branch-index order, not finish order (see
@@ -899,7 +993,9 @@ What a running workflow does with one:
   `sleep()`, `awaitSignal()` or terminal write. A fault inside a `parallel()`
   branch, or during compensation, abandons the whole run the same way.
 - **Recovery resumes it.** The recovery poller's own pass fails while the
-  store is down (`Recovery polling error — will retry next cycle` at `ERROR`).
+  store is down (`Background loop 'recovery-poller' failed …` at `ERROR`
+  once, then a reminder every 5 minutes, and `… recovered after N consecutive
+  failure(s)` at `INFO`).
   The first pass after the store answers adopts the instance, so expect it
   back within one `maestro.recovery.poll-interval` (default 60s). If the
   instance-lock release could not reach the database either, the lock row
@@ -1043,12 +1139,18 @@ the workflow itself.
   and is redelivered; the redelivery finds no instance and stores the orphan.
   Nothing is lost; the dead-letter topic is reached only if every redelivery
   fails for some other reason (`docs/configuration.md` § Redelivery).
-- **A concurrent retry never loses its history.** Postgres: the retry's row
-  update blocks on (or is skipped by) the purge's `FOR UPDATE SKIP LOCKED`;
+- **A concurrent retry never loses its history.** Postgres: the retry's one
+  transaction takes the row lock first, so it blocks on (or is skipped by)
+  the purge's `FOR UPDATE SKIP LOCKED`, and a retry that waited on a purged
+  row reports `NOT_FOUND` (tests:
+  `PostgresReopenFailedInstanceTest.aReopenWaitingOnAPurgeFindsTheRowGone`,
+  `AdminRetryTest.aReopenThatFindsTheRowGone_isNotFoundAndLaunchesNothing`);
   the two cannot interleave. A dialect without row locking (the portable base
   SQL in `maestro-store-jdbc`) re-checks the status in the instance delete and
   rolls the whole batch back — children included — when the count falls
-  short, logging a `WARN`.
+  short, logging a `WARN`; and because a retry locks the instance row before
+  its children while that purge deletes the children first, the two can
+  deadlock, and the database aborts one of them whole (traced, not tested).
 
 ### 11.3 Observing it
 
@@ -1057,7 +1159,8 @@ never increments it is simply not the leader — expected on all but one node).
 `maestro.retention.purged{kind=instance|event|signal|timer}` moves by the
 sweep's counts. `/actuator/health` reports `retentionSweeperRunning` (`true`,
 `false`, `"starting"`, or `"disabled"` when `maestro.retention.enabled=false`);
-`false` after a start is a dead loop and turns the status `DOWN`. A sweep that
+`false` after a start is a dead loop and turns the status `DOWN`.
+`signalJanitorRunning` and `instanceLockRenewerRunning` read the same way (the renewer reads `"idle"` until this node takes its first instance lock); see §14. A sweep that
 purged anything logs one `INFO` line with its counts; a store failure logs
 `WARN` and the loop retries next interval.
 
@@ -1221,7 +1324,25 @@ P × d / `maestro.signal.wake-recheck-interval` workflow slots busy, where d is
 one re-check's duration (its 2–3 reads). In the worked example above, and
 assuming 5 ms per re-check, 2,000 × 5 ms / 30 s ≈ 0.3 slots, so re-checks rarely crowd out runs; with
 slow reads or a short interval, check the product. A pool that runs dry shows up as `STORE_UNAVAILABLE` abandons
-(§10.9), not as workflow failures.
+(§10.9), not as workflow failures, and as `store: "timed out"` with status `UNKNOWN` on `/actuator/health` (§14).
+
+## 14. Health checks and Kubernetes probes
+
+**Maestro's health indicator is a readiness signal at most, never liveness.** The `maestro` contributor (`MaestroHealthIndicator`) reports `DOWN` when the store refused the probe (`store: "unreachable"`) or a background loop that started has stopped (`timerPollerRunning`, `recoveryPollerRunning`, `retentionSweeperRunning`, `signalJanitorRunning`, `instanceLockRenewerRunning`: `false`), or the instance-lock renewer is running but has failed two passes in a row (`instanceLockRenewerConsecutiveFailures` `2` or more: held locks are not being renewed, and they expire after `maestro.lock.ttl`). One failed pass reads `UP`, with the streak of `1` in the details: the TTL is three renew intervals, so it covers roughly two missed passes — after one there is still a pass to spare, after two the held locks are at the edge of expiring (`theRenewerIsUpAfterOneFailedPassAndDownAfterTwoInARow`). It reports `UNKNOWN` when the probe (`getInstance` on a sentinel id) did not finish within 2 s (`store: "timed out"`) — usually a pool whose connections are all borrowed, which is the node doing its job. Spring Boot orders statuses `DOWN`, `OUT_OF_SERVICE`, `UP`, `UNKNOWN`, so an `UNKNOWN` `maestro` leaves the aggregate `UP`, and only `DOWN` and `OUT_OF_SERVICE` answer 503. A renewer that alternates one failed pass with one good pass never reads `DOWN`: each good pass renews every lock to its full TTL, so the locks stay valid (traced, not tested). If the probe's own thread cannot be started, the contributor reports `DOWN` with that failure; it never throws.
+
+- **Liveness.** Spring Boot's `liveness` group contains only `livenessState`; keep it that way, and never point a liveness probe at `/actuator/health`. Restarting a busy pod abandons its in-flight runs to the lock TTL and adds a recovery pass to the fleet's load.
+- **Readiness.** Add `maestro` only if this pod's HTTP traffic needs Maestro's store: `management.endpoint.health.group.readiness.include=readinessState,maestro`. A shared database that is down then takes every pod out of the Service, which is what you want only if the pods cannot serve without it.
+- **Probe timeout.** The indicator can take up to 2 s to answer: a call that starts or joins a store probe waits for it for up to 2 s (only a call that finds the probe already timed out by an earlier call answers at once). A kubelet probe's default `timeoutSeconds` is `1`, so a slow store makes the HTTP probe itself time out, which the kubelet counts as a failure — the pod leaves the Service even though `maestro` would have answered `UNKNOWN` (HTTP 200). Set the readiness probe's `timeoutSeconds` to at least `3` whenever `maestro` is in its group; the `UNKNOWN`-is-200 behaviour below helps only if the probe waits long enough to receive it. (The 2 s bound is `returnsPromptlyWhenStoreBlocksIndefinitely`; the kubelet default is Kubernetes' documented behaviour, not tested here.)
+- **A dead loop.** Since 3.5b a loop contains every `Error` except Maestro's control-flow signals, so a loop that stops is a bug: the log carries `Background loop '<name>' stopped: …` at `ERROR`, health reads `DOWN`, and the remedy is restarting the node — readiness does not do that for you. Alert on `maestro.loop.errors` (contained `Error`s) before it comes to that.
+
+**`UNKNOWN` answers HTTP 200 by default.** That holds for `/actuator/health/maestro` too, and for a group whose only member is `maestro`. A host that wants a timed-out probe to answer 503 maps the status, and, for an aggregate or a group that also has an `UP` member, ranks `UNKNOWN` above `UP` — otherwise the aggregate stays `UP` and the mapping never applies:
+
+```properties
+management.endpoint.health.status.http-mapping.unknown=503
+management.endpoint.health.status.order=DOWN,OUT_OF_SERVICE,UNKNOWN,UP
+```
+
+Think twice before doing this for readiness: a pool that is busy, not broken, then takes the pod out of the Service. `MaestroHealthIndicatorTest` pins Spring Boot's defaults (`bootsDefaultsLeaveAnUnknownMaestroAt200`) and the effect of both properties on Boot's aggregator and status mapper (`aHostCanMapUnknownTo503`); the full actuator endpoint with these properties set is traced, not tested. The status rule itself is pinned by `returnsPromptlyWhenStoreBlocksIndefinitely` (`UNKNOWN` within the bound), `aStoreThatThrowsWithinTheBoundIsDown` and `aTimedOutProbeDoesNotHideADeadLoop`.
 
 ---
 

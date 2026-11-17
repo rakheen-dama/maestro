@@ -26,7 +26,11 @@ import java.util.concurrent.Callable;
  * blocking), and MUST NOT throw. {@link CompositeEngineObserver} contains a
  * misbehaving observer by catching {@code RuntimeException} per callback;
  * {@code Error}s (including the engine's control-flow signals) always
- * propagate. {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
+ * propagate — except from {@link #backgroundLoopError}, where every
+ * {@code Error} but a
+ * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError} is
+ * contained too, by the composite per delegate and by the loop's guard.
+ * {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
  * delegate list — including a single observer — so that containment holds for
  * every registration, not only for multi-observer ones (coordinator Ruling 4).
  */
@@ -246,6 +250,22 @@ public interface EngineObserver {
      * a leader that found nothing to purge.
      */
     default void retentionPass(io.b2mash.maestro.core.spi.PurgeResult purged) {}
+
+    // ── Background loops ──────────────────────────────────────────────
+
+    /**
+     * A background loop (one of {@code timer-poller}, {@code recovery-poller},
+     * {@code signal-janitor}, {@code retention-sweeper},
+     * {@code instance-lock-renewer}) contained an {@code Error} that is not a
+     * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError}, and
+     * keeps running. Fires on the loop's own thread, never on a workflow
+     * thread. {@code errorType} is the {@code Error}'s class name. Any
+     * occurrence means a bug or resource exhaustion on this node.
+     *
+     * @param loop      the loop's fixed name (bounded: the five names above)
+     * @param errorType fully-qualified class name of the contained {@code Error}
+     */
+    default void backgroundLoopError(String loop, String errorType) {}
 
     // ── Stand-down ────────────────────────────────────────────────────
 

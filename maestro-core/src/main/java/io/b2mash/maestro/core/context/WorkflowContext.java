@@ -11,8 +11,11 @@ import org.slf4j.LoggerFactory;
 import java.lang.ScopedValue;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.WeakHashMap;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Predicate;
@@ -87,6 +90,26 @@ public final class WorkflowContext {
     private final @Nullable BranchBound bound;
     private final RunCancellation cancellation;
     private final RunLease lease;
+
+    /**
+     * The run's failure-memo registry: every exception the engine threw for a
+     * durable failure memo ({@code ACTIVITY_FAILED}, {@code SIGNAL_TIMEOUT}),
+     * live or replayed, keyed by identity, mapped to that memo's sequence.
+     * Created by the public constructors and shared with every bounded
+     * context, so branch and compensation contexts register into the run's
+     * map.
+     *
+     * <p>The keys are weak: an entry goes once nothing else reaches its
+     * exception, so a long loop that catches failures, or a replay that
+     * re-registers them, does not grow the map for the run's whole life. An
+     * exception still reachable from the one escaping the workflow method (as
+     * itself, a cause or a suppressed exception) keeps its entry, which is all
+     * {@code failedSequences} reads. Identity semantics hold:
+     * {@link Throwable} does not override {@code equals}/{@code hashCode}, and
+     * both registered types ({@code ActivityExecutionException},
+     * {@code SignalTimeoutException}) are final.
+     */
+    private final Map<Throwable, Integer> failureMemos;
 
     /**
      * The sequence block a bounded branch context may draw from.
@@ -230,7 +253,8 @@ public final class WorkflowContext {
     ) {
         this(workflowInstanceId, workflowId, runId, workflowType, taskQueue,
                 serviceName, initialSequence, replaying, operations, null, cancellation,
-                new RunLease(workflowInstanceId, leaseEpoch));
+                new RunLease(workflowInstanceId, leaseEpoch),
+                Collections.synchronizedMap(new WeakHashMap<>()));
     }
 
     private WorkflowContext(
@@ -245,11 +269,13 @@ public final class WorkflowContext {
             @Nullable WorkflowOperations operations,
             @Nullable BranchBound bound,
             RunCancellation cancellation,
-            RunLease lease
+            RunLease lease,
+            Map<Throwable, Integer> failureMemos
     ) {
         this.bound = bound;
         this.cancellation = cancellation;
         this.lease = lease;
+        this.failureMemos = failureMemos;
         this.workflowInstanceId = workflowInstanceId;
         this.workflowId = workflowId;
         this.runId = runId;
@@ -336,7 +362,7 @@ public final class WorkflowContext {
                 parent.workflowType, parent.taskQueue, parent.serviceName,
                 baseSeq, parent.replaying, operations,
                 new BranchBound(branchIndex, baseSeq, limitExclusive), parent.cancellation,
-                parent.lease);
+                parent.lease, parent.failureMemos);
     }
 
     // ── ScopedValue management ─────────────────────────────────────────
@@ -511,6 +537,34 @@ public final class WorkflowContext {
      */
     void setSequence(int sequence) {
         sequenceCounter.set(sequence);
+    }
+
+    /**
+     * Registers {@code thrown} as the exception the engine is about to throw
+     * for the failure memo at {@code sequence}. Keyed by identity, so a
+     * rethrown exception keeps its registration and an equal but distinct one
+     * has none. A second registration of the same object overwrites the first.
+     *
+     * <p>Thread-safe: the map is synchronized, because parallel branches
+     * register into the run's one map from their own threads.
+     *
+     * @param thrown   the exact object about to be thrown
+     * @param sequence the sequence number of its memo
+     */
+    void recordFailureMemo(Throwable thrown, int sequence) {
+        failureMemos.put(thrown, sequence);
+    }
+
+    /**
+     * Returns the sequence of the failure memo {@code thrown} was registered
+     * against, by identity.
+     *
+     * @param thrown an exception
+     * @return the memo's sequence, or {@code null} if this run registered no
+     *         memo for this exact object
+     */
+    @Nullable Integer failureMemoSequence(Throwable thrown) {
+        return failureMemos.get(thrown);
     }
 
     // ── Workflow API methods (delegate to operations) ─────────────────

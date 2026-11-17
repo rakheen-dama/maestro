@@ -1351,4 +1351,123 @@ class InMemoryWorkflowStoreTest {
             }
         }
     }
+
+    // ── reopenFailedInstance (WP3: admin retry, one atomic step) ─────────
+
+    /** The in-memory twin of {@code PostgresReopenFailedInstanceTest}: same names, same assertions. */
+    @Nested
+    class ReopenFailedInstance {
+
+        private WorkflowInstance w;
+        private WorkflowInstance other;
+
+        @BeforeEach
+        void seed() {
+            var now = Instant.now();
+            w = store.createInstance(buildInstance("w", WorkflowStatus.FAILED).toBuilder()
+                    .completedAt(now).version(3).build());
+            store.appendEvent(event(w.id(), 1, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(event(w.id(), 2, EventType.ACTIVITY_FAILED));
+            store.appendEvent(event(w.id(), 3, EventType.ACTIVITY_COMPLETED));
+            store.appendEvent(event(w.id(), 4, EventType.WORKFLOW_FAILED));
+            store.saveTimer(new WorkflowTimer(UUID.randomUUID(), w.id(), "w", "sleep-3", now, TimerStatus.FIRED, now));
+            store.saveTimer(new WorkflowTimer(UUID.randomUUID(), w.id(), "w", "sleep-1", now, TimerStatus.FIRED, now));
+            other = store.createInstance(buildInstance("other", WorkflowStatus.FAILED).toBuilder()
+                    .completedAt(now).version(3).build());
+            store.appendEvent(event(other.id(), 2, EventType.ACTIVITY_FAILED));
+            store.saveTimer(new WorkflowTimer(UUID.randomUUID(), other.id(), "other", "sleep-3", now,
+                    TimerStatus.FIRED, now));
+        }
+
+        @Test
+        void reopenDeletesExactlyTheNamedEventsAndTimerRowsAndWritesTheRow() {
+            // 99 and "nope" have no row: ignored
+            store.reopenFailedInstance(running(w, 4), Set.of(2, 3, 4, 99), Set.of("sleep-3", "nope"));
+            assertEquals(List.of(1), seqs(w));
+            assertEquals(List.of("sleep-1"), timerIds(w));
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("w").orElseThrow().status());
+            assertEquals(List.of(2), seqs(other));
+            assertEquals(List.of("sleep-3"), timerIds(other));
+        }
+
+        @Test
+        void aStaleVersionDeletesNothing() {
+            assertThrows(OptimisticLockException.class,
+                    () -> store.reopenFailedInstance(running(w, 3), Set.of(2), Set.of("sleep-3")));
+            assertEquals(List.of(1, 2, 3, 4), seqs(w));
+            assertEquals(List.of("sleep-1", "sleep-3"), timerIds(w));
+            assertEquals(WorkflowStatus.FAILED, store.getInstance("w").orElseThrow().status());
+        }
+
+        @Test
+        void aRowNoLongerFailedDeletesNothing() {
+            // Another retry won first: the row is RUNNING at version 4, and a
+            // reopen built for version 4 → 5 must not delete the new run's history.
+            store.updateInstance(running(w, 4));
+            assertThrows(OptimisticLockException.class,
+                    () -> store.reopenFailedInstance(running(w, 5), Set.of(2, 3, 4), Set.of("sleep-3")));
+            assertEquals(List.of(1, 2, 3, 4), seqs(w));
+            assertEquals(List.of("sleep-1", "sleep-3"), timerIds(w));
+            assertEquals(4, store.getInstance("w").orElseThrow().version());
+        }
+
+        @Test
+        void aMissingInstanceIsNotFound() {
+            assertThrows(WorkflowNotFoundException.class,
+                    () -> store.reopenFailedInstance(runningUnknown(), Set.of(1), Set.of()));
+        }
+
+        @Test
+        void aReopenedRowThatIsNotRunningIsRefusedBeforeAnyWrite() {
+            var stillFailed = running(w, 4).toBuilder().status(WorkflowStatus.FAILED).build();
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.reopenFailedInstance(stillFailed, Set.of(2, 3, 4), Set.of("sleep-3")));
+            var completed = running(w, 4).toBuilder().completedAt(Instant.now()).build();
+            assertThrows(IllegalArgumentException.class,
+                    () -> store.reopenFailedInstance(completed, Set.of(2, 3, 4), Set.of("sleep-3")));
+            assertEquals(List.of(1, 2, 3, 4), seqs(w));
+            assertEquals(List.of("sleep-1", "sleep-3"), timerIds(w));
+            assertEquals(WorkflowStatus.FAILED, store.getInstance("w").orElseThrow().status());
+            assertEquals(3, store.getInstance("w").orElseThrow().version());
+        }
+
+        @Test
+        void emptySetsOnlyWriteTheRow() {
+            store.reopenFailedInstance(running(w, 4), Set.of(), Set.of());
+            assertEquals(List.of(1, 2, 3, 4), seqs(w));
+            assertEquals(List.of("sleep-1", "sleep-3"), timerIds(w));
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("w").orElseThrow().status());
+        }
+
+        @Test
+        void signalRowsAreUntouched() {
+            var consumed = new WorkflowSignal(UUID.randomUUID(), w.id(), "w", "go", null, true, Instant.now());
+            store.saveSignal(consumed);
+            store.reopenFailedInstance(running(w, 4), Set.of(2, 3, 4), Set.of("sleep-3"));
+            assertTrue(store.getUnconsumedSignals("w", "go").isEmpty());
+            assertEquals(List.of(consumed), store.getAllSignals());
+        }
+
+        /** The stored row, reopened: {@code RUNNING}, {@code completedAt} null, version {@code version}. */
+        private WorkflowInstance running(WorkflowInstance instance, int version) {
+            return store.getInstance(instance.workflowId()).orElseThrow().toBuilder()
+                    .status(WorkflowStatus.RUNNING).completedAt(null).version(version).build();
+        }
+
+        private WorkflowInstance runningUnknown() {
+            return buildInstance("never-created").toBuilder().version(1).build();
+        }
+
+        private List<Integer> seqs(WorkflowInstance instance) {
+            return store.getEvents(instance.id()).stream().map(WorkflowEvent::sequenceNumber).toList();
+        }
+
+        private List<String> timerIds(WorkflowInstance instance) {
+            return store.getAllTimers().stream()
+                    .filter(t -> t.workflowInstanceId().equals(instance.id()))
+                    .map(WorkflowTimer::timerId)
+                    .sorted()
+                    .toList();
+        }
+    }
 }

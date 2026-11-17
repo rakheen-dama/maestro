@@ -543,7 +543,11 @@ class MaestroAutoConfigurationConfigSeamsTest {
     /** The admin retry path: {@code AdminCommandDispatcher}'s exact call. */
     private static void retry(org.springframework.context.ApplicationContext context, String workflowId) {
         var registration = context.getBean(WorkflowRegistrar.class).getRegistration(ArgDriftWorkflow.class);
-        var outcome = context.getBean(WorkflowExecutor.class).retryWorkflow(workflowId, registration);
+        var executor = context.getBean(WorkflowExecutor.class);
+        // The failed run writes FAILED before it leaves the executor's registry;
+        // a retry in between reopens the row without relaunching it.
+        await().atMost(Duration.ofSeconds(10)).until(() -> !executor.isRunning(workflowId));
+        var outcome = executor.retryWorkflow(workflowId, registration);
         assertThat(outcome).isEqualTo(WorkflowExecutor.RetryOutcome.RETRIED);
     }
 

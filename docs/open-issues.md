@@ -328,7 +328,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
-| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
+| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | **Resolved** |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
 | [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
@@ -354,6 +354,16 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | Open |
 | [57](#issue-57) | The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once | Library gap — startup check side effects | Low | Open |
 | [58](#issue-58) | The `byte[]` template check runs before Maestro's consumers only by bean-registration order | Library gap — startup ordering | Low | Open |
+| [59](#issue-59) | Retry refuses when the failure's handling consumed a signal | Library gap — admin retry | Medium | Open |
+| [60](#issue-60) | Two independently failed `parallel()` branches need two Retries | Library gap — admin retry | Low | Open |
+| [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
+| [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
+| [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Open |
+| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | Open |
+| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | Open |
+| [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | Open |
+| [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3069,7 +3079,9 @@ notification fix above remains what bounds the call itself.
 
 ### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
 
-> **Open.** Raised by the R61 implementer and sharpened by the R61 reviewer
+> **Resolved** in WP3 (branch fix/admin-retry): the failing await is the one the WORKFLOW_FAILED payload attributes; pinned by AdminRetryTest.issue33_*.
+
+> Raised by the R61 implementer and sharpened by the R61 reviewer
 > (commit `53ca7e9`, "admin retry after an awaitSignal timeout re-arms a fresh
 > deadline instead of honouring the spent one"); filed under Rulings R62/R63.
 
@@ -4276,6 +4288,454 @@ holds whichever bean is registered first.
 
 **Done when.** A context with a host-declared post-processor and a
 misinjected point fails startup without starting a consumer.
+
+---
+
+### Issue 59 — Retry refuses when the failure's handling consumed a signal {#issue-59}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Medium.
+
+**What happens.** When the region a Retry would delete holds a
+`SIGNAL_RECEIVED` memo — the workflow caught a failure, awaited a signal
+while handling it (`catch (e) { awaitSignal("ack", …); throw e; }`), then
+rethrew — Retry writes nothing and returns
+`RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE`. The workflow stays `FAILED`;
+the operator can only terminate it or finish its outcome by hand
+(`AdminRetryTest.aSignalConsumedWhileHandlingTheFailure_refusesTheRetryAndWritesNothing`,
+`AdminCommandKafkaIT.retry_refusedForAConsumedSignal_isAcknowledgedAndWritesNothing`).
+
+**Where.** `RetryPlanner.java:152-157` sets `consumedSignalAt`;
+`WorkflowExecutor.java:1424-1430` refuses. The memo cannot be given back
+because it carries the signal's payload, not its row id
+(`SignalManager.java:1368-1379`), and no column links a signal row to the memo
+that consumed it (V1, V9).
+
+**Harm.** A Retry is unavailable for this shape. Before WP3 the same Retry
+relaunched and then stood down on every recovery pass (traced), so the
+refusal is no worse, and it is visible; but the workflow cannot be resumed.
+
+**How to tackle it.** A V102 column on `maestro_workflow_signal` (or on the
+event) linking a `SIGNAL_RECEIVED` memo to the row it consumed, written in
+`appendEventAndConsumeSignal`'s transaction; Retry then deletes the memo and
+flips exactly that row back to unconsumed, in `reopenFailedInstance`'s
+transaction. Releasing "a consumed row with an equal payload" instead is
+inexact (a rounded decimal, a same-name sibling).
+
+**Why it is not WP3.** It needs a migration and a change to the consume
+transaction; WP3 adds no migration (D-7), and refusing keeps "never discard a
+signal" (MD-1).
+
+**Done when.** The shape above is retried: the handling re-runs and consumes
+the same signal again, and no signal row is deleted.
+
+---
+
+### Issue 60 — Two independently failed `parallel()` branches need two Retries {#issue-60}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Low.
+
+**What happens.** When two branches of one `parallel()` both fail uncaught,
+`parallel()` rethrows the lowest-index branch's error, so only that failure
+is attributed. Retry deletes it and keeps the other branch's failure memo; the
+retried run replays that memo and fails again, naming the second branch, and
+a second Retry completes it (`AdminRetryTest.twoFailedBranches_needTwoRetries`).
+
+**Where.** `DefaultWorkflowOperations.java:922-928` (the first error in
+branch-index order is rethrown); `RetryPlanner` deletes only attributed
+failures under `ATTRIBUTED` (D-3 step 3).
+
+**Harm.** One extra operator action. Nothing stands down, nothing compensates,
+and no sibling side effect repeats.
+
+**How to tackle it.** After the attributed truncation, also delete every
+last-in-lane failure of a sibling branch of the same fork — but only an
+uncaught one. That needs the join to record which branches failed uncaught
+(for example in the fork's join, or in `failedSequences`), because a branch
+that caught a gate timeout and returned looks the same in the history, and
+Issue 33 requires a caught gate to survive.
+
+**Why it is not WP3.** Deleting every sibling's last-in-lane failure would
+also clear a caught gate (MD-2); doing it right needs a new recorded fact.
+
+**Done when.** One Retry of the two-failed-branches shape completes, and a
+sibling's caught gate timeout is still kept.
+
+---
+
+### Issue 61 — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry {#issue-61}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Medium.
+
+**What happens.** When `LaneTree` leaves an event unplaced, or two lanes claim
+one slot, the plan's basis is `LEGACY`: Retry deletes every `ACTIVITY_FAILED`,
+every `WORKFLOW_FAILED` and, for an await-timeout failure, the highest
+`SIGNAL_TIMEOUT` with its park memo — exactly the pre-WP3 Retry
+(`RetryPlannerTest.theLegacyPlanKeepsIssue19sTimeoutRule`,
+`aSlotTwoLanesClaim_fallsBackToTheLegacyPlan`,
+`anOverflowingForkMarker_fallsBackToTheLegacyPlan`). Two engine shapes
+produce such a history: a live activity result the mapper could not write
+(the slot is consumed without a memo), caught by workflow code that carries
+on; and an unknown newer operation that partitions the sequence space
+differently. In those histories 3.3 remains: a caught failure is deleted too,
+and the retried run can stand down.
+
+**Where.** `RetryPlanner.java:93-96`; the live serialization failure at
+`ActivityInvocationHandler.java:926-931` ("an ordinary live failure").
+
+**Harm.** In those histories, the old Retry's defect (re-running a caught
+failure, then a stand-down) and Issue 33's highest-timeout attribution
+remain. Never worse than before WP3.
+
+**How to tackle it.** Memoize the slot of a live serialization failure (an
+`ACTIVITY_FAILED` at the slot the result could not be written to), so the
+walk never meets a consumed slot without a memo. The unknown-operation case
+is handled by the stand-down design and needs nothing here.
+
+**Why it is not WP3.** It changes what the activity path records for a
+result the mapper cannot write, which is replay behaviour outside Retry.
+
+**Done when.** A caught result-serialization failure followed by more work
+is retried under `ATTRIBUTED` or `LAST_IN_LANE`, and the caught failure
+replays.
+
+---
+
+### Issue 62 — A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry {#issue-62}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — SPI. **Severity:** Low.
+
+**What happens.** `WorkflowStore.reopenFailedInstance` has a default: the old
+`deleteFailureEvents` then `updateInstance`. It ignores the planned sets, is
+not atomic, and does not check `FAILED`; a losing concurrent call has already
+deleted by type before its compare-and-set fails
+(`WorkflowStoreReopenDefaultTest.theDefaultIsThePreWp3TwoStepRetry`). A
+third-party store, or a decorating store that does not forward the method,
+therefore keeps the pre-WP3 Retry, 3.3 and Issue 33 included.
+
+**Where.** `WorkflowStore.java:575-579`.
+
+**Harm.** Users of a custom store do not get the fix, silently.
+
+**How to tackle it.** Make the method abstract in the next release that may
+break the SPI, or log a `WARN` once per executor when the store's class does
+not declare it.
+
+**Why it is not WP3.** An abstract method is a compile break for every
+third-party store; the house pattern for SPI additions this cycle is a
+default (MD-4).
+
+**Done when.** A store cannot reach the old Retry without its author knowing.
+
+---
+
+### Issue 63 — The dashboard reports "Retry command sent" for a Retry the engine refused {#issue-63}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Medium.
+
+**What happens.** The dashboard's Retry button publishes `$maestro:retry`
+and shows "Retry command sent for workflow …" at once. When the engine
+refuses the Retry (`SIGNAL_CONSUMED_AFTER_FAILURE`, Issue 59; also
+`COMPENSATED_NOT_RETRYABLE`), it writes nothing, logs a `WARN` on the
+service's node, and acknowledges the command; the row just stays `FAILED`.
+No refusal event reaches the dashboard.
+
+**Where.** `AdminActionController.java:55` (the flash message);
+`AdminCommandDispatcher.java:143-147` (a non-`RETRIED` outcome is only
+logged); no lifecycle event is published for a refusal.
+
+**Harm.** An operator sees a successful action and an unchanged workflow, and
+must read the service's logs to learn why.
+
+**How to tackle it.** Publish a lifecycle event for a refused Retry (through
+`LifecycleEventSink`, with the outcome), and have the dashboard show it on
+the workflow's page.
+
+**Why it is not WP3.** It adds a lifecycle event type and dashboard UI;
+WP3 changes no lifecycle event or `maestro-admin` code.
+
+**Done when.** A refused Retry shows its outcome on the workflow's dashboard
+page.
+
+---
+
+### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the Tasks 4–5 review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — shutdown. **Severity:** Low.
+
+**What happens.** `close()` sets `running` to `false` and calls
+`thread.interrupt()` on the cleaner's virtual thread. Between sleeps that
+thread runs `PostgresLockCleaner.clean()`: one pooled connection, two
+`DELETE`s. An interrupt that lands while the thread is blocked in a socket
+read closes the socket under the pool. This is the mechanism WP10 reproduced
+for Issue 38 on the wake listener, so the pool marks the connection broken,
+logs a `WARN` and evicts it. WP4 changed only what the loop does with a
+throwable (a failure after `close()` is logged at `DEBUG`); the interrupt is
+older code.
+
+**The same in core.** `WorkflowInstanceLockManager.close()` (called from
+`WorkflowExecutor.shutdown()`) interrupts the instance-lock renewer, which
+may be inside `DistributedLock.renewAll` — on Postgres one pooled connection
+and one `UPDATE` per 500 locks — with the same effect on the pool. The
+interrupted `renewAll` then throws (`LockBackendException`), and the
+renewer's backend-failure arm emits `instanceLockRenewFailed` for **every
+held lock** before the guard sees it is stopping, so a shutdown that lands
+inside a pass adds one `maestro.lock.renew.failures{outcome="error"}` per
+held lock: an alert on that counter fires on a routine deploy. Traced, not
+tested.
+
+**Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
+interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`);
+`WorkflowInstanceLockManager.java` (`close()`, `thread.interrupt()`;
+`renewPass()`, the `catch (Exception e)` arm around `renewAll`).
+
+**Harm.** At most one pool `WARN` and one evicted connection per shutdown,
+and only when the shutdown falls inside a run (a few milliseconds every
+`maestro.lock.cleanup-interval`, 10 min by default, for the cleaner; a
+renewal pass every TTL/3, 10 s by default, for the renewer). Nothing durable
+is affected: both `DELETE`s are idempotent and autocommit, and the locks the
+renewer held expire via TTL as they would anyway. The renewer's case also
+counts `maestro.lock.renew.failures{outcome="error"}` once per held lock.
+
+**How to tackle it.** Do what WP10 did for the listener: `close()` stops the
+wait without an interrupt (a latch or condition the loop waits on in place of
+`Thread.sleep`), lets a run in progress finish, and joins the thread for a
+bounded time. Pin it as `PostgresWakeListenerShutdownTest` does: a Hikari pool,
+`close()` during a slow `DELETE`, no pool `WARN`, and the connection reused.
+The renewer takes the same change, and its backend-failure arm should not
+emit `instanceLockRenewFailed` once the manager is closed.
+
+**Why it is not WP4.** WP4 makes the loop survive an `Error`; changing how
+the loop stops is WP10's pattern applied to another class. It needs its own
+Hikari-backed test.
+
+**Done when.** Closing the scheduler during a run, or the executor during a
+renewal pass, logs no pool `WARN`, evicts no connection, and counts no
+renewal failure.
+
+---
+
+### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** The two `maestro-store-postgres` loops — the lock cleaner
+(`maestro-pg-lock-cleaner`) and the wake listener (`maestro-pg-wake-listener`)
+— contain an `Error` as the five engine loops do, and log it at `ERROR`
+(`PostgresLockCleanerSchedulerTest`, `PostgresWakeListenerLoopErrorTest`).
+But they apply the guard's rule inline: `BackgroundLoopGuard` is
+package-private in `maestro-core`, and neither class holds an
+`EngineObserver`, so neither reaches `maestro.loop.errors`. Neither is in
+`/actuator/health` either: `MaestroHealthIndicator` lives in the starter and
+knows only the `WorkflowExecutor`. `PostgresWakeListener.isConnected()` and the
+cleaner's (package-private) `isRunning()` reach no indicator. The wake
+listener's `WARN` for an unexpected `RuntimeException` is also not
+rate-limited like the guard's lines: once per reconnect attempt, so at most
+one per second, falling to one per 30 s as the back-off grows. Its arm for a
+driver `Error` (not a control-flow one) is worse: it keeps the same session
+and pauses 1 s, so a driver that throws an `Error` on every poll logs
+`ERROR` **with the stack trace** about once a second — roughly 3,600 lines an
+hour — with no rate limit and no back-off (traced, not tested; the 1 s pause
+is `anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain`).
+
+**Where.** `PostgresLockCleanerScheduler.java` (`loop`),
+`PostgresWakeListener.java` (`pollLoop`, `dispatch`); their auto-configurations
+`PostgresLockAutoConfiguration.java` and
+`PostgresSignalWakeAutoConfiguration.java`; `MaestroHealthIndicator.java`.
+
+**Harm.** A dead or failing cleaner (expired lock rows accumulate) or wake
+listener (cross-node wakes fall back to `maestro.signal.wake-recheck-interval`)
+is visible only in the log. No alert on the counter or on health fires for
+them.
+
+**How to tackle it.** Give both classes an `EngineObserver` from their
+auto-configurations (`ObjectProvider<EngineObserver>`, wrapped with
+`CompositeEngineObserver.of`) and two more fixed loop names
+(`lock-cleaner`, `wake-listener`) in `EngineObserver.backgroundLoopError`'s
+contract, so the counter sees them. Add a `HealthContributor` in
+`maestro-store-postgres` (`maestroPostgres`) reporting both loops and the
+listener's session, readiness-only like
+[Operations §14](operations.md#14-health-checks-and-kubernetes-probes).
+
+**Why it is not WP4.** Both need new wiring across module boundaries and a
+change to the callback's documented loop names; WP4 kept to the engine's
+observer and the starter's indicator.
+
+**Done when.** An `Error` in either loop moves `maestro.loop.errors`, and a
+dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
+
+---
+
+### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed. Traced, not tested: the
+> interrupt itself is tested (`MaestroHealthIndicatorTest.aTimedOutProbeIsInterrupted`),
+> its effect on a pooled connection is not.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** When the store probe (`getInstance` on a sentinel id) does
+not finish within 2 s, `MaestroHealthIndicator` reports `UNKNOWN` and
+interrupts the probe's virtual thread. In a pool wait the interrupt is
+harmless. Mid-query it closes the socket — the mechanism WP10 reproduced for
+Issue 38 — so a slow database sees one pool `WARN` and one evicted connection
+per timed-out probe. WP4 made the probe single-flight (a later health call
+joins a probe still in flight instead of starting another), but that bounds
+the cost only for a store call that ignores the interrupt: such a probe stays
+stuck, later calls join it, and it holds one connection. With pgjdbc the
+interrupt frees the probe — the socket is closed and the call throws — so
+the probe ends, the next health call starts a fresh one, and on a database
+that stays slow **each timed-out health call can cost one evicted
+connection** (traced, not tested).
+
+**Where.** `MaestroHealthIndicator.java`, `Probe.abandon()`
+(`thread.interrupt()`), called from `probeStore()` on timeout.
+
+**Harm.** Pool `WARN`s and connection churn on a database that is already
+slow: up to one evicted connection per timed-out health call, from any caller
+(kubelet probes, scrapers, load-balancer checks, the aggregate and the group
+endpoints), while every probe times out mid-query.
+
+**How to tackle it.** Stop interrupting: the single-flight probe already
+bounds the cost of a stuck probe to one thread and one borrowed connection.
+The trade-off to settle first is a probe stuck for ever on a half-open
+connection with no socket timeout, which the interrupt currently frees: with
+no interrupt, health would read `UNKNOWN` until that connection's socket
+timeout or TCP keep-alive gives up. Pin it as `PostgresWakeListenerShutdownTest`
+does: a Hikari pool, a probe that times out mid-query, no pool `WARN`.
+
+**Why it is not WP4.** It changes what a stuck probe costs (a held
+connection instead of an evicted one) and needs a Hikari-backed test; 3.5a
+is the status a timeout reports.
+
+**Done when.** A probe that times out mid-query logs no pool `WARN` and
+evicts no connection, and a stuck probe cannot hold health at `UNKNOWN`
+after the store answers again.
+
+---
+
+### Issue 67 — Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass {#issue-67}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** Each of the four loops counts its failure streak in its
+`BackgroundLoopGuard` and exposes it as a package-private
+`consecutiveFailures()` (`TimerPoller`, `RecoveryPoller`, `SignalJanitor`,
+`RetentionSweeper`), but `WorkflowExecutor` has no public accessor for any of
+them and `MaestroHealthIndicator` reads only whether each loop's thread is
+alive (`timerPollerRunning`, `recoveryPollerRunning`, `signalJanitorRunning`,
+`retentionSweeperRunning`). A loop that fails every pass for hours — say a
+store call that keeps throwing in `getDueTimers` or the recovery page while
+the health probe's `getInstance` still answers — keeps its thread alive and
+reads `UP`. Only the instance-lock renewer's streak
+reaches health (`instanceLockRenewerConsecutiveFailures`, `DOWN` at 2).
+
+**Where.** `MaestroHealthIndicator.health()` (`pollerState`); the four
+loops' `consecutiveFailures()`; `WorkflowExecutor` (the renewer's
+`instanceLockRenewerFailureStreak()` is the model).
+
+**Harm.** A node whose timers never fire, or whose recovery never adopts, reads
+healthy. The guard's `ERROR` lines (first failure, then a reminder every
+5 minutes) and, for an `Error`, `maestro.loop.errors` are the only signals;
+a store fault that is an `Exception` is logged but not counted.
+
+**How to tackle it.** Add public `…FailureStreak()` accessors on
+`WorkflowExecutor` for the four loops, report each as a detail, and decide a
+threshold per loop: the 5 s pollers can use a small streak, while the hourly
+janitor and sweeper would read `DOWN` only after hours, so a time-based
+threshold (failing for longer than N minutes) may fit them better. Keep the
+store-probe rule: a store that is down already reads `DOWN` through the probe.
+
+**Why it is not WP4.** WP4 added the renewer's streak because a failing
+renewer loses locks within one TTL; for the other four the right threshold
+is a design decision, and each needs its own test.
+
+**Done when.** A loop that fails every pass for longer than its threshold
+reads `DOWN`, with its streak in the details, and one that recovers reads
+`UP`.
+
+---
+
+### Issue 68 — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass {#issue-68}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** Two separate gaps in the instance-lock renewer:
+
+1. **A failed start reads idle.** When `startRenewerIfNeeded()` fails with a
+   `RuntimeException` (the thread could not be created or started),
+   `WorkflowInstanceLockManager.tryAcquire` logs `ERROR` and still returns
+   `ACQUIRED`: the lock is held and the run proceeds. `startRenewerIfNeeded()`
+   resets `renewerStarted` to `false` so that the next acquisition retries the
+   start. Until one does, `hasInstanceLockRenewerStarted()` is `false`, so
+   health reads `instanceLockRenewerRunning: "idle"` and `UP` — the reading
+   for a node that holds no lock — while every lock this node holds is
+   unrenewed and expires after the TTL. (An `Error` from the start releases
+   the lock and is rethrown, so it does not leave this state.)
+2. **One lost lock per pass after an observer `Error`.** `renewPass()` walks
+   the handles `renewAll` reported lost and calls `lockLost` for each. If
+   `observer.instanceLockLost` throws an `Error` — possible only with an
+   observer the builder was given unwrapped; the starter always wraps in
+   `CompositeEngineObserver.of`, which contains it — `lockLost` still drops
+   the handle and stands the run down (review d2), but the `Error` leaves the
+   loop over `lost`. The remaining lost handles stay in `heldLocks` until a
+   later pass reports them again, so an observer that throws deterministically
+   handles one lost lock per pass (one renew interval each).
+
+**Where.** `WorkflowInstanceLockManager.java`: `tryAcquire` (the
+`catch (Exception e)` around `startRenewerIfNeeded()`),
+`startRenewerIfNeeded()`, `renewPass()` (the loop over `lost`), `lockLost`;
+`MaestroHealthIndicator.renewerState`.
+
+**Harm.** (1) A node whose renewer never started looks healthy while its
+workflows lose their locks to other nodes one TTL after acquisition — the
+churn 3.5b fixed for a dead renewer, without the `DOWN`. (2) Runs whose locks
+are lost are stood down one renew interval apart instead of at once; until
+then they keep executing without the lock (the lease fence still rejects
+their writes).
+
+**How to tackle it.** (1) Distinguish "no lock ever held" from "locks held,
+renewer not running": report `instanceLockRenewerRunning: false` (a fault)
+whenever `heldLocks` is non-empty and the renewer is not running, whatever
+`renewerStarted` says. (2) Contain an observer `Error` per lost handle in
+`renewPass` (as d3 did per notification in the wake listener), rethrowing
+only a control-flow `Error`, after the remaining handles are processed.
+
+**Why it is not WP4.** Both were found by the whole-branch review after WP4's
+tasks were done; each needs a red test of its own.
+
+**Done when.** A node holding locks with no running renewer reads `DOWN`, and
+an observer `Error` on one lost lock does not delay the others.
 
 ---
 

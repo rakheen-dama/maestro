@@ -331,7 +331,7 @@ Left uncaught, `TimerCancelledException` propagates like any other exception: sa
 
 Cancellation is arbitrated the same way firing is: a compare-and-set on the timer row (`PENDING -> CANCELLED`). `cancelTimer` returns `true` if it won the race, `false` if the timer had already fired or was already cancelled -- the caller is told, rather than left to guess.
 
-`awaitSignal(name, timeout)` arms a durable timer row for its timeout (timer ID `await-signal-<seq>`, where `seq` is the sequence the await allocated), so the deadline survives restarts and is honoured from the original arming time. `cancelTimer` does reach it: a cancelled await timer ends the await with `SignalTimeoutException` on its next wake, because the timer row is the arbiter and a non-`PENDING` row means the deadline is spent. An admin **Retry** of a workflow that failed on an await timeout discards that await's spent deadline along with its timeout, so the retried await waits the full timeout again from the moment of the retry; a signal that arrived in the meantime is consumed at once.
+`awaitSignal(name, timeout)` arms a durable timer row for its timeout (timer ID `await-signal-<seq>`, where `seq` is the sequence the await allocated), so the deadline survives restarts and is honoured from the original arming time. `cancelTimer` does reach it: a cancelled await timer ends the await with `SignalTimeoutException` on its next wake, because the timer row is the arbiter and a non-`PENDING` row means the deadline is spent. An admin **Retry** of a workflow that failed on that await's timeout (the timeout that propagated, not the latest one) discards that await's spent deadline along with its timeout, so the retried await waits the full timeout again from the moment of the retry; a signal that arrived in the meantime is consumed at once. A gate timeout the workflow caught is kept and replays (`AdminRetryTest`, Issue 33) — except in a history Maestro cannot place (a slot consumed without a memo and followed by more work, or two lanes claiming one slot), where Retry of an await-timeout failure falls back to deleting the highest `SIGNAL_TIMEOUT`, which can be a caught gate's (`RetryPlannerTest.theLegacyPlanKeepsIssue19sTimeoutRule`; [Operations § 4](operations.md#4-cross-node-admin-retryterminate), "What a Retry deletes"; Issue 61).
 
 ---
 
@@ -558,7 +558,7 @@ workflow.version("shipping-v2", 1, 1);
 shipping.dispatchWithCarrier(order, carrier);
 ```
 
-Raise the floor too early and an instance whose recorded version is below `minSupported` fails with `UnsupportedWorkflowVersionException`, naming the changeId, the recorded version and the supported range. That is an ordinary deterministic workflow failure -- saga compensation runs if registered, the instance ends `FAILED`. Restore code carrying the old branch and use the admin **Retry** action: retry clears the failure memos but never the version marker, so the retried run replays the same recorded version.
+Raise the floor too early and an instance whose recorded version is below `minSupported` fails with `UnsupportedWorkflowVersionException`, naming the changeId, the recorded version and the supported range. That is an ordinary deterministic workflow failure -- saga compensation runs if registered, the instance ends `FAILED`. Restore code carrying the old branch and use the admin **Retry** action: Retry never deletes a version marker recorded before the failure, so the retried run replays the same recorded version.
 
 ### Rules
 

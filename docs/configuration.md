@@ -909,6 +909,8 @@ wire format reverts to byte-identical to a pre-tracing build.
 
 The whole block is additionally gated by `maestro.enabled`.
 
+`/actuator/health`'s `maestro` component is described in [Operations §14](operations.md#14-health-checks-and-kubernetes-probes): it is a readiness signal at most, and a probe timeout reads `UNKNOWN`.
+
 ```yaml
 maestro:
   observability:
@@ -918,12 +920,15 @@ maestro:
       enabled: true
 ```
 
-Meters registered: counters `maestro.workflow.started|completed|failed|compensated|terminated`,
-`maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
-`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.standdown`;
-timer `maestro.activity.duration`; gauges `maestro.workflows.running`,
-`maestro.workflows.parked` and `maestro.wake.permits` (node-local — sum across
-pods for a cluster total).
+Meters registered (23): counters `maestro.workflow.started|completed|failed|compensated|terminated`,
+`maestro.activity.result.unreadable`, `maestro.signal.consumed`, `maestro.signal.duplicates`,
+`maestro.timer.fired`, `maestro.recovery.scanned`, `maestro.recovery.adopted`,
+`maestro.retention.sweeps`, `maestro.retention.purged`, `maestro.lock.renew.failures`,
+`maestro.loop.errors`, `maestro.standdown`, `maestro.run.abandoned` (17);
+timers `maestro.activity.duration` and `maestro.workflow.duration` (2); gauges
+`maestro.workflows.running`, `maestro.workflows.parked`, `maestro.wake.permits`
+and `maestro.taskqueue.slots.used` (4; node-local — sum across pods for a
+cluster total).
 See [`docs/observability.md`](observability.md) for tags, tag values, span
 topology, and the Kafka propagation header contract.
 

@@ -171,6 +171,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.recoveryPasses().size(), "recoveryPass");
             assertEquals(1, recorder.retentionPasses().size(), "retentionPass");
             assertEquals(1, recorder.standDowns().size(), "standDown");
+            assertEquals(1, recorder.loopErrors().size(), "backgroundLoopError");
         }
     }
 
@@ -292,5 +293,6 @@ class CompositeEngineObserverTest {
         o.recoveryPass(3, 2);
         o.retentionPass(new io.b2mash.maestro.core.spi.PurgeResult(2, 9, 1, 0));
         o.standDown(StandDownReason.STALE_RUN, "wf-1", "seq 7");
+        o.backgroundLoopError("timer-poller", "java.lang.AssertionError");
     }
 }

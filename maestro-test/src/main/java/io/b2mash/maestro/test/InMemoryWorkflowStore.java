@@ -26,6 +26,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
@@ -451,6 +452,59 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                 event.eventType() == EventType.ACTIVITY_FAILED
                         || event.eventType() == EventType.WORKFLOW_FAILED);
         return before - instanceEvents.size();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Under the timer lock and then the per-workflow instance lock — the
+     * purge's lock order, data lock before instance lock — so a concurrent
+     * purge, retry, terminate or adoption orders strictly before or after it.
+     * Every check ({@code reopened} is {@code RUNNING} with no
+     * {@code completedAt}, the instance exists with this id, its version is
+     * {@code reopened.version() - 1}, it is {@code FAILED}) is made before
+     * anything is mutated, so a refused reopen leaves the events, the timer
+     * rows and the row untouched; then the events are removed, then the timer
+     * rows, then the row is written. Signals are not touched.
+     */
+    @Override
+    public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                     Set<String> deleteTimerIds) {
+        Objects.requireNonNull(reopened, "reopened");
+        Objects.requireNonNull(deleteEventSequences, "deleteEventSequences");
+        Objects.requireNonNull(deleteTimerIds, "deleteTimerIds");
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
+        var lock = instanceLocks.get(reopened.workflowId());
+        if (lock == null) {
+            throw new WorkflowNotFoundException(reopened.workflowId());
+        }
+        synchronized (timerLock) {
+            synchronized (lock) {
+                var current = instances.get(reopened.workflowId());
+                if (current == null || !current.id().equals(reopened.id())) {
+                    throw new WorkflowNotFoundException(reopened.workflowId());
+                }
+                var expectedPreviousVersion = reopened.version() - 1;
+                // A row at the expected version that is no longer FAILED also
+                // throws here, with "expected version N but found N":
+                // unreachable while every instance write bumps the version.
+                if (current.version() != expectedPreviousVersion || current.status() != WorkflowStatus.FAILED) {
+                    throw new OptimisticLockException(
+                            reopened.workflowId(), expectedPreviousVersion, current.version());
+                }
+                var instanceEvents = events.get(current.id());
+                if (instanceEvents != null) {
+                    instanceEvents.keySet().removeAll(deleteEventSequences);
+                }
+                timers.removeIf(t -> t.workflowInstanceId().equals(current.id())
+                        && deleteTimerIds.contains(t.timerId()));
+                instances.put(reopened.workflowId(), reopened);
+            }
+        }
     }
 
     // ── Signal operations ────────────────────────────────────────────────

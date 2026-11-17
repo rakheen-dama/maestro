@@ -88,6 +88,7 @@ public interface WorkflowStore {
     default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V101 index)
     void updateInstance(WorkflowInstance instance);       // optimistic locking
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
+    default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences, Set<String> deleteTimerIds); // manual Retry: exact deletes + FAILED→RUNNING CAS, one transaction in JDBC; the default is today's non-atomic two-step
 
     void appendEvent(WorkflowEvent event);
     default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease); // the payload as stored (Postgres: INSERT … RETURNING); a live activity returns what replay reads; a store decorator must forward it (the default returns the payload sent, not the jsonb form)
@@ -308,6 +309,7 @@ any other value fails startup. Removed (setting either fails startup):
   `22`/`23`/`54`, and `StoreFaultGuard` retries outcome appends then latches the run
   `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
   recovery, so any new `catch` that collects failures must rethrow it too.
+  A background loop never ends on an `Error` silently (3.5b): it rethrows a `MaestroControlFlowError` and contains every other `Throwable`. The five engine loops (timer poller, recovery poller, signal janitor, retention sweeper, instance-lock renewer) wrap each iteration in `BackgroundLoopGuard` (package `engine`); the two `maestro-store-postgres` loops (`PostgresLockCleanerScheduler`, `PostgresWakeListener`) cannot see that package-private class and apply the same rule inline. A new loop does one or the other.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

@@ -83,6 +83,10 @@ try {
 
 **Test it:** count provider calls (`assertEquals(1, provider.calls.get())`). To pin the replay path, `env.crashAfterPersisting(e -> e.eventType() == EventType.ACTIVITY_FAILED)` and `crash.recover()` (see `PaymentProcessingWorkflowTest`).
 
+**Retry truncates from the earliest failure the escaping exception carries.** A workflow that loops over items, catches each failure, carries on, and finally throws one exception holding those failures as cause or suppressed, is retried from the first of them: every activity recorded after it runs again live, the successful ones included (they must be idempotent, rule 3).
+
+**Admin Retry reads the chain.** Retry re-runs the failure that ended the run, found through the exception that escaped `@WorkflowMethod`. Rethrow the `ActivityExecutionException`, or pass it as the cause (`throw new OrderFailed("…", e)`). A failure thrown without it is found only when nothing was recorded after it; otherwise Retry replays it and the workflow fails again.
+
 ---
 
 ## 3. Every activity must be idempotent

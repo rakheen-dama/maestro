@@ -27,6 +27,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -418,6 +419,10 @@ class SagaManagerTerminateRaceTest {
         }
         @Override public List<WorkflowEvent> getEvents(UUID instanceId) { return delegate.getEvents(instanceId); }
         @Override public int deleteFailureEvents(UUID instanceId) { return delegate.deleteFailureEvents(instanceId); }
+        @Override public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                                   Set<String> deleteTimerIds) {
+            delegate.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
+        }
         @Override public void saveSignal(WorkflowSignal signal) { delegate.saveSignal(signal); }
         @Override public List<WorkflowSignal> getUnconsumedSignals(String wfId, String name) {
             return delegate.getUnconsumedSignals(wfId, name);

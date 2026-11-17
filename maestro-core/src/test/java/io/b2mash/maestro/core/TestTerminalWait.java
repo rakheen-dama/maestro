@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core;
 
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -132,6 +133,29 @@ public final class TestTerminalWait {
                             () -> "the instance row reads " + expected + " but the log has no "
                                     + terminalEventFor(expected) + " yet — the run is not finished");
                 });
+    }
+
+    /**
+     * Waits until the run of {@code workflowId} has left {@code executor}'s
+     * local running registry.
+     *
+     * <p>A run writes its terminal status first and leaves the registry only
+     * in its {@code finally}, so a persisted {@code FAILED} does not mean the
+     * run is gone. A {@code retryWorkflow} in that window reopens the row and
+     * returns {@code ALREADY_RUNNING_LOCALLY} without launching (PR #57 review
+     * 4; {@code AdminRetryTest.aRetryBeforeTheFailedRunLeavesThisNode_*}). A
+     * test that asserts {@code RETRIED} waits here first.
+     *
+     * @param executor   the executor the run was launched on
+     * @param workflowId the business workflow ID
+     * @param timeout    the bound
+     * @throws org.awaitility.core.ConditionTimeoutException if the run is still
+     *         registered when the bound elapses
+     */
+    public static void awaitRunEnded(WorkflowExecutor executor, String workflowId, Duration timeout) {
+        await().atMost(timeout)
+                .pollInterval(POLL_INTERVAL)
+                .until(() -> !executor.isRunning(workflowId));
     }
 
     /**

@@ -46,7 +46,7 @@ class NodeStoreViewTest {
     /** Every {@link WorkflowStore} method that changes state — kept explicit so a new SPI method must be classified. */
     private static final Set<String> WRITES = Set.of(
             "createInstance", "updateInstance", "completeInstance", "appendEvent", "appendEventReturningPayload",
-            "deleteFailureEvents",
+            "deleteFailureEvents", "reopenFailedInstance",
             "saveSignal", "saveSignalIfAbsent", "markSignalConsumed", "appendEventAndConsumeSignal",
             "adoptOrphanedSignals", "deleteUnconsumedSignalsForTerminalInstancesBefore",
             "purgeTerminalInstancesBefore", "saveTimer", "markTimerFired", "markTimerCancelled");

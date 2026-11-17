@@ -7,14 +7,18 @@ import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.TimerInfo;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Unit-level pin for the design doc §2.2 meter catalog: every row's name,
@@ -325,5 +329,29 @@ class MicrometerEngineObserverTest {
 
         assertThat(registry.get("maestro.signal.consumed").tag("signal", "payment-approved")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void backgroundLoopErrorCountsByLoop() {
+        observer.backgroundLoopError("instance-lock-renewer", "java.lang.OutOfMemoryError");
+        observer.backgroundLoopError("instance-lock-renewer", "java.lang.AssertionError");
+        var counter = registry.get("maestro.loop.errors").tag("loop", "instance-lock-renewer").counter();
+        assertEquals(2.0, counter.count());
+        assertEquals(List.of("loop"), counter.getId().getTags().stream().map(Tag::getKey).toList());
+    }
+
+    /**
+     * Fix wave e6: the five engine loops' series exist at zero as soon as the
+     * observer is created, so {@code increase(maestro_loop_errors_total[15m])}
+     * sees the first Error instead of a series that starts at 1.
+     */
+    @Test
+    void loopErrorSeriesExistAtZeroBeforeAnyFailure() {
+        var fresh = new SimpleMeterRegistry();
+        new MicrometerEngineObserver(fresh);
+        var series = fresh.find("maestro.loop.errors").counters().stream()
+                .collect(java.util.stream.Collectors.toMap(c -> c.getId().getTag("loop"), Counter::count));
+        assertEquals(java.util.Map.of("timer-poller", 0.0, "recovery-poller", 0.0, "signal-janitor", 0.0,
+                "retention-sweeper", 0.0, "instance-lock-renewer", 0.0), series);
     }
 }

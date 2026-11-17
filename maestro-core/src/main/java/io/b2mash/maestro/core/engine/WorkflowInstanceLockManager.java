@@ -46,7 +46,8 @@ import java.util.function.Supplier;
  * stop point instead of first trying a write the store would fence anyway.
  * The callback is proactive courtesy, not the guarantee — the fence holds
  * even when the renewer notices nothing (a frozen JVM notices only after it
- * thaws).
+ * thaws). An {@code Error} in a pass is contained by the renewer's guard:
+ * every handle is kept and the next pass runs one interval later.
  *
  * <p><b>Thread safety:</b> all methods are thread-safe.
  */
@@ -75,6 +76,7 @@ final class WorkflowInstanceLockManager {
     private final Duration ttl;
     private final Duration renewInterval;
     private final EngineObserver observer;
+    private final BackgroundLoopGuard guard;
     private final ConcurrentHashMap<String, LockHandle> heldLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean renewerStarted = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -166,8 +168,11 @@ final class WorkflowInstanceLockManager {
         this.ttl = ttl;
         this.renewInterval = renewInterval;
         this.observer = observer;
+        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.INSTANCE_LOCK_RENEWER, renewInterval,
+                closed::get, observer);
         this.renewerThreadStarter = () -> Thread.ofVirtual()
                 .name("maestro-instance-lock-renewer-" + this.serviceName)
+                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
                 .unstarted(this::renewLoop);
     }
 
@@ -205,19 +210,36 @@ final class WorkflowInstanceLockManager {
         // releases, making the workflowId permanently unacquirable here and
         // blocked cluster-wide.
         try {
-            startRenewerIfNeeded();
-        } catch (Exception e) {
-            // Node-total, not per-lock: no held lock on this node is being
-            // renewed right now (all will expire via TTL unless renewal is
-            // restarted). startRenewerIfNeeded() resets its latch on
-            // failure, so the very next tryAcquire — for this or any other
-            // workflowId — retries starting the renewer.
-            logger.error("Instance lock renewer failed to start for '{}' — no locks on this node are "
-                            + "being renewed until the next acquisition retries the renewer start; "
-                            + "until then they expire via TTL: {}",
-                    workflowId, e.getMessage(), e);
+            try {
+                startRenewerIfNeeded();
+            } catch (Exception e) {
+                // Node-total, not per-lock: no held lock on this node is being
+                // renewed right now (all will expire via TTL unless renewal is
+                // restarted). startRenewerIfNeeded() resets its latch on
+                // failure, so the very next tryAcquire — for this or any other
+                // workflowId — retries starting the renewer.
+                logger.error("Instance lock renewer failed to start for '{}' — no locks on this node are "
+                                + "being renewed until the next acquisition retries the renewer start; "
+                                + "until then they expire via TTL: {}",
+                        workflowId, e.getMessage(), e);
+            }
+            emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
+        } catch (RuntimeException | Error e) {
+            // An Error (from the renewer start or the observer) reaches the
+            // caller instead of ACQUIRED, so no run will ever own — or release
+            // — this handle. Kept, the renewer would renew it forever and the
+            // workflow would be unacquirable on every node until this one
+            // restarts: give it back first, then rethrow (a control-flow
+            // Error included). A RuntimeException cannot reach here today
+            // (both calls above contain it); caught so that stays true if
+            // either changes. A failing release is suppressed on the original.
+            try {
+                release(workflowId);
+            } catch (RuntimeException | Error releaseFailure) {
+                e.addSuppressed(releaseFailure);
+            }
+            throw e;
         }
-        emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
         return Acquisition.ACQUIRED;
     }
 
@@ -297,6 +319,39 @@ final class WorkflowInstanceLockManager {
     }
 
     /**
+     * Whether the renewer thread is alive. It starts with the first lock this
+     * manager acquires, so this is {@code false} before then, with no
+     * {@link DistributedLock}, and after {@link #close()}.
+     *
+     * @return {@code true} while the renewer thread runs and the manager is open
+     */
+    boolean isRenewerRunning() {
+        var thread = renewerThread;
+        return !closed.get() && thread != null && thread.isAlive();
+    }
+
+    /**
+     * Whether the renewer thread has been started. Monotonic in practice: it
+     * is reset only when starting the thread itself failed, so that the next
+     * acquisition retries the start.
+     *
+     * @return {@code true} once the renewer has been started
+     */
+    boolean hasRenewerStarted() {
+        return renewerStarted.get();
+    }
+
+    /**
+     * The renewer's current failure streak: consecutive passes whose
+     * {@code renewAll} failed or that threw, since the last pass that did not.
+     *
+     * @return the number of consecutive failed passes
+     */
+    int renewFailureStreak() {
+        return guard.consecutiveFailures();
+    }
+
+    /**
      * Stops the renewer thread. Still-held locks are left to expire via TTL —
      * their workflow threads may still be mid-activity during shutdown, and
      * TTL expiry is the safe handoff to another node.
@@ -324,7 +379,7 @@ final class WorkflowInstanceLockManager {
                 var thread = renewerThreadStarter.get();
                 renewerThread = thread;
                 thread.start();
-            } catch (Exception e) {
+            } catch (RuntimeException | Error e) {
                 // Un-latch: if we left renewerStarted=true here, the CAS
                 // above would stay burned for the rest of the process's
                 // life — every future tryAcquire, for every workflowId,
@@ -349,7 +404,16 @@ final class WorkflowInstanceLockManager {
             if (closed.get()) {
                 return;
             }
-            renewPass();
+            try {
+                if (renewPass()) {
+                    guard.succeeded();
+                }
+            } catch (Throwable t) {
+                // Every handle is kept: renewPass removes one only for a loss
+                // the backend reported. A control-flow Error is rethrown and
+                // ends the renewer; anything else waits one interval.
+                guard.failed(t);
+            }
         }
     }
 
@@ -359,11 +423,15 @@ final class WorkflowInstanceLockManager {
      * for the next pass (the TTL tolerates roughly two missed passes); a
      * handle reported lost takes {@link #lockLost}. A pass slower than the
      * renew interval logs one WARN — it is eating into the TTL margin.
+     *
+     * @return {@code false} when the backend failed (reported through the
+     *         guard here), {@code true} otherwise, including a pass with no
+     *         held lock
      */
     @SuppressWarnings("DataFlowIssue") // renewer only runs when distributedLock != null
-    private void renewPass() {
+    private boolean renewPass() {
         if (heldLocks.isEmpty()) {
-            return;
+            return true;
         }
         var snapshot = new HashMap<LockHandle, String>();
         heldLocks.forEach((workflowId, handle) -> snapshot.put(handle, workflowId));
@@ -374,12 +442,12 @@ final class WorkflowInstanceLockManager {
                 lost = distributedLock.renewAll(snapshot.keySet(), ttl);
             } catch (Exception e) {
                 // Backend failure — nothing is known, so nothing is lost: keep
-                // every handle and retry next pass.
-                logger.warn("Failed to renew {} instance lock(s) — will retry: {}",
-                        snapshot.size(), e.getMessage());
+                // every handle and retry next pass. Logged through the guard:
+                // once loudly, then quietly with a reminder every 5 minutes.
                 snapshot.forEach((_, workflowId) -> emit("instanceLockRenewFailed", workflowId,
                         () -> observer.instanceLockRenewFailed(workflowId)));
-                return;
+                guard.failed(e);
+                return false;
             }
             for (var handle : lost) {
                 var workflowId = snapshot.get(handle);
@@ -387,6 +455,7 @@ final class WorkflowInstanceLockManager {
                     lockLost(workflowId, handle);
                 }
             }
+            return true;
         } finally {
             var elapsed = Duration.ofNanos(System.nanoTime() - started);
             if (elapsed.compareTo(renewInterval) > 0) {
@@ -416,10 +485,16 @@ final class WorkflowInstanceLockManager {
         // reported as a transient renew failure, and contained so it cannot
         // escape renewLoop() and kill the single renewer thread — that would
         // silently stop renewing EVERY held lock.
-        emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
-        // Proactive stand-down: tell the executor now, so the run stops at
-        // its next stop point rather than after a write the store fences.
-        emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
+        try {
+            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+        } finally {
+            // Proactive stand-down: tell the executor now, so the run stops at
+            // its next stop point rather than after a write the store fences.
+            // In a finally: the handle is already dropped, so no later pass
+            // reports this loss again — an observer Error (which emit lets
+            // through, to the renewer's guard) must not skip the stand-down.
+            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
+        }
     }
 
     /**
