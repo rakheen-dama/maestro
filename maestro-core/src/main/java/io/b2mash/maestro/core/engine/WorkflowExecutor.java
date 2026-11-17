@@ -158,6 +158,15 @@ public final class WorkflowExecutor {
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final LifecycleEventSink lifecycleEventSink;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
+
+    /**
+     * Test seam: runs on the launching thread once a launch has been admitted
+     * — the instance lock acquired and, on a resume, the instance adopted —
+     * before the run is set up. A test makes it throw to show that a failure
+     * between admission and the run's thread start still releases the lock.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable afterLaunchAdmission = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
@@ -2212,32 +2221,37 @@ public final class WorkflowExecutor {
             instance = snapshot;
         }
 
-        var compensationStack = new CompensationStack();
-        var operations = new DefaultWorkflowOperations(
-                store, distributedLock, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
-
-        var cancellation = new RunCancellation();
-        var ctx = new WorkflowContext(
-                instance.id(),
-                instance.workflowId(),
-                instance.runId(),
-                instance.workflowType(),
-                instance.taskQueue(),
-                serviceName,
-                0,
-                replaying,
-                operations,
-                cancellation,
-                instance.leaseEpoch()
-        );
-
-        // Detect @Saga on the workflow method
-        var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
-        var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
-
+        // From here to thread.start() the lock is held but no run owns it yet:
+        // anything thrown in between — an Error included — must release it, or
+        // the handle is renewed forever and the workflow is unrecoverable on
+        // every node until this one restarts.
         RunningWorkflow running = null;
         try {
+            afterLaunchAdmission.run();
+            var compensationStack = new CompensationStack();
+            var operations = new DefaultWorkflowOperations(
+                    store, distributedLock, serializer, parkingLot, compensationStack,
+                    signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
+
+            var cancellation = new RunCancellation();
+            var ctx = new WorkflowContext(
+                    instance.id(),
+                    instance.workflowId(),
+                    instance.runId(),
+                    instance.workflowType(),
+                    instance.taskQueue(),
+                    serviceName,
+                    0,
+                    replaying,
+                    operations,
+                    cancellation,
+                    instance.leaseEpoch()
+            );
+
+            // Detect @Saga on the workflow method
+            var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
+            var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
+
             // F1: one workflow object per run, built on the launching thread
             // before the run's virtual thread exists — a throwing factory
             // surfaces to the caller and releases the lock in the catch below.

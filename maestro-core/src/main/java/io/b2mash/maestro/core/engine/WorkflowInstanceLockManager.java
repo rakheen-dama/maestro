@@ -210,19 +210,30 @@ final class WorkflowInstanceLockManager {
         // releases, making the workflowId permanently unacquirable here and
         // blocked cluster-wide.
         try {
-            startRenewerIfNeeded();
-        } catch (Exception e) {
-            // Node-total, not per-lock: no held lock on this node is being
-            // renewed right now (all will expire via TTL unless renewal is
-            // restarted). startRenewerIfNeeded() resets its latch on
-            // failure, so the very next tryAcquire — for this or any other
-            // workflowId — retries starting the renewer.
-            logger.error("Instance lock renewer failed to start for '{}' — no locks on this node are "
-                            + "being renewed until the next acquisition retries the renewer start; "
-                            + "until then they expire via TTL: {}",
-                    workflowId, e.getMessage(), e);
+            try {
+                startRenewerIfNeeded();
+            } catch (Exception e) {
+                // Node-total, not per-lock: no held lock on this node is being
+                // renewed right now (all will expire via TTL unless renewal is
+                // restarted). startRenewerIfNeeded() resets its latch on
+                // failure, so the very next tryAcquire — for this or any other
+                // workflowId — retries starting the renewer.
+                logger.error("Instance lock renewer failed to start for '{}' — no locks on this node are "
+                                + "being renewed until the next acquisition retries the renewer start; "
+                                + "until then they expire via TTL: {}",
+                        workflowId, e.getMessage(), e);
+            }
+            emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
+        } catch (Error e) {
+            // An Error (from the renewer start or the observer) reaches the
+            // caller instead of ACQUIRED, so no run will ever own — or release
+            // — this handle. Kept, the renewer would renew it forever and the
+            // workflow would be unacquirable on every node until this one
+            // restarts: give it back first, then rethrow (a control-flow
+            // Error included).
+            release(workflowId);
+            throw e;
         }
-        emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
         return Acquisition.ACQUIRED;
     }
 
@@ -362,7 +373,7 @@ final class WorkflowInstanceLockManager {
                 var thread = renewerThreadStarter.get();
                 renewerThread = thread;
                 thread.start();
-            } catch (Exception e) {
+            } catch (RuntimeException | Error e) {
                 // Un-latch: if we left renewerStarted=true here, the CAS
                 // above would stay burned for the rest of the process's
                 // life — every future tryAcquire, for every workflowId,
