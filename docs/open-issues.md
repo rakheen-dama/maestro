@@ -321,8 +321,8 @@ await one signal name at once, orphaned-signal adoption has two owners and an
 unadopted signal is never purged, the
 wake listener leaves autocommit on, the upgrade fixtures have no procedure
 for a breaking core API change, and retried store faults are invisible.
-Issue 87, from a CI failure on the same branch, is **open**: `shutdown()` can
-return while a run it drained still holds its instance lock.
+Issue 87, from a CI failure on the same branch, is **resolved**: `shutdown()`
+could return while a run it drained still held its instance lock.
 Issue 88, from a review comment on the same branch, is **open**: during a
 rolling deploy an older node's Retry can strip failure memos from a run a
 newer node just reopened.
@@ -428,7 +428,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | Open |
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
-| [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | Open |
+| [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
@@ -5479,8 +5479,10 @@ starter test.
 **Kind:** Library gap — shutdown. **Severity:** Low.
 
 **What happens.** `WorkflowExecutor.shutdown` drains by iterating
-`runningWorkflows.entrySet()` once, joining each run against the deadline.
-`runningWorkflows` is a `ConcurrentHashMap`, whose iterator is weakly
+`unreleasedRuns.values()` once, joining each run against the deadline. Each
+run is tracked there from just before it enters `runningWorkflows` until its
+instance-lock release has been attempted ([Issue 87](#issue-87)).
+`unreleasedRuns` is a `ConcurrentHashMap`, whose iterator is weakly
 consistent: an entry put after the iterator passed its bucket is not visited.
 A launch that passed its `shuttingDown` check before shutdown began, and
 registers only after the drain's iterator passed, is asked to stop (the
@@ -5497,9 +5499,9 @@ the workflow stays recoverable (traced): the cost is a misleading abandon
 reason and a run that outlives the summary line's count. Nothing is recorded
 as a failure.
 
-**How to tackle it.** Drain until the map holds no entry the drain has not
-joined: iterate over a snapshot, then re-snapshot and join any new entry,
-until a pass finds none or the deadline passes. A test can hold a launch
+**How to tackle it.** Drain until `unreleasedRuns` holds no entry the drain
+has not joined: iterate over a snapshot, then re-snapshot `unreleasedRuns`
+and join any new entry, until a pass finds none or the deadline passes. A test can hold a launch
 between its `shuttingDown` check and its `put` (a test hook there, like the
 executor's existing `beforeRunThreadStart`) and assert `shutdown()` does not return before that run's thread
 ends.
@@ -5757,21 +5759,41 @@ and the run continue.
 
 ### Issue 87 — `shutdown()` can return while a run it drained still holds its instance lock {#issue-87}
 
-> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the CI
+> **Resolved** (2026-11-17, branch `fix/shutdown-waits-for-lock-release`).
+> The drain now iterates a second map, `unreleasedRuns`, keyed by the run's
+> thread: a run enters it just before `runningWorkflows` and leaves it only
+> once its instance-lock release has been attempted, at the end of the run
+> thread's body (in a `finally`, so a release that throws still leaves it) or,
+> for a launch that failed before starting the thread, in the launch's cleanup
+> after its release (in a `finally`, so a failing cleanup step leaves no ghost
+> run). The drain's existing waits (the `launched` latch, then `join` on the
+> thread) apply unchanged, so a run that has left `runningWorkflows` but not
+> yet released is waited for within the deadline, and a run still in its
+> release at the deadline is named in the deadline `WARN`. Shutdown's stop
+> request (which abandons retry backoffs) goes to the same runs. A release the
+> backend fails leaves the lock's row to its TTL, as before. The
+> remove-then-release order is unchanged; a run now removes only its own
+> `runningWorkflows` entry. Pinned by `ShutdownReturnsBeforeLockReleaseTest`
+> (enabled), with the failed-launch path (also with a throwing cleanup step),
+> a run thread that died before its body, a release that throws, the deadline
+> `WARN`, two runs of one id on a node without a lock backend, and 13 rounds
+> of 12 runs leaving during the drain. The drain is still one weakly
+> consistent pass, so [Issue 80](#issue-80) is not affected.
+>
+> Filed by WP13, docs and housekeeping (2026-11-17), from the CI
 > failure of `DeterminismCheckerRecoverableTest` on PR #64. Reproduced
-> deterministically by `ShutdownReturnsBeforeLockReleaseTest` (`@Disabled`,
-> red until fixed). The fix is an engine change; routed by the coordinator.
+> deterministically by `ShutdownReturnsBeforeLockReleaseTest`.
 
 **Kind:** Library defect — shutdown, test kit. **Severity:** Low in
 production, High for the test kit's `recover()`.
 
-**What happens.** A run's `finally` in `WorkflowExecutor.executeWorkflow`
+**What happened.** A run's `finally` in `WorkflowExecutor.executeWorkflow`
 gives its slot back, removes itself from `runningWorkflows`, clears its wake
 permits and only then releases its instance lock ("remove-then-release").
-`shutdown()`'s drain (step 5) iterates `runningWorkflows` once and joins what
-it finds. A run already removed but not yet past its release is not joined,
-so `shutdown()` can return with that run's instance lock still held. A
-recovery pass that runs at once skips the workflow as locked elsewhere.
+`shutdown()`'s drain (step 5) iterated `runningWorkflows` once and joined what
+it found. A run already removed but not yet past its release was not joined,
+so `shutdown()` could return with that run's instance lock still held. A
+recovery pass that ran at once skipped the workflow as locked elsewhere.
 
 **Where.** `WorkflowExecutor.executeWorkflow` (the `finally`) and
 `WorkflowExecutor.shutdown(ShutdownDeadline)` (step 5); seen through
