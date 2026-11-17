@@ -232,7 +232,7 @@ Sibling branches of any lane on the path, and the subtrees of forks *before* the
 | Terminate | Before commit: `ALREADY_TERMINAL`. After: its converge loop re-reads `RUNNING` and terminates. | Terminate re-reads per attempt (`:1110-1170`) |
 | Retention purge, Postgres | The purge's `FOR UPDATE SKIP LOCKED` skips a row the reopen holds. A reopen that meets a row the purge holds waits, finds zero rows, and gets `WorkflowNotFoundException`, which the executor returns as `NOT_FOUND`. | Row lock (Task 5 `aReopenWaitingOnAPurgeFindsTheRowGone`) |
 | Retention purge, portable dialect | The purge's instance delete re-checks status and rolls back. | Existing (`:1057-1068`) |
-| An older-build node retrying at once | Its `deleteFailureEvents` commits on its own, and at most one CAS wins. The union of deletes is at most today's set plus the plan. | No worse than today |
+| An older-build node retrying at once | Its `deleteFailureEvents` commits on its own, and at most one CAS wins. The union of deletes is at most today's set plus the plan. | No worse than today. *As built (WP13): the older node's delete has no status check and commits before its CAS, so if the newer reopen commits first, the delete strips failure memos (caught ones included) from the relaunched run, the outcome of an old-build Retry; release notes, Mixed fleets; Issue 88.* |
 | Timer poller, signal delivery | They touch rows the reopen does not lock or delete, or lose their CAS on a deleted row. | — |
 | Crash | All or nothing. A crash after the commit and before the launch leaves `RUNNING`, which recovery adopts (as today). | — |
 

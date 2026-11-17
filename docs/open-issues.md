@@ -319,6 +319,9 @@ wake listener leaves autocommit on, the upgrade fixtures have no procedure
 for a breaking core API change, and retried store faults are invisible.
 Issue 87, from a CI failure on the same branch, is **open**: `shutdown()` can
 return while a run it drained still holds its instance lock.
+Issue 88, from a review comment on the same branch, is **open**: during a
+rolling deploy an older node's Retry can strip failure memos from a run a
+newer node just reopened.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -420,6 +423,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | Open |
+| [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -5721,6 +5725,52 @@ the retiring node's lock is still held.
 
 **Done when.** `ShutdownReturnsBeforeLockReleaseTest` passes without
 `@Disabled`.
+
+---
+
+<a id="issue-88"></a>
+
+### Issue 88 — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened {#issue-88}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from an
+> automated review of PR #64 on the WP3 plan's mixed-fleet row. Traced, not
+> tested.
+
+**Kind:** Library gap — mixed-version deploy. **Severity:** Low.
+
+**What happens.** A build before WP3 retries in two steps
+(`WorkflowExecutor.retryWorkflow` at `17811ab0`): read the instance and
+require `FAILED`, call `deleteFailureEvents` (every `ACTIVITY_FAILED`, the
+`WORKFLOW_FAILED` and the failing await's memos, by type, in a transaction of
+its own, without re-checking the status), then `updateInstance`
+(`FAILED → RUNNING` compare-and-set). This build's Retry is one transaction
+(`reopenFailedInstance`). If an older node reads `FAILED` and a newer node's
+reopen commits before the older node's delete, the delete removes failure
+memos from the run the newer node relaunched, including caught failures the
+newer plan kept; the older node's compare-and-set then fails, but the delete
+is already committed.
+
+**Where.** The pre-WP3 `WorkflowExecutor.retryWorkflow` and
+`AbstractJdbcWorkflowStore.deleteFailureEvents` (still the SPI default of
+`reopenFailedInstance`); this build's `reopenFailedInstance`.
+
+**Harm.** The relaunched run re-runs a caught failure's activity live; if it
+now succeeds, the run meets the fallback's memo and stands down as
+`nondeterministic_history` on every recovery pass: the 3.3 outcome of an
+old-build Retry, no worse than two concurrent old-build Retries. It needs two
+concurrent calls of `retryWorkflow` for one workflow on nodes of different
+builds. `AdminCommandDispatcher` handles `$maestro:retry` commands for one
+workflow in order (the record key is the workflow id, so one partition and
+one consumer), so the shipped admin path reaches it only if two consumers
+handle that partition at once, or a host calls `retryWorkflow` itself on two
+nodes.
+
+**How to tackle it.** Documented mitigation (release notes, Mixed fleets): do
+not retry workflows until the rolling deploy across this build boundary has
+finished. A code change cannot reach the older build.
+
+**Done when.** The next release that crosses this boundary carries the
+deploy note; nothing more is needed once no pre-WP3 node can run.
 
 ---
 
