@@ -317,8 +317,8 @@ await one signal name at once, orphaned-signal adoption has two owners and an
 unadopted signal is never purged, the
 wake listener leaves autocommit on, the upgrade fixtures have no procedure
 for a breaking core API change, and retried store faults are invisible.
-Issue 87, from a CI failure on the same branch, is **open**: `shutdown()` can
-return while a run it drained still holds its instance lock.
+Issue 87, from a CI failure on the same branch, is **resolved**: `shutdown()`
+could return while a run it drained still held its instance lock.
 Issue 88, from a review comment on the same branch, is **open**: during a
 rolling deploy an older node's Retry can strip failure memos from a run a
 newer node just reopened.
@@ -422,7 +422,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | Open |
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
-| [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | Open |
+| [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
@@ -5684,10 +5684,26 @@ and the run continue.
 
 ### Issue 87 — `shutdown()` can return while a run it drained still holds its instance lock {#issue-87}
 
-> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the CI
+> **Resolved** (2026-11-17, branch `fix/shutdown-waits-for-lock-release`).
+> The drain now iterates a second map, `unreleasedRuns`, keyed by the run's
+> thread: a run enters it just before `runningWorkflows` and leaves it only
+> after its instance lock is released, at the end of the run thread's body
+> (in a `finally`, so a release that throws still leaves it) or, for a launch
+> that failed before starting the thread, in the launch's cleanup after its
+> release. The drain's existing waits (the `launched` latch, then `join` on the
+> thread) apply unchanged, so a run that has left `runningWorkflows` but not
+> yet released is waited for within the deadline, and a run still in its
+> release at the deadline is named in the deadline `WARN`. The
+> remove-then-release order is unchanged. Pinned by
+> `ShutdownReturnsBeforeLockReleaseTest` (enabled), with the failed-launch
+> path, a run thread that died before its body, a release that throws, the
+> deadline `WARN`, and 13 rounds of 12 runs leaving during the drain. The
+> drain is still one weakly consistent pass, so [Issue 80](#issue-80) is not
+> affected.
+>
+> Filed by WP13, docs and housekeeping (2026-11-17), from the CI
 > failure of `DeterminismCheckerRecoverableTest` on PR #64. Reproduced
-> deterministically by `ShutdownReturnsBeforeLockReleaseTest` (`@Disabled`,
-> red until fixed). The fix is an engine change; routed by the coordinator.
+> deterministically by `ShutdownReturnsBeforeLockReleaseTest`.
 
 **Kind:** Library defect — shutdown, test kit. **Severity:** Low in
 production, High for the test kit's `recover()`.
