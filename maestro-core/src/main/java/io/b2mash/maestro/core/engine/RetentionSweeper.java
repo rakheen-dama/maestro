@@ -86,6 +86,14 @@ final class RetentionSweeper {
     private final EngineObserver observer;
     private final String candidateId;
     private final BackgroundLoopGuard guard;
+
+    /**
+     * Set by {@link #sweepOnce()} when it logged and swallowed a fault, so the
+     * loop does not count that sweep as a success. Written and then read on
+     * the loop thread; a direct {@code sweepOnce()} from another thread while
+     * the loop runs can at worst misreport one sweep.
+     */
+    private volatile boolean sweepSwallowedAFailure;
     private final AtomicBoolean started = new AtomicBoolean(false);
     /**
      * Set by {@link #stop()} and never cleared; distinct from {@code running}
@@ -212,6 +220,7 @@ final class RetentionSweeper {
      *         node holds leadership, or the first leader check failed
      */
     Optional<PurgeResult> sweepOnce() {
+        sweepSwallowedAFailure = false;
         var now = Instant.now();
         var total = PurgeResult.EMPTY;
         var leader = false;
@@ -245,6 +254,7 @@ final class RetentionSweeper {
         } catch (RuntimeException e) {
             logger.warn("Retention sweep failed after purging {} instance(s) — will retry in {}",
                     total.instances(), settings.interval(), e);
+            sweepSwallowedAFailure = true;
             return leader ? finish(total) : Optional.empty();
         }
     }
@@ -290,6 +300,7 @@ final class RetentionSweeper {
         } catch (RuntimeException e) {
             logger.warn("Retention leader election failed for service '{}' — treating as not the leader",
                     serviceName, e);
+            sweepSwallowedAFailure = true;
             return false;
         }
     }
@@ -298,7 +309,11 @@ final class RetentionSweeper {
         while (running) {
             try {
                 sweepOnce();
-                guard.succeeded();
+                // A sweep that swallowed a store or lock-backend fault is not
+                // a success: it must not end an Error streak (nor log "recovered").
+                if (!sweepSwallowedAFailure) {
+                    guard.succeeded();
+                }
             } catch (Throwable t) {
                 // Rethrows a MaestroControlFlowError (ending the loop);
                 // contains and logs everything else. Store and lock-backend

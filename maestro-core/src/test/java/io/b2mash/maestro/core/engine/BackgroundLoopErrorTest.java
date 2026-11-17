@@ -250,7 +250,84 @@ class BackgroundLoopErrorTest {
         assertFalse(janitor.isRunning());
     }
 
+    /**
+     * A sweep whose store fault {@code sweepOnce} swallowed is not a success:
+     * it does not end an {@code Error} streak (so no "recovered" line is
+     * logged for it). The next real success does.
+     */
+    @Test
+    void signalJanitor_aSweepThatSwallowedAStoreFaultDoesNotEndTheStreak() throws Exception {
+        var janitorRef = new AtomicReference<SignalJanitor>();
+        var calls = new AtomicInteger();
+        var streakSeenByThirdSweep = new AtomicInteger(-1);
+        var thirdSweep = new CountDownLatch(1);
+        var flaky = new PollFaultStore() {
+            @Override
+            public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+                switch (calls.incrementAndGet()) {
+                    case 1 -> throw new AssertionError("an Error: the streak starts");
+                    case 2 -> throw new IllegalStateException("a store fault sweepOnce swallows");
+                    case 3 -> {
+                        streakSeenByThirdSweep.set(janitorRef.get().consecutiveFailures());
+                        thirdSweep.countDown();
+                    }
+                    default -> { }
+                }
+                return 0;
+            }
+        };
+        var janitor = new SignalJanitor(flaky, Duration.ofMillis(50), Duration.ofDays(1), observer);
+        janitorRef.set(janitor);
+        janitor.start();
+        try {
+            assertTrue(thirdSweep.await(5, TimeUnit.SECONDS), "the janitor made no third sweep");
+            assertEquals(1, streakSeenByThirdSweep.get(),
+                    "the sweep that swallowed a store fault did not end the streak");
+            await("the third, successful sweep to end the streak").atMost(Duration.ofSeconds(5))
+                    .until(() -> janitor.consecutiveFailures() == 0);
+        } finally {
+            janitor.stop();
+        }
+    }
+
     // ── Retention sweeper ─────────────────────────────────────────────
+
+    /** As for the janitor: a sweep that swallowed a store fault does not end the streak. */
+    @Test
+    void retentionSweeper_aSweepThatSwallowedAStoreFaultDoesNotEndTheStreak() throws Exception {
+        var sweeperRef = new AtomicReference<RetentionSweeper>();
+        var calls = new AtomicInteger();
+        var streakSeenByThirdSweep = new AtomicInteger(-1);
+        var thirdSweep = new CountDownLatch(1);
+        var flaky = new PollFaultStore() {
+            @Override
+            public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+                switch (calls.incrementAndGet()) {
+                    case 1 -> throw new AssertionError("an Error: the streak starts");
+                    case 2 -> throw new IllegalStateException("a store fault sweepOnce swallows");
+                    case 3 -> {
+                        streakSeenByThirdSweep.set(sweeperRef.get().consecutiveFailures());
+                        thirdSweep.countDown();
+                    }
+                    default -> { }
+                }
+                return PurgeResult.EMPTY;
+            }
+        };
+        var sweeper = new RetentionSweeper(flaky, null, "svc", new WorkflowExecutor.RetentionSettings(
+                Duration.ofMillis(50), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1), observer);
+        sweeperRef.set(sweeper);
+        sweeper.start();
+        try {
+            assertTrue(thirdSweep.await(5, TimeUnit.SECONDS), "the sweeper made no third sweep");
+            assertEquals(1, streakSeenByThirdSweep.get(),
+                    "the sweep that swallowed a store fault did not end the streak");
+            await("the third, successful sweep to end the streak").atMost(Duration.ofSeconds(5))
+                    .until(() -> sweeper.consecutiveFailures() == 0);
+        } finally {
+            sweeper.stop();
+        }
+    }
 
     @ParameterizedTest
     @MethodSource("survivableErrors")

@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.sql.SQLException;
@@ -176,6 +177,54 @@ class BackgroundLoopGuardTest {
             assertTrue(logs.records().stream().anyMatch(r -> r.message().contains(UnprintableError.class.getName())),
                     "the dead loop is still reported, by class name");
         }
+    }
+
+    static Stream<Arguments> intervalsInPlainUnits() {
+        return Stream.of(
+                Arguments.of(Duration.ofMillis(50), "every 50 ms "),
+                Arguments.of(Duration.ofMillis(1500), "every 1500 ms "),
+                Arguments.of(Duration.ofSeconds(5), "every 5 s "),
+                Arguments.of(Duration.ofSeconds(90), "every 90 s "),
+                Arguments.of(Duration.ofMinutes(10), "every 10 min "),
+                Arguments.of(Duration.ofHours(1), "every 1 h "));
+    }
+
+    @ParameterizedTest
+    @MethodSource("intervalsInPlainUnits")
+    void theFirstFailureNamesTheRetryIntervalInPlainUnits(Duration interval, String expected) {
+        var g = new BackgroundLoopGuard(BackgroundLoopGuard.TIMER_POLLER, interval, () -> false, observer, nanos::get);
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            g.failed(new IllegalStateException("down"));
+            var first = logs.records().getFirst().message();
+            assertTrue(first.contains(expected), "expected '" + expected + "' in: " + first);
+        }
+    }
+
+    @Test
+    void aLoopFasterThanTheReminderIntervalSaysRepeatsAreQuiet() {
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            guard.failed(new IllegalStateException("down"));                       // 5 s interval
+            assertEquals("Background loop 'timer-poller' failed (java.lang.IllegalStateException: down); it keeps "
+                            + "running and retries every 5 s — further failures are logged at DEBUG, with an ERROR "
+                            + "reminder at most every 5 minutes while they continue",
+                    logs.records().getFirst().message());
+        }
+    }
+
+    @Test
+    void aLoopNoFasterThanTheReminderIntervalSaysEveryFailureIsLoggedAtError() {
+        var hourly = new BackgroundLoopGuard(BackgroundLoopGuard.SIGNAL_JANITOR, Duration.ofHours(1), () -> false,
+                observer, nanos::get);
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            hourly.failed(new IllegalStateException("down"));
+            assertEquals("Background loop 'signal-janitor' failed (java.lang.IllegalStateException: down); it keeps "
+                            + "running and retries every 1 h — each further failure is logged at ERROR, without the "
+                            + "stack trace, until it recovers",
+                    logs.records().getFirst().message());
+        }
+        nanos.addAndGet(Duration.ofHours(1).toNanos());
+        assertEquals(BackgroundLoopGuard.Logged.REMINDER, hourly.failed(new IllegalStateException("down")),
+                "what the message promised");
     }
 
     @Test

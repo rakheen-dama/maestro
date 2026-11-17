@@ -59,6 +59,14 @@ final class SignalJanitor {
     private final Duration interval;
     private final Duration retention;
     private final BackgroundLoopGuard guard;
+
+    /**
+     * Set by {@link #sweepOnce()} when it logged and swallowed a fault, so the
+     * loop does not count that sweep as a success. Written and then read on
+     * the loop thread; a direct {@code sweepOnce()} from another thread while
+     * the loop runs can at worst misreport one sweep.
+     */
+    private volatile boolean sweepSwallowedAFailure;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private volatile boolean running;
@@ -176,6 +184,7 @@ final class SignalJanitor {
      * @return the number of signal rows deleted ({@code 0} on a store failure)
      */
     int sweepOnce() {
+        sweepSwallowedAFailure = false;
         var cutoff = Instant.now().minus(retention);
         try {
             int deleted = store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
@@ -186,6 +195,7 @@ final class SignalJanitor {
             return deleted;
         } catch (RuntimeException e) {
             logger.warn("Signal janitor sweep failed — will retry in {}", interval, e);
+            sweepSwallowedAFailure = true;
             return 0;
         }
     }
@@ -196,7 +206,11 @@ final class SignalJanitor {
         while (running) {
             try {
                 sweepOnce();
-                guard.succeeded();
+                // A sweep that swallowed a store fault is not a success: it
+                // must not end an Error streak (nor log "recovered").
+                if (!sweepSwallowedAFailure) {
+                    guard.succeeded();
+                }
             } catch (Throwable t) {
                 // Rethrows a MaestroControlFlowError (ending the loop);
                 // contains and logs everything else. Store faults never get

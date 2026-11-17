@@ -23,8 +23,11 @@ import java.util.function.LongSupplier;
  * the guard adds no wait and no back-off of its own, so a loop keeps its
  * schedule after a contained failure, and what is rate-limited is the log —
  * one {@code ERROR} with the stack trace when a streak starts, {@code DEBUG}
- * for repeats, one {@code ERROR} reminder every {@link #REMINDER_INTERVAL}
- * while it continues, and one {@code INFO} when the loop recovers.
+ * for repeats, one {@code ERROR} reminder at most every
+ * {@link #REMINDER_INTERVAL} while it continues, and one {@code INFO} when the
+ * loop recovers. A loop whose interval is at least {@code REMINDER_INTERVAL}
+ * (the hourly janitor and sweeper) therefore logs every failure at
+ * {@code ERROR}; its first line says so.
  *
  * <h2>Why a per-iteration guard, not a runner that owns the loop</h2>
  * <p>The five loops differ in shape: the recovery poller and the instance-lock
@@ -162,9 +165,8 @@ final class BackgroundLoopGuard {
             lastLoudNanos = now;
             logged = Logged.FIRST;
             log(failure, () -> logger.error("Background loop '{}' failed ({}); it keeps running and retries every "
-                            + "{} — further failures are logged at DEBUG, with a reminder every 5 minutes while "
-                            + "they continue",
-                    loop, describe(failure), retryInterval, failure));
+                            + "{} — {}",
+                    loop, describe(failure), plain(retryInterval), whatFollows(), failure));
         } else if (now - lastLoudNanos >= REMINDER_INTERVAL.toNanos()) {
             lastLoudNanos = now;
             logged = Logged.REMINDER;
@@ -206,6 +208,33 @@ final class BackgroundLoopGuard {
                 // Nothing left to log with; the failure is still counted.
             }
         }
+    }
+
+    /**
+     * What the first failure's line promises about the ones after it. A loop
+     * whose interval is at least {@link #REMINDER_INTERVAL} never fails twice
+     * within it, so each of its further failures is a reminder.
+     */
+    private String whatFollows() {
+        return retryInterval.compareTo(REMINDER_INTERVAL) < 0
+                ? "further failures are logged at DEBUG, with an ERROR reminder at most every 5 minutes while they "
+                        + "continue"
+                : "each further failure is logged at ERROR, without the stack trace, until it recovers";
+    }
+
+    /** {@code d} in one plain unit: {@code 50 ms}, {@code 5 s}, {@code 10 min}, {@code 1 h}. */
+    static String plain(Duration d) {
+        var ms = d.toMillis();
+        if (ms != 0 && ms % 3_600_000 == 0) {
+            return ms / 3_600_000 + " h";
+        }
+        if (ms != 0 && ms % 60_000 == 0) {
+            return ms / 60_000 + " min";
+        }
+        if (ms != 0 && ms % 1000 == 0) {
+            return ms / 1000 + " s";
+        }
+        return ms + " ms";
     }
 
     /**
