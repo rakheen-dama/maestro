@@ -88,8 +88,12 @@ function json(res) {
   }
 }
 
+// An HTTP answer of any status. Not `!res.error_code`: k6 sets error_code
+// for every 4xx/5xx too (1503 for a 503), so a DOWN component's 503 would
+// count as "no answer" (it did, in r20261117t152847z); a timeout or a
+// refused connection has status 0.
 function answered(res) {
-  return res.status !== 0 && !res.error_code;
+  return res.status !== 0;
 }
 
 // A DOWN that a background loop explains, not the store: any *Running detail
