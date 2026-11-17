@@ -1,6 +1,8 @@
 # Multi-Instance Verification Plan
 
-**Status: COMPLETE as of 2026-08-01.** All
+**Status: COMPLETE as of 2026-08-01.** (Since 2026-11-04 Postgres is the
+only lock backend; the Valkey runs below are history, see the note under
+Task E.) All
 three phases below shipped: Phase 1 (Tasks A-E, real multi-process E2E
 scenarios on both lock backends), Phase 2 (the chaos/soak harness, which
 found and fixed three further engine defects, Issues 18, 19, and 20), and

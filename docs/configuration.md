@@ -138,7 +138,7 @@ SELECT t.table_name, p.privilege_type
     ORDER BY t.table_name, p.privilege_type;
 ```
 
-In the documented state it returns the same four rows. It counts a privilege wherever it comes from: granted to `maestro_app`, to `PUBLIC`, or to a role `maestro_app` inherits from, on the table or (for `INSERT`, `SELECT` and `UPDATE`) on any column of it. Any role may run it, not only a grantor: `has_table_privilege` and `has_any_column_privilege` answer for another role without that restriction. The caller must still be able to resolve the tables, which needs `USAGE` on the schema; a caller that cannot gets an error (`permission denied for schema`, or `relation ... does not exist`), never an empty result. Each check proves something the other does not:
+In the documented state it returns the same four rows; fewer means `maestro_app` lacks one of the four privileges the engine uses on these tables, so restore the grants above. It counts a privilege wherever it comes from: granted to `maestro_app`, to `PUBLIC`, or to a role `maestro_app` inherits from, on the table or (for `INSERT`, `SELECT` and `UPDATE`) on any column of it. It does not count a role `maestro_app` can `SET ROLE` to without inheriting from it (a PostgreSQL 16 membership `WITH INHERIT FALSE, SET TRUE`): such a session can still take that role's privileges (from the PostgreSQL documentation; not tested here), so list `maestro_app`'s memberships too: `SELECT roleid::regrole FROM pg_auth_members WHERE member = 'maestro_app'::regrole;`. Any role may run it, not only a grantor: `has_table_privilege` and `has_any_column_privilege` answer for another role without that restriction. The caller must still be able to resolve the tables, which needs `USAGE` on the schema; a caller that cannot gets an error (`permission denied for schema`, or `relation ... does not exist`), never an empty result. Each check proves something the other does not:
 
 - The grants check shows what was granted to `maestro_app` itself, and so what the `REVOKE ... FROM maestro_app` repair above removes. It does not prove the role cannot do more.
 - The effective check shows what `maestro_app` can do on those two tables. It does not say where a privilege comes from, so a row the repair above does not remove was granted elsewhere. Revoke it where it was granted, from `PUBLIC` or from the parent role (in `psql`, `\dp maestro_workflow_event` lists the table's grants, column grants included). Neither check covers `REFERENCES` or `TRIGGER`, or the other `maestro_*` tables, which hold full DML by design.
@@ -275,8 +275,8 @@ Put the qualifier on one bean, on the `@Bean` method or on the bean's class.
 If several carry it, Spring's usual tie-breakers pick Maestro's: the `@Primary`
 one, else the one named `maestroDataSource` (the name of Maestro's injection
 points). With neither, startup fails with `Maestro found 2 @MaestroDataSource
-beans and none is @Primary: [...]. Keep one, or mark the one Maestro should use
-@Primary.` With no qualified bean and two or more
+beans, none @Primary and none named maestroDataSource: [...]. Keep one, mark the
+one Maestro should use @Primary, or name its bean maestroDataSource.` With no qualified bean and two or more
 unqualified `DataSource`s, none `@Primary`, startup fails with `Maestro found
 <n> DataSource beans and none is @Primary or @MaestroDataSource. Annotate the
 one Maestro should use with @MaestroDataSource.`
@@ -289,7 +289,9 @@ connections as well as an activity slot's: a run replaying its history, or a
 parked run's wake re-check, holds a workflow slot without running an
 activity. Size the pool at **at least `max(maestro.worker.default-concurrency,
 maestro.worker.default-activity-concurrency) + 5`** (25 at the defaults); if
-several task queues are busy at once, add the same `max(...)` for each. As arithmetic, wake re-checks keep on average
+several task queues are busy at once, add the same `max(...)` for each. This is
+a heuristic, not a bound: workflow and activity slot holders can borrow at the
+same time, so the sum of the two limits, plus 5, is the conservative figure. As arithmetic, wake re-checks keep on average
 P × d / `wake-recheck-interval` workflow slots busy, where P is the number of
 parked workflows and d one re-check's duration (2–3 reads). For example,
 assuming 5 ms per re-check, 2,000 parked workflows × 5 ms / 30 s ≈ 0.3 slots. A

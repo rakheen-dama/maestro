@@ -733,6 +733,12 @@ recollection. "Unverified" below means no test asserts the behaviour either way.
    results* are still prevented by the unique event index; duplicate *side
    effects* are not. Closing this needs fencing-token validation in the
    `WorkflowStore` SPI.
+   **Fixed 2026-11-04** (Issue 11, store migration V6): every adoption bumps
+   `maestro_workflow_instance.lease_epoch`, every run-scoped write carries the
+   run's epoch, and a write from a run whose epoch has moved on is rejected with
+   `FencedWriteException`; the fenced run stands down as `LEASE_FENCED`. The
+   activity in flight at adoption can still run twice: the fence bounds
+   persisted progress, not external side effects.
 
 5. **The no-lock-backend profile duplicates execution.** *By design, now
    characterised.* `MultiNodeNoLockBackendIT` pins what actually happens: a
@@ -868,13 +874,14 @@ resurfaces, start there.
 
 ## 4. Explicitly out of scope (for now)
 
-Valkey beyond existing coverage (best-effort), RabbitMQ parity suite,
-admin dashboard UI tests. **No longer out of
+Admin dashboard UI tests. (Valkey and RabbitMQ coverage were listed here; both
+backends have since been removed.) **No longer out of
 scope, closed 2026-08-01:** chaos testing of >TTL pauses — the multi-instance
 chaos harness's `PAUSE_RESUME` action freezes a real container past the 30s
 instance-lock TTL on every run (mandated ≥2 loan-node occurrences per run);
-split-brain is still accepted-by-design (fencing tokens have not landed —
-`docs/open-issues.md` Issue 11), but its measured consequences are no longer
-unmeasured — see `docs/operations.md` and Issue 11's evidence section.
+its measured consequences are in `docs/operations.md` and Issue 11's evidence
+section. Split-brain was accepted by design when this was written; the lease
+epoch fence (Issue 11, V6, 2026-11-04) has since closed it for persisted
+progress.
 
 Performance/load testing moved into scope 2026-11-12 — see §1 *Load suite*.

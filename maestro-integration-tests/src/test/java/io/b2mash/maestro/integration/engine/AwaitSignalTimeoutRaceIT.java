@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
@@ -349,6 +350,12 @@ class AwaitSignalTimeoutRaceIT extends PostgresIntegrationSupport {
         @Override
         public List<WorkflowInstance> getRecoverableInstances() {
             return delegate.getRecoverableInstances();
+        }
+
+        @Override
+        public List<WorkflowInstance> getRecoverableInstances(
+                String serviceName, @Nullable RecoveryCursor after, int limit) {
+            return delegate.getRecoverableInstances(serviceName, after, limit);
         }
 
         @Override
