@@ -359,6 +359,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
 | [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -4465,6 +4466,47 @@ WP3 changes no lifecycle event or `maestro-admin` code.
 
 **Done when.** A refused Retry shows its outcome on the workflow's dashboard
 page.
+
+---
+
+### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the Tasks 4–5 review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — shutdown. **Severity:** Low.
+
+**What happens.** `close()` sets `running` to `false` and calls
+`thread.interrupt()` on the cleaner's virtual thread. Between sleeps that
+thread runs `PostgresLockCleaner.clean()`: one pooled connection, two
+`DELETE`s. An interrupt that lands while the thread is blocked in a socket
+read closes the socket under the pool. This is the mechanism WP10 reproduced
+for Issue 38 on the wake listener, so the pool marks the connection broken,
+logs a `WARN` and evicts it. WP4 changed only what the loop does with a
+throwable (a failure after `close()` is logged at `DEBUG`); the interrupt is
+older code.
+
+**Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
+interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`).
+
+**Harm.** At most one pool `WARN` and one evicted connection per shutdown,
+and only when the shutdown falls inside a run (a few milliseconds every
+`maestro.lock.cleanup-interval`, 10 min by default). Nothing durable is
+affected: both `DELETE`s are idempotent and autocommit.
+
+**How to tackle it.** Do what WP10 did for the listener: `close()` stops the
+wait without an interrupt (a latch or condition the loop waits on in place of
+`Thread.sleep`), lets a run in progress finish, and joins the thread for a
+bounded time. Pin it as `PostgresWakeListenerShutdownTest` does: a Hikari pool,
+`close()` during a slow `DELETE`, no pool `WARN`, and the connection reused.
+
+**Why it is not WP4.** WP4 makes the loop survive an `Error`; changing how
+the loop stops is WP10's pattern applied to another class. It needs its own
+Hikari-backed test.
+
+**Done when.** Closing the scheduler during a run logs no pool `WARN` and
+evicts no connection.
 
 ---
 
