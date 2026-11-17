@@ -173,10 +173,10 @@ public final class WorkflowExecutor {
      * <em>before</em> its release (remove-then-release, which the wake-permit
      * cleanup relies on), so a drain over that map alone could return while a
      * finished run still held its lock. An entry leaves here only after the
-     * release, whether it returned or threw: at the end of the run thread's
-     * body (the release, on every path a started run takes, happens on that
-     * thread before it), or, for a launch that failed before starting the
-     * thread, in the launch's cleanup after its release.
+     * release was attempted, whether it succeeded or threw: at the end of the
+     * run thread's body (the release, on every path a started run takes, is
+     * attempted on that thread before it), or, for a launch that failed
+     * before starting the thread, in the launch's cleanup after its release.
      *
      * <p>Thread-safe: each entry is put once by its launch and removed once by
      * the run's thread or by the failed launch; the drain reads it weakly
@@ -2230,8 +2230,10 @@ public final class WorkflowExecutor {
      *   <li>Drain the runs in flight until the deadline, a run whose launch has
      *       registered it but not yet started its thread included, and a run
      *       that has finished but not yet released its instance lock: a run
-     *       drained in time has released its lock when {@code shutdown()}
-     *       returns.</li>
+     *       drained in time has finished its lock release when
+     *       {@code shutdown()} returns. The lock is free if the backend's
+     *       release succeeded; if it failed, the lock's row is left to expire
+     *       by TTL.</li>
      *   <li>Join the background loops for what is left. A loop still inside
      *       a store call at the deadline is named in a {@code WARN} and ends
      *       after that call.</li>
@@ -2942,8 +2944,8 @@ public final class WorkflowExecutor {
                             }
                             throw t; // control-flow Errors included: cleaned up, then rethrown unchanged
                         } finally {
-                            // Last on this thread: the instance lock was released
-                            // above (or its release threw), on every path.
+                            // Last on this thread: the instance lock was released,
+                            // or its release attempted, above on every path.
                             unreleasedRuns.remove(Thread.currentThread());
                             WorkflowMDC.clear();
                         }
