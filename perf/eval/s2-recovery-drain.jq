@@ -47,30 +47,49 @@
 #   pg_stat_statements entry for INSERT INTO maestro_distributed_lock (the
 #   acquire is an upsert that returns a row only when it takes the lock).
 #   gate.lockAcquisitionsPerAdoption  (successful acquisitions - probe starts
-#                                + adoptCas) / adoptions <= 2.02: one lock and
-#                                one compare-and-set per adopted run (measured
-#                                2.0000 in every run)
-#   gate.lostLockRaces           (lock calls - lock rows) / N <= 0.25: attempts
+#                                + adoptCas) / adoptions <= 2.02. Read
+#                                honestly: validity.recoveryClassifier
+#                                already holds adoptCas == adoptions == N, so
+#                                this is 1 + (lock rows - probe starts) / N:
+#                                every adoption took exactly one lock, and no
+#                                run was locked twice (re-adopted). Measured
+#                                2.0000 in every run
+#   gate.lostLockRaces           (lock calls - lock rows) / N <= 0.5: attempts
 #                                lost to the peer between its heldKeys read
 #                                and its lock call, inherent on two nodes
-#                                while the store has no claim protocol
-#                                (measured B: 0 before, 622 = 0.124 preview,
-#                                923 = 0.185 after of record; A: 0)
-#   gate.recoveryPassRate        (recoveryPage + heldKeys) / designed <= 1.25,
-#                                designed = R x node-seconds + one full pass
-#                                per node start, R = 2 / 1 s (capacity passes:
-#                                at most once per second per node, one page +
-#                                one heldKeys read, RecoveryPoller.java:201,
-#                                operations.md's capacity-pass row) + 2 x
+#                                while the store has no claim protocol, and
+#                                growing with statement latency (the window
+#                                between the read and the call). Measured, one
+#                                host: B 0 before (node 2 adopted nothing),
+#                                622 = 0.124 preview, 923 = 0.185 after of
+#                                record; A 0. 0.5 (coordinator's ruling, final
+#                                review f3) leaves room for a slower host,
+#                                while the regression the gate exists for — a
+#                                peer chasing every row, as if heldKeys were
+#                                not read — loses about one race per run (>= 1)
+#   gate.recoveryPassRate        (recoveryPage + heldKeys) / designed <= 1.25.
+#                                designed is a FLOOR, not a ceiling: R x
+#                                node-seconds + one full pass per node start,
+#                                R = 2 / 1 s (capacity passes at most once per
+#                                second per node, RecoveryPoller.java:201,
+#                                counted at their least, one page + one
+#                                heldKeys read; a pass whose page fills goes
+#                                on to the next page while headroom remains,
+#                                operations.md: ceil(rows read / page) page
+#                                reads, so a pass can read more) + 2 x
 #                                ceil(N / 200) / pollInterval (a full pass
 #                                every recovery poll interval reads every page
 #                                and its heldKeys; 200 = the page,
 #                                WorkflowExecutor RECOVERY_PAGE_SIZE); a full
-#                                pass = 2 x ceil(N / 200). node-seconds: each
+#                                pass = 2 x ceil(N / 200); node-seconds: each
 #                                node's start (startIssuedAt) to the phase's
-#                                last completion. 1.25 is slack for the
-#                                clocks and the drain's tail; a re-poll storm
-#                                (passes faster than the spacing) exceeds it
+#                                last completion. The limit 1.25 rests on the
+#                                measurements, not the arithmetic: 0.57-0.73
+#                                on one node, 0.86-0.90 on two after WP6
+#                                (worst 0.896, the preview's phase B), so 1.25
+#                                is 39 % above the worst run seen; a re-poll
+#                                storm (passes faster than the spacing, or
+#                                re-reading pages it has adopted) exceeds it
 #   advisory.readiness           readiness delay over the empty-database
 #                                start, per phase start (WARN above 5 s)
 #   advisory.adoptionShare       per-node adoptions in phase B (WARN when one
@@ -89,7 +108,7 @@ include "common";
 def s2_max_ratio: 0.65;
 def s2_probe_fraction: 0.25;
 def s2_max_acquisitions_per_adoption: 2.02;
-def s2_max_lost_per_run: 0.25;
+def s2_max_lost_per_run: 0.5;
 def s2_pass_rate_slack: 1.25;
 def s2_page_rows: 200;
 def s2_capacity_spacing_secs: 1;
@@ -235,7 +254,7 @@ $identity[0] as $id
          if ($v | length) == 0 or ($c | isnum | not) then "INVALID" elif $mx <= 2 * $c then "PASS" else "FAIL" end;
          $v; {maxHoard: "<= 2C = \(if $c | isnum then 2 * $c else null end) (the documented running-or-queued bound)"};
          if ($v | length) == 0 then "no hoard series"
-         else "max hoard \($mx) (running - parked - workflow slots used) against C = \($c)" end)),
+         else "max hoard \($mx) (running - parked - workflow slots used) against 2C = \(2 * $c) (C = \($c))" end)),
     (($a | drain_secs) as $da | ($a.probes.latency.p95Ms // null) as $p95
      | (if ($da | isnum) and $da > 0 and ($p95 | isnum) then $p95 / 1000 / $da else null end) as $f
      | check("gate.freshStartsNotStarved"; "gate";
