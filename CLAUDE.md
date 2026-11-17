@@ -13,7 +13,7 @@ Read these before making architectural decisions:
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
-- `docs/pitfalls.md` — The twelve workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them)
+- `docs/pitfalls.md` — The thirteen workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them, no workflow operations inside an activity)
 
 ## Core Design: Hybrid Memoization
 
