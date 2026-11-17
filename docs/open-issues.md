@@ -4489,26 +4489,45 @@ logs a `WARN` and evicts it. WP4 changed only what the loop does with a
 throwable (a failure after `close()` is logged at `DEBUG`); the interrupt is
 older code.
 
+**The same in core.** `WorkflowInstanceLockManager.close()` (called from
+`WorkflowExecutor.shutdown()`) interrupts the instance-lock renewer, which
+may be inside `DistributedLock.renewAll` — on Postgres one pooled connection
+and one `UPDATE` per 500 locks — with the same effect on the pool. The
+interrupted `renewAll` then throws (`LockBackendException`), and the
+renewer's backend-failure arm emits `instanceLockRenewFailed` for **every
+held lock** before the guard sees it is stopping, so a shutdown that lands
+inside a pass adds one `maestro.lock.renew.failures{outcome="error"}` per
+held lock: an alert on that counter fires on a routine deploy. Traced, not
+tested.
+
 **Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
-interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`).
+interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`);
+`WorkflowInstanceLockManager.java` (`close()`, `thread.interrupt()`;
+`renewPass()`, the `catch (Exception e)` arm around `renewAll`).
 
 **Harm.** At most one pool `WARN` and one evicted connection per shutdown,
 and only when the shutdown falls inside a run (a few milliseconds every
-`maestro.lock.cleanup-interval`, 10 min by default). Nothing durable is
-affected: both `DELETE`s are idempotent and autocommit.
+`maestro.lock.cleanup-interval`, 10 min by default, for the cleaner; a
+renewal pass every TTL/3, 10 s by default, for the renewer). Nothing durable
+is affected: both `DELETE`s are idempotent and autocommit, and the locks the
+renewer held expire via TTL as they would anyway. The renewer's case also
+counts `maestro.lock.renew.failures{outcome="error"}` once per held lock.
 
 **How to tackle it.** Do what WP10 did for the listener: `close()` stops the
 wait without an interrupt (a latch or condition the loop waits on in place of
 `Thread.sleep`), lets a run in progress finish, and joins the thread for a
 bounded time. Pin it as `PostgresWakeListenerShutdownTest` does: a Hikari pool,
 `close()` during a slow `DELETE`, no pool `WARN`, and the connection reused.
+The renewer takes the same change, and its backend-failure arm should not
+emit `instanceLockRenewFailed` once the manager is closed.
 
 **Why it is not WP4.** WP4 makes the loop survive an `Error`; changing how
 the loop stops is WP10's pattern applied to another class. It needs its own
 Hikari-backed test.
 
-**Done when.** Closing the scheduler during a run logs no pool `WARN` and
-evicts no connection.
+**Done when.** Closing the scheduler during a run, or the executor during a
+renewal pass, logs no pool `WARN`, evicts no connection, and counts no
+renewal failure.
 
 ---
 
@@ -4531,7 +4550,12 @@ knows only the `WorkflowExecutor`. `PostgresWakeListener.isConnected()` and the
 cleaner's (package-private) `isRunning()` reach no indicator. The wake
 listener's `WARN` for an unexpected `RuntimeException` is also not
 rate-limited like the guard's lines: once per reconnect attempt, so at most
-one per second, falling to one per 30 s as the back-off grows.
+one per second, falling to one per 30 s as the back-off grows. Its arm for a
+driver `Error` (not a control-flow one) is worse: it keeps the same session
+and pauses 1 s, so a driver that throws an `Error` on every poll logs
+`ERROR` **with the stack trace** about once a second — roughly 3,600 lines an
+hour — with no rate limit and no back-off (traced, not tested; the 1 s pause
+is `anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain`).
 
 **Where.** `PostgresLockCleanerScheduler.java` (`loop`),
 `PostgresWakeListener.java` (`pollLoop`, `dispatch`); their auto-configurations
@@ -4576,14 +4600,20 @@ interrupts the probe's virtual thread. In a pool wait the interrupt is
 harmless. Mid-query it closes the socket — the mechanism WP10 reproduced for
 Issue 38 — so a slow database sees one pool `WARN` and one evicted connection
 per timed-out probe. WP4 made the probe single-flight (a later health call
-joins a probe still in flight instead of starting another), so this is at
-most one connection per stuck probe, not one per health call.
+joins a probe still in flight instead of starting another), but that bounds
+the cost only for a store call that ignores the interrupt: such a probe stays
+stuck, later calls join it, and it holds one connection. With pgjdbc the
+interrupt frees the probe — the socket is closed and the call throws — so
+the probe ends, the next health call starts a fresh one, and on a database
+that stays slow **each timed-out health call can cost one evicted
+connection** (traced, not tested).
 
 **Where.** `MaestroHealthIndicator.java`, `Probe.abandon()`
 (`thread.interrupt()`), called from `probeStore()` on timeout.
 
 **Harm.** Pool `WARN`s and connection churn on a database that is already
-slow.
+slow: up to one evicted connection per readiness-probe period while every
+probe times out mid-query.
 
 **How to tackle it.** Stop interrupting: the single-flight probe already
 bounds the cost of a stuck probe to one thread and one borrowed connection.
