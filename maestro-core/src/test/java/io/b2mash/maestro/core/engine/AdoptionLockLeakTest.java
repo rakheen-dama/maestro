@@ -144,6 +144,45 @@ class AdoptionLockLeakTest {
                 .until(manager::isRenewerRunning);
     }
 
+    /**
+     * Review d1: {@code startWorkflow} acquires the lock, then creates the row
+     * and adopts orphaned signals. An {@code Error} from the adoption, after
+     * the {@code RUNNING} row committed, must release the lock, or no later
+     * recovery pass can adopt the workflow.
+     */
+    @Test
+    void startWorkflow_anErrorAdoptingOrphanedSignals_releasesTheLockAndALaterRecoveryPassRunsTheWorkflow()
+            throws Exception {
+        var failingStore = new AdoptFailsOnceStore();
+        executor = WorkflowExecutor.builder(failingStore, serializer, "svc")
+                .distributedLock(lock)
+                .lifecycleEventsEnabled(false)
+                .build();
+
+        var thrown = assertThrows(AssertionError.class, () -> executor.startWorkflow("wf-d1", "LeakWorkflow",
+                "default", null, () -> new LeakWorkflow(ran), workflowMethod()));
+        assertEquals("injected in adoptOrphanedSignals", thrown.getMessage(), "the Error propagates unchanged");
+        assertEquals(List.of("maestro:lock:workflow:wf-d1"), lock.released,
+                "the handle acquired for the failed start is released");
+
+        executor.startRecoveryPoller(registrations(), Duration.ofMillis(50));
+        assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass adopted and ran the workflow");
+    }
+
+    /** Throws an {@code AssertionError} from the first {@code adoptOrphanedSignals}, after the row exists. */
+    static final class AdoptFailsOnceStore extends VersionedInMemoryStore {
+
+        private final AtomicBoolean thrown = new AtomicBoolean();
+
+        @Override
+        public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
+            if (thrown.compareAndSet(false, true)) {
+                throw new AssertionError("injected in adoptOrphanedSignals");
+            }
+            super.adoptOrphanedSignals(workflowId, instanceId);
+        }
+    }
+
     // ── Fixtures ──────────────────────────────────────────────────────
 
     private WorkflowExecutor executor(EngineObserver observer) {

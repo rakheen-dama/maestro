@@ -640,9 +640,16 @@ public final class WorkflowExecutor {
             // signals sent before workflow starts are stored with null instanceId)
             store.createInstance(instance);
             signalManager.adoptOrphanedSignals(workflowId, instanceId);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            // An Error too (control-flow ones included): no run owns this lock yet, so
+            // keeping it would leave the handle renewed for ever and the workflow, whose
+            // RUNNING row may already be committed, unrecoverable until this node restarts.
             if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                instanceLockManager.release(workflowId);
+                try {
+                    instanceLockManager.release(workflowId);
+                } catch (RuntimeException | Error releaseFailure) {
+                    e.addSuppressed(releaseFailure);
+                }
             }
             throw e;
         }
