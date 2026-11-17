@@ -83,7 +83,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * queue is empty; {@link #reclaimShutdownPermits}, called after the drain,
  * takes the loans back.
  * <ul>
- *   <li><b>No interrupts.</b> Nothing calls {@code Thread.interrupt()} and the
+ *   <li><b>No interrupts.</b> Nothing interrupts a waiting thread and the
  *       closed path sets no interrupt flag, so a waiter's own instance-lock
  *       release over JDBC, in its {@code finally}, is never cut short.</li>
  *   <li><b>No waiter left parked.</b> Every waiter queued at shutdown is woken
