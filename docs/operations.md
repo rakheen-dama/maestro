@@ -1294,7 +1294,7 @@ slow reads or a short interval, check the product. A pool that runs dry shows up
 
 - **Liveness.** Spring Boot's `liveness` group contains only `livenessState`; keep it that way, and never point a liveness probe at `/actuator/health`. Restarting a busy pod abandons its in-flight runs to the lock TTL and adds a recovery pass to the fleet's load.
 - **Readiness.** Add `maestro` only if this pod's HTTP traffic needs Maestro's store: `management.endpoint.health.group.readiness.include=readinessState,maestro`. A shared database that is down then takes every pod out of the Service, which is what you want only if the pods cannot serve without it.
-- **A dead loop.** Since 3.5b a loop contains every `Error` except Maestro's control-flow signals, so a loop that stops is a bug: the log carries `Background loop '<name>' stopped: …` at `ERROR`, health reads `DOWN`, and the remedy is restarting the node — readiness does not do that for you.
+- **A dead loop.** Since 3.5b a loop contains every `Error` except Maestro's control-flow signals, so a loop that stops is a bug: the log carries `Background loop '<name>' stopped: …` at `ERROR`, health reads `DOWN`, and the remedy is restarting the node — readiness does not do that for you. Alert on `maestro.loop.errors` (contained `Error`s) before it comes to that.
 
 **`UNKNOWN` answers HTTP 200 by default.** That holds for `/actuator/health/maestro` too, and for a group whose only member is `maestro`. A host that wants a timed-out probe to answer 503 maps the status, and, for an aggregate or a group that also has an `UP` member, ranks `UNKNOWN` above `UP` — otherwise the aggregate stays `UP` and the mapping never applies:
 

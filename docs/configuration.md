@@ -922,7 +922,7 @@ maestro:
 
 Meters registered: counters `maestro.workflow.started|completed|failed|compensated|terminated`,
 `maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
-`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.standdown`;
+`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.loop.errors`, `maestro.standdown`;
 timer `maestro.activity.duration`; gauges `maestro.workflows.running`,
 `maestro.workflows.parked` and `maestro.wake.permits` (node-local — sum across
 pods for a cluster total).

@@ -42,6 +42,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.retention.purged}</td><td>Counter</td><td>kind=instance|event|signal|timer</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.retention.sweeps}</td><td>Counter</td><td>—</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.lock.renew.failures}</td><td>Counter</td><td>outcome=error|lost</td><td>{@link #instanceLockRenewFailed}/{@link #instanceLockLost}</td></tr>
+ *   <tr><td>{@code maestro.loop.errors}</td><td>Counter</td><td>loop</td><td>{@link #backgroundLoopError}</td></tr>
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
  * </table>
  *
@@ -88,6 +89,7 @@ public final class MicrometerEngineObserver implements EngineObserver {
     private static final String TAG_OUTCOME = "outcome";
     private static final String TAG_KIND = "kind";
     private static final String TAG_REASON = "reason";
+    private static final String TAG_LOOP = "loop";
 
     private static final String UNKNOWN_WORKFLOW_TYPE = "unknown";
 
@@ -237,6 +239,17 @@ public final class MicrometerEngineObserver implements EngineObserver {
     @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         increment("maestro.standdown", TAG_REASON, reasonTag(reason));
+    }
+
+    /**
+     * Counts an {@code Error} a background loop contained, tagged with the
+     * loop's fixed name only (five values, bounded by code). The error type
+     * is deliberately not a tag: it is open-ended, and the loop's {@code ERROR}
+     * log names it.
+     */
+    @Override
+    public void backgroundLoopError(String loop, String errorType) {
+        increment("maestro.loop.errors", TAG_LOOP, loop);
     }
 
     private static String reasonTag(StandDownReason reason) {

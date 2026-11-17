@@ -5,13 +5,16 @@ import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.TimerInfo;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Unit-level pin for the design doc §2.2 meter catalog: every row's name,
@@ -274,5 +277,14 @@ class MicrometerEngineObserverTest {
 
         assertThat(registry.get("maestro.signal.consumed").tag("signal", "payment-approved")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void backgroundLoopErrorCountsByLoop() {
+        observer.backgroundLoopError("instance-lock-renewer", "java.lang.OutOfMemoryError");
+        observer.backgroundLoopError("instance-lock-renewer", "java.lang.AssertionError");
+        var counter = registry.get("maestro.loop.errors").tag("loop", "instance-lock-renewer").counter();
+        assertEquals(2.0, counter.count());
+        assertEquals(List.of("loop"), counter.getId().getTags().stream().map(Tag::getKey).toList());
     }
 }

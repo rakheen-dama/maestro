@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.event.Level;
 
 import java.sql.SQLException;
 import java.time.Duration;
@@ -18,9 +19,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -92,6 +95,54 @@ class BackgroundLoopGuardTest {
         assertFalse(guard.succeeded());
         assertEquals(0, guard.consecutiveFailures());
         assertEquals(BackgroundLoopGuard.Logged.FIRST, guard.failed(new IllegalStateException("2")));
+    }
+
+    /**
+     * Review c7: the log cadence at the levels D-6 names, read back as SLF4J
+     * delivers it to a binding — after SLF4J's own normalisation, which is what
+     * decides whether a trailing argument becomes the attached throwable (the
+     * stack trace). FIRST is ERROR with it, REPEAT DEBUG with it, REMINDER
+     * ERROR without it, the recovery INFO, and a failure while stopping DEBUG
+     * without it.
+     */
+    @Test
+    void theCadenceLogsAtD6sLevelsWithTheStackTraceOnlyWhereItSays() {
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            var first = new IllegalStateException("first");
+            var repeat = new IllegalStateException("repeat");
+            var reminder = new IllegalStateException("reminder");
+            var whileStopping = new IllegalStateException("while stopping");
+            assertEquals(BackgroundLoopGuard.Logged.FIRST, guard.failed(first));
+            assertEquals(BackgroundLoopGuard.Logged.REPEAT, guard.failed(repeat));
+            nanos.addAndGet(BackgroundLoopGuard.REMINDER_INTERVAL.toNanos());
+            assertEquals(BackgroundLoopGuard.Logged.REMINDER, guard.failed(reminder));
+            assertTrue(guard.succeeded());
+            stopping.set(true);
+            assertEquals(BackgroundLoopGuard.Logged.STOPPING, guard.failed(whileStopping));
+
+            var records = logs.records();
+            assertEquals(5, records.size(), "one line per call: " + records);
+            assertAll(
+                    () -> assertEquals(Level.ERROR, records.get(0).level(), "FIRST"),
+                    () -> assertSame(first, records.get(0).throwable(), "FIRST carries the stack trace"),
+                    () -> assertTrue(records.get(0).message().startsWith("Background loop 'timer-poller' failed "
+                            + "(java.lang.IllegalStateException: first); it keeps running and retries every 5 s"),
+                            records.get(0).message()),
+                    () -> assertEquals(Level.DEBUG, records.get(1).level(), "REPEAT"),
+                    () -> assertSame(repeat, records.get(1).throwable(), "REPEAT carries the stack trace"),
+                    () -> assertEquals("Background loop 'timer-poller' failed again (2 in a row)",
+                            records.get(1).message()),
+                    () -> assertEquals(Level.ERROR, records.get(2).level(), "REMINDER"),
+                    () -> assertNull(records.get(2).throwable(), "REMINDER has no stack trace"),
+                    () -> assertEquals("Background loop 'timer-poller' is still failing: 3 consecutive failure(s) "
+                            + "over 5 min; latest: java.lang.IllegalStateException: reminder", records.get(2).message()),
+                    () -> assertEquals(Level.INFO, records.get(3).level(), "recovery"),
+                    () -> assertNull(records.get(3).throwable()),
+                    () -> assertEquals("Background loop 'timer-poller' recovered after 3 consecutive failure(s)",
+                            records.get(3).message()),
+                    () -> assertEquals(Level.DEBUG, records.get(4).level(), "STOPPING"),
+                    () -> assertNull(records.get(4).throwable(), "STOPPING has no stack trace"));
+        }
     }
 
     @Test
