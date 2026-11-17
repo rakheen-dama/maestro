@@ -339,7 +339,7 @@ final class RecoveryPoller implements StoppableLoop {
     }
 
     /** The earliest cursor of {@code queues} in keyset order; {@code null} (the first row) is the earliest. */
-    private static @Nullable RecoveryCursor earliest(Map<String, @Nullable RecoveryCursor> cursors,
+    static @Nullable RecoveryCursor earliest(Map<String, @Nullable RecoveryCursor> cursors,
                                                      Set<String> queues) {
         RecoveryCursor min = null;
         var any = false;
