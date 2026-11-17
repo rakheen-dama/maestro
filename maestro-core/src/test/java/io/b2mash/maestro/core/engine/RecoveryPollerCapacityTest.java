@@ -92,14 +92,16 @@ class RecoveryPollerCapacityTest {
             seedRecoverable(store, "rec-" + i, "orders");
         }
         a.startRecoveryPoller(registrations(a), Duration.ofHours(1), Duration.ofMillis(20));
-        valueWithin(work::entries, 1, Duration.ofSeconds(5)); // rec-0 running, rec-1 queued
+        valueWithin(work::entries, 1, Duration.ofSeconds(5)); // rec-0 running
+        // rec-1 is in the slot line before the signal, so the order below is not a race
+        assertEquals(1, valueWithin(() -> a.taskQueueGovernor().workflowSlotWaiters("orders"), 1,
+                Duration.ofSeconds(5)));
         a.deliverSignal("parked", "go", "now");
         valueWithin(a::parkedCount, 0, Duration.ofSeconds(5));
         // parked is in the slot line behind rec-1
         valueWithin(() -> a.taskQueueGovernor().workflowSlotWaiters("orders"), 2, Duration.ofSeconds(5));
-        for (var i = 0; i < 6; i++) {
-            work.release(1); // one activity at a time
-        }
+        // Six permits at once: each run takes one as it reaches the activity, in slot order.
+        work.release(6);
         var order = valueMatching(work::order, o -> o.contains("parked"), Duration.ofSeconds(10));
         assertEquals(2, order.indexOf("parked"), "order=" + order);
     }
