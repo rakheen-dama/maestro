@@ -317,6 +317,8 @@ await one signal name at once, orphaned-signal adoption has two owners and an
 unadopted signal is never purged, the
 wake listener leaves autocommit on, the upgrade fixtures have no procedure
 for a breaking core API change, and retried store faults are invisible.
+Issue 87, from a CI failure on the same branch, is **open**: `shutdown()` can
+return while a run it drained still holds its instance lock.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -417,6 +419,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | Open |
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
+| [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -5670,6 +5673,54 @@ log line at `DEBUG`.
 
 **Done when.** A test that fails one append once sees the counter move by one
 and the run continue.
+
+---
+
+<a id="issue-87"></a>
+
+### Issue 87 — `shutdown()` can return while a run it drained still holds its instance lock {#issue-87}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the CI
+> failure of `DeterminismCheckerRecoverableTest` on PR #64. Reproduced
+> deterministically by `ShutdownReturnsBeforeLockReleaseTest` (`@Disabled`,
+> red until fixed). The fix is an engine change; routed by the coordinator.
+
+**Kind:** Library defect — shutdown, test kit. **Severity:** Low in
+production, High for the test kit's `recover()`.
+
+**What happens.** A run's `finally` in `WorkflowExecutor.executeWorkflow`
+gives its slot back, removes itself from `runningWorkflows`, clears its wake
+permits and only then releases its instance lock ("remove-then-release").
+`shutdown()`'s drain (step 5) iterates `runningWorkflows` once and joins what
+it finds. A run already removed but not yet past its release is not joined,
+so `shutdown()` can return with that run's instance lock still held. A
+recovery pass that runs at once skips the workflow as locked elsewhere.
+
+**Where.** `WorkflowExecutor.executeWorkflow` (the `finally`) and
+`WorkflowExecutor.shutdown(ShutdownDeadline)` (step 5); seen through
+`TestWorkflowEnvironment.recover()`, which shuts the retiring node down and
+runs one ungated recovery pass.
+
+**Harm.** Production: the next recovery poll (60 s) adopts it, or the lock
+expires by TTL if the release never lands; nothing is lost. Test kit:
+`recover()` runs one pass and never re-polls (see also Issue 72), so the workflow is
+never adopted and the test times out with the instance still active. CI saw
+it once: `DeterminismCheckerRecoverableTest.aFailingSagaRecoversFromEveryCrashPoint_includingInsideTheCompensation`
+"did not finish within PT10S of recovering from a crash after 3 completed
+activities (status: COMPENSATING)". It is not specific to sagas: any kit
+crash-and-recover test can hit it when the crashed run is descheduled between
+the removal and the release.
+
+**How to tackle it.** Make the drain wait for every run that has registered
+and not yet released its lock: count runs from registration to the end of
+their `finally` (after the release) and have step 5, after the join loop,
+wait on that count reaching zero within what is left of the deadline. Keep
+the remove-then-release order, which the wake-permit cleanup relies on.
+A kit-only stopgap would be for `recover()` to repeat its pass, bounded, while
+the retiring node's lock is still held.
+
+**Done when.** `ShutdownReturnsBeforeLockReleaseTest` passes without
+`@Disabled`.
 
 ---
 
