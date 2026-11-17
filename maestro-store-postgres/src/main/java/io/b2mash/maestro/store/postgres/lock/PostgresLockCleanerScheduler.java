@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.postgres.lock;
 
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +23,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <h2>Thread Safety</h2>
  * <p>Thread-safe: {@link #start()} and {@link #close()} may be called from any
  * thread and are idempotent; the cleaner runs only on the scheduler's thread.
+ * A run that fails does not end the loop: a {@code RuntimeException} is logged
+ * at {@code WARN} and any other {@code Throwable} (an {@code Error}) at
+ * {@code ERROR}, and the next run follows one interval later. Only a
+ * {@code MaestroControlFlowError} ends it, and the thread's end is logged at
+ * {@code ERROR} through SLF4J.
  */
 public final class PostgresLockCleanerScheduler implements AutoCloseable {
 
@@ -49,7 +55,11 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable {
         if (!running.compareAndSet(false, true)) {
             return;
         }
-        thread = Thread.ofVirtual().name("maestro-pg-lock-cleaner").start(this::loop);
+        thread = Thread.ofVirtual()
+                .name("maestro-pg-lock-cleaner")
+                .uncaughtExceptionHandler((th, e) ->
+                        logger.error("Postgres lock cleaner stopped: {} escaped it", e.toString(), e))
+                .start(this::loop);
         logger.info("Postgres lock cleaner scheduled every {}", interval);
     }
 
@@ -63,6 +73,16 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable {
         if (t != null) {
             t.interrupt();
         }
+    }
+
+    /**
+     * Whether the cleaner's thread is alive and the scheduler not closed.
+     *
+     * @return {@code true} while the loop runs
+     */
+    boolean isRunning() {
+        var t = thread;
+        return running.get() && t != null && t.isAlive();
     }
 
     private void loop() {
@@ -81,8 +101,20 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable {
                 if (deleted > 0) {
                     logger.debug("Lock cleaner removed {} expired row(s)", deleted);
                 }
-            } catch (RuntimeException e) {
-                logger.warn("Postgres lock cleaner run failed; will retry in {}: {}", interval, e.toString());
+            } catch (Throwable t) {
+                // The engine's control-flow rule: rethrown, it ends the loop.
+                if (t instanceof MaestroControlFlowError controlFlow) {
+                    throw controlFlow;
+                }
+                if (!running.get()) {
+                    // close() interrupted a run that then threw: expected.
+                    logger.debug("Postgres lock cleaner run failed while stopping (ignored): {}", t.toString());
+                } else if (t instanceof RuntimeException) {
+                    logger.warn("Postgres lock cleaner run failed; will retry in {}: {}", interval, t.toString());
+                } else {
+                    logger.error("Postgres lock cleaner run failed with {}; it keeps running and retries in {}",
+                            t.toString(), interval, t);
+                }
             }
         }
     }
