@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Named;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.event.Level;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
@@ -376,13 +378,30 @@ class BackgroundLoopErrorTest {
         assertTrue(manager.isRenewerRunning());
     }
 
+    /**
+     * The renewer's end is reported through SLF4J by the guard's uncaught
+     * handler (review d5): the verdict comes from that log line, not from
+     * Awaitility rethrowing a dead thread's exception, which is switched off.
+     */
     @Test
     void aControlFlowErrorStopsTheRenewer() {
-        lock.answer = () -> { throw new ExecutorShutdownException("test"); };
-        manager.tryAcquire("wf-1");
-        await("the renewer thread to end").atMost(Duration.ofSeconds(5)).until(() -> !manager.isRenewerRunning());
-        assertTrue(manager.hasRenewerStarted());
-        assertEquals(1, lock.calls.get(), "the control-flow Error ended the renewer; it made no second pass");
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            lock.answer = () -> { throw new ExecutorShutdownException("test"); };
+            manager.tryAcquire("wf-1");
+            await("the renewer thread to end").atMost(Duration.ofSeconds(5)).dontCatchUncaughtExceptions()
+                    .until(() -> !manager.isRenewerRunning());
+            assertTrue(manager.hasRenewerStarted());
+            assertEquals(1, lock.calls.get(), "the control-flow Error ended the renewer; it made no second pass");
+            // The uncaught handler runs on the dying thread before isAlive() turns false.
+            var stopped = logs.records().stream()
+                    .filter(r -> r.message().startsWith("Background loop 'instance-lock-renewer' stopped: "
+                            + "io.b2mash.maestro.core.exception.ExecutorShutdownException: test escaped it"))
+                    .toList();
+            assertEquals(1, stopped.size(), "one 'stopped' line: " + logs.records());
+            assertEquals(Level.ERROR, stopped.getFirst().level());
+            assertTrue(stopped.getFirst().throwable() instanceof ExecutorShutdownException,
+                    "the line carries the throwable (stack trace)");
+        }
     }
 
     /**
