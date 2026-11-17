@@ -385,3 +385,21 @@ prom_instant() {
              else null end' 2>/dev/null \
     || printf 'null'
 }
+
+# prom_instant_checked <query> <epoch>: {"ok": <Prometheus answered
+# "success">, "value": <first sample as a number, or null>}. Unlike
+# prom_instant it tells a failed query (curl error, timeout, status "error")
+# from an empty result, for a figure whose ABSENCE means something (a counter
+# that registers on its first increment: no series = zero).
+prom_instant_checked() {
+  local out
+  if out=$(dc exec -T curl curl -fsS -m 30 -G http://prometheus:9090/api/v1/query \
+    --data-urlencode "query=$1" --data-urlencode "time=$2" </dev/null 2>>"${RESULTS}/harness.log"); then
+    jq -c '{ok: (.status == "success"),
+            value: (if .status == "success" and (.data.result | length) > 0
+                    then (.data.result[0].value[1] | if test("^[-+]?[0-9.]+([eE][-+]?[0-9]+)?$") then tonumber else null end)
+                    else null end)}' <<<"$out" 2>/dev/null || printf '{"ok":false,"value":null}'
+  else
+    printf '{"ok":false,"value":null}'
+  fi
+}

@@ -264,9 +264,9 @@ scenario_run() {
   done < <(jq -c '.levels[]' <<<"$levels")
   first_ws=$(jq -r '[.levels[].windowStartEpoch] | min // empty' <<<"$levels")
   last_we=$(date +%s)
-  abandoned=null
+  abandoned='{"ok":false,"value":null}'
   if [[ -n "$first_ws" ]]; then
-    abandoned=$(prom_instant "sum(increase(maestro_run_abandoned_total[$(jq -rn --argjson a "$first_ws" --argjson b "$last_we" '$b - $a | ceil')s]))" "$last_we")
+    abandoned=$(prom_instant_checked "sum(increase(maestro_run_abandoned_total[$(jq -rn --argjson a "$first_ws" --argjson b "$last_we" '$b - $a | ceil')s]))" "$last_we")
   fi
   # The duration timer's largest finite bucket: a quantile that lands on it
   # is clipped (the true value is at least that), never a measurement.
@@ -303,7 +303,7 @@ scenario_run() {
       drain: {waitedSecs: $drain.waitedSecs, timedOut: $drain.timedOut, timeoutSecs: $plan.drainTimeoutSecs},
       runStatus: $status, window: $window, latency: $latency,
       levelRows: $levels.levels, unlabeledRows: $levels.unlabeled, levelProm: $levelProm,
-      runAbandonedIncrease: $abandoned,
+      runAbandonedIncrease: $abandoned.value, runAbandonedQueryOk: $abandoned.ok,
       durationMeterTopBucketSecs: $topBucket, startByLevel: $startByLevel,
       hostLoad: {scenarioStart: $hostStart, loadStart: $hostLoadStart, afterDrain: $hostEnd},
       containerStats: $containerStats,

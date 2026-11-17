@@ -369,7 +369,7 @@ scenario_run() {
   local first_a last_b abandoned
   first_a=$(jq -r '.[0].epochs.start' <<<"$windows")
   last_b=$(date +%s)
-  abandoned=$(prom_instant "sum(increase(maestro_run_abandoned_total[$((last_b - first_a))s]))" "$last_b")
+  abandoned=$(prom_instant_checked "sum(increase(maestro_run_abandoned_total[$((last_b - first_a))s]))" "$last_b")
 
   jq -n \
     --arg parkPrefix "$parkPrefix" --arg runPrefix "${RUN_ID}-" --argjson plan "$plan" \
@@ -383,7 +383,7 @@ scenario_run() {
       workflowShape: $plan.seed.body, probeShape: $plan.probe.body,
       plan: $plan, warmup: $warmup, background: $background, k6: $k6,
       windows: $windows, auxWindows: $aux, plateaus: $plateaus, probes: $probes, release: $release,
-      windowProm: $prom, runAbandonedIncrease: $abandoned,
+      windowProm: $prom, runAbandonedIncrease: $abandoned.value, runAbandonedQueryOk: $abandoned.ok,
       hostLoad: {scenarioStart: $hostStart, windows: $hostLoads, end: $hostEnd},
       containerStats: $containerStats, runStatus: $final, foreignRows: $foreign, stopped: $stopped}' \
     >"${RESULTS}/measurements.json"

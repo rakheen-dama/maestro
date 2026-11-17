@@ -463,7 +463,10 @@ if [[ -n "$s1src" ]]; then
 
   out=$(s1_eval s1-pass '.')
   expect "s1: unchanged run" PASS "$(jq -r .verdict <<<"$out")"
-  expect "s1: every check (of at least 20) is PASS or NO_BASELINE (gate) on the real run" "true []" \
+  # A source recorded before runAbandonedQueryOk cannot show that the
+  # abandoned-runs query succeeded: its advisory.runAbandoned WARNs.
+  real_warns=$(jq -c 'if has("runAbandonedQueryOk") then [] else ["advisory.runAbandoned"] end' "${s1src}/measurements.json")
+  expect "s1: every check (of at least 20) is PASS or NO_BASELINE (gate) on the real run" "true ${real_warns}" \
     "$(jq -r '.checks | "\(length >= 20) \(to_entries | map(select(.value != "PASS" and .value != "NO_BASELINE")) | map(.key) | tojson)"' <<<"$out")"
   expect "s1: levels recorded = plan" "$(jq -c .plan.levels "${s1src}/measurements.json")" "$(s1_field s1-pass '[.measurements.levels[].level]')"
   expect "s1: ceilingPerSec is a number" number "$(s1_field s1-pass '.measurements.ceiling.ceilingPerSec | type' | tr -d '"')"
@@ -486,8 +489,18 @@ if [[ -n "$s1src" ]]; then
   out=$(s1_eval s1-no-prom 'del(.levelProm) | .runAbandonedIncrease = null')
   expect "s1, no Prometheus data at all: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
   expect "s1, no Prometheus data at all: advisory.hikariPool" WARN "$(st "$out" advisory.hikariPool)"
-  out=$(s1_eval s1-abandon-lazy '.runAbandonedIncrease = null')
-  expect "s1, abandoned counter absent on a WP11 engine (lazy): advisory.runAbandoned" PASS "$(st "$out" advisory.runAbandoned)"
+  out=$(s1_eval s1-abandon-lazy '.runAbandonedIncrease = null | .runAbandonedQueryOk = true')
+  expect "s1, abandoned counter absent on a WP11 engine (lazy), query succeeded: advisory.runAbandoned" PASS "$(st "$out" advisory.runAbandoned)"
+  # A failed query is not zero abandonments; neither is one whose success
+  # was not recorded (a record from before runAbandonedQueryOk).
+  out=$(s1_eval s1-abandon-qfail '.runAbandonedIncrease = null | .runAbandonedQueryOk = false')
+  expect "s1, abandoned-runs query failed: advisory.runAbandoned" WARN "$(st "$out" advisory.runAbandoned)"
+  expect "s1, abandoned-runs query failed: the detail says so" yes \
+    "$(s1_field s1-abandon-qfail '.checks[] | select(.id == "advisory.runAbandoned") | .detail' | grep -q 'query failed' && echo yes || echo no)"
+  out=$(s1_eval s1-abandon-qunknown '.runAbandonedIncrease = null | del(.runAbandonedQueryOk)')
+  expect "s1, abandoned-runs query success not recorded: advisory.runAbandoned" WARN "$(st "$out" advisory.runAbandoned)"
+  expect "s1, query success not recorded: the detail says so" yes \
+    "$(s1_field s1-abandon-qunknown '.checks[] | select(.id == "advisory.runAbandoned") | .detail' | grep -q 'not recorded' && echo yes || echo no)"
   out=$(s1_eval s1-abandon-3 '.runAbandonedIncrease = 3')
   expect "s1, 3 runs abandoned: advisory.runAbandoned" WARN "$(st "$out" advisory.runAbandoned)"
   expect "s1, 3 runs abandoned: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
@@ -1177,6 +1190,12 @@ if [[ -n "$s3src" ]]; then
   expect "s3: garbage records: advisory.heapPerParked" WARN "$(s3st "$out" advisory.heapPerParked)"
   out=$(s3_eval s3-abandoned '.runAbandonedIncrease = 2')
   expect "s3: two runs abandoned: advisory.runAbandoned" WARN "$(s3st "$out" advisory.runAbandoned)"
+  out=$(s3_eval s3-abandon-ok '.runAbandonedIncrease = null | .runAbandonedQueryOk = true')
+  expect "s3: no abandoned series, query succeeded: advisory.runAbandoned" PASS "$(s3st "$out" advisory.runAbandoned)"
+  out=$(s3_eval s3-abandon-qfail '.runAbandonedIncrease = null | .runAbandonedQueryOk = false')
+  expect "s3: abandoned-runs query failed: advisory.runAbandoned" WARN "$(s3st "$out" advisory.runAbandoned)"
+  out=$(s3_eval s3-abandon-qunknown '.runAbandonedIncrease = null | del(.runAbandonedQueryOk)')
+  expect "s3: abandoned-runs query success not recorded: advisory.runAbandoned" WARN "$(s3st "$out" advisory.runAbandoned)"
 
   # advisory.liveness: in sleep mode nothing wakes a parked run, so the
   # NO_BASELINE release check proves nothing; the verdict must say so.

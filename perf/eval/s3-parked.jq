@@ -382,7 +382,7 @@ $identity[0] as $id
     | (if ($sk.checksPassed | isnum) then $sk.checksPassed else $requested end) as $n
     | (($n | posnum) and (window_cps($s) | isnum)) as $sOk
     | ([($m.plateaus | objs)[] | select(.P == $s.P)] | first // {}) as $pl
-    | {P: $s.P, Pprev: $s.Pprev, started: $n, requested: $requested, reached: ($pl.reached // null), windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
+    | {P: $s.P, Pprev: $s.Pprev, started: $n, requested: $requested, reached: ($pl.reached | if type == "boolean" then . else null end), windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
        timeToParkSecs: ($pl.seed.timeToParkSecs // $pl.seed.waitedSecs // null), k6Secs: ($pl.seed.k6Secs // null),
        lagSecs: ($pl.seed.lagSecs // null),
        netPerStartedRun: (if $sOk and ($cps0 | isnum) and ($kPrev | isnum) then ($s.maestroCalls - lock_cleaner_calls($s) - ($cps0 + $kPrev * $s.Pprev) * $s.windowSecs) / $n | round2 else null end),
@@ -795,12 +795,18 @@ $identity[0] as $id
         end),
     advisory_guarded("advisory.runAbandoned";
       $m.runAbandonedIncrease as $a
+      # runAbandonedQueryOk: Prometheus answered the query (prom_instant_checked).
+      # No series is zero only when the query succeeded: a failed query, or a
+      # record that does not say (before runAbandonedQueryOk), is unknown.
+      | ($m.runAbandonedQueryOk | if type == "boolean" then . else null end) as $qok
       | any($promPlateaus[]; .slotsUsed.workflowMax | isnum) as $wp11
       | check("advisory.runAbandoned"; "advisory";
-              if ($a | isnum) then (if $a == 0 then "PASS" else "WARN" end) elif $wp11 then "PASS" else "WARN" end;
-              $a; 0;
+              if ($a | isnum) then (if $a == 0 then "PASS" else "WARN" end) elif $qok == true and $wp11 then "PASS" else "WARN" end;
+              {runAbandonedIncrease: $a, queryOk: $qok}; 0;
               if ($a | isnum) then "\($a) run(s) abandoned during the scenario (maestro_run_abandoned_total)"
-              elif $wp11 then "no maestro_run_abandoned_total series: the counter registers on its first increment, and this engine exports the other WP11 meters, so none was abandoned"
+              elif $qok == false then "the maestro_run_abandoned_total query failed (Prometheus error or no answer): whether any run was abandoned is not known"
+              elif $wp11 and $qok == null then "no maestro_run_abandoned_total value, and whether its query succeeded is not recorded (a record from before runAbandonedQueryOk): an absent series cannot be told from a failed query"
+              elif $wp11 then "no maestro_run_abandoned_total series in a successful query: the counter registers on its first increment, and this engine exports the other WP11 meters, so none was abandoned"
               else "not available: maestro_run_abandoned_total is not exported and neither are the other WP11 meters (an engine that predates them)" end))
   ] as $checks
 | ([$plateauWins[] | . as $w
