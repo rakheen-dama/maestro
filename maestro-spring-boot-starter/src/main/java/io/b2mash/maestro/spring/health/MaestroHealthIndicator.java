@@ -44,7 +44,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *       one per health call. A call that finds the probe already timed out by
  *       an earlier call answers {@code "timed out"} at once rather than
  *       waiting the bound again. If the probe thread cannot be started, the
- *       call throws that failure and the next call probes afresh;</li>
+ *       call reports {@code DOWN} with that failure and the next call probes
+ *       afresh;</li>
  *   <li>{@code UP} otherwise.</li>
  * </ul>
  * A loop that has never been started yet is <b>not</b> treated as a fault:
@@ -186,7 +187,8 @@ public class MaestroHealthIndicator implements HealthIndicator {
     /**
      * The probe whose store call has not returned yet, if any. At most one
      * probe thread per indicator exists at a time: a call that finds one in
-     * flight waits on it (within the same bound) instead of starting another,
+     * flight waits on it (within the same bound; a probe an earlier call already
+     * timed out is answered {@code "timed out"} at once) instead of starting another,
      * so a store call that ignores the interrupt cannot pile up one stuck
      * thread per health call. Cleared by the probe thread when its store call
      * returns or throws.
@@ -303,7 +305,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * Probes the store with a bounded timeout, never letting the probe
      * itself hang this method. Joins the probe already in flight, if any; on
      * timeout the probe is abandoned and its thread interrupted (best effort),
-     * and the next call joins it again until its store call returns.
+     * and later calls answer "timed out" at once until its store call returns.
      */
     private StoreProbe probeStore() {
         var probe = inFlightOrNewProbe();
@@ -347,9 +349,14 @@ public class MaestroHealthIndicator implements HealthIndicator {
                     // A probe that never ran must not stay in flight: every later call
                     // would join it and read "timed out" for ever. A call that joined it
                     // meanwhile learns of the failure at once.
+                    // The failure is reported as an unreachable store (DOWN), never
+                    // thrown: a plain HealthIndicator that throws fails the whole
+                    // health endpoint with a 500.
                     inFlight.compareAndSet(fresh, null);
                     fresh.result.completeExceptionally(t);
-                    throw t;
+                    if (t instanceof MaestroControlFlowError controlFlow) {
+                        throw controlFlow;
+                    }
                 }
                 return fresh;
             }

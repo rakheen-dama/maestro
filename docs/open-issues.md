@@ -4614,8 +4614,9 @@ connection** (traced, not tested).
 (`thread.interrupt()`), called from `probeStore()` on timeout.
 
 **Harm.** Pool `WARN`s and connection churn on a database that is already
-slow: up to one evicted connection per readiness-probe period while every
-probe times out mid-query.
+slow: up to one evicted connection per timed-out health call, from any caller
+(kubelet probes, scrapers, load-balancer checks, the aggregate and the group
+endpoints), while every probe times out mid-query.
 
 **How to tackle it.** Stop interrupting: the single-flight probe already
 bounds the cost of a stuck probe to one thread and one borrowed connection.

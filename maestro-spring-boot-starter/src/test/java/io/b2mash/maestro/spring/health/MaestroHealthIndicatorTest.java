@@ -508,8 +508,9 @@ class MaestroHealthIndicatorTest {
                 : Thread.ofVirtual().name(MaestroHealthIndicator.PROBE_THREAD_NAME).unstarted(task);
         var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false, threads);
 
-        assertThatThrownBy(indicator::health).isInstanceOf(OutOfMemoryError.class)
-                .hasMessageContaining("injected");
+        var failed = indicator.health();
+        assertThat(failed.getStatus()).isEqualTo(Status.DOWN);
+        assertThat(failed.getDetails()).containsEntry("store", "unreachable");
 
         var start = Instant.now();
         var health = indicator.health();
