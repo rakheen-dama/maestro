@@ -14,8 +14,10 @@ import java.util.Map;
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SERVICE;
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.seedRecoverable;
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueMatching;
+import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin;
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.workMethod;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WP6 D-2 / coordinator call C2: recovered runs are never starved by fresh
@@ -65,6 +67,35 @@ class RecoveryStarvationTest {
         }
         assertEquals(3, store.completed("rec-"),
                 "recovered runs completed while fresh starts kept the queue non-empty");
+    }
+
+    /**
+     * Carry c6, C2's other direction: recovery cannot starve fresh starts.
+     * With C = 2 and a 10-run backlog, the poller's first pass runs 2 and
+     * queues 2; a fresh start then waits behind at most those C queued
+     * recovered runs, never the whole backlog — so at most 2C recovered runs
+     * reach their activity before it. The recovered runs admitted later, as
+     * tickets return, queue behind it.
+     */
+    @Test
+    void aFreshStartWaitsBehindAtMostOneQueuesWorthOfRecoveredRuns() {
+        var a = node(2);
+        for (var i = 0; i < 10; i++) {
+            seedRecoverable(store, "rec-" + i, "orders");
+        }
+        a.startRecoveryPoller(registrations(a), Duration.ofHours(1), Duration.ofMillis(10));
+        assertEquals(2, valueWithin(work::entries, 2, Duration.ofSeconds(5)), "2 recovered runs running");
+        assertEquals(2, valueWithin(() -> a.taskQueueGovernor().workflowSlotWaiters("orders"), 2,
+                Duration.ofSeconds(5)), "2 recovered runs queued");
+        startFresh(a, "fresh");
+        assertEquals(3, valueWithin(() -> a.taskQueueGovernor().workflowSlotWaiters("orders"), 3,
+                Duration.ofSeconds(5)), "the fresh start is in line");
+        work.releaseAll();
+        var order = valueMatching(work::order, o -> o.contains("fresh"), Duration.ofSeconds(10));
+        var ahead = order.indexOf("fresh");
+        assertTrue(ahead >= 0 && ahead <= 4, "recovered runs ahead of the fresh start: " + ahead + ", order=" + order);
+        assertEquals(10, valueWithin(() -> store.completed("rec-"), 10, Duration.ofSeconds(10)),
+                "the backlog still drains");
     }
 
     // ── fixtures ──────────────────────────────────────────────────────
