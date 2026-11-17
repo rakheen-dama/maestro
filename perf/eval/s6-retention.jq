@@ -51,13 +51,18 @@
 #                            share of its own duration a purge statement was
 #                            running
 #   gate.janitorServiceScoped (3.11b)  jforeign's unconsumed signals all kept
-#   gate.janitorBatched (3.11b)  janitor DELETE calls >= 2 in the sweep window
-#                            and rows per call <= jown / 2. WP8's batch is
-#                            SignalJanitor.BATCH_SIZE = 1,000
-#                            (maestro-core SignalJanitor.java:64; at most
-#                            MAX_BATCHES_PER_SWEEP = 1,000 batches, :70), well
-#                            under jown / 2 = 5,000 locally: the after of
-#                            record ran 11 calls (10 x 1,000 + one empty).
+#   gate.janitorBatched (3.11b)  janitor rows per DELETE call in the sweep
+#                            window <= 1,000, the engine's batch size
+#                            (SignalJanitor.BATCH_SIZE = 1,000,
+#                            maestro-core SignalJanitor.java:64; at most
+#                            MAX_BATCHES_PER_SWEEP = 1,000 batches, :70), i.e.
+#                            calls >= ceil(rows / 1,000). The figure is an
+#                            AVERAGE over the calls (pg_stat_statements keeps
+#                            rows and calls, not each call's rows), so one
+#                            oversized call among many short ones could hide;
+#                            the before's single 20,000-row call cannot. The
+#                            after of record ran 11 calls (10 x 1,000 + one
+#                            empty): 909 rows per call.
 #                            WP8 kept the janitor's leading text ("DELETE
 #                            FROM maestro_workflow_signal WHERE consumed = ",
 #                            AbstractJdbcWorkflowStore.java:1809-1816) and the
@@ -75,6 +80,7 @@ def s6_max_busy: 0.65;
 def s6_min_active_samples: 20;
 def s6_min_window_secs: 30;
 def s6_fg_ratio: 1.5;
+def s6_janitor_batch: 1000;
 def s6_duty_tolerance: 0.15;
 def s6_max_span_gap: 0.3;
 def s6_short_reads_max: 3;
@@ -195,9 +201,10 @@ $identity[0] as $id
      | (if ($j.calls | isnum) and $j.calls > 0 then $j.rows / $j.calls else null end) as $rpc
      | check("gate.janitorBatched"; "gate";
          if ($jown | isnum | not) or ($j.calls // 0) == 0 then "INVALID"
-         elif ($j.calls // 0) >= 2 and $rpc != null and $rpc <= $jown / 2 then "PASS" else "FAIL" end;
+         elif $rpc != null and $rpc <= s6_janitor_batch then "PASS" else "FAIL" end;
          {calls: ($j.calls // 0), rows: ($j.rows // 0), rowsPerCall: ($rpc | round2)};
-         {calls: ">= 2", rowsPerCall: "<= jown / 2 = \(if $jown | isnum then $jown / 2 else null end)"};
+         {rowsPerCall: "<= \(s6_janitor_batch) (the engine's batch; an average over the calls)",
+          calls: ">= ceil(rows / \(s6_janitor_batch)) = \((($j.rows // 0) / s6_janitor_batch) | ceil)"};
          "the janitor deleted \($j.rows // 0) row(s) in \($j.calls // 0) DELETE call(s) (3.11b: one unbounded statement)")),
     advisory_guarded("advisory.foreground";
       ($m.foreground) as $fg
