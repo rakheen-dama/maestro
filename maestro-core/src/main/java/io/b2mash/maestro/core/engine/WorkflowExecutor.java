@@ -1782,6 +1782,11 @@ public final class WorkflowExecutor {
      * progress is abandoned too, with {@link ExecutorShutdownException},
      * leaving the instance {@code RUNNING} and recoverable; the attempt counter
      * restarts on the next node.
+     *
+     * <p>A run waiting for a task-queue slot (a fresh start, an adopted run, a
+     * park's reacquire, an activity or a compensation) leaves at once with
+     * {@link ExecutorShutdownException}: it stands down recoverable and
+     * releases its instance lock before {@code shutdown()} returns.
      */
     public void shutdown() {
         if (!shuttingDown.compareAndSet(false, true)) {
@@ -1818,6 +1823,10 @@ public final class WorkflowExecutor {
         // Abandon every retry backoff the same way. Shutdown is not checked
         // before an activity attempt, so in-flight work still drains.
         runningWorkflows.values().forEach(r -> r.cancellation().requestShutdown());
+        // Release every run queued for a task-queue slot (Issue 29): the
+        // governor's poison permit wakes each waiter in turn, without an
+        // interrupt, and each stands down recoverable.
+        taskQueueGovernor.shutdown();
 
         // Wait for in-flight workflows with a deadline
         var deadline = Instant.now().plus(shutdownTimeout);
@@ -1833,6 +1842,9 @@ public final class WorkflowExecutor {
                 break;
             }
         }
+        // The poison has finished travelling: take the governor's loans back
+        // so its slot counts are exact again.
+        taskQueueGovernor.reclaimShutdownPermits();
 
         // Stop the lock renewer; locks of overrunning workflows expire via TTL
         instanceLockManager.close();
