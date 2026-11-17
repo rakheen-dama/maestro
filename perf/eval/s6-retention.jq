@@ -4,7 +4,9 @@
 # $measurements (slurped). Workload, sets and windows:
 # perf/scenarios/s6-retention.sh and perf/sql/s6-seed.sql.
 #
-#   validity.seeded          every set seeded exactly, each instance with the
+#   validity.seeded          (the template has >= 1 event, a CANCELLED timer
+#                            and only consumed signals, >= 1)
+#                            every set seeded exactly, each instance with the
 #                            template's events and timers, one consumed
 #                            signal, and (jown, jfailed, jforeign) one
 #                            unconsumed signal
@@ -15,7 +17,11 @@
 #                            would be meaningless
 #   validity.windows         pre and post windows >= 30 s each; the sweep
 #                            ended within its allowance
-#   correctness.retentionExact  rc keeps exactly rc - min(rc, budget); rt and
+#   correctness.retentionExact  (every retained instance keeps its events and
+#                            timers, and the rc remainder its template
+#                            children and consumed signals; >= 1 foreground
+#                            probe completed during the sweep)
+#                            rc keeps exactly rc - min(rc, budget); rt and
 #                            rf are empty; young, jown, jfailed and jforeign
 #                            keep every instance; no orphan child row; every
 #                            foreground probe COMPLETED. xforeign is not
@@ -109,7 +115,13 @@ $identity[0] as $id
               and setv($s0; $k; "timers") == $n * ($t.timers // -1)
               and setv($s0; $k; "signalsConsumed") == $n * ($t.signalsConsumed // -1)
               and setv($s0; $k; "signalsUnconsumed") == (if (jsets | index([$k])) then $n else 0 end))}]) as $v
-    | (($v | length) == 8 and ($v | all(.ok)) and $t.captured == true) as $ok
+    # the template itself must carry every child kind the sets are cloned
+    # with (events, its cancelled await timer, its consumed signal): a
+    # template without one would make "n x 0" seeded children look exact
+    | ((($t.events // 0) | isnum) and ($t.events // 0) >= 1 and ($t.timers // 0) >= 1
+       and (($t.timerStatuses // []) | index(["CANCELLED"])) != null
+       and ($t.signals // 0) >= 1 and ($t.signalsConsumed // 0) == ($t.signals // 0)) as $tmplOk
+    | (($v | length) == 8 and ($v | all(.ok)) and $t.captured == true and $tmplOk) as $ok
     | check("validity.seeded"; "validity"; if $ok then "PASS" else "INVALID" end; $v | map(del(.ok));
         {perInstance: {events: $t.events, timers: $t.timers, signalsConsumed: $t.signalsConsumed}};
         if $ok then "every set seeded exactly, with the template's children" else "set(s) \($v | map(select(.ok | not) | .set) | join(", ")) not seeded as planned" end),
@@ -134,17 +146,31 @@ $identity[0] as $id
     (($m.plan.rcRemainder // null) as $rem
      | ($m.foreground // {}) as $fg
      | {rc: setv($s1; "rc"; "instances"), rt: setv($s1; "rt"; "instances"), rf: setv($s1; "rf"; "instances"),
-        kept: ([["young", "jown", "jfailed", "jforeign"][] as $k | {set: $k, before: setv($s0; $k; "instances"), after: setv($s1; $k; "instances")}]),
+        kept: ([["young", "jown", "jfailed", "jforeign"][] as $k
+                | {set: $k, before: setv($s0; $k; "instances"), after: setv($s1; $k; "instances"),
+                   eventsBefore: setv($s0; $k; "events"), eventsAfter: setv($s1; $k; "events"),
+                   timersBefore: setv($s0; $k; "timers"), timersAfter: setv($s1; $k; "timers")}]),
+        rcChildren: {events: setv($s1; "rc"; "events"), timers: setv($s1; "rc"; "timers"),
+                     signalsConsumed: setv($s1; "rc"; "signalsConsumed"),
+                     expected: (if ($rem | isnum) then {events: ($rem * ($t.events // 0)), timers: ($rem * ($t.timers // 0)),
+                                                         signalsConsumed: ($rem * ($t.signalsConsumed // 0))} else null end)},
         orphans: $s1.orphans,
-        foreground: {n: ([$fg[]?.n] | add), completed: ([$fg[]?.completed] | add)}} as $v
+        foreground: {n: ([$fg[]?.n] | add), completed: ([$fg[]?.completed] | add),
+                     duringCompleted: ($fg.during.completed // 0)}} as $v
      | (($rem | isnum) and $v.rc == $rem and $v.rt == 0 and $v.rf == 0
-        and ($v.kept | all(.before == .after and .after > 0))
+        and ($v.kept | all(.before == .after and .after > 0
+                           and .eventsBefore == .eventsAfter and .timersBefore == .timersAfter))
+        and $v.rcChildren.expected != null
+        and $v.rcChildren.events == $v.rcChildren.expected.events and $v.rcChildren.timers == $v.rcChildren.expected.timers
+        and $v.rcChildren.signalsConsumed == $v.rcChildren.expected.signalsConsumed
         and ($v.orphans | type) == "object" and ([$v.orphans[]] | all(. == 0))
-        and ($v.foreground.n | isnum) and $v.foreground.n > 0 and $v.foreground.n == $v.foreground.completed) as $ok
+        and ($v.foreground.n | isnum) and $v.foreground.n > 0 and $v.foreground.n == $v.foreground.completed
+        and $v.foreground.duringCompleted >= 1) as $ok
      | check("correctness.retentionExact"; "correctness"; if $ok then "PASS" else "FAIL" end; $v;
-         {rc: $rem, rt: 0, rf: 0, kept: "unchanged", orphans: 0, foreground: "every probe COMPLETED"};
-         if $ok then "retention removed exactly what its cutoffs and budget allow, and nothing else; no orphan child row"
-         else "retention removed too much or too little, left an orphan, or a foreground probe did not complete" end)),
+         {rc: $rem, rt: 0, rf: 0, kept: "instances, events and timers unchanged", rcChildren: "the template's per instance",
+          orphans: 0, foreground: "every probe COMPLETED, >= 1 during the sweep"};
+         if $ok then "retention removed exactly what its cutoffs and budget allow, and nothing else (every retained instance keeps its events, timers and consumed signal); no orphan child row; the foreground completed during the sweep"
+         else "retention removed too much or too little (instances, or children of instances it kept), left an orphan, or the foreground did not complete (during the sweep too)" end)),
     ({jownUnconsumed: setv($s1; "jown"; "signalsUnconsumed"),
       jfailedUnconsumed: {before: setv($s0; "jfailed"; "signalsUnconsumed"), after: setv($s1; "jfailed"; "signalsUnconsumed")},
       consumedKept: ([["young", "jown", "jfailed", "jforeign"][] as $k
