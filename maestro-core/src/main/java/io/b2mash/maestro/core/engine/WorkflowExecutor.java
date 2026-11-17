@@ -929,7 +929,9 @@ public final class WorkflowExecutor {
     /**
      * How many instances the most recent full gated pass on this node
      * deferred for lack of task-queue capacity: the recovery backlog this node
-     * can see but cannot run or queue yet.
+     * can see but cannot run or queue yet. Only a pass that read to the last
+     * recoverable row sets it; one that threw or ended early (a stop, a
+     * shutdown) leaves the previous value.
      *
      * @return the count; {@code 0} before the first full gated pass
      */
@@ -974,7 +976,8 @@ public final class WorkflowExecutor {
         }
 
         var pass = tally.toPass();
-        if (gate == RecoveryGate.GATED) {
+        if (gate == RecoveryGate.GATED && pass.reachedEnd()) {
+            // A pass that ended early saw only part of the backlog.
             recoveryDeferred = pass.deferred();
         }
         logPass(pass, true);

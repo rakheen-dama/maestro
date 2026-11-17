@@ -77,6 +77,28 @@ class RecoveryCapacityTest {
         assertEquals(Set.of("A", "B"), valueWithin(work::nodesThatRan, Set.of("A", "B"), Duration.ofSeconds(10)));
     }
 
+    /**
+     * Carry c5: a full pass that ends early (the poller's stop, a shutdown)
+     * saw only part of the backlog, so it leaves the deferred count of the
+     * last pass that read to the end.
+     */
+    @Test
+    void aFullPassThatEndsEarlyLeavesTheDeferredCount() {
+        for (var i = 0; i < 4; i++) {
+            seedRecoverable(store, "wf-" + i, "orders");
+        }
+        var a = node(1);
+        var regs = registrations(a);
+        assertEquals(2, a.recoveryPass(regs).deferred());
+        Thread.currentThread().interrupt();
+        try {
+            a.recoveryPass(regs);
+        } finally {
+            Thread.interrupted();
+        }
+        assertEquals(2, a.recoveryDeferredCount());
+    }
+
     @Test
     void anUnboundedNodeAdoptsEveryInstanceAsBefore() {
         for (var i = 0; i < 6; i++) {

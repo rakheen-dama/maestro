@@ -135,10 +135,10 @@ public final class TaskQueueGovernor {
 
     /**
      * One bounded queue's two slot pools, and its recovery tickets: how many
-     * more recovered runs may be admitted to wait for a slot (D-2), at most
-     * {@code workflowConcurrency}.
+     * more recovered runs may be admitted to wait for a slot, at most the
+     * queue's workflow concurrency.
      */
-    private record Bucket(String name, int workflowConcurrency, Semaphore workflowSlots, Semaphore activitySlots,
+    private record Bucket(String name, Semaphore workflowSlots, Semaphore activitySlots,
                           AtomicInteger recoveryTickets) {}
 
     /**
@@ -417,6 +417,9 @@ public final class TaskQueueGovernor {
         }
         var bucket = Objects.requireNonNull(reservation.bucket);
         if (reservation.kind() == SlotReservation.Kind.RESERVED) {
+            // Not checked against closed: a run claiming its permit after
+            // shutdown began stands down in executeWorkflow (cause SHUTDOWN)
+            // before its body, and its finally gives the permit back.
             var slot = new RunSlot(bucket);
             slot.held.set(true);
             var existing = runs.putIfAbsent(workflowId, slot);
@@ -670,7 +673,6 @@ public final class TaskQueueGovernor {
 
     private static Bucket newBucket(String queue, TaskQueueLimits limit) {
         return new Bucket(queue,
-                limit.workflowConcurrency(),
                 new Semaphore(limit.workflowConcurrency(), true),
                 new Semaphore(limit.activityConcurrency(), true),
                 new AtomicInteger(limit.workflowConcurrency()));
