@@ -187,6 +187,42 @@ expect "a registered pid whose start time does not match is not killed" alive "$
 kill "$stranger" 2>/dev/null || true
 wait "$stranger" 2>/dev/null || true
 
+# 8. Cleanup must not let a loop replace the child it just lost: a loop
+#    that starts one child after another (an S2 probe loop runs one k6 after
+#    another) and logs each child's pid. When the harness exits through its
+#    trap, no child the loop ever started may survive — including one it
+#    started after its first child was killed.
+mkdir "$work/t9"
+bash -c '
+  set -Eeuo pipefail
+  RESULTS=$2; COMPOSE_PROJECT=none; PERF_MAIN_PID=$$
+  : >"$RESULTS/harness.log"
+  source "$1/lib/common.sh"
+  trap "bg_kill_all" EXIT
+  spawner() {
+    # It outlives its own SIGTERM, which makes the race deterministic: a
+    # cleanup that only kills the current child and then the loop would let
+    # it start another child; the stop flag (bg_should_continue) does not.
+    trap ":" TERM
+    local deadline=$(($(date +%s) + 600))
+    while bg_should_continue "$deadline"; do
+      sleep 30 &
+      printf "%s\n" "$!" >>"$RESULTS/children.log"
+      wait "$!" || true
+    done
+  }
+  bg_start spawner
+  for _ in $(seq 1 50); do [[ -s "$RESULTS/children.log" ]] && break; sleep 0.1; done
+  sleep 0.5
+' _ "$PERF_DIR" "$work/t9" 2>/dev/null || true
+sleep 1.5
+left=0
+while IFS= read -r c; do
+  if kill -0 "$c" 2>/dev/null; then left=$((left + 1)); kill "$c" 2>/dev/null || true; fi
+done <"$work/t9/children.log"
+expect "cleanup: no child the loop started survives, a replacement included" 0 "$left"
+expect "cleanup: the loop started no replacement child" 1 "$(wc -l <"$work/t9/children.log" | tr -d ' ')"
+
 if ((failures > 0)); then
   echo "bgloop-selftest: ${failures} case(s) failed"
   exit 1

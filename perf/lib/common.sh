@@ -41,13 +41,17 @@ dc() {
 #       lstart) in ${RESULTS}/.bg-pids.
 #   bg_wait <pid>  waits for it and forgets it, so a pid the kernel may
 #       reuse later is never in the registry.
-#   bg_kill_all  (run.sh's on_exit) kills each recorded pid whose live
-#       process still has the recorded start time (the same process, not a
-#       reused pid), with its direct children, BY PID — never by name or
+#   bg_kill_all  (run.sh's on_exit) first drops ${RESULTS}/.bg-stop, which
+#       bg_should_continue reads, so no loop begins another iteration; then
+#       for each recorded pid whose live process still has the recorded start
+#       time (the same process, not a reused pid): freezes it (SIGSTOP), so it
+#       cannot replace the child it is about to lose, kills its direct
+#       children, then it (SIGTERM, SIGCONT) — BY PID, never by name or
 #       pattern.
-#   bg_should_continue <deadline epoch>  a loop's guard: false once the
-#       harness (PERF_MAIN_PID, run.sh's own pid) is gone, e.g. after a
-#       SIGKILL that ran no trap, or once the deadline has passed.
+#   bg_should_continue <deadline epoch>  a loop's guard: false once cleanup
+#       has begun (.bg-stop), once the harness (PERF_MAIN_PID, run.sh's own
+#       pid) is gone, e.g. after a SIGKILL that ran no trap, or once the
+#       deadline has passed.
 # perf/lib/bgloop-selftest.sh pins all of it.
 bg_start_time() {
   ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' | tr ' ' '_'
@@ -70,22 +74,29 @@ bg_wait() {
   bg_forget "$1"
 }
 bg_kill_all() {
-  local pid started rest child
+  local pid started rest child children
   [[ -n "${RESULTS:-}" && -s "${RESULTS}/.bg-pids" ]] || return 0
+  # No loop starts another iteration once cleanup has begun.
+  : >"${RESULTS}/.bg-stop"
   while IFS='|' read -r pid started rest; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     kill -0 "$pid" 2>/dev/null || continue
     # The same process, not a pid the kernel has since given to another.
     [[ -n "$started" && "$(bg_start_time "$pid")" == "$started" ]] || continue
-    for child in $(ps -axo pid=,ppid= | awk -v p="$pid" '$2 == p {print $1}'); do
+    # Freeze it first, so it cannot replace the child it is about to lose,
+    # then kill its children, then it (SIGCONT lets the TERM land).
+    kill -STOP "$pid" 2>/dev/null || true
+    children=$(ps -axo pid=,ppid= | awk -v p="$pid" '$2 == p {print $1}')
+    for child in $children; do
       kill "$child" 2>/dev/null || true
     done
     kill "$pid" 2>/dev/null || true
+    kill -CONT "$pid" 2>/dev/null || true
   done <"${RESULTS}/.bg-pids"
   return 0
 }
 bg_should_continue() {
-  kill -0 "${PERF_MAIN_PID:-$$}" 2>/dev/null && (($(date +%s) < $1))
+  [[ ! -e "${RESULTS:-/nonexistent}/.bg-stop" ]] && kill -0 "${PERF_MAIN_PID:-$$}" 2>/dev/null && (($(date +%s) < $1))
 }
 
 # Rewrites identity.json in place: identity_set '<jq filter>' [jq args…]
