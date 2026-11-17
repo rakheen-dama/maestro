@@ -8,15 +8,37 @@ name: Perf (k6)
 # correctness; the rest is reported). It runs on demand and once a week, to
 # keep a standing record against the committed baselines (perf/baselines/).
 #
+# Profile: the schedule and the dispatch default run `local`, the profile both
+# committed baselines were recorded with, so the baseline gates judge
+# (gate.statementsPerWorkflow, gate.parkedCostBaseline). `full` is a manual
+# choice: no baseline is recorded for it, so its baseline gates read
+# NO_BASELINE (reported below) and only the absolute gates judge.
+#
+# Hardware-sensitive on a shared runner (the statement figures are not: they
+# did not move with host load in any committed run):
+#   - dropped iterations: k6's VUs exhausted, by a slow system under test or
+#     a starved generator (validity.droppedIterations -> INVALID);
+#   - the plan's iteration count: k6 must start the stage table's
+#     iterations within max(2, 0.5 %) (validity.plan -> INVALID); the
+#     warm-up must drain before the idle window (validity.warmup -> INVALID);
+#   - Scenario 3's plateau wait: each plateau must park within 600 s
+#     (correctness.plateauReached -> FAIL);
+#   - drain timeouts: S1 300 s (local) / 1200 s (full), S3 probes 120 s, the
+#     S3 release 120 s + Pmax / 10 s (correctness.* -> FAIL).
+# So read a FAIL's detail before calling it an engine regression.
+#
 # The schedule is subject to GitHub's 60-day inactivity disable. build-test.yml's
 # `keep-nightly-enabled` job re-enables it on every push to main; manual
 # recovery is `gh workflow enable perf.yml`.
 #
-# Verdicts: perf/run.sh exits 0 PASS, 1 FAIL, 2 INVALID, 3 harness error, so a
-# FAIL, INVALID or ERROR verdict fails the job. A gate that had no usable
-# baseline (status NO_BASELINE; the verdict can still be PASS) is reported as
-# a warning annotation and in the step summary, never silently counted as
-# passed. Admin events default to false, the engine's default and the setting
+# Verdicts: perf/run.sh exits 0 PASS, 1 FAIL, 2 INVALID, 3 harness error.
+# FAIL and ERROR fail the job on every trigger. INVALID (the measurement could
+# not be trusted, typically the runner, see above) fails a dispatched job, but
+# on the schedule it is a warning annotation and the job succeeds: a weekly
+# run on a noisy neighbour must not read as a red build. A gate that had no
+# usable baseline (status NO_BASELINE; the verdict can still be PASS) is
+# reported as a warning annotation and in the step summary, never silently
+# counted as passed. Admin events default to false, the engine's default and the setting
 # the committed baselines were recorded with.
 
 on:
@@ -31,7 +53,7 @@ on:
         description: Load profile
         type: choice
         options: [local, full]
-        default: full
+        default: local
       replicas:
         description: Node replicas (a positive integer)
         type: string
@@ -80,18 +102,26 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
       - name: Run the scenario
         # Inputs reach the shell as environment variables, never spliced into
         # the script text.
         env:
           PERF_SCENARIO: ${{ matrix.scenario }}
-          PERF_PROFILE: ${{ inputs.profile || 'full' }}
+          PERF_PROFILE: ${{ inputs.profile || 'local' }}
           PERF_REPLICAS: ${{ inputs.replicas || '1' }}
           PERF_ADMIN_EVENTS: ${{ inputs.admin_events || 'false' }}
-        run: perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" --replicas "$PERF_REPLICAS"
+        # jq (which run.sh needs) is preinstalled on ubuntu-latest (the
+        # runner image's tool list, actions/runner-images Ubuntu2404-Readme).
+        # Exit 2 (INVALID) on the schedule is a warning, not a failed job;
+        # every other non-zero exit fails it (header: Verdicts).
+        run: |
+          rc=0
+          perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" --replicas "$PERF_REPLICAS" || rc=$?
+          if [[ "$rc" == 2 && "$GITHUB_EVENT_NAME" == schedule ]]; then
+            echo "::warning title=Perf INVALID (${PERF_SCENARIO})::the measurement could not be trusted (see the validity checks in the step summary); a scheduled INVALID does not fail the job"
+            exit 0
+          fi
+          exit "$rc"
 
       - name: Summarise
         if: always()

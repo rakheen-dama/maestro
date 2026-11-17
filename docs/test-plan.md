@@ -301,10 +301,20 @@ with the old file untouched).
 
 **CI:** `.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
 (scenario, profile, replicas, admin_events; defaults `s1-throughput`,
-`full`, `1`, `false`) and Saturday 04:00 UTC (s1-throughput and s3-parked,
-full profile). Never on pull requests: a load run on a shared 4-vCPU runner is
-not a merge signal. FAIL, INVALID and ERROR fail the job; a NO_BASELINE gate is
-a warning annotation. Results are uploaded for 14 days.
+`local`, `1`, `false`) and Saturday 04:00 UTC (s1-throughput and s3-parked,
+**local** profile: the profile both committed baselines were recorded with,
+so the baseline gates judge; `full` is a manual choice, and its baseline gates
+read NO_BASELINE). Never on pull requests: a load run on a shared 4-vCPU
+runner is not a merge signal. What is hardware-sensitive on such a runner
+(the statement figures are not): dropped iterations and the plan's iteration
+count (`validity.droppedIterations`, `validity.plan`; also the warm-up drain,
+`validity.warmup` — all INVALID), Scenario 3's 600 s plateau wait
+(`correctness.plateauReached`) and the drain timeouts (S1 300 s local /
+1200 s full, S3 probes 120 s, S3 release 120 s + Pmax / 10 s; `correctness.*`
+— all FAIL). FAIL and ERROR fail the job on every trigger; INVALID fails a
+dispatched job, but a **scheduled INVALID is a warning annotation and the job
+succeeds**; a NO_BASELINE gate is a warning annotation. Read a FAIL's detail
+before calling it an engine regression. Results are uploaded for 14 days.
 `gh workflow run perf.yml -f scenario=smoke -f profile=local`.
 
 **Adding a scenario (WP12):** a `perf/scenarios/<name>.sh` defining
