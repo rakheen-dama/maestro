@@ -192,6 +192,8 @@ Each clone is then exactly a run whose node died after step 0 completed and befo
 | `advisory.decomposition` | advisory | The component calls per seeded run |
 | `advisory.c2Stream` | advisory | `full`: recovered completions in every minute of phase C > 0 → PASS, else WARN. `local`: "not measured". |
 
+> **As built (after review):** the table above is the plan. The shipped evaluator (`perf/eval/s2-recovery-drain.jq`, its header lists every check) replaces `gate.recoveryStatements` with three gates — `gate.lockAcquisitionsPerAdoption` ≤ 2.02, `gate.lostLockRaces` ≤ 0.5 per seeded run, `gate.recoveryPassRate` ≤ 1.25 × a designed floor — and keeps the combined figure as `advisory.recoveryStatements`; `gate.noHoard` is ≤ 2C; `validity.recoveryClassifier` requires every statement component matched and adoptCas = the nodes' adoptions = N; `validity.statusRecorded` is new. Current rules and measured figures: `docs/test-plan.md` § Finding-linked scenarios and the Review section below.
+
 **Predictions** (N = 5,000, d = 2 s, C = 20, JVM boot ≈ 15 s):
 
 | Figure | Before (WP6 merge base) | After (WP6) |
@@ -827,7 +829,7 @@ The `type` error becomes `type must be chain, park, hold or signals`.
 | after preview (WP6 branch) | `25e84962` (`fix/recovery-capacity`), overlay of H 24763185 | r20261117t122039z | **PASS** | 520.91 | 269.05 | 0.5165 | 21 / 21 | 0.010 | 2.22 / 2.41 | +0.6; +1.4 / +1.9 | yes: 0.52, ≤ 2C, 0.01; two-node figure above the predicted 2.2 (lost lock races 0.124 / run) |
 | after of record (main) | `d1600bf1` (PR #62; engine ec0458ca), H 1192fabd (S2 files = 24763185) | r20261117t162103z | **PASS** | 517.09 | 264.39 | 0.5113 | 21 / 21 | 0.011 | 2.17 / 2.45 | −0.7; +0.1 / +0.3 | yes, within ±10 % of the preview except phase B's combined statements (lost races 0.185 / run; gate ≤ 0.5) |
 
-S2's statement gates since the final review: `gate.lockAcquisitionsPerAdoption` ≤ 2.02 (2.000 in every run), `gate.lostLockRaces` ≤ 0.5 (0 / 0.124 / 0.185), `gate.recoveryPassRate` ≤ 1.25 × designed floor (0.13 / 0.90 / 0.86); "recovery stmts / run" above is the former combined figure, now `advisory.recoveryStatements`. Re-evaluated with the S2 evaluator at d705ba4a.
+S2's statement gates since the final review: `gate.lockAcquisitionsPerAdoption` ≤ 2.02 (2.000 in every run), `gate.lostLockRaces` ≤ 0.5 (0 / 0.124 / 0.185), `gate.recoveryPassRate` ≤ 1.25 × designed floor (0.13 / 0.82 / 0.78, node-seconds to the statement window's end); "recovery stmts / run" above is the former combined figure, now `advisory.recoveryStatements`. Re-evaluated with the S2 evaluator at 40981910.
 
 ### S4 `s4-signals` (3.2, WP2)
 
