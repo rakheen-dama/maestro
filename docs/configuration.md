@@ -920,9 +920,11 @@ maestro:
       enabled: true
 ```
 
-Meters registered: counters `maestro.workflow.started|completed|failed|compensated|terminated`,
-`maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
-`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.loop.errors`, `maestro.standdown`;
+Meters registered (20): counters `maestro.workflow.started|completed|failed|compensated|terminated`,
+`maestro.activity.result.unreadable`, `maestro.signal.consumed`, `maestro.signal.duplicates`,
+`maestro.timer.fired`, `maestro.recovery.scanned`, `maestro.recovery.adopted`,
+`maestro.retention.sweeps`, `maestro.retention.purged`, `maestro.lock.renew.failures`,
+`maestro.loop.errors`, `maestro.standdown` (16);
 timer `maestro.activity.duration`; gauges `maestro.workflows.running`,
 `maestro.workflows.parked` and `maestro.wake.permits` (node-local — sum across
 pods for a cluster total).
