@@ -2086,10 +2086,11 @@ public final class WorkflowExecutor {
      * Starts the background retention sweeper.
      *
      * <p>Every {@code settings.interval()} the elected leader for this service
-     * purges workflows that reached {@code COMPLETED}, {@code TERMINATED} or
-     * {@code FAILED} longer ago than that status's retention — the instance
-     * row and its whole history (events, signals, timers) — via
-     * {@link WorkflowStore#purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
+     * purges this service's workflows that reached {@code COMPLETED},
+     * {@code TERMINATED} or {@code FAILED} longer ago than that status's
+     * retention — the instance row and its whole history (events, signals,
+     * timers) — via
+     * {@link WorkflowStore#purgeTerminalInstancesBefore(String, io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
      * in batches of {@code settings.batchSize()}. Leadership is held on
      * {@code maestro:leader:retention:<serviceName>} through the
      * {@link DistributedLock} (always held when there is none) and re-checked
@@ -2114,6 +2115,44 @@ public final class WorkflowExecutor {
         var sweeper = new RetentionSweeper(store, distributedLock, serviceName, settings, observer);
         installAndStart(retentionSweeper, sweeper, "Retention sweeper", sweeper::start, sweeper::stop);
         retentionSettings = settings;
+    }
+
+    // ── Service-name check ──────────────────────────────────────────────
+
+    /**
+     * Starts the once-per-start check for active workflows of this node's
+     * types recorded under another {@code maestro.service-name} (Issue 39),
+     * and returns at once.
+     *
+     * <p>Recovery adopts only instances recorded under this executor's own
+     * service name. The check asks the store once, through
+     * {@link WorkflowStore#getActiveInstanceCountsUnderOtherServices}, for
+     * every other service name holding active instances of a type in
+     * {@code registrations}, and logs one {@code WARN} per name (at most 20)
+     * with its count and the remedy. It runs on its own virtual thread,
+     * {@code maestro-foreign-service-check}, and ends after that one read.
+     *
+     * <p>It never throws and never writes: a failed read is logged once at
+     * {@code INFO}, and while the executor is shutting down this method logs
+     * at {@code DEBUG} and starts nothing. {@link #shutdown()} does not wait
+     * for it. A store that does not override the read reports nothing, so
+     * nothing is logged above {@code DEBUG}.
+     *
+     * <p>The Spring Boot starter calls this at startup, right after it has
+     * started recovery. An embedder without the starter calls it once after
+     * starting recovery.
+     *
+     * @param registrations map of workflow type → registration metadata; its
+     *                      keys are the types checked
+     */
+    public void startForeignServiceCheck(Map<String, WorkflowRegistration> registrations) {
+        if (shuttingDown.get()) {
+            logger.debug("WorkflowExecutor is shutting down — the service-name check is not started");
+            return;
+        }
+        var types = Set.copyOf(registrations.keySet());
+        Thread.ofVirtual().name(ForeignServiceCheck.THREAD_NAME)
+                .start(() -> ForeignServiceCheck.run(store, serviceName, types));
     }
 
     /**
