@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -35,7 +36,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>A {@link RuntimeException} from the store (for example the database is
  * briefly unreachable) is logged at {@code WARN} and the loop carries on to
  * the next interval; the janitor never dies of a store error. Purges that
- * delete rows are logged at {@code INFO}.
+ * delete rows are logged at {@code INFO}. An {@code Error} is contained by
+ * the loop's guard, logged and counted on {@code maestro.loop.errors}, and the
+ * next sweep runs one interval later.
  *
  * <h2>Thread Safety</h2>
  * <p>{@link #start()}, {@link #stop()} and {@link #isRunning()} may be
@@ -55,6 +58,15 @@ final class SignalJanitor {
     private final WorkflowStore store;
     private final Duration interval;
     private final Duration retention;
+    private final BackgroundLoopGuard guard;
+
+    /**
+     * Set by {@link #sweepOnce()} when it logged and swallowed a fault, so the
+     * loop does not count that sweep as a success. Written and then read on
+     * the loop thread; a direct {@code sweepOnce()} from another thread while
+     * the loop runs can at worst misreport one sweep.
+     */
+    private volatile boolean sweepSwallowedAFailure;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private volatile boolean running;
@@ -72,6 +84,23 @@ final class SignalJanitor {
      *                                  is {@code null}, zero or negative
      */
     SignalJanitor(WorkflowStore store, Duration interval, Duration retention) {
+        this(store, interval, retention, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new signal janitor that reports contained {@code Error}s.
+     *
+     * @param store     the store whose signal table is swept
+     * @param interval  time between sweeps; must be positive
+     * @param retention how long after a workflow completed or was terminated
+     *                  its unconsumed signals are kept; must be positive
+     * @param observer  receives {@link EngineObserver#backgroundLoopError}
+     *                  for every {@code Error} the loop contains
+     * @throws NullPointerException     if {@code store} or {@code observer} is {@code null}
+     * @throws IllegalArgumentException if {@code interval} or {@code retention}
+     *                                  is {@code null}, zero or negative
+     */
+    SignalJanitor(WorkflowStore store, Duration interval, Duration retention, EngineObserver observer) {
         if (store == null) throw new NullPointerException("store must not be null");
         if (interval == null || interval.isNegative() || interval.isZero()) {
             throw new IllegalArgumentException("interval must be positive, got " + interval);
@@ -82,6 +111,7 @@ final class SignalJanitor {
         this.store = store;
         this.interval = interval;
         this.retention = retention;
+        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.SIGNAL_JANITOR, interval, () -> !running, observer);
     }
 
     /**
@@ -97,6 +127,7 @@ final class SignalJanitor {
         running = true;
         janitorThread = Thread.ofVirtual()
                 .name(THREAD_NAME)
+                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
                 .start(this::sweepLoop);
         logger.info("Signal janitor started (interval={}, terminalRetention={})", interval, retention);
     }
@@ -133,6 +164,16 @@ final class SignalJanitor {
     }
 
     /**
+     * The loop's current failure streak (sweeps that threw since the last one
+     * that returned). Safe to call from any thread.
+     *
+     * @return the number of consecutive failed sweeps
+     */
+    int consecutiveFailures() {
+        return guard.consecutiveFailures();
+    }
+
+    /**
      * Runs one sweep: purges the unconsumed signals of workflows that reached
      * {@code COMPLETED}/{@code TERMINATED} before {@code now - retention}.
      *
@@ -143,6 +184,7 @@ final class SignalJanitor {
      * @return the number of signal rows deleted ({@code 0} on a store failure)
      */
     int sweepOnce() {
+        sweepSwallowedAFailure = false;
         var cutoff = Instant.now().minus(retention);
         try {
             int deleted = store.deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
@@ -153,6 +195,7 @@ final class SignalJanitor {
             return deleted;
         } catch (RuntimeException e) {
             logger.warn("Signal janitor sweep failed — will retry in {}", interval, e);
+            sweepSwallowedAFailure = true;
             return 0;
         }
     }
@@ -161,7 +204,19 @@ final class SignalJanitor {
 
     private void sweepLoop() {
         while (running) {
-            sweepOnce();
+            try {
+                sweepOnce();
+                // A sweep that swallowed a store fault is not a success: it
+                // must not end an Error streak (nor log "recovered").
+                if (!sweepSwallowedAFailure) {
+                    guard.succeeded();
+                }
+            } catch (Throwable t) {
+                // Rethrows a MaestroControlFlowError (ending the loop);
+                // contains and logs everything else. Store faults never get
+                // here: sweepOnce logs and swallows them itself.
+                guard.failed(t);
+            }
             // stop() interrupts this thread, but a store call (e.g. a JDBC
             // driver) may swallow that interrupt and return normally; without
             // this re-check the loop would then sleep a full interval after

@@ -308,6 +308,7 @@ any other value fails startup. Removed (setting either fails startup):
   `22`/`23`/`54`, and `StoreFaultGuard` retries outcome appends then latches the run
   `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
   recovery, so any new `catch` that collects failures must rethrow it too.
+  A background loop never ends on an `Error` silently (3.5b): it rethrows a `MaestroControlFlowError` and contains every other `Throwable`. The five engine loops (timer poller, recovery poller, signal janitor, retention sweeper, instance-lock renewer) wrap each iteration in `BackgroundLoopGuard` (package `engine`); the two `maestro-store-postgres` loops (`PostgresLockCleanerScheduler`, `PostgresWakeListener`) cannot see that package-private class and apply the same rule inline. A new loop does one or the other.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

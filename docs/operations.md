@@ -992,7 +992,9 @@ What a running workflow does with one:
   `sleep()`, `awaitSignal()` or terminal write. A fault inside a `parallel()`
   branch, or during compensation, abandons the whole run the same way.
 - **Recovery resumes it.** The recovery poller's own pass fails while the
-  store is down (`Recovery polling error — will retry next cycle` at `ERROR`).
+  store is down (`Background loop 'recovery-poller' failed …` at `ERROR`
+  once, then a reminder every 5 minutes, and `… recovered after N consecutive
+  failure(s)` at `INFO`).
   The first pass after the store answers adopts the instance, so expect it
   back within one `maestro.recovery.poll-interval` (default 60s). If the
   instance-lock release could not reach the database either, the lock row
@@ -1154,7 +1156,8 @@ never increments it is simply not the leader — expected on all but one node).
 `maestro.retention.purged{kind=instance|event|signal|timer}` moves by the
 sweep's counts. `/actuator/health` reports `retentionSweeperRunning` (`true`,
 `false`, `"starting"`, or `"disabled"` when `maestro.retention.enabled=false`);
-`false` after a start is a dead loop and turns the status `DOWN`. A sweep that
+`false` after a start is a dead loop and turns the status `DOWN`.
+`signalJanitorRunning` and `instanceLockRenewerRunning` read the same way (the renewer reads `"idle"` until this node takes its first instance lock); see §14. A sweep that
 purged anything logs one `INFO` line with its counts; a store failure logs
 `WARN` and the loop retries next interval.
 
@@ -1318,7 +1321,25 @@ P × d / `maestro.signal.wake-recheck-interval` workflow slots busy, where d is
 one re-check's duration (its 2–3 reads). In the worked example above, and
 assuming 5 ms per re-check, 2,000 × 5 ms / 30 s ≈ 0.3 slots, so re-checks rarely crowd out runs; with
 slow reads or a short interval, check the product. A pool that runs dry shows up as `STORE_UNAVAILABLE` abandons
-(§10.9), not as workflow failures.
+(§10.9), not as workflow failures, and as `store: "timed out"` with status `UNKNOWN` on `/actuator/health` (§14).
+
+## 14. Health checks and Kubernetes probes
+
+**Maestro's health indicator is a readiness signal at most, never liveness.** The `maestro` contributor (`MaestroHealthIndicator`) reports `DOWN` when the store refused the probe (`store: "unreachable"`) or a background loop that started has stopped (`timerPollerRunning`, `recoveryPollerRunning`, `retentionSweeperRunning`, `signalJanitorRunning`, `instanceLockRenewerRunning`: `false`), or the instance-lock renewer is running but has failed two passes in a row (`instanceLockRenewerConsecutiveFailures` `2` or more: held locks are not being renewed, and they expire after `maestro.lock.ttl`). One failed pass reads `UP`, with the streak of `1` in the details: the TTL is three renew intervals, so it covers roughly two missed passes — after one there is still a pass to spare, after two the held locks are at the edge of expiring (`theRenewerIsUpAfterOneFailedPassAndDownAfterTwoInARow`). It reports `UNKNOWN` when the probe (`getInstance` on a sentinel id) did not finish within 2 s (`store: "timed out"`) — usually a pool whose connections are all borrowed, which is the node doing its job. Spring Boot orders statuses `DOWN`, `OUT_OF_SERVICE`, `UP`, `UNKNOWN`, so an `UNKNOWN` `maestro` leaves the aggregate `UP`, and only `DOWN` and `OUT_OF_SERVICE` answer 503. A renewer that alternates one failed pass with one good pass never reads `DOWN`: each good pass renews every lock to its full TTL, so the locks stay valid (traced, not tested). If the probe's own thread cannot be started, the contributor reports `DOWN` with that failure; it never throws.
+
+- **Liveness.** Spring Boot's `liveness` group contains only `livenessState`; keep it that way, and never point a liveness probe at `/actuator/health`. Restarting a busy pod abandons its in-flight runs to the lock TTL and adds a recovery pass to the fleet's load.
+- **Readiness.** Add `maestro` only if this pod's HTTP traffic needs Maestro's store: `management.endpoint.health.group.readiness.include=readinessState,maestro`. A shared database that is down then takes every pod out of the Service, which is what you want only if the pods cannot serve without it.
+- **Probe timeout.** The indicator can take up to 2 s to answer: a call that starts or joins a store probe waits for it for up to 2 s (only a call that finds the probe already timed out by an earlier call answers at once). A kubelet probe's default `timeoutSeconds` is `1`, so a slow store makes the HTTP probe itself time out, which the kubelet counts as a failure — the pod leaves the Service even though `maestro` would have answered `UNKNOWN` (HTTP 200). Set the readiness probe's `timeoutSeconds` to at least `3` whenever `maestro` is in its group; the `UNKNOWN`-is-200 behaviour below helps only if the probe waits long enough to receive it. (The 2 s bound is `returnsPromptlyWhenStoreBlocksIndefinitely`; the kubelet default is Kubernetes' documented behaviour, not tested here.)
+- **A dead loop.** Since 3.5b a loop contains every `Error` except Maestro's control-flow signals, so a loop that stops is a bug: the log carries `Background loop '<name>' stopped: …` at `ERROR`, health reads `DOWN`, and the remedy is restarting the node — readiness does not do that for you. Alert on `maestro.loop.errors` (contained `Error`s) before it comes to that.
+
+**`UNKNOWN` answers HTTP 200 by default.** That holds for `/actuator/health/maestro` too, and for a group whose only member is `maestro`. A host that wants a timed-out probe to answer 503 maps the status, and, for an aggregate or a group that also has an `UP` member, ranks `UNKNOWN` above `UP` — otherwise the aggregate stays `UP` and the mapping never applies:
+
+```properties
+management.endpoint.health.status.http-mapping.unknown=503
+management.endpoint.health.status.order=DOWN,OUT_OF_SERVICE,UNKNOWN,UP
+```
+
+Think twice before doing this for readiness: a pool that is busy, not broken, then takes the pod out of the Service. `MaestroHealthIndicatorTest` pins Spring Boot's defaults (`bootsDefaultsLeaveAnUnknownMaestroAt200`) and the effect of both properties on Boot's aggregator and status mapper (`aHostCanMapUnknownTo503`); the full actuator endpoint with these properties set is traced, not tested. The status rule itself is pinned by `returnsPromptlyWhenStoreBlocksIndefinitely` (`UNKNOWN` within the bound), `aStoreThatThrowsWithinTheBoundIsDown` and `aTimedOutProbeDoesNotHideADeadLoop`.
 
 ---
 

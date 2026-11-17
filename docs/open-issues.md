@@ -359,6 +359,11 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
 | [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Open |
+| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | Open |
+| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | Open |
+| [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | Open |
+| [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -4465,6 +4470,272 @@ WP3 changes no lifecycle event or `maestro-admin` code.
 
 **Done when.** A refused Retry shows its outcome on the workflow's dashboard
 page.
+
+---
+
+### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the Tasks 4–5 review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — shutdown. **Severity:** Low.
+
+**What happens.** `close()` sets `running` to `false` and calls
+`thread.interrupt()` on the cleaner's virtual thread. Between sleeps that
+thread runs `PostgresLockCleaner.clean()`: one pooled connection, two
+`DELETE`s. An interrupt that lands while the thread is blocked in a socket
+read closes the socket under the pool. This is the mechanism WP10 reproduced
+for Issue 38 on the wake listener, so the pool marks the connection broken,
+logs a `WARN` and evicts it. WP4 changed only what the loop does with a
+throwable (a failure after `close()` is logged at `DEBUG`); the interrupt is
+older code.
+
+**The same in core.** `WorkflowInstanceLockManager.close()` (called from
+`WorkflowExecutor.shutdown()`) interrupts the instance-lock renewer, which
+may be inside `DistributedLock.renewAll` — on Postgres one pooled connection
+and one `UPDATE` per 500 locks — with the same effect on the pool. The
+interrupted `renewAll` then throws (`LockBackendException`), and the
+renewer's backend-failure arm emits `instanceLockRenewFailed` for **every
+held lock** before the guard sees it is stopping, so a shutdown that lands
+inside a pass adds one `maestro.lock.renew.failures{outcome="error"}` per
+held lock: an alert on that counter fires on a routine deploy. Traced, not
+tested.
+
+**Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
+interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`);
+`WorkflowInstanceLockManager.java` (`close()`, `thread.interrupt()`;
+`renewPass()`, the `catch (Exception e)` arm around `renewAll`).
+
+**Harm.** At most one pool `WARN` and one evicted connection per shutdown,
+and only when the shutdown falls inside a run (a few milliseconds every
+`maestro.lock.cleanup-interval`, 10 min by default, for the cleaner; a
+renewal pass every TTL/3, 10 s by default, for the renewer). Nothing durable
+is affected: both `DELETE`s are idempotent and autocommit, and the locks the
+renewer held expire via TTL as they would anyway. The renewer's case also
+counts `maestro.lock.renew.failures{outcome="error"}` once per held lock.
+
+**How to tackle it.** Do what WP10 did for the listener: `close()` stops the
+wait without an interrupt (a latch or condition the loop waits on in place of
+`Thread.sleep`), lets a run in progress finish, and joins the thread for a
+bounded time. Pin it as `PostgresWakeListenerShutdownTest` does: a Hikari pool,
+`close()` during a slow `DELETE`, no pool `WARN`, and the connection reused.
+The renewer takes the same change, and its backend-failure arm should not
+emit `instanceLockRenewFailed` once the manager is closed.
+
+**Why it is not WP4.** WP4 makes the loop survive an `Error`; changing how
+the loop stops is WP10's pattern applied to another class. It needs its own
+Hikari-backed test.
+
+**Done when.** Closing the scheduler during a run, or the executor during a
+renewal pass, logs no pool `WARN`, evicts no connection, and counts no
+renewal failure.
+
+---
+
+### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** The two `maestro-store-postgres` loops — the lock cleaner
+(`maestro-pg-lock-cleaner`) and the wake listener (`maestro-pg-wake-listener`)
+— contain an `Error` as the five engine loops do, and log it at `ERROR`
+(`PostgresLockCleanerSchedulerTest`, `PostgresWakeListenerLoopErrorTest`).
+But they apply the guard's rule inline: `BackgroundLoopGuard` is
+package-private in `maestro-core`, and neither class holds an
+`EngineObserver`, so neither reaches `maestro.loop.errors`. Neither is in
+`/actuator/health` either: `MaestroHealthIndicator` lives in the starter and
+knows only the `WorkflowExecutor`. `PostgresWakeListener.isConnected()` and the
+cleaner's (package-private) `isRunning()` reach no indicator. The wake
+listener's `WARN` for an unexpected `RuntimeException` is also not
+rate-limited like the guard's lines: once per reconnect attempt, so at most
+one per second, falling to one per 30 s as the back-off grows. Its arm for a
+driver `Error` (not a control-flow one) is worse: it keeps the same session
+and pauses 1 s, so a driver that throws an `Error` on every poll logs
+`ERROR` **with the stack trace** about once a second — roughly 3,600 lines an
+hour — with no rate limit and no back-off (traced, not tested; the 1 s pause
+is `anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain`).
+
+**Where.** `PostgresLockCleanerScheduler.java` (`loop`),
+`PostgresWakeListener.java` (`pollLoop`, `dispatch`); their auto-configurations
+`PostgresLockAutoConfiguration.java` and
+`PostgresSignalWakeAutoConfiguration.java`; `MaestroHealthIndicator.java`.
+
+**Harm.** A dead or failing cleaner (expired lock rows accumulate) or wake
+listener (cross-node wakes fall back to `maestro.signal.wake-recheck-interval`)
+is visible only in the log. No alert on the counter or on health fires for
+them.
+
+**How to tackle it.** Give both classes an `EngineObserver` from their
+auto-configurations (`ObjectProvider<EngineObserver>`, wrapped with
+`CompositeEngineObserver.of`) and two more fixed loop names
+(`lock-cleaner`, `wake-listener`) in `EngineObserver.backgroundLoopError`'s
+contract, so the counter sees them. Add a `HealthContributor` in
+`maestro-store-postgres` (`maestroPostgres`) reporting both loops and the
+listener's session, readiness-only like
+[Operations §14](operations.md#14-health-checks-and-kubernetes-probes).
+
+**Why it is not WP4.** Both need new wiring across module boundaries and a
+change to the callback's documented loop names; WP4 kept to the engine's
+observer and the starter's indicator.
+
+**Done when.** An `Error` in either loop moves `maestro.loop.errors`, and a
+dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
+
+---
+
+### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed. Traced, not tested: the
+> interrupt itself is tested (`MaestroHealthIndicatorTest.aTimedOutProbeIsInterrupted`),
+> its effect on a pooled connection is not.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** When the store probe (`getInstance` on a sentinel id) does
+not finish within 2 s, `MaestroHealthIndicator` reports `UNKNOWN` and
+interrupts the probe's virtual thread. In a pool wait the interrupt is
+harmless. Mid-query it closes the socket — the mechanism WP10 reproduced for
+Issue 38 — so a slow database sees one pool `WARN` and one evicted connection
+per timed-out probe. WP4 made the probe single-flight (a later health call
+joins a probe still in flight instead of starting another), but that bounds
+the cost only for a store call that ignores the interrupt: such a probe stays
+stuck, later calls join it, and it holds one connection. With pgjdbc the
+interrupt frees the probe — the socket is closed and the call throws — so
+the probe ends, the next health call starts a fresh one, and on a database
+that stays slow **each timed-out health call can cost one evicted
+connection** (traced, not tested).
+
+**Where.** `MaestroHealthIndicator.java`, `Probe.abandon()`
+(`thread.interrupt()`), called from `probeStore()` on timeout.
+
+**Harm.** Pool `WARN`s and connection churn on a database that is already
+slow: up to one evicted connection per timed-out health call, from any caller
+(kubelet probes, scrapers, load-balancer checks, the aggregate and the group
+endpoints), while every probe times out mid-query.
+
+**How to tackle it.** Stop interrupting: the single-flight probe already
+bounds the cost of a stuck probe to one thread and one borrowed connection.
+The trade-off to settle first is a probe stuck for ever on a half-open
+connection with no socket timeout, which the interrupt currently frees: with
+no interrupt, health would read `UNKNOWN` until that connection's socket
+timeout or TCP keep-alive gives up. Pin it as `PostgresWakeListenerShutdownTest`
+does: a Hikari pool, a probe that times out mid-query, no pool `WARN`.
+
+**Why it is not WP4.** It changes what a stuck probe costs (a held
+connection instead of an evicted one) and needs a Hikari-backed test; 3.5a
+is the status a timeout reports.
+
+**Done when.** A probe that times out mid-query logs no pool `WARN` and
+evicts no connection, and a stuck probe cannot hold health at `UNKNOWN`
+after the store answers again.
+
+---
+
+### Issue 67 — Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass {#issue-67}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** Each of the four loops counts its failure streak in its
+`BackgroundLoopGuard` and exposes it as a package-private
+`consecutiveFailures()` (`TimerPoller`, `RecoveryPoller`, `SignalJanitor`,
+`RetentionSweeper`), but `WorkflowExecutor` has no public accessor for any of
+them and `MaestroHealthIndicator` reads only whether each loop's thread is
+alive (`timerPollerRunning`, `recoveryPollerRunning`, `signalJanitorRunning`,
+`retentionSweeperRunning`). A loop that fails every pass for hours — say a
+store call that keeps throwing in `getDueTimers` or the recovery page while
+the health probe's `getInstance` still answers — keeps its thread alive and
+reads `UP`. Only the instance-lock renewer's streak
+reaches health (`instanceLockRenewerConsecutiveFailures`, `DOWN` at 2).
+
+**Where.** `MaestroHealthIndicator.health()` (`pollerState`); the four
+loops' `consecutiveFailures()`; `WorkflowExecutor` (the renewer's
+`instanceLockRenewerFailureStreak()` is the model).
+
+**Harm.** A node whose timers never fire, or whose recovery never adopts, reads
+healthy. The guard's `ERROR` lines (first failure, then a reminder every
+5 minutes) and, for an `Error`, `maestro.loop.errors` are the only signals;
+a store fault that is an `Exception` is logged but not counted.
+
+**How to tackle it.** Add public `…FailureStreak()` accessors on
+`WorkflowExecutor` for the four loops, report each as a detail, and decide a
+threshold per loop: the 5 s pollers can use a small streak, while the hourly
+janitor and sweeper would read `DOWN` only after hours, so a time-based
+threshold (failing for longer than N minutes) may fit them better. Keep the
+store-probe rule: a store that is down already reads `DOWN` through the probe.
+
+**Why it is not WP4.** WP4 added the renewer's streak because a failing
+renewer loses locks within one TTL; for the other four the right threshold
+is a design decision, and each needs its own test.
+
+**Done when.** A loop that fails every pass for longer than its threshold
+reads `DOWN`, with its streak in the details, and one that recovers reads
+`UP`.
+
+---
+
+### Issue 68 — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass {#issue-68}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** Two separate gaps in the instance-lock renewer:
+
+1. **A failed start reads idle.** When `startRenewerIfNeeded()` fails with a
+   `RuntimeException` (the thread could not be created or started),
+   `WorkflowInstanceLockManager.tryAcquire` logs `ERROR` and still returns
+   `ACQUIRED`: the lock is held and the run proceeds. `startRenewerIfNeeded()`
+   resets `renewerStarted` to `false` so that the next acquisition retries the
+   start. Until one does, `hasInstanceLockRenewerStarted()` is `false`, so
+   health reads `instanceLockRenewerRunning: "idle"` and `UP` — the reading
+   for a node that holds no lock — while every lock this node holds is
+   unrenewed and expires after the TTL. (An `Error` from the start releases
+   the lock and is rethrown, so it does not leave this state.)
+2. **One lost lock per pass after an observer `Error`.** `renewPass()` walks
+   the handles `renewAll` reported lost and calls `lockLost` for each. If
+   `observer.instanceLockLost` throws an `Error` — possible only with an
+   observer the builder was given unwrapped; the starter always wraps in
+   `CompositeEngineObserver.of`, which contains it — `lockLost` still drops
+   the handle and stands the run down (review d2), but the `Error` leaves the
+   loop over `lost`. The remaining lost handles stay in `heldLocks` until a
+   later pass reports them again, so an observer that throws deterministically
+   handles one lost lock per pass (one renew interval each).
+
+**Where.** `WorkflowInstanceLockManager.java`: `tryAcquire` (the
+`catch (Exception e)` around `startRenewerIfNeeded()`),
+`startRenewerIfNeeded()`, `renewPass()` (the loop over `lost`), `lockLost`;
+`MaestroHealthIndicator.renewerState`.
+
+**Harm.** (1) A node whose renewer never started looks healthy while its
+workflows lose their locks to other nodes one TTL after acquisition — the
+churn 3.5b fixed for a dead renewer, without the `DOWN`. (2) Runs whose locks
+are lost are stood down one renew interval apart instead of at once; until
+then they keep executing without the lock (the lease fence still rejects
+their writes).
+
+**How to tackle it.** (1) Distinguish "no lock ever held" from "locks held,
+renewer not running": report `instanceLockRenewerRunning: false` (a fault)
+whenever `heldLocks` is non-empty and the renewer is not running, whatever
+`renewerStarted` says. (2) Contain an observer `Error` per lost handle in
+`renewPass` (as d3 did per notification in the wake listener), rethrowing
+only a control-flow `Error`, after the remaining handles are processed.
+
+**Why it is not WP4.** Both were found by the whole-branch review after WP4's
+tasks were done; each needs a red test of its own.
+
+**Done when.** A node holding locks with no running renewer reads `DOWN`, and
+an observer `Error` on one lost lock does not delay the others.
 
 ---
 

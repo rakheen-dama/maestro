@@ -57,7 +57,12 @@ Both adapters wrap each emission: a `RuntimeException` thrown by the registry
 or the tracer is caught and logged **once per meter name / callback name**,
 never propagated into the engine. `Error`s — the engine's control-flow signals
 (`MaestroControlFlowError`) — deliberately propagate, because swallowing one
-would convert a stand-down or a terminate into a workflow failure.
+would convert a stand-down or a terminate into a workflow failure. One
+callback is wider: `CompositeEngineObserver.backgroundLoopError` fires while a
+loop is already containing an `Error`, so it contains every `Throwable` from a
+delegate except a control-flow `Error`, logging `WARN` with the stack trace
+once per delegate and loop until that delegate succeeds again
+(`CompositeEngineObserverLoopErrorTest`).
 
 Observers are composed through `CompositeEngineObserver.of(...)`, which always
 wraps even a single observer, so containment is structural at every emission
@@ -67,7 +72,7 @@ site.
 
 ## Meter catalog
 
-Nineteen meters: **15 counters and 1 timer**, registered by
+Twenty meters: **16 counters and 1 timer**, registered by
 `MicrometerEngineObserver`, plus **3 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
@@ -103,12 +108,30 @@ type is known (the instance exists).
 | `maestro.retention.sweeps` | *(none)* | — | A retention sweep finished on this node as the elected leader (non-leaders never increment it) |
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
+| `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
 
 `maestro.recovery.scanned`, `maestro.recovery.adopted` and
 `maestro.retention.purged` are `increment(n)` calls, not `increment()` — one
 recovery pass or retention sweep moves them by the pass's counts (so a leader
 that found nothing to purge registers the four `kind` series at zero).
+
+`maestro.loop.errors` counts the five engine loops only. The two
+`maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)
+and the wake listener (`maestro-pg-wake-listener`) — contain an `Error` the
+same way and log it at `ERROR`, but they reach no `EngineObserver`, so they
+are logged and **not counted** ([Issue 65](open-issues.md#issue-65)). Unlike
+the other counters here, its five series are registered at zero when
+`MicrometerEngineObserver` is created, so a rate query sees the first `Error`
+rather than a series that appears already at 1. Alert on
+`increase(maestro_loop_errors_total[15m]) > 0`: it fires on a new `Error` and
+clears once the loop stops hitting them, where `maestro_loop_errors_total > 0`
+would stay firing until the node restarts. The error type is not a tag
+(open-ended); the log line names it. Pinned by
+`MicrometerEngineObserverTest.backgroundLoopErrorCountsByLoop` and
+`loopErrorSeriesExistAtZeroBeforeAnyFailure` and, through the composite
+observer and a real executor, by `LoopErrorCounterWiringTest` (one `Error` per
+loop counts exactly 1).
 
 The `reason` tag value set is closed at five, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
@@ -179,7 +202,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 16 of the 26 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 17 of the 27 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,

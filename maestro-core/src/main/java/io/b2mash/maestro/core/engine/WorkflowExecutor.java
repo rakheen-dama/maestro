@@ -158,6 +158,15 @@ public final class WorkflowExecutor {
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final LifecycleEventSink lifecycleEventSink;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
+
+    /**
+     * Test seam: runs on the launching thread once a launch has been admitted
+     * — the instance lock acquired and, on a resume, the instance adopted —
+     * before the run is set up. A test makes it throw to show that a failure
+     * between admission and the run's thread start still releases the lock.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable afterLaunchAdmission = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
@@ -582,6 +591,14 @@ public final class WorkflowExecutor {
      * @return the workflow instance UUID
      * @throws IllegalStateException        if the executor is shutting down
      * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     * @throws RuntimeException             (or an {@code Error}) from the store
+     *         while the instance row is created or pre-delivered signals are
+     *         adopted, propagated unchanged, with the instance lock released
+     *         first. If it came after the row was created, the {@code RUNNING}
+     *         row remains: the recovery poller adopts and runs it on its next
+     *         pass, and a retry of the same start throws
+     *         {@link WorkflowAlreadyExistsException}
+     *         ({@code AdoptionLockLeakTest.startWorkflow_aFailureAfterTheRowIsCreated_…})
      * @throws WorkflowInstantiationException if the factory throws — the
      *         instance row already exists and is left {@code RUNNING} for the
      *         recovery poller to adopt; no {@code WORKFLOW_STARTED} event or
@@ -631,9 +648,16 @@ public final class WorkflowExecutor {
             // signals sent before workflow starts are stored with null instanceId)
             store.createInstance(instance);
             signalManager.adoptOrphanedSignals(workflowId, instanceId);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            // An Error too (control-flow ones included): no run owns this lock yet, so
+            // keeping it would leave the handle renewed for ever and the workflow, whose
+            // RUNNING row may already be committed, unrecoverable until this node restarts.
             if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                instanceLockManager.release(workflowId);
+                try {
+                    instanceLockManager.release(workflowId);
+                } catch (RuntimeException | Error releaseFailure) {
+                    e.addSuppressed(releaseFailure);
+                }
             }
             throw e;
         }
@@ -659,8 +683,9 @@ public final class WorkflowExecutor {
      * @param instance       the workflow instance to resume
      * @param workflowFactory builds a fresh workflow implementation object for
      *                       this run; called exactly once if — and only if — the
-     *                       run is launched. A {@code RuntimeException} it throws
-     *                       propagates as {@link WorkflowInstantiationException}
+     *                       run is launched. A {@code RuntimeException} or
+     *                       {@code LinkageError} it throws propagates as
+     *                       {@link WorkflowInstantiationException}
      * @param workflowMethod the entry-point method
      * @return {@code true} if the workflow was launched; {@code false} if it
      *         was skipped (already running locally, instance lock held by
@@ -1518,7 +1543,8 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start timer poller");
         }
-        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
+        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize,
+                observer);
         installAndStart(timerPoller, poller, "Timer poller", poller::start, poller::stop);
         timerPollerStarted.set(true);
     }
@@ -1547,7 +1573,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
-        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval);
+        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer);
         installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
         recoveryPollerStarted.set(true);
     }
@@ -1594,7 +1620,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, interval, retention);
+        var janitor = new SignalJanitor(store, interval, retention, observer);
         installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
     }
@@ -2040,6 +2066,43 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns whether this node's instance-lock renewer thread is alive. It
+     * starts with the first instance lock this node acquires, so it is
+     * {@code false} before then, on a node without a {@code DistributedLock},
+     * and after {@link #shutdown()}.
+     *
+     * @return {@code true} while the instance-lock renewer thread runs
+     */
+    public boolean isInstanceLockRenewerRunning() {
+        return instanceLockManager.isRenewerRunning();
+    }
+
+    /**
+     * Returns whether this node's instance-lock renewer has been started.
+     * Monotonic in practice; see {@link #hasTimerPollerStarted()} for the
+     * startup-vs-fault rationale.
+     *
+     * @return {@code true} once the instance-lock renewer has been started
+     */
+    public boolean hasInstanceLockRenewerStarted() {
+        return instanceLockManager.hasRenewerStarted();
+    }
+
+    /**
+     * Returns the instance-lock renewer's current failure streak: consecutive
+     * renewal passes that failed (the lock backend's {@code renewAll} threw, or
+     * the pass threw an {@code Error}) since the last pass that did not.
+     * {@code 0} before the renewer starts. A renewer can be running with a
+     * positive streak: its thread is alive, but the locks it holds are not
+     * being renewed.
+     *
+     * @return the number of consecutive failed renewal passes
+     */
+    public int instanceLockRenewerFailureStreak() {
+        return instanceLockManager.renewFailureStreak();
+    }
+
+    /**
      * Returns whether the background signal janitor is currently running on
      * this executor.
      *
@@ -2188,39 +2251,48 @@ public final class WorkflowExecutor {
             instance = snapshot;
         }
 
-        var compensationStack = new CompensationStack();
-        var operations = new DefaultWorkflowOperations(
-                store, distributedLock, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
-
-        var cancellation = new RunCancellation();
-        var ctx = new WorkflowContext(
-                instance.id(),
-                instance.workflowId(),
-                instance.runId(),
-                instance.workflowType(),
-                instance.taskQueue(),
-                serviceName,
-                0,
-                replaying,
-                operations,
-                cancellation,
-                instance.leaseEpoch()
-        );
-
-        // Detect @Saga on the workflow method
-        var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
-        var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
-
+        // From here to thread.start() the lock is held but no run owns it yet:
+        // anything thrown in between — an Error included — must release it, or
+        // the handle is renewed forever and the workflow is unrecoverable on
+        // every node until this one restarts.
         RunningWorkflow running = null;
         try {
+            afterLaunchAdmission.run();
+            var compensationStack = new CompensationStack();
+            var operations = new DefaultWorkflowOperations(
+                    store, distributedLock, serializer, parkingLot, compensationStack,
+                    signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
+
+            var cancellation = new RunCancellation();
+            var ctx = new WorkflowContext(
+                    instance.id(),
+                    instance.workflowId(),
+                    instance.runId(),
+                    instance.workflowType(),
+                    instance.taskQueue(),
+                    serviceName,
+                    0,
+                    replaying,
+                    operations,
+                    cancellation,
+                    instance.leaseEpoch()
+            );
+
+            // Detect @Saga on the workflow method
+            var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
+            var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
+
             // F1: one workflow object per run, built on the launching thread
             // before the run's virtual thread exists — a throwing factory
             // surfaces to the caller and releases the lock in the catch below.
             Object workflowImpl;
             try {
                 workflowImpl = workflowFactory.get();
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | LinkageError e) {
+                // A LinkageError (NoClassDefFoundError, ExceptionInInitializerError)
+                // is a bean that cannot be built, like a RuntimeException — and
+                // recovery isolates only this wrapper per instance, so unwrapped
+                // it would end every pass at the same keyset position.
                 throw new WorkflowInstantiationException(instance.workflowId(), instance.workflowType(), e);
             }
             if (!replaying) {
@@ -2265,7 +2337,12 @@ public final class WorkflowExecutor {
                 // no run will park on it now (3.2).
                 parkingLot.clearPending(instance.workflowId());
             }
-            instanceLockManager.release(instance.workflowId());
+            try {
+                instanceLockManager.release(instance.workflowId());
+            } catch (RuntimeException | Error releaseFailure) {
+                // The launch's own failure is what the caller must see.
+                e.addSuppressed(releaseFailure);
+            }
             throw e;
         }
         if (replaying) {

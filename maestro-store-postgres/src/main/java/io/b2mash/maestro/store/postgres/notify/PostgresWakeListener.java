@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.postgres.notify;
 
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import org.jspecify.annotations.Nullable;
 import org.postgresql.PGConnection;
 import org.postgresql.PGNotification;
@@ -51,7 +52,29 @@ import java.util.function.Consumer;
  * under the pool, Issue 38). It leaves its loop within one poll, puts a
  * one-second network timeout on the connection, issues {@code UNLISTEN *} and
  * closes it, which hands it back to the pool listening on nothing. A session
- * that has already failed is closed without {@code UNLISTEN}.
+ * that has failed with an {@code SQLException} is closed without
+ * {@code UNLISTEN}.
+ *
+ * <h2>Failures</h2>
+ * <p>A consumer that throws — a {@code RuntimeException} or an {@code Error}
+ * — is logged at {@code ERROR} and contained per notification: the rest of
+ * the batch is delivered at once. A {@code RuntimeException} or an
+ * {@code Error} from one poll does not end the poll thread, and a fault that
+ * repeats on every poll cannot spin it. A {@code RuntimeException} is logged
+ * at {@code WARN} and the session is dropped: released as at close (the
+ * one-second network timeout, {@code UNLISTEN *} — whose failure is ignored —
+ * the previous timeout restored, then closed, with the interrupt flag clear),
+ * because the connection itself may be healthy, then reconnected after the
+ * back-off, which starts at one second and doubles up to 30 s for as long as
+ * each new session fails before a poll returns. A {@code close()} during that
+ * release still returns within its join: the release is bounded by the
+ * network timeout and the loop ends right after it. An {@code Error}
+ * is logged at {@code ERROR} and the loop polls the same session again one
+ * second later. A
+ * notification batch that a poll-side failure cuts short loses its remaining
+ * wakes to the engine's {@code maestro.signal.wake-recheck-interval} re-read.
+ * Only a {@code MaestroControlFlowError} ends the thread; the connection is
+ * still released and the end is logged at {@code ERROR}.
  *
  * <h2>Thread Safety</h2>
  * <p>Thread-safe. {@link #register}/{@link #unregister} may be called from any
@@ -153,7 +176,19 @@ public final class PostgresWakeListener implements AutoCloseable {
                         + "background; until it connects, cross-node wakes fall back to "
                         + "maestro.signal.wake-recheck-interval", channel);
             }
-            pollingThread = Thread.ofVirtual().name("maestro-pg-wake-listener").start(this::pollLoop);
+            pollingThread = Thread.ofVirtual()
+                    .name("maestro-pg-wake-listener")
+                    .uncaughtExceptionHandler((th, e) -> {
+                        if (running.get()) {
+                            logger.error("Postgres wake listener on channel '{}' stopped: {} escaped it — until "
+                                    + "the node restarts, cross-node wakes fall back to "
+                                    + "maestro.signal.wake-recheck-interval", channel, e.toString(), e);
+                        } else {
+                            logger.debug("Postgres wake listener on channel '{}' exited while stopping: {}",
+                                    channel, e.toString());
+                        }
+                    })
+                    .start(this::pollLoop);
         } finally {
             lifecycle.unlock();
         }
@@ -251,8 +286,12 @@ public final class PostgresWakeListener implements AutoCloseable {
                         if (!running.get()) {
                             break;
                         }
-                        if (!connect()) {
-                            backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+                        var connected = connect();
+                        // Doubled on every reconnect attempt and reset only by a poll that
+                        // returned, so a session that connects but fails again at once backs
+                        // off too, not only a refused connection.
+                        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+                        if (!connected) {
                             continue;
                         }
                         reconnects.incrementAndGet();
@@ -262,8 +301,8 @@ public final class PostgresWakeListener implements AutoCloseable {
                             continue;
                         }
                     }
-                    backoff = INITIAL_BACKOFF_MS;
                     var notifications = pg.getNotifications(POLL_TIMEOUT_MS);
+                    backoff = INITIAL_BACKOFF_MS;
                     if (notifications != null) {
                         for (PGNotification notification : notifications) {
                             dispatch(notification);
@@ -282,14 +321,75 @@ public final class PostgresWakeListener implements AutoCloseable {
                 } catch (RuntimeException e) {
                     // A driver or dispatch bug must never end the poll thread: the listener
                     // would then look connected while delivering nothing until restart.
+                    // Nor may it spin, or retry the same suspect session every second for
+                    // ever: the session is dropped and the reconnect path's back-off, 1 s
+                    // doubling to 30 s while new sessions keep failing, comes before the
+                    // next poll. Unlike an SQLException, a RuntimeException says nothing
+                    // about the connection itself, which may be healthy: it is released as
+                    // at close (UNLISTEN * bounded by the network timeout, any failure of
+                    // it ignored, then closed), so the pool never gets it back listening.
                     if (running.get()) {
                         logger.warn("Postgres wake poll loop on channel '{}' hit an unexpected error ({}); "
-                                + "continuing", channel, e.toString());
+                                + "dropping the session and reconnecting", channel, e.toString());
+                    }
+                    releaseWithInterruptCleared();
+                } catch (Error e) {
+                    // The engine's control-flow rule: rethrown, it ends the loop (the
+                    // finally still releases the connection). No consumer throws one in
+                    // production; the rule is kept so that one never could be swallowed.
+                    if (e instanceof MaestroControlFlowError controlFlow) {
+                        throw controlFlow;
+                    }
+                    // Any other Error — a driver's LinkageError, an OutOfMemoryError —
+                    // is contained like a RuntimeException. A consumer's Error never gets
+                    // here (dispatch contains it per notification); wakes left in a batch
+                    // that a driver or decode Error cut short are covered by
+                    // maestro.signal.wake-recheck-interval, as any lost NOTIFY is.
+                    if (running.get()) {
+                        logger.error("Postgres wake poll loop on channel '{}' hit {}; continuing in {} ms",
+                                channel, e.toString(), INITIAL_BACKOFF_MS, e);
+                    }
+                    if (pauseAfterFailure()) {
+                        break;
                     }
                 }
             }
         } finally {
+            releaseWithInterruptCleared();
+        }
+    }
+
+    /**
+     * {@link #releaseConnection()} with the poll thread's interrupt flag
+     * cleared, re-asserted afterwards. Never release with the flag set: an
+     * interrupted virtual thread entering a socket read (the
+     * {@code UNLISTEN *}) closes the socket under the pool (Issue 38).
+     */
+    private void releaseWithInterruptCleared() {
+        var interrupted = Thread.interrupted();
+        try {
             releaseConnection();
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * The wait after an unexpected failure, so a fault that repeats on every
+     * poll cannot spin the thread: {@link #INITIAL_BACKOFF_MS}, cut short by
+     * {@link #close()}.
+     *
+     * @return {@code true} if the loop must end — closed during the wait, or
+     *         interrupted (the flag is re-asserted)
+     */
+    private boolean pauseAfterFailure() {
+        try {
+            return awaitStop(INITIAL_BACKOFF_MS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return true;
         }
     }
 
@@ -365,6 +465,14 @@ public final class PostgresWakeListener implements AutoCloseable {
             consumer.accept(payload.signalName());
         } catch (RuntimeException e) {
             logger.error("Wake consumer for workflow '{}' threw: {}", payload.workflowId(), e.getMessage(), e);
+        } catch (Error e) {
+            // Contained per notification, so one consumer's Error neither drops the
+            // rest of this batch nor pauses every other wake for the loop's 1 s.
+            // The control-flow rule still holds: rethrown, it ends the loop.
+            if (e instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            logger.error("Wake consumer for workflow '{}' threw: {}", payload.workflowId(), e.toString(), e);
         }
     }
 
@@ -382,8 +490,9 @@ public final class PostgresWakeListener implements AutoCloseable {
     }
 
     /**
-     * Runs on the poll thread as it ends: hands a healthy session back to the
-     * pool listening on nothing. The network timeout bounds the
+     * Runs on the poll thread as it ends, and when a poll threw a
+     * {@code RuntimeException}: hands a session that may be healthy back to
+     * the pool listening on nothing. The network timeout bounds the
      * {@code UNLISTEN *} on a half-open connection; it is put back to its
      * earlier value before the connection is returned, so a pool that does not
      * reset it (Hikari does) never hands out a connection with a one-second

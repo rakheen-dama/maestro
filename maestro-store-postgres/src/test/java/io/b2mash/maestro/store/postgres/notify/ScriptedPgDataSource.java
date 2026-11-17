@@ -33,7 +33,9 @@ import java.util.logging.Logger;
  * them, in order and with the thread that did it.
  *
  * <p>Recorded events: the SQL of every {@code Statement.execute} (or
- * {@code "<sql> failed: closed"} once the connection is broken),
+ * {@code "<sql> failed: closed"} once the connection is broken; under
+ * {@link #unlistenTimesOut} also {@code "UNLISTEN * timed out"} or
+ * {@code "UNLISTEN * interrupted"} after it),
  * {@code "setNetworkTimeout <ms>"} ({@code getNetworkTimeout} returns the last
  * value set, initially 0, and is not recorded), {@code "close"}, {@code "poll"} for every
  * {@code getNotifications(int)}, and {@code "poll-interrupted"} when a poll's
@@ -55,6 +57,7 @@ final class ScriptedPgDataSource implements DataSource {
     private final AtomicInteger pollCalls = new AtomicInteger();
     private final AtomicInteger refusedConnections = new AtomicInteger();
     private final BlockingQueue<PGNotification> notifications = new LinkedBlockingQueue<>();
+    private final BlockingQueue<PGNotification[]> batches = new LinkedBlockingQueue<>();
     private final AtomicReference<@Nullable Supplier<? extends Exception>> nextPollFailure = new AtomicReference<>();
     private final Object pollGate = new Object();
 
@@ -62,6 +65,7 @@ final class ScriptedPgDataSource implements DataSource {
     private volatile boolean refuseConnections;
     private volatile boolean broken;
     private volatile boolean blockPolls;
+    private volatile boolean unlistenTimesOut;
     private volatile boolean inBlockedPoll;
     private volatile @Nullable Supplier<? extends Exception> everyPollFailure;
 
@@ -83,6 +87,19 @@ final class ScriptedPgDataSource implements DataSource {
         notifications.add(new Notification(CHANNEL, 0, WakeChannel.encode(workflowId, signalName)));
     }
 
+    /**
+     * Queues one batch: the next poll returns all of these notifications at
+     * once, one per workflow id, each for {@code signalName}, ahead of any
+     * single notification queued by {@link #deliver}.
+     */
+    void deliverInOnePoll(String signalName, String... workflowIds) {
+        var batch = new PGNotification[workflowIds.length];
+        for (int i = 0; i < workflowIds.length; i++) {
+            batch[i] = new Notification(CHANNEL, 0, WakeChannel.encode(workflowIds[i], signalName));
+        }
+        batches.add(batch);
+    }
+
     /** Every poll from now on throws what {@code failure} supplies. */
     void failPollsWith(Supplier<? extends Exception> failure) {
         everyPollFailure = failure;
@@ -91,6 +108,15 @@ final class ScriptedPgDataSource implements DataSource {
     /** The next poll throws what {@code failure} supplies — evaluated after a blocked poll is released. */
     void failNextPollWith(Supplier<? extends Exception> failure) {
         nextPollFailure.set(failure);
+    }
+
+    /**
+     * While {@code timesOut}, {@code UNLISTEN *} is recorded, then blocks for
+     * the connection's network timeout and throws, recording
+     * {@code "UNLISTEN * timed out"} — a half-open connection.
+     */
+    void unlistenTimesOut(boolean timesOut) {
+        unlistenTimesOut = timesOut;
     }
 
     /** Polls from now on block, ignoring interrupts, until {@link #releasePolls()} — a stuck driver call. */
@@ -236,6 +262,9 @@ final class ScriptedPgDataSource implements DataSource {
                     throw new PSQLException("This connection has been closed.", PSQLState.CONNECTION_DOES_NOT_EXIST);
                 }
                 record(sql);
+                if (unlistenTimesOut && sql.equals("UNLISTEN *")) {
+                    awaitNetworkTimeout(sql);
+                }
                 yield false;
             }
             case "close" -> null;
@@ -265,6 +294,10 @@ final class ScriptedPgDataSource implements DataSource {
         if (every != null) {
             throw every.get();
         }
+        var batch = batches.poll();
+        if (batch != null) {
+            return batch;
+        }
         PGNotification notification;
         try {
             notification = notifications.poll(timeoutMillis, TimeUnit.MILLISECONDS);
@@ -274,6 +307,25 @@ final class ScriptedPgDataSource implements DataSource {
             throw new PSQLException("An I/O error occurred while sending to the backend.", PSQLState.CONNECTION_FAILURE);
         }
         return notification == null ? null : new PGNotification[] {notification};
+    }
+
+    /**
+     * A statement on a half-open connection: no reply comes, so it blocks for
+     * the connection's network timeout (10 s if none is set — the real driver
+     * would block for ever) and then fails as pgjdbc's read timeout does. An
+     * interrupt during the wait breaks the connection.
+     */
+    private void awaitNetworkTimeout(String sql) throws SQLException {
+        var timeout = networkTimeoutMillis > 0 ? networkTimeoutMillis : 10_000;
+        try {
+            Thread.sleep(timeout);
+        } catch (InterruptedException e) {
+            record(sql + " interrupted");
+            broken = true;
+            throw new PSQLException("An I/O error occurred while sending to the backend.", PSQLState.CONNECTION_FAILURE);
+        }
+        record(sql + " timed out");
+        throw new PSQLException("Read timed out", PSQLState.CONNECTION_FAILURE);
     }
 
     private void awaitReleaseIgnoringInterrupts() {
