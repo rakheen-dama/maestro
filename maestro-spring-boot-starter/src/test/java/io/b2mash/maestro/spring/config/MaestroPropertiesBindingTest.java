@@ -207,7 +207,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getRetry().defaultMaxAttempts()).isEqualTo(3);
             assertThat(properties.getWorker().taskQueues()).isEmpty();
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
-            assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(20));
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
             assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));

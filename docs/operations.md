@@ -83,7 +83,11 @@ boot, not gated on the 60s poll cadence) resumes all three workflows in
 roughly **2 seconds**, not the TTL/poll-interval-bound tens of seconds a hard
 kill requires. This is the practical argument for graceful shutdown over
 `kill -9` wherever your platform gives you the choice (`.superpowers/sdd/
-task-3-report.md` §"Decisions and justifications").
+task-3-report.md` §"Decisions and justifications"). Since WP5 this includes
+runs that were queued for a task-queue slot; before, they kept their locks
+until a slot freed or the lock TTL ran out. See
+[§15](#15-shutdown-one-deadline-and-the-grace-period) for the whole shutdown
+sequence and the grace-period arithmetic.
 
 **Coverage boundary, stated honestly.** Scenario 8 drives three workflows
 into three distinct `WAITING_SIGNAL` states (fan-in await, decision await,
@@ -475,6 +479,8 @@ routine graceful rolling restart racing a late signal.
 # Soak mode: multi-hour window + the vs-node-count benchmark tail
 # (chaos off, steady low rate, ~5 min at 6 nodes, graceful stop of one node
 # per service, ~5 min at 3 nodes — the Issue 12 benchmark of record).
+# On macOS, prefix it with `caffeinate -i -m -s`: a host that sleeps mid-soak
+# leaves a gap between chaos actions and invalidates the run.
 ./gradlew :maestro-integration-tests:e2eTest --rerun-tasks \
     -Dmaestro.chaos.soak=true -Dmaestro.chaos.durationMinutes=120
 ```
@@ -1343,6 +1349,194 @@ management.endpoint.health.status.order=DOWN,OUT_OF_SERVICE,UNKNOWN,UP
 ```
 
 Think twice before doing this for readiness: a pool that is busy, not broken, then takes the pod out of the Service. `MaestroHealthIndicatorTest` pins Spring Boot's defaults (`bootsDefaultsLeaveAnUnknownMaestroAt200`) and the effect of both properties on Boot's aggregator and status mapper (`aHostCanMapUnknownTo503`); the full actuator endpoint with these properties set is traced, not tested. The status rule itself is pinned by `returnsPromptlyWhenStoreBlocksIndefinitely` (`UNKNOWN` within the bound), `aStoreThatThrowsWithinTheBoundIsDown` and `aTimedOutProbeDoesNotHideADeadLoop`.
+
+## 15. Shutdown: one deadline and the grace period
+
+`maestro.shutdown.timeout` (default **20 s**) is the deadline for the whole
+engine shutdown, not only the drain. Every step that waits takes what is left
+of it, measured on the monotonic clock. With every step stuck at once — four
+background loops inside a store call that ignores the interrupt, a run inside
+an activity, the lock renewer inside `renewAll`, and a stalled lifecycle-event
+transport — `shutdown()` returns within the timeout plus under 1 s, the bound
+`WorkflowExecutorShutdownDeadlineTest.shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`
+asserts at a 1 s timeout; it measured 1,002–1,008 ms. Before WP5 the same
+set-up without the renewer took 26 s, because every step had a timeout of its
+own.
+
+### 15.1 The sequence
+
+Maestro's `GracefulShutdownHandler` stops in Spring's phase `MAX_VALUE - 1024`,
+the web server's graceful-shutdown phase, and **alongside** the web server's
+drain: its `stop(callback)` returns at once and the engine shuts down on the
+virtual thread `maestro-shutdown`, which calls Spring back when it is done
+(`GracefulShutdownLifecycleTest.theWebServersGracefulDrainStartsWhileMaestroDrains`;
+with a stand-in registered the way Boot registers its web-server lifecycle —
+Tomcat itself was not run). The host's `@KafkaListener` containers (phase
+`MAX_VALUE - 100`) have stopped before it (traced). Then the engine:
+
+| # | Step | Waits? | For at most |
+|---|---|---|---|
+| 1 | Logs `Maestro shutdown started` and starts the deadline | no | — |
+| 2 | Asks the timer poller, recovery poller, signal janitor and retention sweeper to stop: no new timer fires, no new recovery starts | no | — |
+| 3 | Abandons every park (`awaitSignal`, `sleep`) and every retry backoff | no | — |
+| 4 | Releases every run queued for a task-queue slot (Issue 29) | no | — |
+| 5 | Drains the runs still executing | yes | what is left |
+| 6 | Joins the four loops asked to stop at step 2 | yes | what is left |
+| 7 | Takes back the permits lent at step 4, so the task-queue slot counts are exact again (a pool with a thread still queued keeps its loan) | no | — |
+| 8 | Stops the instance-lock renewer, without an interrupt | yes | 2 s of what is left |
+| 9 | Flushes queued lifecycle events; what is still queued is dropped and counted | yes | 5 s of what is left |
+| 10 | Logs the summary line | no | — |
+
+Nothing is interrupted: not a run executing an activity, not the lock renewer.
+Once the drain has used the whole deadline, steps 6, 8 and 9 only signal and
+return.
+
+A second `shutdown()` call — Spring's inferred destroy method on the executor
+bean — waits for the first to finish, for at most what is left of its deadline
+plus 2 s (`WorkflowExecutorShutdownDeadlineTest.aSecondShutdownCallReturnsOnlyAfterTheFirstHasFinished`).
+So even when `spring.lifecycle.timeout-per-shutdown-phase` is shorter than the
+drain, the beans the engine was built on — the store, the lock, the messaging
+and the `DataSource` — are destroyed only after the engine has finished
+(`GracefulShutdownLifecycleTest.theEngineDrainsBeforeTheBeansItIsBuiltOnAreDestroyed`,
+with a recording bean in the `DataSource`'s place, wired through an
+`ObjectProvider` as Maestro's Postgres beans are). Beans created after the
+executor — the host's own services — are destroyed before it, while it still
+drains, if the phase timed out (traced).
+
+`context.pause()` leaves the engine running: the handler is not pauseable
+(`pausingTheContextLeavesTheEngineRunning`). `context.stop()` followed by
+`start()` does not restart it.
+
+A request already in flight that calls `startWorkflow` after the engine's
+shutdown has begun gets `IllegalStateException` (`WorkflowExecutor is shutting
+down — cannot start workflow '…'`), as before WP5. In a web host that is an
+HTTP 500 unless the host maps it, for example to 503 so the client retries
+against another node (`WorkflowExecutorShutdownDeadlineTest.startingAWorkflowDuringTheDrainIsRefused`;
+the HTTP status is traced, not tested). Because the web server now stops
+accepting new requests at the start of the drain instead of after it, only
+requests already in flight can meet this.
+
+### 15.2 What each workflow looks like afterwards
+
+Shutdown itself appends nothing. A run that keeps executing writes what it
+normally writes.
+
+| State when shutdown began | What happens | Instance row afterwards | Instance lock | Recovered |
+|---|---|---|---|---|
+| Executing an activity that ends before the deadline | Its outcome is recorded; the run goes on until it parks, needs a slot, or completes | as the run leaves it | released by the run | at once |
+| Executing an activity past the deadline | Not interrupted; `shutdown()` returns and the run keeps going until the JVM exits (`aShutdownThatHitsItsDeadlineNamesTheRunsStillRunning`) | `RUNNING` (or `COMPENSATING`) | held, no longer renewed; expires after `maestro.lock.ttl` (traced) | by a peer's next recovery pass; the activity runs again, so it must be idempotent |
+| Parked on `awaitSignal` / `sleep` | The park throws `ExecutorShutdownException` | `WAITING_SIGNAL` / `WAITING_TIMER` | released at unwind | at once |
+| In a retry backoff | The backoff is abandoned | `RUNNING`, no `ACTIVITY_FAILED` | released | at once |
+| Queued for a workflow or activity slot | Leaves at once, never interrupted (`ShutdownReleasesSlotWaitersTest`) | `RUNNING` | released before `shutdown()` returns | at once |
+| Woken from a park, waiting for its slot again | Leaves; the signal stays unconsumed, a fired timer row stays `FIRED` | `WAITING_SIGNAL` / `WAITING_TIMER` | released | at once |
+| Compensating: parked, queued or in a backoff | `ExecutorShutdownException` passes through the saga without recording the step | `COMPENSATING` | released | at once |
+
+**Residual (Issue 70, traced, not tested).** A run still executing past the
+deadline whose activity then fails because a host bean was destroyed after the
+deadline can record `ACTIVITY_FAILED` on its last attempt, and the workflow
+may then fail and compensate. Keep the deadline long enough for your
+activities, and keep them idempotent.
+
+### 15.3 What you see in the log
+
+| When | Level | Line |
+|---|---|---|
+| Start | INFO | `Maestro shutdown started: {n} run(s) in flight; deadline {budget} ms (maestro.shutdown.timeout)` |
+| Within the deadline | INFO | `Maestro shutdown finished in {total} ms of its {budget} ms deadline: {n} run(s) in flight at start, 0 still running (drain … ms, background loops … ms, instance locks … ms, lifecycle events … ms)` |
+| Deadline hit, runs left | WARN | `Maestro shutdown hit its {budget} ms deadline (maestro.shutdown.timeout): {m} of {n} run(s) still running [ids]; shutdown does not interrupt them and records nothing for them; their instance locks expire after {ttl} ms (maestro.lock.ttl) and a peer recovers them (…)` — at most ten ids, then `and {k} more`; without a lock backend the clause reads `a restarted node recovers them` |
+| A loop still inside a store call at the deadline | WARN | `Background loop '{name}' did not stop within the shutdown deadline; it ends after its current store call` |
+| Events dropped at the flush deadline | WARN | `Lifecycle event publisher stopped with {k} queued event(s) unpublished` (also added to the publisher's internal drop count) |
+| A second `shutdown()` call | INFO | `Shutdown already in progress — waiting up to {} ms for it to finish` (a WARN if that wait runs out) |
+| Handler | INFO | `Maestro graceful shutdown initiated`, `Maestro graceful shutdown complete`; ERROR `Maestro graceful shutdown failed: …` if the engine's shutdown threw |
+| Per run | INFO | `Workflow '{}' suspended by shutdown while {} — left recoverable` (unchanged; a queued run now logs it at once) |
+
+The summary lines are pinned by `theFinishLineReportsTheStepsAndNothingStillRunning`,
+`aShutdownThatHitsItsDeadlineNamesTheRunsStillRunning` and
+`aLoopThatDoesNotStopByTheDeadlineIsNamed`; the publisher's by
+`LifecycleEventPublisherShutdownTest`. If Spring's phase also timed out, Spring
+logs its own `INFO Shutdown phase 2147482623 ends with 1 bean(s) still running
+after timeout of …ms: [maestroGracefulShutdownHandler]`.
+
+### 15.4 The grace-period arithmetic
+
+```
+terminationGracePeriodSeconds (or docker stop -t, systemd TimeoutStopSec)
+    ≥ preStop
+    + the host's lifecycle beans above phase MAX-1024 (e.g. @KafkaListener containers, phase MAX-100)
+    + max(maestro.shutdown.timeout, the web server's graceful drain)
+    + Maestro's Kafka listener containers, stopped at bean destruction (≤ 10 s each; typically under 1 s, traced)
+    + 2 s for the Postgres wake listener (typically ≤ 0.5 s; WP10 measured 0–408 ms)
+    + a margin for the DataSource and the JVM (5 s suggested)
+
+spring.lifecycle.timeout-per-shutdown-phase ≥ maestro.shutdown.timeout + 2 s
+```
+
+Maestro's own term is bounded by `shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`
+(timeout + under 1 s asserted; about 5 ms over the timeout measured). Every other term is traced from the Spring, Spring Kafka
+and Kubernetes sources and documentation, not run.
+
+- **Defaults, no preStop — the typical case:** 20 (`maestro.shutdown.timeout`,
+  which also covers the web server's drain, run alongside it) + ~1 (Maestro's
+  Kafka containers, typically under 1 s together) + 2 (the wake listener, at
+  most) + 5 (the `DataSource` and JVM margin) ≈ 28 s ≤ 30 s. That fits
+  Kubernetes' default grace (30 s, traced), narrowly, and assumes no host
+  `@KafkaListener` container is slow to stop.
+- **Defaults, worst case:** each of Maestro's Kafka listener containers — the
+  engine's signal container plus one per `@MaestroSignalListener`, N in all —
+  can take up to Spring Kafka's 10 s to stop, so 20 + 10·N + 2 + 5 s: 37 s
+  for N = 1, 47 s for N = 2. That exceeds the 30 s default grace, and the
+  kubelet's `SIGKILL` then lands during bean destruction — after the engine
+  has drained, so nothing durable is lost (traced), but consumers may not
+  leave their group cleanly. If your consumers stop slowly, set
+  `terminationGracePeriodSeconds` to at least 27 + 10·N seconds plus your
+  preStop, plus whatever your own `@KafkaListener` containers and other
+  lifecycle beans take to stop (traced; Issue 69 would take these containers out of the sum).
+- **With a 5 s preStop:** ≈ 33 s typical. Set `terminationGracePeriodSeconds: 45`.
+- **Keeping 30 s of drain:** `maestro.shutdown.timeout: 30s`,
+  `spring.lifecycle.timeout-per-shutdown-phase: 35s`, grace ≥ 45 s + preStop.
+- **If the phase timeout is shorter than the drain:** Spring moves on to lower
+  phases and starts destroying beans created after the engine while it still
+  drains. The engine and the beans it is built on stay up until it finishes
+  (§15.1).
+
+```yaml
+spec:
+  terminationGracePeriodSeconds: 45
+  containers:
+    - lifecycle:
+        preStop:
+          exec: { command: ["sleep", "5"] }
+```
+
+```yaml
+spring:
+  lifecycle:
+    timeout-per-shutdown-phase: 25s
+maestro:
+  shutdown:
+    timeout: 20s
+```
+
+### 15.5 Kafka
+
+Maestro's own Kafka listener containers are not Spring lifecycle beans: they
+keep consuming through the drain, which is safe because a signal that arrives
+is persisted and recovered with the run it wakes, and they stop at bean
+destruction, where their stop time adds to the arithmetic above. The
+`@MaestroSignalListener` containers stop after the `DataSource`, so a record in
+flight in that window fails and is redelivered after the restart rather than
+dead-lettered (traced, not run). Both are Issue 69.
+
+### 15.6 Upgrading from 30 s
+
+`maestro.shutdown.timeout` (and `WorkflowExecutor.builder(...)`'s default) is
+now 20 s, was 30 s, and it now bounds the whole engine shutdown, not only the
+drain. With a 30 s drain under an asynchronous stop, the drain alone would
+equal Spring Boot's 30 s `spring.lifecycle.timeout-per-shutdown-phase` and
+Kubernetes' 30 s `terminationGracePeriodSeconds`, leaving no time for the rest
+of shutdown. To keep 30 s, set `maestro.shutdown.timeout: 30s`,
+`spring.lifecycle.timeout-per-shutdown-phase: 35s` and
+`terminationGracePeriodSeconds: 45` (more with a preStop hook).
 
 ---
 

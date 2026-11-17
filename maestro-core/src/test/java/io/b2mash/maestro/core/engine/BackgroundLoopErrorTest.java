@@ -32,6 +32,7 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -501,30 +502,41 @@ class BackgroundLoopErrorTest {
     }
 
     /**
-     * close() while renewAll swallows the interrupt and then throws: the guard
-     * sees the renewer stopping, does not count or report the failure, and the
-     * thread ends.
+     * close() while renewAll is in flight, which then throws: the guard sees
+     * the renewer stopping, does not count or report the failure, and the
+     * thread ends. Since WP5 (Issue 64) close() never interrupts the renewer:
+     * the in-flight call is released from another thread once close() has
+     * begun, and returns with an error.
      */
     @Test
-    void renewer_closeWhileRenewAllSwallowsTheInterruptAndThrows_endsUncounted() throws Exception {
+    void renewer_closeWhileRenewAllIsInFlightAndThenThrows_endsUncounted() throws Exception {
         var thread = captureRenewerThread();
         var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var interrupted = new AtomicBoolean();
         lock.alwaysFail = true;
         lock.answer = () -> {
             entered.countDown();
             try {
-                new CountDownLatch(1).await();                   // until close() interrupts
-            } catch (InterruptedException swallowed) {
-                // a driver that swallows the interrupt (flag cleared) and then fails
+                release.await();                                 // released once close() has begun
+            } catch (InterruptedException e) {
+                interrupted.set(true);
+                Thread.currentThread().interrupt();
             }
-            throw new AssertionError("interrupted renewal");
+            throw new AssertionError("renewal failed after close()");
         };
         manager.tryAcquire("wf-1");
         assertTrue(entered.await(5, TimeUnit.SECONDS), "the renewer never reached renewAll");
+        // isRenewerRunning() reads false as soon as close() has begun.
+        Thread.ofVirtual().start(() -> {
+            await().atMost(Duration.ofSeconds(5)).until(() -> !manager.isRenewerRunning());
+            release.countDown();
+        });
 
         manager.close();
 
         assertTrue(thread.get().join(Duration.ofSeconds(4)), "the renewer thread outlived close()");
+        assertFalse(interrupted.get(), "close() must not interrupt a renewal in flight");
         assertEquals(0, manager.renewFailureStreak(), "a failure while stopping is not counted");
         assertEquals(List.of(), observer.loopErrors(), "a failure while stopping is not reported");
     }

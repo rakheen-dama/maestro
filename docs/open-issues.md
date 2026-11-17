@@ -324,7 +324,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
-| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open — on the default path since 2026-11-11 |
+| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | **Resolved** (WP5) |
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
@@ -359,11 +359,13 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
 | [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
-| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Partly resolved (WP5: the renewer); the cleaner and the four core pollers open |
 | [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | Open |
 | [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | Open |
 | [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | Open |
 | [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | Open |
+| [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | Open |
+| [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -735,7 +737,7 @@ no longer reference it.
 
 > **Resolved.** Both threaded through `MaestroProperties` and the
 > `WorkflowExecutor`/`SignalManager` constructors exactly as proposed:
-> `maestro.shutdown.timeout` (default 30s, unchanged) and
+> `maestro.shutdown.timeout` (default 30s, unchanged; 20 s since WP5) and
 > `maestro.signal.wake-recheck-interval` (default 30s, unchanged). Commits
 > `ea9eb34` (core), `dd7c4f8` (starter wiring). Pinned by
 > `MaestroAutoConfigurationConfigSeamsTest` (context-runner tests proving the
@@ -2847,7 +2849,27 @@ removed.
 
 ### Issue 29 — Shutdown never interrupts threads blocked waiting for a task-queue slot {#issue-29}
 
-> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> **Resolved** (WP5, PR pending). `WorkflowExecutor.shutdown()` now shuts
+> the `TaskQueueGovernor` down: it lends one permit (a "poison permit") to
+> each of its pools, and a waiter that wakes — or that would start waiting —
+> on a shut-down governor gives the permit straight back and throws
+> `ExecutorShutdownException`, which wakes the next waiter. Nothing is
+> interrupted: the run stands down recoverable through the existing
+> `ExecutorShutdownException` arm, writes nothing, and its `finally` releases
+> its instance lock before `shutdown()` returns. After the drain the governor
+> takes its loans back from every pool with no thread still queued, so its
+> slot counts are exact again. A free activity
+> slot is still taken during the drain, so a bounded pool can run one activity
+> over its limit until the drain ends (MD-3). Pinned by
+> `TaskQueueGovernorTest$Shutdown` (the mechanism, including that no permit is
+> lost or gained once the loan is reclaimed) and `ShutdownReleasesSlotWaitersTest`
+> (a fresh start, an activity, `parallel()` branches, a compensation and a
+> park's reacquire, each queued at shutdown, leave before `shutdown()` returns
+> and release their locks). The interrupt fix proposed below was rejected: a
+> restored interrupt flag on the unwinding thread could fail the JDBC release
+> of its instance lock in the run's `finally` (Audit A, "Surprises" 5).
+>
+> Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — shutdown latency. **Severity:** Low (nothing is
@@ -4475,7 +4497,19 @@ page.
 
 ### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
 
-> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> **Partly resolved** (WP5, PR pending): the renewer.
+> `WorkflowInstanceLockManager.close(Duration)` no longer interrupts the
+> instance-lock renewer: it counts down a latch the renewer waits on between
+> passes, lets a pass in progress finish, and joins the thread for at most
+> `min(2 s, what is left of the shutdown deadline)`. A pass that fails once
+> the manager is closed counts no `instanceLockRenewFailed`, and a loss it
+> reports after close is logged at INFO and not sent to `instanceLockLost`
+> (the run is still stood down). Pinned by
+> `WorkflowInstanceLockManagerCloseTest` and
+> `WorkflowExecutorShutdownDeadlineTest.aShutdownDuringARenewalPassCountsNoRenewalFailure`.
+> Still open: the lock cleaner (below) and the four core pollers.
+>
+> Filed by WP4, loop liveness (2026-11-17, branch
 > `fix/loop-liveness`), from the Tasks 4–5 review. Recorded, not fixed.
 > Traced, not tested.
 
@@ -4500,7 +4534,27 @@ renewer's backend-failure arm emits `instanceLockRenewFailed` for **every
 held lock** before the guard sees it is stopping, so a shutdown that lands
 inside a pass adds one `maestro.lock.renew.failures{outcome="error"}` per
 held lock: an alert on that counter fires on a routine deploy. Traced, not
-tested.
+tested. *(Fixed by WP5; see the callout above.)*
+
+**The four core pollers too.** The timer poller, recovery poller, signal
+janitor and retention sweeper are stopped with `requestStop()`, which calls
+`thread.interrupt()` (`TimerPoller.java:202`, `RecoveryPoller.java:134`,
+`SignalJanitor.java:164`, `RetentionSweeper.java:193`). Each may be inside a
+store call at that moment: leader election, `getDueTimers`, `markTimerFired`,
+the recovery pass's reads and adoption writes, the janitor's `DELETE`, the
+purge transaction. On a virtual thread the interrupt closes the socket, with
+the same pool `WARN` and evicted connection; the janitor and the sweeper also
+log a `WARN … sweep failed` (traced). WP5 kept these interrupts (its MD-1):
+removing them means rewriting the existing tests whose fakes block until
+interrupted — `SignalJanitorTest.stop_whileTheStoreSwallowsTheInterrupt_endsTheLoopPromptly`,
+`RetentionSweeperTest.stopMidSweepEndsBeforeTheNextBatch`,
+`RetentionSweeperTest.stopWhileTheStoreSwallowsTheInterruptEndsPromptly`,
+`BackgroundLoopErrorTest.timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndThrows_endsPromptlyAndUncounted`,
+`BackgroundLoopErrorTest.timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndReturns_endsPromptly`
+and `PostgresLockCleanerSchedulerTest.closeWhileARunSwallowsTheInterruptAndThrowsEndsTheCleaner`
+— plus a Hikari-backed test for the cleaner. Since WP5 the executor joins
+the pollers against the shutdown deadline, so a fix that drops the interrupt
+waits for a store call in progress at most until the deadline.
 
 **Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
 interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`);
@@ -4736,6 +4790,104 @@ tasks were done; each needs a red test of its own.
 
 **Done when.** A node holding locks with no running renewer reads `DOWN`, and
 an observer `Error` on one lost lock does not delay the others.
+
+---
+
+### Issue 69 — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` {#issue-69}
+
+> **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
+> Recorded, not fixed. Traced, not tested.
+
+**Kind:** Library gap — shutdown. **Severity:** Low.
+
+**What happens.** Maestro creates its Kafka listener containers by hand
+(`new ConcurrentMessageListenerContainer`, started explicitly) instead of
+registering them as Spring lifecycle beans, so no lifecycle phase stops them:
+
+- They keep consuming through the engine's whole drain. That is safe:
+  `deliverSignal` does not check `shuttingDown`, so a signal that arrives is
+  persisted, and a parked run that would have consumed it is recovered with
+  it.
+- They stop in `DisposableBean.destroy()`, during bean destruction, after
+  every lifecycle phase. Each `container.stop()` waits up to Spring Kafka's
+  `ContainerProperties.DEFAULT_SHUTDOWN_TIMEOUT` (10 s), and that time adds to
+  the grace-period arithmetic ([Operations §15.4](operations.md#154-the-grace-period-arithmetic)).
+- `MaestroSignalListenerBeanPostProcessor` is a `BeanPostProcessor`, created
+  before ordinary singletons, so it is destroyed after the `DataSource`. A
+  record in flight in that window fails with `StoreUnavailableException` and
+  goes to the container's error handler, whose back-off is cut short by the
+  stop: the record is redelivered after the restart, not dead-lettered
+  (traced from Spring Kafka's `DefaultErrorHandler`; not run).
+
+**Where.** `KafkaWorkflowMessaging.subscribeSignals` (creates and starts the
+engine's container) and `KafkaWorkflowMessaging.destroy()` (stops it);
+`MaestroSignalListenerBeanPostProcessor` (creates and starts one container per
+`@MaestroSignalListener`, stops them in `destroy()`);
+`KafkaMessagingAutoConfiguration` (registers the post-processor).
+
+**Harm.** Partitions move to peers only after the drain and after bean
+destruction reaches the containers, up to 10 s per container later than they
+could. A `@MaestroSignalListener` record in flight while the `DataSource` is
+already closed fails once and is redelivered after the restart. Nothing is
+lost.
+
+**How to tackle it.** A `SmartLifecycle` in the messaging module, in phase
+`MAX_VALUE - 100` (the phase of a host's `@KafkaListener` containers), that
+stops every Maestro container asynchronously before the engine's drain.
+Partitions then move to peers sooner, and no consumer runs after the
+`DataSource` closes. Pin it with a context test against a broker.
+
+**Why it is not WP5.** It changes `maestro-messaging-kafka` (WP7's module) and
+needs a broker-backed context test; the total shutdown time does not change,
+because Spring's phases run in series (WP5's MD-5).
+
+**Done when.** Every Maestro container has stopped before the engine's
+shutdown phase begins, and none consumes after the `DataSource` is closed.
+
+---
+
+### Issue 70 — A run still executing at the shutdown deadline can record a failure caused by bean teardown {#issue-70}
+
+> **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
+> Recorded, not fixed. Traced, not tested.
+
+**Kind:** Library gap — shutdown. **Severity:** Low–Medium.
+
+**What happens.** `WorkflowExecutor.shutdown()` never interrupts a run
+executing an activity: at the deadline the run is left running, and
+`shutdown()` returns. Spring then goes on to destroy beans. If that activity
+then fails because a host bean it uses was destroyed, and that attempt is its
+last, and Maestro's store is still writable, the run records `ACTIVITY_FAILED`;
+the workflow may then fail and compensate — for a failure the shutdown caused.
+Before the last attempt nothing is recorded: the retry backoff is abandoned
+(`RunCancellation.requestShutdown`). A run whose next write meets a closed
+`DataSource` is abandoned `STORE_UNAVAILABLE` instead (a null SQLSTATE maps
+to `StoreUnavailableException`), which records nothing.
+
+**Where.** `WorkflowExecutor.shutdown()` (the drain ends at the deadline;
+runs still registered are left running); the stop points a fix would check:
+`RetryExecutor`, `ActivityInvocationHandler`, `DefaultWorkflowOperations`,
+`SagaManager`, `StoreFaultGuard`, and the executor's failure path.
+
+**Harm.** A workflow recorded `FAILED` (and compensated) by a routine deploy,
+only when an activity overruns `maestro.shutdown.timeout` and then fails on
+its last attempt because of teardown. Rare with the default timeout and
+idempotent activities, but it is the outcome graceful shutdown exists to
+prevent.
+
+**How to tackle it.** At the deadline, latch every run still registered with
+a new `RunCancellation` cause stronger than `SHUTDOWN`, checked where
+`STORE_UNAVAILABLE` is checked, so that nothing it does afterwards is appended
+and it is abandoned as `SHUTDOWN`. This changes behaviour: a successful
+activity result after the deadline is discarded and the activity re-runs on
+adoption.
+
+**Why it is not WP5.** It threads a new cause through about seven stop points
+and changes what happens to a successful late result; it deserves its own
+review (WP5's MD-4).
+
+**Done when.** A run whose activity fails after the shutdown deadline records
+nothing and is recovered by a peer, pinned on the in-memory executor.
 
 ---
 
