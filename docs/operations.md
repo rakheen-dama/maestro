@@ -531,8 +531,12 @@ traceable to engine code and its pinning tests rather than to a timing run.*
 *Admin Retry in a mixed fleet: a node of the previous build retries the old
 way (it deletes failure memos by type and ignores `failedSequences`); a node of
 this build retries history an older node wrote by matching the recorded
-message. Nothing either build writes is unreadable to the other. The details
-are in `docs/release-notes.md`, "Mixed fleets", under the admin Retry entry.*
+message. An older node reads the new `failedSequences` field of a newer
+`WORKFLOW_FAILED` by ignoring it (Jackson's default) — except in a host whose
+`ObjectMapper` enables `FAIL_ON_UNKNOWN_PROPERTIES`, where
+`WorkflowHandle.failure()` throws on the older node until the deploy completes
+(traced, not tested). The details are in `docs/release-notes.md`, "Mixed
+fleets", under the admin Retry entry.*
 
 ### 10.1 The deploy rule has not changed: upgrade all nodes together
 
