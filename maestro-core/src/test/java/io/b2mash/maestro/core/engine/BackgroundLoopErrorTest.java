@@ -164,6 +164,38 @@ class BackgroundLoopErrorTest {
         assertEquals(List.of(), observer.loopErrors(), "a failure while stopping is not reported");
     }
 
+    /**
+     * Shutdown while a store call swallows the interrupt and then returns
+     * normally: the success path re-checks {@code running} too, so the loop
+     * ends instead of sleeping a full interval.
+     */
+    @Test
+    void timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndReturns_endsPromptly() throws Exception {
+        var entered = new CountDownLatch(1);
+        var swallowing = new PollFaultStore() {
+            @Override
+            public List<WorkflowTimer> getDueTimers(int batchSize) {
+                entered.countDown();
+                try {
+                    new CountDownLatch(1).await();           // until stop() interrupts
+                } catch (InterruptedException swallowed) {
+                    // a driver that swallows the interrupt (flag cleared) and returns
+                }
+                return List.of();
+            }
+        };
+        var poller = new TimerPoller(swallowing, executor, null, "svc", Duration.ofMinutes(10), 10, observer);
+        poller.start();
+        assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
+
+        var started = System.nanoTime();
+        poller.stop();
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
+                "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
+    }
+
     // ── Recovery poller ───────────────────────────────────────────────
 
     @ParameterizedTest

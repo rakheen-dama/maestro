@@ -240,6 +240,11 @@ final class TimerPoller {
                     skewCheck.maybeCheck();
                 }
                 guard.succeeded();
+                // As in the failure arm: a store call may swallow stop()'s
+                // interrupt and return normally.
+                if (!running) {
+                    break;
+                }
                 Thread.sleep(pollInterval);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
