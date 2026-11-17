@@ -105,6 +105,34 @@ class SignalJanitorBatchingTest {
         assertEquals(1, unscoped.calls.get(), "one call, through the overload's default");
     }
 
+    /**
+     * A store whose delete keeps reporting a full batch (one that reports
+     * matched rather than removed rows, say) cannot turn a sweep into a hot
+     * loop: the sweep ends after {@link SignalJanitor#MAX_BATCHES_PER_SWEEP}
+     * batches. The fake would stop on its own one batch later.
+     */
+    @Test
+    void aSweepEndsAfterItsBatchCapEvenIfEveryBatchIsFull() {
+        for (int i = 0; i <= SignalJanitor.MAX_BATCHES_PER_SWEEP; i++) {
+            store.script(SignalJanitor.BATCH_SIZE, ms(1));
+        }
+        var swept = janitor(pacer).sweepOnce();
+        assertEquals(List.of(1_000, 1_000_000), List.of(store.calls().size(), swept));
+    }
+
+    /**
+     * Guard: over a store without the overload, an unscoped delete of 1,000
+     * rows or more is followed by exactly one more call, which deletes none
+     * and ends the sweep (the overload's documented default path).
+     */
+    @Test
+    void anUnscopedDeleteOfAFullBatchOrMoreIsCalledOnceMore() {
+        var unscoped = new UnscopedStore(1_500);
+        var janitor = new SignalJanitor(unscoped, "orders", Duration.ofHours(1), Duration.ofDays(7), EngineObserver.NOOP, pacer);
+        assertEquals(1_500, janitor.sweepOnce());
+        assertEquals(2, unscoped.calls.get(), "one more call, which deleted nothing");
+    }
+
     @Test
     void aBlankServiceNameIsRejected() {
         assertThrows(IllegalArgumentException.class,

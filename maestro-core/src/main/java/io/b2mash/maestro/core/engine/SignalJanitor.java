@@ -29,7 +29,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <h2>Batches, without leader election</h2>
  * <p>Every node runs a janitor, without leader election. It deletes only
  * this service's signals, in batches of 1,000, pausing between batches as
- * the retention sweeper does. Two nodes sweeping at once wait at most one
+ * the retention sweeper does, and at most {@link #MAX_BATCHES_PER_SWEEP}
+ * batches (1,000,000 signals) per sweep; a larger backlog takes more than
+ * one interval. Two nodes sweeping at once wait at most one
  * batch on each other, and the later one ends early.
  *
  * <h2>Failure handling</h2>
@@ -60,6 +62,12 @@ final class SignalJanitor implements StoppableLoop {
 
     /** The most signal rows one delete statement removes. */
     static final int BATCH_SIZE = 1_000;
+
+    /**
+     * The most batches one sweep issues: 1,000 batches, so at most 1,000,000
+     * signals per sweep.
+     */
+    static final int MAX_BATCHES_PER_SWEEP = 1_000;
 
     private final WorkflowStore store;
     private final String serviceName;
@@ -263,7 +271,10 @@ final class SignalJanitor implements StoppableLoop {
      * that reached {@code COMPLETED}/{@code TERMINATED} before
      * {@code now - retention}, in batches of {@link #BATCH_SIZE} until a batch
      * deletes fewer, pausing between batches (see the class Javadoc). The
-     * cutoff is fixed once per sweep.
+     * cutoff is fixed once per sweep. A sweep issues at most
+     * {@link #MAX_BATCHES_PER_SWEEP} batches, so a store that keeps reporting
+     * full batches cannot keep it running; it logs one {@code INFO} and leaves
+     * the rest to the next sweep.
      *
      * <p>A {@link RuntimeException} from the store is logged at {@code WARN}
      * and swallowed, so the loop keeps running; the sweep ends there and
@@ -289,6 +300,11 @@ final class SignalJanitor implements StoppableLoop {
                 batches++;
                 total += deleted;
                 if (deleted < BATCH_SIZE) {
+                    break;
+                }
+                if (batches >= MAX_BATCHES_PER_SWEEP) {
+                    logger.info("Signal janitor ended this sweep after {} batches ({} signal(s)); the rest is "
+                            + "left to the next sweep, in {}", batches, total, interval);
                     break;
                 }
             }

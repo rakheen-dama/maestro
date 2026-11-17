@@ -1991,7 +1991,8 @@ public final class WorkflowExecutor {
      * {@link WorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)}
      * (see its Javadoc for what survives — notably {@code FAILED} workflows,
      * which may still be retried). Every node runs one, without leader
-     * election; it deletes this service's signals only, in batches of 1,000.
+     * election; it deletes this service's signals only, in batches of 1,000,
+     * at most 1,000 batches per sweep.
      * A store failure is logged and retried on the next interval.
      * {@link #shutdown()} stops it.
      *

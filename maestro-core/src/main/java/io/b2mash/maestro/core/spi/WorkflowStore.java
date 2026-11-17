@@ -866,8 +866,9 @@ public interface WorkflowStore {
      *
      * <p><b>At most {@code limit} rows per call.</b> The engine's signal
      * janitor calls this in a loop, on every node and without leader
-     * election, until a call returns fewer than {@code limit}, so one call is
-     * one short statement rather than a sweep of the whole backlog. Which
+     * election, until a call returns fewer than {@code limit} (and at most
+     * 1,000 times per sweep), so one call is one short statement rather than
+     * a sweep of the whole backlog. Which
      * qualifying rows a call takes is up to the store. Safe to run
      * concurrently: two callers may select the same rows, and the later one
      * deletes fewer.
