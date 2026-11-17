@@ -668,8 +668,9 @@ public final class WorkflowExecutor {
      * @param instance       the workflow instance to resume
      * @param workflowFactory builds a fresh workflow implementation object for
      *                       this run; called exactly once if — and only if — the
-     *                       run is launched. A {@code RuntimeException} it throws
-     *                       propagates as {@link WorkflowInstantiationException}
+     *                       run is launched. A {@code RuntimeException} or
+     *                       {@code LinkageError} it throws propagates as
+     *                       {@link WorkflowInstantiationException}
      * @param workflowMethod the entry-point method
      * @return {@code true} if the workflow was launched; {@code false} if it
      *         was skipped (already running locally, instance lock held by
@@ -2258,7 +2259,11 @@ public final class WorkflowExecutor {
             Object workflowImpl;
             try {
                 workflowImpl = workflowFactory.get();
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | LinkageError e) {
+                // A LinkageError (NoClassDefFoundError, ExceptionInInitializerError)
+                // is a bean that cannot be built, like a RuntimeException — and
+                // recovery isolates only this wrapper per instance, so unwrapped
+                // it would end every pass at the same keyset position.
                 throw new WorkflowInstantiationException(instance.workflowId(), instance.workflowType(), e);
             }
             if (!replaying) {
