@@ -1,12 +1,20 @@
 name: Perf (k6)
 
 # The k6 load harness (perf/run.sh, docs/test-plan.md § Load suite) on a
-# GitHub-hosted runner. Never on pull requests or pushes: a load run takes
+# GitHub-hosted runner. The LOAD job never runs on pull requests or pushes: a
+# load run takes
 # 10-40 minutes, and its numbers come from a shared 4-vCPU runner whose
 # neighbours vary from run to run, so a latency or throughput figure measured
 # here is not a merge signal (D4: the harness gates only statement counts and
 # correctness; the rest is reported). It runs on demand and once a week, to
 # keep a standing record against the committed baselines (perf/baselines/).
+#
+# Pull requests that touch perf/**, sample-perf or this file run only the
+# `selftest` job: the harness's no-Docker self-tests on committed files
+# (evidence privacy guard, evaluator self-test rebuilt from
+# perf/.evidence/wp11/, the baseline-record self-test), a few minutes, with
+# contents: read. The run-lock race test (perf/lib/lock-selftest.sh) is not
+# in it: it is timing-based and meant for a local shell.
 #
 # Profile: the schedule and the dispatch default run `local`, the profile both
 # committed baselines were recorded with, so the baseline gates judge
@@ -63,6 +71,11 @@ on:
         type: choice
         options: ['true', 'false']
         default: 'false'
+  pull_request:
+    paths:
+      - 'perf/**'
+      - 'maestro-samples/sample-perf/**'
+      - '.github/workflows/perf.yml'
   schedule:
     # 04:00 UTC Saturday: clear of the 02:30 nightly E2E and the Sunday 01:00
     # soak (e2e-nightly.yml).
@@ -71,13 +84,36 @@ on:
 permissions:
   contents: read
 
+# Load runs share one group and never cancel each other; a pull request's
+# self-tests have their own group per ref and supersede an older push.
 concurrency:
-  group: perf
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('perf-selftest-{0}', github.ref) || 'perf' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  selftest:
+    name: perf self-tests (no Docker)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # jq is preinstalled on ubuntu-latest (jq 1.7.1; the evaluator
+      # self-test passes on 1.7.1 and 1.8.1).
+      - name: Evidence carries no path or host name
+        run: perf/lib/evidence-selftest.sh
+
+      - name: Evaluator self-test (from committed evidence)
+        run: perf/eval/selftest-evidence.sh
+
+      - name: Baseline-record self-test
+        run: perf/lib/baseline-selftest.sh
+
   perf:
     name: k6 ${{ matrix.scenario }}
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
