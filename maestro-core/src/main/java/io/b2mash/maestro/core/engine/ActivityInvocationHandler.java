@@ -219,6 +219,13 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(ActivityInvocationHandler.class);
 
+    /**
+     * The cause message a replayed failure gets when its {@code ACTIVITY_FAILED}
+     * memo has no (or an empty) message ({@link #reconstructFailure}). The
+     * Retry planner's legacy message match rebuilds it.
+     */
+    static final String REPLAYED_FAILURE_MESSAGE = "Replayed failure";
+
     private final Object activityImpl;
     private final String activityName;
     private final WorkflowStore store;
@@ -596,7 +603,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
             case ACTIVITY_FAILED -> {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
-                throw reconstructFailure(event, stepName, ctx.workflowId());
+                var replayed = reconstructFailure(event, stepName, ctx.workflowId());
+                WorkflowContextInternals.recordFailureMemo(ctx, replayed, seq);
+                throw replayed;
             }
             // Unreachable: ReplayGuard.requireMatch admits only ACTIVITY_COMPLETED
             // and ACTIVITY_FAILED before handleReplay is called. Kept so the
@@ -787,7 +796,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private ActivityExecutionException reconstructFailure(
             WorkflowEvent event, String stepName, String workflowId
     ) {
-        var message = "Replayed failure";
+        var message = REPLAYED_FAILURE_MESSAGE;
         var exceptionType = (String) null;
 
         if (event.payload() != null) {
@@ -902,6 +911,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw notRecorded;
             }
+            // WP3: the memo at seq is durable — remember which object carries
+            // it, so WORKFLOW_FAILED can name it (failedSequences). First, so
+            // nothing below can skip it.
+            WorkflowContextInternals.recordFailureMemo(ctx, e, seq);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
             // (An Error — e.g. a shutdown signal — never reaches this catch
             // and is never observed as a failure.)

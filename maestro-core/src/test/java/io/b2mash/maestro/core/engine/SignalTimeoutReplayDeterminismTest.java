@@ -189,6 +189,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeA.deliverSignal(workflowId, "approval", "granted");
         var reg = new WorkflowRegistration("SingleAwaitWorkflow", "default",
                 () -> new SingleAwaitWorkflow(), method);
+        TestTerminalWait.awaitRunEnded(nodeA, workflowId, Duration.ofSeconds(5));
         nodeA.retryWorkflow(workflowId, reg);
 
         TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
@@ -222,6 +223,7 @@ class SignalTimeoutReplayDeterminismTest {
         var reg = new WorkflowRegistration("GateThenFlakyWorkflow", "default",
                 () -> new GateThenFlakyWorkflow(failOnce, new java.util.concurrent.CountDownLatch(1)),
                 method);
+        TestTerminalWait.awaitRunEnded(nodeA, workflowId, Duration.ofSeconds(5));
         nodeA.retryWorkflow(workflowId, reg);
 
         TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));

@@ -113,6 +113,7 @@ class WorkflowExecutorRetryTest {
         // Fix the fault — the test seam a real operator's "dependency is back
         // up" corresponds to — THEN retry.
         activityImpl.faultFixed.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "retry-headline", Duration.ofSeconds(5));
         var outcome = executor.retryWorkflow("retry-headline", registration);
 
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, outcome);
@@ -218,6 +219,7 @@ class WorkflowExecutorRetryTest {
         awaitStatus("retry-dup", WorkflowStatus.FAILED);
 
         activityImpl.faultFixed.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "retry-dup", Duration.ofSeconds(5));
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED,
                 executor.retryWorkflow("retry-dup", registration));
         awaitStatus("retry-dup", WorkflowStatus.COMPLETED);
@@ -241,6 +243,7 @@ class WorkflowExecutorRetryTest {
 
         executor.startWorkflow("retry-concurrent", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-concurrent", WorkflowStatus.FAILED);
+        TestTerminalWait.awaitRunEnded(executor, "retry-concurrent", Duration.ofSeconds(5));
         activityImpl.faultFixed.set(true);
 
         var pool = Executors.newFixedThreadPool(2);
@@ -457,6 +460,7 @@ class WorkflowExecutorRetryTest {
                 "the row is untouched by a delete that happened before any CAS");
 
         activityImpl.faultFixed.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "retry-crash-delete", Duration.ofSeconds(5));
         var outcome = executor.retryWorkflow("retry-crash-delete", registration);
 
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, outcome,

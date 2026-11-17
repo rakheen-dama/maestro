@@ -1226,7 +1226,16 @@ public final class WorkflowExecutor {
          * rebase) makes retrying a compensated saga safe; see the tracked
          * follow-up issue in {@code docs/open-issues.md}.
          */
-        COMPENSATED_NOT_RETRYABLE
+        COMPENSATED_NOT_RETRYABLE,
+
+        /**
+         * The workflow is {@code FAILED}, and the code that handled the
+         * failure consumed a signal before the run failed. Re-running that
+         * code would need the signal again, and Maestro cannot give back the
+         * exact signal row. Nothing was written. Terminate the workflow, or
+         * finish its business outcome by hand.
+         */
+        SIGNAL_CONSUMED_AFTER_FAILURE
     }
 
     /**
@@ -1242,55 +1251,102 @@ public final class WorkflowExecutor {
      * {@code ACTIVITY_FAILED} event rather than running again. Relaunching a
      * {@code FAILED} workflow without first clearing that memo would therefore
      * replay straight back into the same failure, even after the underlying
-     * fault is fixed — a Retry button that always "succeeds" at flipping the
-     * row to {@code RUNNING} and then silently fails again. So the very first
-     * step, before anything else, is {@link WorkflowStore#deleteFailureEvents}:
-     * it deletes exactly the instance's {@code ACTIVITY_FAILED} and
-     * {@code WORKFLOW_FAILED} events, leaving every success and compensation
-     * memo untouched. The freed sequence also lets the retried run's own
-     * terminal event land where {@code WORKFLOW_FAILED} used to sit, instead of
-     * colliding with it.
+     * fault is fixed. But a memo the workflow <em>caught</em> and recovered
+     * from (a fallback taken) must stay, or the retried run takes the other
+     * branch and meets the fallback's memo.
      *
-     * <p>When the failure was an uncaught {@code awaitSignal} timeout, the
-     * failing await's {@code SIGNAL_TIMEOUT} goes too (Issue 19) — and, if that
-     * await had parked, its {@code TIMER_SCHEDULED} memo and its
-     * {@code await-signal-<seq>} deadline row (R61). Their deadline is spent:
-     * kept, the retried await would resume past it and fail again at once. So
-     * the retried await runs live at the same sequence slots: it consumes a
-     * signal that arrived meanwhile, or else arms a fresh full timeout from
-     * the retry and parks.
+     * <h2>What a Retry deletes (WP3)</h2>
+     * <p>The plan is computed from the history alone (package-private
+     * {@code RetryPlanner}); the store applies it:
+     * <ul>
+     *   <li><b>Attributed.</b> The {@code WORKFLOW_FAILED} payload names, in
+     *       {@code failedSequences}, the failure memos the exception that
+     *       escaped the workflow method carried (itself, its cause chain, its
+     *       suppressed exceptions). For each, Retry deletes the memo (with a
+     *       parked await's {@code TIMER_SCHEDULED} just before it), everything
+     *       its lane recorded after it, everything every enclosing lane
+     *       recorded after the fork that led to it (with the whole subtree of
+     *       any fork in those slots), and the {@code WORKFLOW_FAILED}. A
+     *       caught failure followed by more work is kept and replays; a
+     *       failure that was handled (an alert) and rethrown is re-run with
+     *       its handling. A sibling branch, and anything before the failure,
+     *       is kept. A second branch's independent failure is kept too: the
+     *       run fails again naming it, and a second Retry clears it.</li>
+     *   <li><b>Matched by message</b>, for a {@code WORKFLOW_FAILED} an older
+     *       build wrote (no {@code failedSequences}): the one failure memo whose
+     *       rebuilt exception message equals the payload's is treated as
+     *       attributed.</li>
+     *   <li><b>Last in lane</b>, when nothing is attributed (a failure
+     *       rethrown without its cause): only a failure memo after which its
+     *       path recorded nothing but {@code WORKFLOW_FAILED}.</li>
+     *   <li><b>Legacy</b>, when the history holds a slot the lane walk cannot
+     *       place (a slot consumed without a memo and followed by more work, or
+     *       two lanes claiming one slot): the pre-WP3 delete-by-type set —
+     *       every {@code ACTIVITY_FAILED}, every {@code WORKFLOW_FAILED} and,
+     *       for an await-timeout failure, the highest {@code SIGNAL_TIMEOUT}
+     *       with its park memo.</li>
+     * </ul>
+     * <p>Every deleted timer slot takes its timer row with it (any status), so
+     * a retried await or sleep arms a fresh deadline instead of reusing a
+     * spent one (R61); timer rows of kept slots are untouched. A version
+     * marker recorded before the failure is never deleted. No signal row is
+     * ever deleted or un-consumed.
+     *
+     * <p><b>A refusal (MD-1).</b> When the delete set would hold a
+     * {@code SIGNAL_RECEIVED} memo — the failure's handling consumed a signal
+     * — re-running that handling would need the signal again, and the memo
+     * does not identify the exact signal row to give back. Retry then writes
+     * nothing and returns {@link RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE},
+     * logged at WARN with the signal's name, its sequence and the remedy
+     * (terminate the workflow or finish it by hand; the signal is not
+     * redelivered).
      *
      * <h2>Mechanics — "make it recoverable again, then recover it"</h2>
      * <ol>
      *   <li>Read the instance. Absent → {@link RetryOutcome#NOT_FOUND}. Status
      *       other than {@code FAILED} → {@link RetryOutcome#NOT_FAILED} — an
      *       idempotent no-op, since retry only makes sense for a failure.</li>
-     *   <li>Probe the event log for {@code COMPENSATION_STARTED} — if the
-     *       saga already ran compensations, return
+     *   <li>Read the event log. A {@code COMPENSATION_STARTED} — the saga
+     *       already ran compensations — returns
      *       {@link RetryOutcome#COMPENSATED_NOT_RETRYABLE} without touching
      *       anything; see that constant's Javadoc for why relaunching is
      *       unsafe on this path.</li>
-     *   <li>{@link WorkflowStore#deleteFailureEvents} — see above.</li>
-     *   <li>A single optimistic compare-and-set: {@code status = RUNNING},
-     *       {@code completedAt = null}, {@code version + 1}. Unlike
+     *   <li>Plan the deletes over that log (above). A refused plan returns
+     *       {@link RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE} without touching
+     *       anything.</li>
+     *   <li>{@link WorkflowStore#reopenFailedInstance}: the plan's event and
+     *       timer-row deletes and a single optimistic compare-and-set
+     *       ({@code status = RUNNING}, {@code completedAt = null},
+     *       {@code version + 1}, only while the row is still {@code FAILED})
+     *       in <b>one transaction</b> — all of it or none of it. Unlike
      *       {@link #terminateWorkflow}, this is <b>one</b> attempt, not a
-     *       converge-loop: a conflict here means another writer changed the row
+     *       converge-loop: a conflict means another writer changed the row
      *       between the read and the write, and
-     *       {@link OptimisticLockException} propagates so an at-least-once
-     *       transport redelivers the command against fresh state rather than
-     *       this call guessing what the fresh state now means.</li>
+     *       {@link OptimisticLockException} propagates, with nothing written,
+     *       so an at-least-once transport redelivers the command against fresh
+     *       state. A row purged meanwhile is {@link RetryOutcome#NOT_FOUND}.
+     *       The lease epoch is not bumped here; the relaunch's adoption bumps
+     *       it, as for any recovery. On every engine path nothing of the failed
+     *       run can still write at its epoch (traced): it wrote {@code FAILED}
+     *       through the fenced terminal write, after every {@code parallel()}
+     *       branch had joined. Two cases outside the engine's own paths can
+     *       append until that adoption fences them: a foreign
+     *       {@link Thread#interrupt()} of a {@code parallel()} join, and an
+     *       abandoned activity attempt that calls through its workflow context.
+     *       The retried run then replays that event or stands down; it never
+     *       records a failure for it.</li>
      *   <li>Relaunch via the same internal path
      *       {@link #resumeWorkflow(WorkflowInstance, Supplier, Method)} uses
      *       ({@code replaying = true}) — identical to crash recovery: every
-     *       memoized event before the failure point replays for free, and the
-     *       step that failed (now memo-free) executes live with a fresh
-     *       retry-policy budget.</li>
+     *       kept memo replays for free, and the run goes live at the first
+     *       deleted slot of each lane it reaches, with a fresh retry-policy
+     *       budget.</li>
      *   <li>If the local {@code runningWorkflows} guard or the instance lock
      *       refuses the launch ({@link RetryOutcome#ALREADY_RUNNING_LOCALLY} /
      *       {@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
      *       {@code RUNNING} — which is recoverable: the recovery poller (on any
      *       node) adopts it within one poll interval, the same as a crash
-     *       between steps 3 and 4 heals.</li>
+     *       between steps 4 and 5 heals.</li>
      * </ol>
      *
      * <h2>Semantics caveat — compensated sagas</h2>
@@ -1321,10 +1377,10 @@ public final class WorkflowExecutor {
      * @return what this call did — see {@link RetryOutcome}
      * @throws OptimisticLockException if another writer touched the instance
      *                                 row between the read and the
-     *                                 compare-and-set. Transient: the caller
-     *                                 should <em>not</em> acknowledge, so the
-     *                                 command is redelivered against fresh
-     *                                 state.
+     *                                 compare-and-set; nothing was written.
+     *                                 Transient: the caller should <em>not</em>
+     *                                 acknowledge, so the command is
+     *                                 redelivered against fresh state.
      * @throws WorkflowInstantiationException if the registration's factory
      *                                 throws while relaunching. The
      *                                 compare-and-set has already happened, so
@@ -1352,7 +1408,8 @@ public final class WorkflowExecutor {
         // Javadoc for the full failure mode. Guard it off rather than corrupt
         // the replay; getEvents is the cheapest correct read the store SPI
         // offers (no targeted "by event type" probe exists).
-        var alreadyCompensated = store.getEvents(latest.id()).stream()
+        var events = store.getEvents(latest.id());
+        var alreadyCompensated = events.stream()
                 .anyMatch(e -> e.eventType() == EventType.COMPENSATION_STARTED);
         if (alreadyCompensated) {
             logger.warn("Workflow '{}' already ran saga compensations — not retrying "
@@ -1361,13 +1418,16 @@ public final class WorkflowExecutor {
             return RetryOutcome.COMPENSATED_NOT_RETRYABLE;
         }
 
-        // Clear the memoized failure BEFORE the CAS: a crash between this line
-        // and the CAS leaves the instance FAILED with its failure memos already
-        // gone, which is harmless — deleteFailureEvents is idempotent, and a
-        // later retry of the still-FAILED instance simply deletes zero rows and
-        // proceeds normally.
-        var deleted = store.deleteFailureEvents(latest.id());
-        logger.debug("Deleted {} failure memo(s) for workflow '{}' before retry", deleted, workflowId);
+        // What to delete: the failure that ended the run and what the run
+        // recorded after it while handling it (WP3, D-3). Pure; no store call.
+        var plan = RetryPlanner.plan(workflowId, events);
+        if (plan.refused()) {
+            logger.warn("Workflow '{}' was not retried: the code that handled its failure consumed signal '{}' "
+                    + "(sequence {}), which a retry would need again. Terminate the workflow or finish it by "
+                    + "hand; the signal is not redelivered (RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE)",
+                    workflowId, consumedSignalName(events, plan.consumedSignalAt()), plan.consumedSignalAt());
+            return RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE;
+        }
 
         var now = Instant.now();
         var running = latest.toBuilder()
@@ -1376,9 +1436,20 @@ public final class WorkflowExecutor {
                 .updatedAt(now)
                 .version(latest.version() + 1)
                 .build();
-        // Single-attempt CAS — OptimisticLockException propagates rather than
-        // being retried here; see the Javadoc above.
-        store.updateInstance(running);
+        // The deletes and the single-attempt CAS are one transaction (D-7):
+        // a crash or a lost CAS leaves the history and the row untouched.
+        // OptimisticLockException (a stale version, or a row no longer
+        // FAILED) and every store fault propagate; see the Javadoc above.
+        try {
+            store.reopenFailedInstance(running, plan.deleteSequences(), plan.deleteTimerIds());
+        } catch (WorkflowNotFoundException e) {
+            logger.warn("Cannot retry workflow '{}' — no such instance in this service (purged?)", workflowId);
+            return RetryOutcome.NOT_FOUND;
+        }
+        logger.info("Workflow '{}' reopened for retry: {} event(s) deleted and {} timer id(s) named for deletion (basis {})",
+                workflowId, plan.deleteSequences().size(), plan.deleteTimerIds().size(), plan.basis());
+        logger.debug("Workflow '{}' retry deleted sequences {} and timer ids {}",
+                workflowId, plan.deleteSequences(), plan.deleteTimerIds());
 
         // Recheck the local running-workflow guard right before launching: the
         // CAS just made the instance RUNNING, and in the gap between that write
@@ -1402,6 +1473,27 @@ public final class WorkflowExecutor {
         publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
         logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
         return RetryOutcome.RETRIED;
+    }
+
+    /**
+     * The name of the signal whose {@code SIGNAL_RECEIVED} memo sits at
+     * {@code sequence}: its step name without the
+     * {@code $maestro:awaitSignal:} prefix, or the step name as recorded if it
+     * has no such prefix. Only the name, never the payload, goes into a log line.
+     */
+    private static @Nullable String consumedSignalName(List<WorkflowEvent> events, @Nullable Integer sequence) {
+        if (sequence == null) {
+            return null;
+        }
+        for (var event : events) {
+            if (event.sequenceNumber() == sequence && event.eventType() == EventType.SIGNAL_RECEIVED) {
+                var step = event.stepName();
+                return step != null && step.startsWith(SignalManager.STEP_PREFIX)
+                        ? step.substring(SignalManager.STEP_PREFIX.length())
+                        : step;
+            }
+        }
+        return null;
     }
 
     // ── Timer poller ────────────────────────────────────────────────────
@@ -2897,7 +2989,8 @@ public final class WorkflowExecutor {
         try {
             var errorPayload = serializer.serialize(new WorkflowFailureDetail(
                     failure.getClass().getName(),
-                    failure.getMessage()
+                    failure.getMessage(),
+                    FailureAttribution.sequences(ctx, failure)
             ));
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED,
                     EventType.WORKFLOW_FAILED, errorPayload)) {

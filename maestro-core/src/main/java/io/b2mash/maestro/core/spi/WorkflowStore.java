@@ -16,6 +16,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -68,7 +69,8 @@ import java.util.UUID;
  * {@link #createInstance} (no lease exists yet), {@link #saveSignal} and
  * {@link #adoptOrphanedSignals} (signal ingestion from any node), the timer
  * leader's {@link #markTimerFired(UUID)}, an operator's terminate and retry
- * ({@code updateInstance}, {@code deleteFailureEvents}), and the adoption bump
+ * ({@code updateInstance}, {@code reopenFailedInstance}; nodes of older builds
+ * retry with {@code deleteFailureEvents} and {@code updateInstance}), and the adoption bump
  * itself — all of which are arbitrated by the version compare-and-set or are
  * idempotent. The fenced overloads are {@code default} methods that delegate to
  * the unfenced forms: <b>a store that does not override them is unfenced</b>
@@ -432,6 +434,11 @@ public interface WorkflowStore {
      * Deletes a workflow instance's <b>failure</b> memos — and nothing else —
      * so a manual retry can re-execute the step that failed.
      *
+     * <p><b>Since WP3 the engine calls
+     * {@link #reopenFailedInstance(WorkflowInstance, Set, Set)}</b>; this method
+     * is called by its default and by nodes of older builds. Its contract is
+     * unchanged.
+     *
      * <p>Deletes exactly the events whose type is
      * {@link io.b2mash.maestro.core.model.EventType#ACTIVITY_FAILED} or
      * {@link io.b2mash.maestro.core.model.EventType#WORKFLOW_FAILED} for the
@@ -511,6 +518,65 @@ public interface WorkflowStore {
      * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
      */
     int deleteFailureEvents(UUID instanceId);
+
+    /**
+     * Reopens a {@code FAILED} instance for an operator retry, as one atomic
+     * step.
+     *
+     * <p>Deletes this instance's events at exactly {@code deleteEventSequences},
+     * and its timer rows whose {@code timerId} is in {@code deleteTimerIds}, any
+     * status. Writes {@code reopened} under the same version compare-and-set as
+     * {@link #updateInstance(WorkflowInstance)}, and only while the stored row
+     * is still {@code FAILED}. Either all of it is applied or none of it: a
+     * failure part-way — a refused delete, a lost connection, a crash — leaves
+     * the events, the timer rows and the row exactly as they were.
+     *
+     * <p>Never touches a signal row or another instance. A sequence or timer
+     * id with no row is ignored. Deletion is by exact
+     * {@code (instance, sequence)} and exact {@code (instance, timerId)} — never
+     * a range or a prefix. Both sets are computed by the engine from the
+     * instance's history; the store applies them and nothing else.
+     *
+     * <p><b>Precondition:</b> {@code reopened} is the stored row with
+     * {@code status = RUNNING}, {@code completedAt = null} and
+     * {@code version + 1}. The lease epoch is not bumped here (an operator
+     * write, arbitrated by the version compare-and-set); the relaunch's
+     * adoption bumps it.
+     *
+     * <p><b>The default</b> is the pre-WP3 retry, {@link #deleteFailureEvents}
+     * then {@link #updateInstance(WorkflowInstance)}: two writes, by event
+     * type, ignoring both sets, and not atomic. The default neither checks
+     * {@code FAILED} nor is all-or-nothing: a losing concurrent call has
+     * already deleted by type before its compare-and-set fails. A store with
+     * concurrent operators should override it, and a decorating store should
+     * forward it. The shipped JDBC store and the in-memory test store override
+     * it.
+     *
+     * <p><b>Thread safety:</b> as every store method — callable concurrently
+     * from any thread. Two concurrent reopens of one instance: at most one
+     * compare-and-set wins, and (in an override) the loser writes nothing.
+     *
+     * @param reopened             the fully-built reopened row ({@code RUNNING},
+     *                             {@code completedAt = null}, version already
+     *                             incremented)
+     * @param deleteEventSequences the sequence numbers of this instance's events
+     *                             to delete; may be empty
+     * @param deleteTimerIds       the logical timer ids of this instance's timer
+     *                             rows to delete, any status; may be empty
+     * @throws OptimisticLockException if the stored version is not {@code reopened.version() - 1}, or the stored
+     *         row is no longer {@code FAILED}; nothing was written
+     * @throws WorkflowNotFoundException if no such instance exists; nothing was
+     *         written
+     * @throws IllegalArgumentException (the shipped overrides) if
+     *         {@code reopened} is not {@code RUNNING} with
+     *         {@code completedAt = null}; checked before anything is written
+     * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
+     */
+    default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                      Set<String> deleteTimerIds) {
+        deleteFailureEvents(reopened.id());
+        updateInstance(reopened);
+    }
 
     // ── Signal operations ────────────────────────────────────────────────
 

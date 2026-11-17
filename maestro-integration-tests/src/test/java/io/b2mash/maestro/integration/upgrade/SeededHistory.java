@@ -396,6 +396,23 @@ public final class SeededHistory {
      * @return the node
      */
     public MaestroEngineHarness node(String serviceName, RecordingObserver observer, Invocations invocations) {
+        return node(serviceName, observer, invocations, true);
+    }
+
+    /**
+     * {@link #node(String, RecordingObserver, Invocations)}, with the
+     * activities built as {@code SeedActivities(invocations, StepGate.OPEN,
+     * explodeFails)}: {@code false} makes {@code seed-failing.explode}
+     * succeed, the operator's "the fault is fixed" before a Retry.
+     *
+     * @param serviceName  the node's service name ({@code Seeds.SERVICE} adopts the seeded runs)
+     * @param observer     observes the node's executor and activity proxies
+     * @param invocations  counts the activity calls the node makes
+     * @param explodeFails whether {@code seed-failing.explode} throws
+     * @return the node
+     */
+    public MaestroEngineHarness node(String serviceName, RecordingObserver observer, Invocations invocations,
+                                     boolean explodeFails) {
         var node = MaestroEngineHarness.builder(store, JsonMapper.builder().build())
                 .serviceName(serviceName)
                 .lock(new PostgresDistributedLock(dataSource))
@@ -406,7 +423,7 @@ public final class SeededHistory {
         node.registerWorkflow(SeedSagaWorkflow.class);
         node.registerWorkflow(SeedFailingWorkflow.class);
         node.registerWorkflow(SeedTypedResultWorkflow.class);
-        var activities = new SeedActivities(invocations, StepGate.OPEN, true);
+        var activities = new SeedActivities(invocations, StepGate.OPEN, explodeFails);
         node.registerActivities(SeedOrderActivities.class, activities);
         node.registerActivities(SeedRiskActivities.class, activities);
         node.registerActivities(SeedSagaActivities.class, activities);

@@ -328,7 +328,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
-| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
+| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | **Resolved** |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
 | [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
@@ -354,6 +354,11 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | Open |
 | [57](#issue-57) | The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once | Library gap — startup check side effects | Low | Open |
 | [58](#issue-58) | The `byte[]` template check runs before Maestro's consumers only by bean-registration order | Library gap — startup ordering | Low | Open |
+| [59](#issue-59) | Retry refuses when the failure's handling consumed a signal | Library gap — admin retry | Medium | Open |
+| [60](#issue-60) | Two independently failed `parallel()` branches need two Retries | Library gap — admin retry | Low | Open |
+| [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
+| [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
+| [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3069,7 +3074,9 @@ notification fix above remains what bounds the call itself.
 
 ### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
 
-> **Open.** Raised by the R61 implementer and sharpened by the R61 reviewer
+> **Resolved** in WP3 (branch fix/admin-retry): the failing await is the one the WORKFLOW_FAILED payload attributes; pinned by AdminRetryTest.issue33_*.
+
+> Raised by the R61 implementer and sharpened by the R61 reviewer
 > (commit `53ca7e9`, "admin retry after an awaitSignal timeout re-arms a fresh
 > deadline instead of honouring the spent one"); filed under Rulings R62/R63.
 
@@ -4276,6 +4283,188 @@ holds whichever bean is registered first.
 
 **Done when.** A context with a host-declared post-processor and a
 misinjected point fails startup without starting a consumer.
+
+---
+
+### Issue 59 — Retry refuses when the failure's handling consumed a signal {#issue-59}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Medium.
+
+**What happens.** When the region a Retry would delete holds a
+`SIGNAL_RECEIVED` memo — the workflow caught a failure, awaited a signal
+while handling it (`catch (e) { awaitSignal("ack", …); throw e; }`), then
+rethrew — Retry writes nothing and returns
+`RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE`. The workflow stays `FAILED`;
+the operator can only terminate it or finish its outcome by hand
+(`AdminRetryTest.aSignalConsumedWhileHandlingTheFailure_refusesTheRetryAndWritesNothing`,
+`AdminCommandKafkaIT.retry_refusedForAConsumedSignal_isAcknowledgedAndWritesNothing`).
+
+**Where.** `RetryPlanner.java:152-157` sets `consumedSignalAt`;
+`WorkflowExecutor.java:1424-1430` refuses. The memo cannot be given back
+because it carries the signal's payload, not its row id
+(`SignalManager.java:1368-1379`), and no column links a signal row to the memo
+that consumed it (V1, V9).
+
+**Harm.** A Retry is unavailable for this shape. Before WP3 the same Retry
+relaunched and then stood down on every recovery pass (traced), so the
+refusal is no worse, and it is visible; but the workflow cannot be resumed.
+
+**How to tackle it.** A V102 column on `maestro_workflow_signal` (or on the
+event) linking a `SIGNAL_RECEIVED` memo to the row it consumed, written in
+`appendEventAndConsumeSignal`'s transaction; Retry then deletes the memo and
+flips exactly that row back to unconsumed, in `reopenFailedInstance`'s
+transaction. Releasing "a consumed row with an equal payload" instead is
+inexact (a rounded decimal, a same-name sibling).
+
+**Why it is not WP3.** It needs a migration and a change to the consume
+transaction; WP3 adds no migration (D-7), and refusing keeps "never discard a
+signal" (MD-1).
+
+**Done when.** The shape above is retried: the handling re-runs and consumes
+the same signal again, and no signal row is deleted.
+
+---
+
+### Issue 60 — Two independently failed `parallel()` branches need two Retries {#issue-60}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Low.
+
+**What happens.** When two branches of one `parallel()` both fail uncaught,
+`parallel()` rethrows the lowest-index branch's error, so only that failure
+is attributed. Retry deletes it and keeps the other branch's failure memo; the
+retried run replays that memo and fails again, naming the second branch, and
+a second Retry completes it (`AdminRetryTest.twoFailedBranches_needTwoRetries`).
+
+**Where.** `DefaultWorkflowOperations.java:922-928` (the first error in
+branch-index order is rethrown); `RetryPlanner` deletes only attributed
+failures under `ATTRIBUTED` (D-3 step 3).
+
+**Harm.** One extra operator action. Nothing stands down, nothing compensates,
+and no sibling side effect repeats.
+
+**How to tackle it.** After the attributed truncation, also delete every
+last-in-lane failure of a sibling branch of the same fork — but only an
+uncaught one. That needs the join to record which branches failed uncaught
+(for example in the fork's join, or in `failedSequences`), because a branch
+that caught a gate timeout and returned looks the same in the history, and
+Issue 33 requires a caught gate to survive.
+
+**Why it is not WP3.** Deleting every sibling's last-in-lane failure would
+also clear a caught gate (MD-2); doing it right needs a new recorded fact.
+
+**Done when.** One Retry of the two-failed-branches shape completes, and a
+sibling's caught gate timeout is still kept.
+
+---
+
+### Issue 61 — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry {#issue-61}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Medium.
+
+**What happens.** When `LaneTree` leaves an event unplaced, or two lanes claim
+one slot, the plan's basis is `LEGACY`: Retry deletes every `ACTIVITY_FAILED`,
+every `WORKFLOW_FAILED` and, for an await-timeout failure, the highest
+`SIGNAL_TIMEOUT` with its park memo — exactly the pre-WP3 Retry
+(`RetryPlannerTest.theLegacyPlanKeepsIssue19sTimeoutRule`,
+`aSlotTwoLanesClaim_fallsBackToTheLegacyPlan`,
+`anOverflowingForkMarker_fallsBackToTheLegacyPlan`). Two engine shapes
+produce such a history: a live activity result the mapper could not write
+(the slot is consumed without a memo), caught by workflow code that carries
+on; and an unknown newer operation that partitions the sequence space
+differently. In those histories 3.3 remains: a caught failure is deleted too,
+and the retried run can stand down.
+
+**Where.** `RetryPlanner.java:93-96`; the live serialization failure at
+`ActivityInvocationHandler.java:926-931` ("an ordinary live failure").
+
+**Harm.** In those histories, the old Retry's defect (re-running a caught
+failure, then a stand-down) and Issue 33's highest-timeout attribution
+remain. Never worse than before WP3.
+
+**How to tackle it.** Memoize the slot of a live serialization failure (an
+`ACTIVITY_FAILED` at the slot the result could not be written to), so the
+walk never meets a consumed slot without a memo. The unknown-operation case
+is handled by the stand-down design and needs nothing here.
+
+**Why it is not WP3.** It changes what the activity path records for a
+result the mapper cannot write, which is replay behaviour outside Retry.
+
+**Done when.** A caught result-serialization failure followed by more work
+is retried under `ATTRIBUTED` or `LAST_IN_LANE`, and the caught failure
+replays.
+
+---
+
+### Issue 62 — A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry {#issue-62}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — SPI. **Severity:** Low.
+
+**What happens.** `WorkflowStore.reopenFailedInstance` has a default: the old
+`deleteFailureEvents` then `updateInstance`. It ignores the planned sets, is
+not atomic, and does not check `FAILED`; a losing concurrent call has already
+deleted by type before its compare-and-set fails
+(`WorkflowStoreReopenDefaultTest.theDefaultIsThePreWp3TwoStepRetry`). A
+third-party store, or a decorating store that does not forward the method,
+therefore keeps the pre-WP3 Retry, 3.3 and Issue 33 included.
+
+**Where.** `WorkflowStore.java:575-579`.
+
+**Harm.** Users of a custom store do not get the fix, silently.
+
+**How to tackle it.** Make the method abstract in the next release that may
+break the SPI, or log a `WARN` once per executor when the store's class does
+not declare it.
+
+**Why it is not WP3.** An abstract method is a compile break for every
+third-party store; the house pattern for SPI additions this cycle is a
+default (MD-4).
+
+**Done when.** A store cannot reach the old Retry without its author knowing.
+
+---
+
+### Issue 63 — The dashboard reports "Retry command sent" for a Retry the engine refused {#issue-63}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Medium.
+
+**What happens.** The dashboard's Retry button publishes `$maestro:retry`
+and shows "Retry command sent for workflow …" at once. When the engine
+refuses the Retry (`SIGNAL_CONSUMED_AFTER_FAILURE`, Issue 59; also
+`COMPENSATED_NOT_RETRYABLE`), it writes nothing, logs a `WARN` on the
+service's node, and acknowledges the command; the row just stays `FAILED`.
+No refusal event reaches the dashboard.
+
+**Where.** `AdminActionController.java:55` (the flash message);
+`AdminCommandDispatcher.java:143-147` (a non-`RETRIED` outcome is only
+logged); no lifecycle event is published for a refusal.
+
+**Harm.** An operator sees a successful action and an unchanged workflow, and
+must read the service's logs to learn why.
+
+**How to tackle it.** Publish a lifecycle event for a refused Retry (through
+`LifecycleEventSink`, with the outcome), and have the dashboard show it on
+the workflow's page.
+
+**Why it is not WP3.** It adds a lifecycle event type and dashboard UI;
+WP3 changes no lifecycle event or `maestro-admin` code.
+
+**Done when.** A refused Retry shows its outcome on the workflow's dashboard
+page.
 
 ---
 

@@ -28,7 +28,10 @@ import tools.jackson.databind.JsonNode;
  * <ul>
  *   <li>{@code $maestro:retry} — looks up the instance's workflow type and its
  *       {@link io.b2mash.maestro.spring.config.WorkflowRegistrar} registration,
- *       then calls {@link WorkflowExecutor#retryWorkflow}.</li>
+ *       then calls {@link WorkflowExecutor#retryWorkflow}; every
+ *       {@link WorkflowExecutor.RetryOutcome} other than {@code RETRIED}
+ *       (including {@code SIGNAL_CONSUMED_AFTER_FAILURE}) is acknowledged as
+ *       a no-op.</li>
  *   <li>{@code $maestro:terminate} — calls
  *       {@link WorkflowExecutor#terminateWorkflow} with the {@code reason}
  *       field of the payload, if present, or a default reason otherwise.</li>

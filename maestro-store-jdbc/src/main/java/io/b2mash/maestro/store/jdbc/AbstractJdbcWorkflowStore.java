@@ -41,6 +41,7 @@ import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -154,6 +155,15 @@ import java.util.stream.Collectors;
  * {@link #appendEventAndConsumeSignal} writes the fenced {@code SIGNAL_RECEIVED}
  * memo and the consumed flip in one transaction — see each method.
  *
+ * <h2>Operator retry</h2>
+ * <ul>
+ *   <li>{@link #reopenFailedInstance} is one transaction: the version- and
+ *       {@code FAILED}-checked instance {@code UPDATE} (which takes the row lock
+ *       first), the exact-sequence event deletes and the exact-id timer deletes
+ *       commit together or roll back together. It never touches a signal row
+ *       and does not bump {@code lease_epoch}.</li>
+ * </ul>
+ *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. All state is immutable after construction.
  * Connections are obtained per-operation from the injected {@link DataSource}.
@@ -182,6 +192,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@code WorkflowExecutor.RetentionSettings.MAX_BATCH_SIZE}.
      */
     static final int MAX_PURGE_BATCH_SIZE = 10_000;
+
+    /**
+     * Most keys bound in one {@code DELETE ... IN (...)} of
+     * {@link #reopenFailedInstance}: a retry's delete set is bounded by the
+     * history, not by a parameter, so it is split to stay far below pgjdbc's
+     * 32 767 binds per statement.
+     */
+    private static final int REOPEN_DELETE_CHUNK = 500;
 
     /**
      * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
@@ -294,7 +312,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * lock the selected rows for the transaction (Postgres
      * {@code LIMIT ? FOR UPDATE SKIP LOCKED}) should override this: it rules
      * that race out and lets two sweepers running at once take disjoint
-     * batches.
+     * batches. It also orders a purge against a concurrent
+     * {@link #reopenFailedInstance}, which locks the instance row before its
+     * children: under the default, which locks the children first, the two
+     * can deadlock, and the database's deadlock detector aborts one of them
+     * whole (traced, not tested).
      *
      * @return the parameterized SQL string
      * @see #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)
@@ -673,26 +695,34 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     private int updateInstanceRow(Connection conn, WorkflowInstance instance,
                                   @Nullable RunLease lease) throws SQLException {
         try (var ps = conn.prepareStatement(updateInstanceSql(lease != null))) {
-            ps.setObject(1, instance.runId());
-            ps.setString(2, instance.workflowType());
-            ps.setString(3, instance.taskQueue());
-            ps.setString(4, instance.status().name());
-            setJsonParameter(ps, 5, instance.input());
-            setJsonParameter(ps, 6, instance.output());
-            ps.setString(7, instance.serviceName());
-            ps.setInt(8, instance.eventSequence());
-            ps.setTimestamp(9, Timestamp.from(instance.startedAt()));
-            setNullableTimestamp(ps, 10, instance.completedAt());
-            ps.setTimestamp(11, Timestamp.from(instance.updatedAt()));
-            ps.setInt(12, instance.version());
-            ps.setLong(13, instance.leaseEpoch());
-            ps.setObject(14, instance.id());
-            ps.setInt(15, instance.version() - 1);
+            bindInstanceRow(ps, instance);
             if (lease != null) {
                 ps.setLong(16, lease.epoch());
             }
             return ps.executeUpdate();
         }
+    }
+
+    /**
+     * Binds parameters 1–15 of {@link #updateInstanceSql}: the new column
+     * values, then the {@code WHERE id = ? AND version = ?} pair.
+     */
+    private void bindInstanceRow(PreparedStatement ps, WorkflowInstance instance) throws SQLException {
+        ps.setObject(1, instance.runId());
+        ps.setString(2, instance.workflowType());
+        ps.setString(3, instance.taskQueue());
+        ps.setString(4, instance.status().name());
+        setJsonParameter(ps, 5, instance.input());
+        setJsonParameter(ps, 6, instance.output());
+        ps.setString(7, instance.serviceName());
+        ps.setInt(8, instance.eventSequence());
+        ps.setTimestamp(9, Timestamp.from(instance.startedAt()));
+        setNullableTimestamp(ps, 10, instance.completedAt());
+        ps.setTimestamp(11, Timestamp.from(instance.updatedAt()));
+        ps.setInt(12, instance.version());
+        ps.setLong(13, instance.leaseEpoch());
+        ps.setObject(14, instance.id());
+        ps.setInt(15, instance.version() - 1);
     }
 
     // ── Event operations ──────────────────────────────────────────────────
@@ -999,6 +1029,132 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
 
         log.debug("Deleted {} failure event(s) for workflow instance {}", deleted, instanceId);
+        return deleted;
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}), in this
+     * order:
+     * <ol>
+     *   <li>the instance {@code UPDATE ... WHERE id = ? AND version = ? AND
+     *       status = 'FAILED'}. It runs first, so the row lock is taken before
+     *       anything is deleted: a concurrent retry, terminate or adoption
+     *       orders strictly before or after the whole reopen. So does a
+     *       retention purge on a dialect whose purge candidate select locks
+     *       the instance row ({@link #getPurgeCandidatesSql()}; Postgres:
+     *       {@code FOR UPDATE SKIP LOCKED}). On a dialect whose select locks
+     *       nothing (the portable default), the purge deletes the children
+     *       before the instance, the reverse order, so the two can deadlock;
+     *       the database's deadlock detector then aborts one of them, which
+     *       rolls back whole (traced, not tested). Zero rows rolls back, and
+     *       the row is probed once the connection is released: missing is
+     *       {@link WorkflowNotFoundException}, anything else
+     *       {@link OptimisticLockException};</li>
+     *   <li>{@code DELETE FROM maestro_workflow_event WHERE workflow_instance_id
+     *       = ? AND sequence_number IN (...)}, in chunks of
+     *       {@value #REOPEN_DELETE_CHUNK} sequences;</li>
+     *   <li>{@code DELETE FROM maestro_workflow_timer WHERE workflow_instance_id
+     *       = ? AND timer_id IN (...)}, in chunks of {@value #REOPEN_DELETE_CHUNK}
+     *       ids;</li>
+     *   <li>commit.</li>
+     * </ol>
+     * Any {@link SQLException} or {@link RuntimeException} rolls all of it back
+     * ({@code rollbackAfter}/{@code endTransaction}, as every transactional
+     * write here); an {@code SQLException} is then classified by
+     * {@link #storeFault}, so a database fault surfaces as
+     * {@link StoreUnavailableException}. No signal row is read or written.
+     */
+    @Override
+    public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                     Set<String> deleteTimerIds) {
+        Objects.requireNonNull(reopened, "reopened");
+        requireReopened(reopened);
+        var sequences = deleteEventSequences.stream().sorted().toList();
+        var timerIds = deleteTimerIds.stream().sorted().toList();
+
+        boolean written;
+        int deletedEvents = 0;
+        int deletedTimers = 0;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                written = executeUpdate(conn, updateInstanceSql(false) + " AND status = ?", ps -> {
+                    bindInstanceRow(ps, reopened);
+                    ps.setString(16, WorkflowStatus.FAILED.name());
+                }) > 0;
+                if (written) {
+                    deletedEvents = deleteInChunks(conn, "workflow_event", "sequence_number",
+                            reopened.id(), sequences);
+                    deletedTimers = deleteInChunks(conn, "workflow_timer", "timer_id",
+                            reopened.id(), timerIds);
+                    conn.commit();
+                } else {
+                    conn.rollback();
+                }
+                settled = true;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            throw storeFault("Failed to reopen workflow instance " + reopened.id() + " for retry", e);
+        }
+
+        if (!written) {
+            // Probed after the transaction's connection is released, so a
+            // single-connection pool cannot deadlock on the nested borrow.
+            // A row at the expected version that is no longer FAILED also
+            // lands here, with "expected version N but found N": unreachable
+            // while every instance write bumps the version.
+            resolveUpdateFailure(reopened, null);
+        }
+
+        log.debug("Reopened workflow instance for retry: workflowId={}, version={}→{}, "
+                        + "deletedEvents={}, deletedTimers={}", reopened.workflowId(), reopened.version() - 1,
+                reopened.version(), deletedEvents, deletedTimers);
+    }
+
+    /**
+     * The {@link WorkflowStore#reopenFailedInstance} precondition: the
+     * reopened row is {@code RUNNING} with no {@code completedAt}.
+     *
+     * @throws IllegalArgumentException if it is not; nothing was written
+     */
+    private static void requireReopened(WorkflowInstance reopened) {
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
+    }
+
+    /**
+     * Deletes the rows of {@code table} that belong to {@code instanceId} and
+     * whose {@code keyColumn} equals one of {@code keys} exactly, on the
+     * caller's transaction, {@value #REOPEN_DELETE_CHUNK} keys per statement.
+     *
+     * @return the number of rows deleted
+     */
+    private int deleteInChunks(Connection conn, String table, String keyColumn, UUID instanceId,
+                               List<?> keys) throws SQLException {
+        int deleted = 0;
+        for (int from = 0; from < keys.size(); from += REOPEN_DELETE_CHUNK) {
+            var chunk = keys.subList(from, Math.min(keys.size(), from + REOPEN_DELETE_CHUNK));
+            deleted += executeUpdate(conn, "DELETE FROM " + tableName(table)
+                    + " WHERE workflow_instance_id = ? AND " + keyColumn + " IN (" + inClause(chunk.size()) + ")",
+                    ps -> {
+                        ps.setObject(1, instanceId);
+                        int index = 2;
+                        for (var key : chunk) {
+                            ps.setObject(index++, key);
+                        }
+                    });
+        }
         return deleted;
     }
 
