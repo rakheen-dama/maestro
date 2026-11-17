@@ -16,10 +16,14 @@ import java.time.Duration;
 interface StoppableLoop {
 
     /**
-     * The loop's name, as {@link BackgroundLoopGuard} names it in logs and on
-     * {@code maestro.loop.errors}.
+     * The loop's name in shutdown's log: for the five engine loops, as
+     * {@link BackgroundLoopGuard} names it in logs and on
+     * {@code maestro.loop.errors}; the one-shot startup recovery names itself
+     * {@code startup-recovery} here while its guard counts as
+     * {@code recovery-poller}.
      *
-     * @return one of the {@link BackgroundLoopGuard} loop-name constants
+     * @return one of the {@link BackgroundLoopGuard} loop-name constants, or
+     *         {@code startup-recovery}
      */
     String loopName();
 

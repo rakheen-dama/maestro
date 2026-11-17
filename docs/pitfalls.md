@@ -357,7 +357,7 @@ Alternatively, start the child with `startAsync`, have it signal the parent when
 
 **What you see:** under load, nothing finishes. Once `default-concurrency` order runs each wait in `ship()` (or `default-activity-concurrency` of them do), no shipment can get a slot to run, and every order blocks until `startAndWait` throws `TimeoutException`, which fails that activity attempt under its retry policy. Below that load it works, so it passes in staging and fails at the first traffic peak.
 
-**Test it:** a `TestWorkflowEnvironment` test does not show it, because the test kit applies no concurrency limits ([Issue 36](open-issues.md#issue-36)). Catch it in review: no `startAndWait`, and no status polling loop, inside an activity, unless the started workflow names a task queue of its own.
+**Test it:** build the kit with production's limits, `TestWorkflowEnvironment.builder().defaultConcurrency(20, 20).build()` or `@MaestroTest(defaultConcurrency = 20, defaultActivityConcurrency = 20)`. To see the deadlock at once, use `(1, 1)`: the activity's wait times out (`TestWorkflowEnvironmentLimitsTest`).
 
 ---
 

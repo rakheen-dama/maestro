@@ -325,13 +325,13 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
 | [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | **Resolved** (WP5) |
-| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
+| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | **Resolved** (WP6) |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 | [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | **Resolved** |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
-| [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
+| [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | **Resolved** (WP6) |
 | [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | **Resolved** |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
@@ -366,6 +366,9 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | Open |
 | [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | Open |
 | [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | Open |
+| [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
+| [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
+| [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -2872,6 +2875,10 @@ removed.
 > and release their locks, within the tests' deadline). The interrupt fix proposed below was rejected: a
 > restored interrupt flag on the unwinding thread could fail the JDBC release
 > of its instance lock in the run's `finally` (Audit A, "Surprises" 5).
+> Since WP6 the recovery poller's passes leave at most `concurrency`
+> recovered runs per queue queued at shutdown, not a whole backlog; the
+> ungated passes (the startup pass with `maestro.recovery.enabled=false`, and
+> `WorkflowExecutor.recoverWorkflows(Map)`) still can.
 >
 > Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
@@ -2916,7 +2923,16 @@ the old (unbounded, so never-waiting) behaviour.
 
 ### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
 
-> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> **Resolved** in WP6 (branch fix/recovery-capacity): the recovery poller
+> reserves a slot before locking, queues at most one queue's concurrency
+> (C2), and re-polls on capacity; pinned by RecoveryCapacityTest,
+> RecoveryPollerCapacityTest, RecoveryStarvationTest,
+> MultiNodeRecoveryCapacityIT. The startup pass runs on the poller's thread
+> (with the poller disabled, on a one-shot thread, ungated and retried), not
+> on the `ApplicationRunner` thread (`StartupRecoveryRunnerTest`,
+> `OneShotRecoveryTest`). `recoverWorkflows(Map)` stays the ungated pass.
+>
+> Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — multi-node load distribution. **Severity:** Medium
@@ -3372,7 +3388,18 @@ index itself can stay, because V101 finds it.
 
 ### Issue 36 — The test kit cannot apply production's default concurrency limits {#issue-36}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> **Resolved** in WP6 (branch fix/recovery-capacity):
+> `TestWorkflowEnvironment.builder().defaultConcurrency(w, a)
+> .taskQueueConcurrency(q, w, a)` and `@MaestroTest(defaultConcurrency,
+> defaultActivityConcurrency)` bound the kit's task queues, validated like
+> `maestro.worker.*`; the default stays unbounded (C3: opt-in). With `(1, 1)`
+> a same-queue child waited on inside an activity times out; unset or `(0, 0)`
+> it completes. Pinned by TestWorkflowEnvironmentLimitsTest and
+> MaestroTestLimitsTest. Binding from `maestro.worker.*` was not done (the kit
+> has no Spring environment); defaulting to 20/20 and a gated `recover()` are
+> Issue 72.
+>
+> Filed by the final whole-branch review of the bounded-host-load
 > cycle (2026-11-11). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — test fidelity. **Severity:** Medium (a deadlock that
@@ -4904,6 +4931,129 @@ nothing and is recovered by a peer, pinned on the in-memory executor.
 
 ---
 
+### Issue 72 — The test kit is unbounded by default and its `recover()` is ungated {#issue-72}
+
+> **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
+> `fix/recovery-capacity`): coordinator call C3's follow-up. Recorded, not
+> fixed.
+
+**Kind:** Library gap — test fidelity. **Severity:** Low.
+
+**What happens.** Issue 36 made the kit's concurrency limits opt-in: a
+`TestWorkflowEnvironment` built with `create()`, or a plain `@MaestroTest`,
+is still unbounded, while a production node bounds every queue at 20/20. And
+`recover()` re-adopts every active workflow with the ungated
+`recoverWorkflows`, while a production node's recovery poller adopts per queue
+only its free slots plus `concurrency` queued runs and defers the rest.
+
+**Where.** `TestWorkflowEnvironment.Builder` (the unbounded default);
+`TestWorkflowEnvironment.recover(Class...)`, which calls
+`node.executor.recoverWorkflows(registrations)`
+(`maestro-test/src/main/java/io/b2mash/maestro/test/TestWorkflowEnvironment.java:578`).
+
+**Harm.** A user test that does not opt in sees neither production's limits
+(pitfalls rule 11's deadlock passes) nor gated recovery (a crash test never
+sees deferred runs, and `recover()` always returns every workflow).
+
+**How to tackle it.** Default the kit to 20/20, after a release note, since
+existing user tests with more than 20 concurrent runs on one queue would slow
+down; and give `recover()` a gated mode (the poller's full pass, then capacity
+passes until the backlog is adopted), keeping today's ungated return value
+for crash tests that count re-adopted workflows.
+
+**Why it is not WP6.** Both change what existing user tests see; C3 made the
+limits opt-in for this cycle.
+
+**Done when.** `TestWorkflowEnvironment.create()` applies 20/20, and a
+`recover()` mode adopts per queue only what the node can run or queue,
+pinned by kit tests.
+
+---
+
+### Issue 73 — No health or readiness detail says the startup recovery pass is still running {#issue-73}
+
+> **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
+> `fix/recovery-capacity`): maintainer decision MD-6. Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** `StartupRecoveryRunner` now only starts the recovery
+poller (or, with `maestro.recovery.enabled=false`, a one-shot pass) and
+returns, so the application reports ready while the startup pass is still
+adopting orphans. `MaestroHealthIndicator` reports `recoveryPollerRunning`
+(whether the loop is alive), but nothing says whether the first pass has
+finished, and the one-shot pass is not reported at all. With
+`maestro.recovery.enabled=false` the one-shot pass has no health detail and
+no meter of its own: a store fault in it is logged (one `ERROR`, then a
+reminder every 5 minutes), not counted (`maestro.loop.errors` counts only
+`Error`s), and it is retried every `poll-interval` with no limit, so a node
+whose store stays unreachable retries for ever with only its log to show
+it.
+
+**Where.** `StartupRecoveryRunner.run`
+(`maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/config/StartupRecoveryRunner.java:61`,
+`:65`); `MaestroHealthIndicator`
+(`maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/health/MaestroHealthIndicator.java:248`).
+
+**Harm.** An operator cannot tell from `/actuator/health` whether a freshly
+started node has finished its startup recovery. Safe for signals (persisted)
+and queries (owning node only), but a dashboard or a deploy script that wants
+"recovery done" has only the log line
+`Maestro startup recovery pass: adopted … deferred …`.
+
+**How to tackle it.** A `startupRecovery` detail on `MaestroHealthIndicator`:
+`"running"` until the poller's first pass (or the one-shot pass) completes,
+then `"complete"`, informational only (never `DOWN`); for the one-shot pass,
+also its failed-attempt streak, as the renewer reports its own. Holding readiness
+instead was rejected (MD-6): it would tie readiness to the backlog again, and
+a store fault in the pass would keep the pod out of service.
+
+**Why it is not WP6.** MD-6 accepted readiness not waiting for recovery; the
+detail is new health surface that deserves its own review.
+
+**Done when.** `/actuator/health` shows `startupRecovery: "running"` while
+the first pass is in progress and `"complete"` afterwards, pinned by a
+starter test.
+
+---
+
+### Issue 74 — Without a lock backend, a recovery pass can adopt a run this node is starting {#issue-74}
+
+> **Open.** Filed while fixing a CI failure of `StoreOutageMidStepIT`
+> (2026-11-17, branch `fix/recovery-capacity`). Recorded, not fixed.
+> Pinned by `NoLockStartRecoveryRaceTest`.
+
+**Kind:** Library gap — at-least-once window. **Severity:** Low.
+
+**What happens.** `WorkflowExecutor.startWorkflow` writes the `RUNNING` row
+(`WorkflowExecutor.java:701`) and only later registers the run in this node's
+running set (`launchWorkflow`, `WorkflowExecutor.java:2873`). With a lock
+backend the start takes the instance lock before the row exists, so a recovery
+pass cannot adopt it. With **no** lock backend the running set is the only
+guard: a pass that reads the new row between the two adopts it (lease epoch
++1) and launches a second run of the same workflow on the same node. The
+lease fence and the terminal compare-and-set keep one persisted outcome — the
+fresh run's writes are fenced, or it converges on the twin's outcome — but
+the first activity can run twice: once in each run.
+
+**Harm.** One extra execution of an activity, which the at-least-once contract
+already allows (activities must be idempotent). Only on a node with no lock
+backend, and only when a pass coincides with a start. Since the recovery
+poller's first pass runs as soon as it starts, a start issued at the same
+moment as the poller starts can meet it; that is how `StoreOutageMidStepIT`
+(which started the poller just before its workflow) failed once in CI with
+`reserve` run twice. That test now starts the run before the poller.
+
+**How to tackle it.** On the no-lock path, register the run (a placeholder
+entry) in the running set before `createInstance`, and remove it if the write
+fails; or have a pass skip a row whose `started_at` is within a few seconds of
+now when no lock backend is configured.
+
+**Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
+the just-started row.
+
+---
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
@@ -4959,9 +5109,9 @@ R56). Issues 29–31 are latency/load gaps with no correctness impact.
 
 **After the 2026-11-11 bounded-host-load cycle:** task queues are bounded by
 default (20/20 per queue per node), which puts Issues 29 and 30 on the default
-path rather than behind an opt-in. **Issue 30 is the recommended next piece of
-work**: without capacity-gated adoption, a post-deploy backlog sits on the
-first node to recover it. Issue 12 is partly addressed by the same cycle
+path rather than behind an opt-in. **Issue 30 was the recommended next piece of
+work**: without capacity-gated adoption, a post-deploy backlog sat on the
+first node to recover it. It was resolved in WP6, together with Issue 36. Issue 12 is partly addressed by the same cycle
 (batched renewal, paged service-scoped recovery scan).
 
 ---

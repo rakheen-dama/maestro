@@ -60,6 +60,42 @@ var env = TestWorkflowEnvironment.create();
 var env = TestWorkflowEnvironment.create(customMapper);
 ```
 
+### Concurrency Limits
+
+By default the kit's task queues are unbounded: a node runs any number of
+workflows and live activities at once. Production bounds every queue per node
+(`maestro.worker.default-concurrency` / `default-activity-concurrency`, 20 and
+20 by default), and some bugs appear only under a bound, such as an activity
+that waits for a workflow on its own queue ([Pitfalls rule
+11](pitfalls.md#11-never-make-an-activity-wait-for-a-workflow-of-its-own-task-queue)).
+The limits are opt-in:
+
+```java
+var env = TestWorkflowEnvironment.builder()
+        .defaultConcurrency(20, 20)                // production's defaults, every unlisted queue
+        .taskQueueConcurrency("payments", 5, 10)   // like a maestro.worker.task-queues[] entry
+        .objectMapper(customMapper)                // optional
+        .build();
+```
+
+or, with the JUnit extension, `@MaestroTest(defaultConcurrency = 20,
+defaultActivityConcurrency = 20)`; a `@Nested` class without its own
+`@MaestroTest` uses its enclosing class's limits (`MaestroTestLimitsTest`).
+
+- `build()` validates as the starter does: `defaultConcurrency(0, 0)` is
+  unbounded; exactly one `0`, or a negative value, fails with
+  `IllegalArgumentException` naming both; a queue entry needs a non-blank name
+  and both limits at least 1; a queue named twice fails
+  (`TestWorkflowEnvironmentLimitsTest`).
+- The limits apply to every node the environment builds, including the ones
+  `recover()` starts, and to live activities as well as workflow runs.
+- `recover()` stays **ungated**: it re-adopts every active workflow at once,
+  and the runs beyond a queue's bound wait for their slots on their own
+  threads, like a production node whose recovery poller is disabled. It keeps
+  returning the number of workflows re-adopted. (A production node's recovery
+  poller adopts only what it can run or queue; the kit does not model that —
+  [Issue 72](open-issues.md#issue-72).)
+
 ### Lifecycle
 
 Always shut down the environment after your test to release virtual threads:

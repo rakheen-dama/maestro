@@ -59,12 +59,14 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -174,6 +176,18 @@ public final class WorkflowExecutor {
     volatile Runnable afterLaunchAdmission = () -> { };
 
     /**
+     * Test seam: runs on the run's own thread before the run body — after
+     * the thread started, before {@code executeWorkflow} is entered. A test
+     * makes it throw to show that a run whose thread dies there still
+     * releases its instance lock, its running entry and its slot reservation.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRunBody = () -> { };
+
+    /** What the most recent full gated recovery pass deferred; see {@link #recoveryDeferredCount()}. */
+    private volatile int recoveryDeferred;
+
+    /**
      * Test seam: runs on the shutting-down thread just before the drain
      * (D-2's step 5). A test makes it throw to show that a second
      * {@link #shutdown()} caller is released when the first call fails.
@@ -191,6 +205,7 @@ public final class WorkflowExecutor {
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
+    private final AtomicReference<OneShotRecovery> oneShotRecovery = new AtomicReference<>();
     private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
     private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
@@ -701,7 +716,7 @@ public final class WorkflowExecutor {
 
         // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
         // the run's workflow object has been built)
-        launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition);
+        launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition, null);
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
         return instanceId;
@@ -733,22 +748,53 @@ public final class WorkflowExecutor {
             Supplier<Object> workflowFactory,
             Method workflowMethod
     ) {
-        if (shuttingDown.get()) {
-            logger.debug("Executor shutting down — skipping resume of workflow '{}'",
-                    instance.workflowId());
-            return false;
-        }
-        if (runningWorkflows.containsKey(instance.workflowId())) {
-            logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
-            return false;
-        }
+        return resumeWorkflow(instance, workflowFactory, workflowMethod, null);
+    }
 
-        var launched = launchWorkflow(instance, workflowFactory, workflowMethod, instance.input(), true, null);
-        if (launched) {
-            logger.info("Resuming workflow '{}' (type={}, status={})",
-                    instance.workflowId(), instance.workflowType(), instance.status());
+    /**
+     * {@link #resumeWorkflow(WorkflowInstance, Supplier, Method)} for a run
+     * the recovery pass admitted with {@code reservation}. A launched run
+     * claims the reservation on its own thread; every path that does not
+     * launch it — skipped ({@code false}) or thrown, an {@code Error}
+     * included — releases it here, in a {@code finally}, exactly once.
+     *
+     * @param reservation the run's task-queue reservation; {@code null} for none
+     */
+    boolean resumeWorkflow(
+            WorkflowInstance instance,
+            Supplier<Object> workflowFactory,
+            Method workflowMethod,
+            TaskQueueGovernor.@Nullable SlotReservation reservation
+    ) {
+        var launched = false;
+        try {
+            if (shuttingDown.get()) {
+                logger.debug("Executor shutting down — skipping resume of workflow '{}'",
+                        instance.workflowId());
+                return false;
+            }
+            if (runningWorkflows.containsKey(instance.workflowId())) {
+                logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
+                return false;
+            }
+
+            launched = launchWorkflow(instance, workflowFactory, workflowMethod, instance.input(), true, null,
+                    reservation);
+            if (launched) {
+                logger.info("Resuming workflow '{}' (type={}, status={})",
+                        instance.workflowId(), instance.workflowType(), instance.status());
+            }
+            return launched;
+        } finally {
+            if (!launched && reservation != null) {
+                // Not launched (shutting down, already running here, lock held
+                // elsewhere or refused, turned terminal, adoption lost, a store
+                // fault, or a failure before the thread started): the run will
+                // never claim it. Never releaseWorkflowSlot here — before the
+                // claim that could free another run's slot.
+                reservation.release();
+            }
         }
-        return launched;
     }
 
     // ── Recovery ───────────────────────────────────────────────────────
@@ -765,6 +811,13 @@ public final class WorkflowExecutor {
      * one {@link DistributedLock#heldKeys} read drops the instances whose lock
      * another node holds, so only the rest cost a lock acquisition.
      *
+     * <p>This pass is <b>ungated</b>: it adopts every instance it can lock,
+     * whatever this node's task-queue capacity, and the runs beyond a queue's
+     * bound wait for their slots on their own threads. It is the startup pass
+     * when the recovery poller is disabled
+     * ({@link #startOneShotRecovery(Map, Duration)}). The recovery poller's passes are
+     * gated instead — see {@link #startRecoveryPoller(Map, Duration)}.
+     *
      * <p>An instance whose registration's factory throws
      * ({@link WorkflowInstantiationException}) is skipped, leaving it active
      * for a later pass; the pass continues with the remaining instances. Any
@@ -779,88 +832,308 @@ public final class WorkflowExecutor {
      * @return the number of workflows recovered
      */
     public int recoverWorkflows(Map<String, WorkflowRegistration> registrations) {
-        return recoveryPass(registrations).adopted();
+        return fullPass(registrations, RecoveryGate.UNGATED, NEVER).adopted();
     }
+
+    /**
+     * {@link #recoverWorkflows(Map)} that also ends at the next instance once
+     * {@code stop} answers {@code true} — the one-shot startup pass's own stop
+     * flag. Like every pass it also ends once the executor is shutting down.
+     *
+     * @return the number of workflows recovered
+     */
+    int recoverWorkflowsUntil(Map<String, WorkflowRegistration> registrations, BooleanSupplier stop) {
+        return fullPass(registrations, RecoveryGate.UNGATED, stop).adopted();
+    }
+
+    /** A pass that only the executor's shutdown ends. */
+    private static final BooleanSupplier NEVER = () -> false;
+
+    /**
+     * The recovery poller's passes end on its thread's interrupt (its stop),
+     * as well as on shutdown. The ungated passes ignore the interrupt: an
+     * interrupted caller of {@link #recoverWorkflows(Map)} still adopts.
+     */
+    private static final BooleanSupplier INTERRUPTED = () -> Thread.currentThread().isInterrupted();
 
     /** The most recoverable instances one recovery-pass store read returns. */
     static final int RECOVERY_PAGE_SIZE = 200;
 
     /**
+     * Whether a recovery pass asks the task-queue governor before it locks an
+     * instance (Issue 30).
+     */
+    enum RecoveryGate {
+        /** Admit only what this node can run or queue ({@link TaskQueueGovernor#admitRecovery}); defer the rest. */
+        GATED,
+        /** Adopt every instance this node can lock; runs beyond a bound wait on their own threads. */
+        UNGATED
+    }
+
+    /**
      * What one recovery pass did.
      *
-     * @param scanned       recoverable instances the store returned, over all pages
-     * @param adopted       instances launched on this node
-     * @param skippedByType instances skipped because their factory threw,
-     *                      counted per workflow type (in first-skip order)
+     * @param scanned         recoverable instances the store returned, over all pages
+     * @param adopted         instances launched on this node
+     * @param skippedByType   instances skipped because their factory threw,
+     *                        counted per workflow type (in first-skip order)
+     * @param deferredByQueue instances left unlocked because their task queue
+     *                        had no slot or recovery ticket free on this node,
+     *                        counted per task queue (in first-deferral order)
+     * @param resumeAfter     the keyset position just before the first deferred
+     *                        instance — where a capacity pass resumes;
+     *                        {@code null} means the first row (or nothing deferred).
+     *                        When a capacity pass ran out of headroom before
+     *                        deferring anything, the position after the last row
+     *                        it read
+     * @param outOfCapacity   a capacity pass stopped because its queues had no
+     *                        headroom left while rows after {@code resumeAfter}
+     *                        may remain unread; always {@code false} for a full pass
+     * @param resumeAfterByQueue per task queue that deferred, the keyset position
+     *                        just before its first deferred instance in this pass
+     *                        (a {@code null} value: the first row) — where a
+     *                        capacity pass for that queue resumes
+     * @param readTo          the position after the last row this pass read;
+     *                        {@code null} if it read nothing
+     * @param reachedEnd      the pass read to the last recoverable row (a short
+     *                        or empty page), rather than stopping early
      */
-    record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType) {
+    record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType,
+                        Map<String, Integer> deferredByQueue, @Nullable RecoveryCursor resumeAfter,
+                        boolean outOfCapacity, Map<String, @Nullable RecoveryCursor> resumeAfterByQueue,
+                        @Nullable RecoveryCursor readTo, boolean reachedEnd) {
         /** @return instances skipped because their factory threw, across all types */
         int skipped() {
             return skippedByType.values().stream().mapToInt(Integer::intValue).sum();
         }
+
+        /** @return instances deferred for lack of task-queue capacity, across all queues */
+        int deferred() {
+            return deferredByQueue.values().stream().mapToInt(Integer::intValue).sum();
+        }
+    }
+
+    /** One pass's running counts. Confined to the pass's thread. */
+    private static final class PassTally {
+        int scanned;
+        int adopted;
+        final Map<String, Integer> skippedByType = new LinkedHashMap<>();
+        final Map<String, Integer> deferredByQueue = new LinkedHashMap<>();
+        boolean deferredAny;
+        @Nullable RecoveryCursor resumeAfter;
+        /** Set when the pass must end now: the executor is shutting down or the thread was interrupted. */
+        boolean stopped;
+        /** Set when a capacity pass stops for lack of headroom; see {@link RecoveryPass#outOfCapacity()}. */
+        boolean outOfCapacity;
+        /** Per queue, the position before its first deferral; a {@code null} value is the first row. */
+        final Map<String, @Nullable RecoveryCursor> resumeAfterByQueue = new LinkedHashMap<>();
+        @Nullable RecoveryCursor readTo;
+        boolean reachedEnd;
+
+        RecoveryPass toPass() {
+            return new RecoveryPass(scanned, adopted, Collections.unmodifiableMap(skippedByType),
+                    Collections.unmodifiableMap(deferredByQueue), resumeAfter, outOfCapacity,
+                    Collections.unmodifiableMap(resumeAfterByQueue), readTo, reachedEnd);
+        }
     }
 
     /**
-     * {@link #recoverWorkflows}, returning the pass's full outcome rather than
-     * only the adopted count.
+     * How many instances the most recent full gated pass on this node
+     * deferred for lack of task-queue capacity: the recovery backlog this node
+     * can see but cannot run or queue yet. Only a pass that read to the last
+     * recoverable row sets it; one that threw or ended early (a stop, a
+     * shutdown) leaves the previous value.
+     *
+     * @return the count; {@code 0} before the first full gated pass
+     */
+    public int recoveryDeferredCount() {
+        return recoveryDeferred;
+    }
+
+    /**
+     * The recovery poller's <b>gated</b> full pass: from the first row, as
+     * {@link #recoverWorkflows}, but each instance is admitted by
+     * {@link TaskQueueGovernor#admitRecovery} before its lock is taken, and an
+     * instance its queue has no room for is deferred — no lock, no adoption,
+     * left for a peer or a later pass. Returns the pass's full outcome.
      */
     RecoveryPass recoveryPass(Map<String, WorkflowRegistration> registrations) {
-        var scanned = 0;
-        var count = 0;
-        var skippedByType = new LinkedHashMap<String, Integer>();
+        return fullPass(registrations, RecoveryGate.GATED, INTERRUPTED);
+    }
+
+    private RecoveryPass fullPass(Map<String, WorkflowRegistration> registrations, RecoveryGate gate,
+                                  BooleanSupplier stop) {
+        var tally = new PassTally();
 
         // Keyset paging: each page is read strictly after the last row of the
         // previous one, and a short page is the last. A store fault ends the
         // pass mid-way (the poller retries next cycle), exactly as one fault in
         // the old single read did.
         RecoveryCursor after = null;
-        while (!shuttingDown.get()) {
+        while (!shuttingDown.get() && !tally.stopped) {
             var page = store.getRecoverableInstances(serviceName, after, RECOVERY_PAGE_SIZE);
-            scanned += page.size();
+            tally.scanned += page.size();
             if (page.isEmpty()) {
+                tally.reachedEnd = true;
                 break;
             }
+            recoverPage(page, after, registrations, gate, stop, tally);
             after = RecoveryCursor.of(page.getLast());
-            count += recoverPage(page, registrations, skippedByType);
+            tally.readTo = after;
             if (page.size() < RECOVERY_PAGE_SIZE) {
+                tally.reachedEnd = !tally.stopped;
                 break;
             }
         }
 
-        var pass = new RecoveryPass(scanned, count, Collections.unmodifiableMap(skippedByType));
-        if (pass.skipped() > 0) {
-            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
-                    pass.skipped(), skippedByType.size(), skippedByType);
+        var pass = tally.toPass();
+        if (gate == RecoveryGate.GATED && pass.reachedEnd()) {
+            // A pass that ended early saw only part of the backlog.
+            recoveryDeferred = pass.deferred();
         }
-        if (count > 0) {
-            logger.info("Recovered {} workflow(s) from {} recoverable instance(s)", count, scanned);
-        } else {
-            logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)", scanned);
-        }
+        logPass(pass, true);
         emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
         return pass;
     }
 
-    /**
-     * Adopts what it can of one recovery page: drops the instances already
-     * running here, then — with one advisory {@code heldKeys} read — those
-     * whose instance lock another node holds, and resumes the rest. An
-     * instance not reported held still goes through {@link #resumeWorkflow}
-     * and its {@code tryAcquire}, which stays the authority on ownership.
-     *
-     * @return the number of instances launched
-     */
-    private int recoverPage(List<WorkflowInstance> page,
-                            Map<String, WorkflowRegistration> registrations,
-                            Map<String, Integer> skippedByType) {
-        var candidates = page.stream()
-                .filter(i -> !runningWorkflows.containsKey(i.workflowId()))
-                .toList();
-        var heldElsewhere = instanceLockManager.heldElsewhere(
-                candidates.stream().map(WorkflowInstance::workflowId).toList());
-        var count = 0;
+    /** The smallest page a capacity pass reads: one small statement even for one free place. */
+    static final int MIN_CAPACITY_PAGE = 20;
 
-        for (var instance : candidates) {
+    /**
+     * A capacity pass's page size for {@code headroom} free places on its
+     * queues: twice the headroom (two nodes interleaving one backlog find
+     * about half of it held elsewhere), at least {@value #MIN_CAPACITY_PAGE},
+     * at most {@value #RECOVERY_PAGE_SIZE}.
+     *
+     * @param headroom the summed {@link TaskQueueGovernor#recoveryHeadroom} of the deferred queues
+     * @return the page size
+     */
+    static int capacityPageSize(long headroom) {
+        return (int) Math.min(RECOVERY_PAGE_SIZE, Math.max(MIN_CAPACITY_PAGE, 2L * headroom));
+    }
+
+    /**
+     * A <b>capacity pass</b>: the gated pass the recovery poller runs as soon
+     * as capacity frees after a pass that deferred. It resumes strictly after
+     * {@code resumeAfter} — the rows before it were adopted, are running here,
+     * held elsewhere, unregistered, factory-failing or terminal, and the next
+     * full pass re-checks them — and reads pages sized to the free capacity of
+     * {@code deferredQueues} ({@link #capacityPageSize}). Before each page it
+     * re-reads that headroom and stops when it is 0, so a pass with nothing
+     * free makes no statement at all. A full page continues to the next while
+     * headroom remains; a short page ends the pass. It never sets
+     * {@link #recoveryDeferredCount()}, which is a full pass's count.
+     *
+     * @param registrations  workflow type → registration
+     * @param resumeAfter    where to resume; {@code null} for the first row
+     * @param deferredQueues the queues the previous pass deferred on
+     * @return what the pass did
+     */
+    RecoveryPass capacityPass(Map<String, WorkflowRegistration> registrations,
+                              @Nullable RecoveryCursor resumeAfter,
+                              Set<String> deferredQueues) {
+        var tally = new PassTally();
+        var after = resumeAfter;
+        while (!shuttingDown.get() && !tally.stopped) {
+            var headroom = recoveryHeadroom(deferredQueues);
+            if (headroom <= 0) {
+                tally.outOfCapacity = true;
+                if (!tally.deferredAny) {
+                    tally.resumeAfter = after;
+                }
+                break;
+            }
+            var size = capacityPageSize(headroom);
+            var page = store.getRecoverableInstances(serviceName, after, size);
+            tally.scanned += page.size();
+            if (page.isEmpty()) {
+                tally.reachedEnd = true;
+                break;
+            }
+            recoverPage(page, after, registrations, RecoveryGate.GATED, INTERRUPTED, tally);
+            after = RecoveryCursor.of(page.getLast());
+            tally.readTo = after;
+            if (page.size() < size) {
+                tally.reachedEnd = !tally.stopped;
+                break;
+            }
+        }
+        var pass = tally.toPass();
+        if (pass.scanned() > 0) {
+            logPass(pass, false);
+            emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        }
+        return pass;
+    }
+
+    /** The summed recovery headroom of {@code queues}; never overflows. */
+    long recoveryHeadroom(Set<String> queues) {
+        var sum = 0L;
+        for (var queue : queues) {
+            sum += taskQueueGovernor.recoveryHeadroom(queue);
+        }
+        return sum;
+    }
+
+    /** The pass's summary lines; a capacity pass ({@code full == false}) logs its deferral at {@code DEBUG}. */
+    private void logPass(RecoveryPass pass, boolean full) {
+        if (pass.skipped() > 0) {
+            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
+                    pass.skipped(), pass.skippedByType().size(), pass.skippedByType());
+        }
+        if (pass.deferred() > 0) {
+            var line = "Recovery pass adopted {} and deferred {} instance(s) for lack of task-queue capacity on "
+                    + "this node {}; they are adopted as slots free";
+            if (full) {
+                logger.info(line, pass.adopted(), pass.deferred(), pass.deferredByQueue());
+            } else {
+                logger.debug(line, pass.adopted(), pass.deferred(), pass.deferredByQueue());
+            }
+        } else if (pass.adopted() > 0) {
+            logger.info("Recovered {} workflow(s) from {} recoverable instance(s)", pass.adopted(), pass.scanned());
+        } else {
+            logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)", pass.scanned());
+        }
+    }
+
+    /**
+     * Adopts what it can of one recovery page, in this order per instance:
+     * drop it if it is running here; drop it if — by one advisory
+     * {@code heldKeys} read for the page — another node holds its lock; drop
+     * it if no registration names its type; under {@link RecoveryGate#GATED},
+     * ask the governor for a slot and defer it when there is none; then
+     * resume it. An instance not reported held still goes through
+     * {@link #resumeWorkflow} and its {@code tryAcquire}, which stays the
+     * authority on ownership.
+     *
+     * <p>Ends the pass ({@link PassTally#stopped}) as soon as the executor is
+     * shutting down or {@code stop} answers {@code true}: the recovery
+     * poller's interrupt for a gated pass, the one-shot pass's own flag, or
+     * never for {@link #recoverWorkflows(Map)}.
+     *
+     * @param pageAfter the cursor this page was read after ({@code null}: the first row)
+     * @param stop      the caller's own stop condition
+     */
+    private void recoverPage(List<WorkflowInstance> page,
+                             @Nullable RecoveryCursor pageAfter,
+                             Map<String, WorkflowRegistration> registrations,
+                             RecoveryGate gate,
+                             BooleanSupplier stop,
+                             PassTally tally) {
+        var heldElsewhere = instanceLockManager.heldElsewhere(page.stream()
+                .map(WorkflowInstance::workflowId)
+                .filter(id -> !runningWorkflows.containsKey(id))
+                .toList());
+
+        for (var i = 0; i < page.size(); i++) {
+            if (shuttingDown.get() || stop.getAsBoolean()) {
+                tally.stopped = true;
+                return;
+            }
+            var instance = page.get(i);
+            if (runningWorkflows.containsKey(instance.workflowId())) {
+                continue;
+            }
             if (heldElsewhere.contains(instance.workflowId())) {
                 logger.debug("Workflow '{}' is locked by another node — skipping recovery this pass",
                         instance.workflowId());
@@ -872,9 +1145,32 @@ public final class WorkflowExecutor {
                         instance.workflowType(), instance.workflowId());
                 continue;
             }
+            // Reserve, then lock: a node never locks a run it can neither run nor queue.
+            var reservation = gate == RecoveryGate.GATED
+                    ? taskQueueGovernor.admitRecovery(instance.taskQueue())
+                    : TaskQueueGovernor.SlotReservation.UNBOUNDED;
+            if (reservation == null && stop.getAsBoolean()) {
+                // admitRecovery returns null on an interrupt (the poller's
+                // stop): that row was not deferred for capacity.
+                tally.stopped = true;
+                return;
+            }
+            if (reservation == null) {
+                tally.deferredByQueue.merge(instance.taskQueue(), 1, Integer::sum);
+                var before = i == 0 ? pageAfter : RecoveryCursor.of(page.get(i - 1));
+                if (!tally.deferredAny) {
+                    tally.deferredAny = true;
+                    tally.resumeAfter = before;
+                }
+                if (!tally.resumeAfterByQueue.containsKey(instance.taskQueue())) {
+                    tally.resumeAfterByQueue.put(instance.taskQueue(), before);
+                }
+                continue;
+            }
             try {
-                if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod())) {
-                    count++;
+                // Releases the reservation itself whenever the run is not launched.
+                if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod(), reservation)) {
+                    tally.adopted++;
                 }
             } catch (WorkflowInstantiationException e) {
                 // R44: only a factory failure is isolated per instance — one
@@ -882,7 +1178,7 @@ public final class WorkflowExecutor {
                 // other type's recovery. Anything else still ends the pass.
                 // One stack trace per type per pass: a broken bean fails every
                 // instance of its type identically, on every pass, on every node.
-                var firstOfType = skippedByType.merge(instance.workflowType(), 1, Integer::sum) == 1;
+                var firstOfType = tally.skippedByType.merge(instance.workflowType(), 1, Integer::sum) == 1;
                 if (firstOfType) {
                     logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
                                     + "could not be built; it stays active for a later pass. Further "
@@ -899,7 +1195,6 @@ public final class WorkflowExecutor {
                 }
             }
         }
-        return count;
     }
 
     // ── Signal delivery ────────────────────────────────────────────────
@@ -1525,7 +1820,7 @@ public final class WorkflowExecutor {
         }
 
         var launched = launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
-                running.input(), true, null);
+                running.input(), true, null, null);
         if (!launched) {
             logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
                     + "left for the recovery poller to adopt", workflowId);
@@ -1591,28 +1886,87 @@ public final class WorkflowExecutor {
     /**
      * Starts the background recovery poller.
      *
-     * <p>The poller periodically re-runs {@link #recoverWorkflows(Map)} so
-     * that workflows whose owning node has died (instance lock expired) or
-     * shut down are adopted without requiring a restart of this node. Every
-     * node polls — safety comes from the per-instance distributed lock and
-     * the in-JVM running-workflow check, not from leader election.
+     * <p>The poller periodically runs a recovery pass so that workflows whose
+     * owning node has died (instance lock expired) or shut down are adopted
+     * without requiring a restart of this node. Every node polls — safety
+     * comes from the per-instance distributed lock and the in-JVM
+     * running-workflow check, not from leader election.
      *
-     * <p>The Spring Boot starter calls this automatically after startup
-     * recovery (configurable via {@code maestro.recovery.*}).
+     * <p>Its passes are <b>gated</b> (Issue 30): an instance is locked only when
+     * its task queue has a free slot on this node, or room in the queue's
+     * bounded line of recovered runs; the rest are deferred, unlocked, for a
+     * peer or for later. Its first pass runs at once, and a pass that deferred
+     * for lack of capacity is followed by another as soon as capacity frees,
+     * at most once per {@code min(1 s, pollInterval)}. Full passes from the
+     * first row run every {@code pollInterval}.
+     *
+     * <p>The Spring Boot starter calls this automatically at startup
+     * (configurable via {@code maestro.recovery.*}).
      *
      * @param registrations map of workflow type → registration metadata
-     * @param pollInterval  interval between recovery cycles (e.g., 60 seconds)
+     * @param pollInterval  interval between full recovery passes (e.g., 60 seconds)
      * @throws IllegalStateException if the poller is already started or the
      *                               executor is shutting down
      */
     public void startRecoveryPoller(Map<String, WorkflowRegistration> registrations, Duration pollInterval) {
+        startRecoveryPoller(registrations, pollInterval, RecoveryPoller.defaultCapacitySpacing(pollInterval));
+    }
+
+    /**
+     * {@link #startRecoveryPoller(Map, Duration)} with an explicit spacing of
+     * capacity passes; a test seam.
+     *
+     * @param capacitySpacing the least time between the starts of two passes
+     *                        when the second is a capacity pass
+     */
+    void startRecoveryPoller(Map<String, WorkflowRegistration> registrations, Duration pollInterval,
+                             Duration capacitySpacing) {
         if (shuttingDown.get()) {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
-        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer);
+        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer,
+                taskQueueGovernor.capacitySignal(), capacitySpacing);
         installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
         recoveryPollerStarted.set(true);
+    }
+
+    /**
+     * Starts the startup recovery pass of a node whose recovery poller is
+     * disabled: one <b>ungated</b> pass ({@link #recoverWorkflows(Map)}) on its
+     * own virtual thread, {@code maestro-startup-recovery-<service>}, so the
+     * caller does not wait for it.
+     *
+     * <p>A pass that throws is logged like a recovery-poller failure (one
+     * {@code ERROR} with the stack trace, then an {@code ERROR} reminder every
+     * 5 minutes while it continues) and retried after {@code retryInterval},
+     * with no limit, until one pass completes; then the thread ends. Only an
+     * {@link Error} it contains is counted, on
+     * {@code maestro.loop.errors{loop=recovery-poller}}; a store fault is
+     * logged, not counted. No health detail or meter reports the pass itself.
+     * A {@code MaestroControlFlowError} ends it at once.
+     * {@link #shutdown()} stops it. It does not occupy the recovery poller's
+     * slot: {@link #startRecoveryPoller(Map, Duration)} may still be called,
+     * and {@link #isRecoveryPollerRunning()} does not report it.
+     *
+     * <p>The Spring Boot starter calls this at startup when
+     * {@code maestro.recovery.enabled=false}, with
+     * {@code maestro.recovery.poll-interval} as the retry interval.
+     *
+     * @param registrations map of workflow type → registration metadata
+     * @param retryInterval the wait after a failed pass before the next; must be positive
+     * @throws IllegalArgumentException if {@code retryInterval} is {@code null},
+     *                                  zero or negative
+     * @throws IllegalStateException    if it was already started on this
+     *                                  executor, or the executor is shutting down
+     */
+    public void startOneShotRecovery(Map<String, WorkflowRegistration> registrations, Duration retryInterval) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start the one-shot startup recovery");
+        }
+        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval, observer);
+        installAndStart(oneShotRecovery, recovery, "One-shot startup recovery", recovery::start, recovery::stop);
     }
 
     // ── Signal janitor ──────────────────────────────────────────────────
@@ -1798,7 +2152,8 @@ public final class WorkflowExecutor {
      * milliseconds of bookkeeping even when every step is stuck. In order:
      * <ol>
      *   <li>Stop taking work, without waiting: the timer poller, recovery
-     *       poller, signal janitor and retention sweeper are asked to stop;
+     *       poller, one-shot startup recovery, signal janitor and retention
+     *       sweeper are asked to stop;
      *       every park and retry backoff is abandoned; every run queued for a
      *       task-queue slot is released.</li>
      *   <li>Drain the runs in flight until the deadline, a run whose launch has
@@ -1883,9 +2238,9 @@ public final class WorkflowExecutor {
         // the background loops to stop — no new timer fires and no new
         // recovery launches — and join them only after the drain (step 6),
         // so a loop stuck in a store call never delays it.
-        var loops = new ArrayList<StoppableLoop>(4);
+        var loops = new ArrayList<StoppableLoop>(5);
         for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(
-                timerPoller, recoveryPoller, signalJanitor, retentionSweeper)) {
+                timerPoller, recoveryPoller, oneShotRecovery, signalJanitor, retentionSweeper)) {
             var loop = slot.getAndSet(null);
             if (loop != null) {
                 loop.requestStop();
@@ -2207,6 +2562,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns whether the one-shot startup recovery
+     * ({@link #startOneShotRecovery(Map, Duration)}) is still in progress or
+     * waiting to retry a failed pass.
+     *
+     * @return {@code false} once a pass has completed, the executor has shut
+     *         it down, or it was never started
+     */
+    boolean isOneShotRecoveryRunning() {
+        var recovery = oneShotRecovery.get();
+        return recovery != null && recovery.isRunning();
+    }
+
+    /**
      * Returns whether {@link #startTimerPoller(Duration, int)} has ever been
      * called on this executor.
      *
@@ -2346,7 +2714,8 @@ public final class WorkflowExecutor {
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             boolean replaying,
-            WorkflowInstanceLockManager.@Nullable Acquisition preAcquired
+            WorkflowInstanceLockManager.@Nullable Acquisition preAcquired,
+            TaskQueueGovernor.@Nullable SlotReservation reservation
     ) {
         // The per-instance distributed lock is the admission guard: it stops a
         // second node from starting a redundant run while this one is live.
@@ -2471,14 +2840,29 @@ public final class WorkflowExecutor {
                 emit("workflowStarted", instance.workflowId(),
                         () -> observer.workflowStarted(observed(instance)));
             }
+            // Set as executeWorkflow is entered. Until then no finally of the
+            // run owns the lock, the entry or the reservation, so a Throwable
+            // before it is cleaned up in the run's catch below. Allocated here,
+            // on the launching thread, so nothing on the run's thread runs
+            // before that catch can see it.
+            var entered = new boolean[1];
             var thread = Thread.ofVirtual()
                     .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                     .unstarted(() -> {
-                        WorkflowMDC.populate(ctx);
                         try {
+                            WorkflowMDC.populate(ctx);
+                            beforeRunBody.run();
                             ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                                    .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                                            inputPayload, compensationStack, parallelCompensation));
+                                    .run(() -> {
+                                        entered[0] = true;
+                                        executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                                                inputPayload, compensationStack, parallelCompensation, reservation);
+                                    });
+                        } catch (Throwable t) {
+                            if (!entered[0]) {
+                                runThreadDiedBeforeItsBody(instance.workflowId(), reservation, t);
+                            }
+                            throw t; // control-flow Errors included: cleaned up, then rethrown unchanged
                         } finally {
                             WorkflowMDC.clear();
                         }
@@ -2530,6 +2914,44 @@ public final class WorkflowExecutor {
         return true;
     }
 
+    /**
+     * The run's thread is dying with {@code cause} before
+     * {@code executeWorkflow} was entered, so none of the run's own cleanup
+     * will run. Does what a launch failure does — drops this thread's running
+     * entry and any stored wake permit, gives the slot reservation back and
+     * releases the instance lock — so the workflow is not stranded with a
+     * lock renewed for ever. Every failure here is suppressed on {@code cause}.
+     */
+    private void runThreadDiedBeforeItsBody(String workflowId,
+                                            TaskQueueGovernor.@Nullable SlotReservation reservation,
+                                            Throwable cause) {
+        // Each step in its own guard, nothing allocated ahead of them: a
+        // failure in one step, or in setting it up, never skips the next.
+        var self = Thread.currentThread();
+        try {
+            runningWorkflows.computeIfPresent(workflowId, (_, r) -> r.thread() == self ? null : r);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            parkingLot.clearPending(workflowId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            if (reservation != null) {
+                reservation.release();
+            }
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            instanceLockManager.release(workflowId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+    }
+
     /** Releases the instance lock this launch acquired, if it did acquire one. */
     private void releaseIfAcquired(WorkflowInstanceLockManager.Acquisition acquisition, String workflowId) {
         if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
@@ -2579,13 +3001,15 @@ public final class WorkflowExecutor {
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             CompensationStack compensationStack,
-            boolean parallelCompensation
+            boolean parallelCompensation,
+            TaskQueueGovernor.@Nullable SlotReservation reservation
     ) {
         try {
             // F8: take this run's workflow slot on its task queue — blocking
             // while the queue is at its maestro.worker concurrency limit (a
             // no-op for an unbounded queue). Released first in finally below.
-            taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId());
+            // A recovered run claims the slot or queue place its pass reserved.
+            taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId(), reservation);
             if (taskQueueGovernor.availableWorkflowSlots(ctx.taskQueue()).isPresent()) {
                 // A bounded run may have waited for its slot while this node
                 // began shutting down, or while the workflow was terminated.

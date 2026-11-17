@@ -29,7 +29,9 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin;
 import static org.awaitility.Awaitility.await;
+import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -84,6 +86,25 @@ class AdoptionLockLeakTest {
 
         assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass after the Error adopted and ran the workflow");
         assertTrue(thrown.get(), "the first adoption hit the injected Error");
+    }
+
+    /** Window (c), W9: a Throwable on the run's thread before executeWorkflow is entered. */
+    @Test
+    void aThrowableBeforeTheRunBodyReleasesTheLockTheSlotAndTheEntry() throws Exception {
+        executor = boundedExecutor(new TaskQueueLimits(1, 1));
+        var thrown = new CountDownLatch(1);
+        executor.beforeRunBody = () -> {
+            thrown.countDown();
+            throw new OutOfMemoryError("injected before the run body");
+        };
+        seedRecoverable("wf-1");
+        executor.recoveryPass(registrations());
+        assertTrue(thrown.await(5, TimeUnit.SECONDS));
+        assertAll(
+                () -> assertEquals(List.of("maestro:lock:workflow:wf-1"), valueWithin(() -> List.copyOf(lock.released),
+                        List.of("maestro:lock:workflow:wf-1"), Duration.ofSeconds(5)), "the lock is released"),
+                () -> assertFalse(executor.isRunning("wf-1"), "the running entry is gone"),
+                () -> assertEquals(2, executor.taskQueueGovernor().recoveryHeadroom("default")));
     }
 
     /** Window (a), one pass at a time: the failed launch gave the lock back to the backend. */
@@ -329,6 +350,14 @@ class AdoptionLockLeakTest {
                 .distributedLock(lock)
                 .lifecycleEventsEnabled(false)
                 .observer(observer)
+                .build();
+    }
+
+    private WorkflowExecutor boundedExecutor(TaskQueueLimits defaults) {
+        return WorkflowExecutor.builder(store, serializer, "svc")
+                .distributedLock(lock)
+                .lifecycleEventsEnabled(false)
+                .defaultTaskQueueLimits(defaults)
                 .build();
     }
 

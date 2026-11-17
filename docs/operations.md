@@ -78,16 +78,43 @@ postgres"; `evidence/task3/run{1,2,3}-scenario8.log`,
 block releases the instance lock immediately
 (`WorkflowExecutor.executeWorkflow`, per-workflow, on
 `ExecutorShutdownException`) instead of leaving it to expire via TTL — so the
-restarted node's own `StartupRecoveryRunner` (which runs synchronously on
-boot, not gated on the 60s poll cadence) resumes all three workflows in
-roughly **2 seconds**, not the TTL/poll-interval-bound tens of seconds a hard
-kill requires. This is the practical argument for graceful shutdown over
+restarted node's recovery poller, whose first pass runs as soon as it starts
+(not after the 60 s cadence), on its own thread, resumes all three workflows
+in roughly **2 seconds** (traced, not re-measured since this change), not the
+TTL/poll-interval-bound tens of seconds a hard kill requires. This is the practical argument for graceful shutdown over
 `kill -9` wherever your platform gives you the choice (`.superpowers/sdd/
 task-3-report.md` §"Decisions and justifications"). Since WP5 this includes
 runs that were queued for a task-queue slot; before, they kept their locks
 until a slot freed or the lock TTL ran out. See
 [§15](#15-shutdown-one-deadline-and-the-grace-period) for the whole shutdown
 sequence and the grace-period arithmetic.
+
+**A restarted fleet shares its recovery backlog.** A node's recovery poller
+locks only the runs its task queues can run or queue — per queue, its free
+slots plus `concurrency` queued runs — and leaves the rest unlocked for its
+peers, then takes more as its own runs finish. Before this release the first
+node to start locked every orphan it could, and its peers, finding them all
+locked, adopted nothing while it worked through the backlog at its own queue
+bound. Two nodes now execute one backlog together
+(`MultiNodeRecoveryCapacityIT`: a 12-run backlog at `concurrency` 2, each
+node locking 4 and both executing runs). Startup no longer waits for the
+recovery pass: the starter's `ApplicationRunner` returns while the first pass
+is still reading (`StartupRecoveryRunnerTest`), so a node reports ready
+before every orphan is re-adopted (traced, not tested: Spring Boot publishes
+readiness after its runners return).
+
+**With `maestro.recovery.enabled=false`** there is no recovery poller: one
+startup pass runs on its own thread (`maestro-startup-recovery-<service>`),
+ungated — it adopts every orphan it can lock, and the runs beyond a queue's
+bound wait for their slots holding their locks, as every pass did before
+this release. Nothing adopts orphans after it, so a node that dies later
+strands its workflows until a node restarts (traced, not tested). A pass that fails (a store
+outage) is logged — one `ERROR`, then an `ERROR` reminder every 5 minutes —
+and retried every `maestro.recovery.poll-interval`, **with no limit**, until
+one pass completes (`OneShotRecoveryTest`). A store fault there is not
+counted on any meter (`maestro.loop.errors` counts only `Error`s, as
+`recovery-poller`), and no health detail shows the pass: watch for the log
+line `Maestro startup recovery (recovery poller disabled) adopted …` (Issue 73).
 
 **Coverage boundary, stated honestly.** Scenario 8 drives three workflows
 into three distinct `WAITING_SIGNAL` states (fan-in await, decision await,
@@ -1284,7 +1311,8 @@ P = workflows parked on this node):
 | Instance-lock renewal | ⌈H / 500⌉ `UPDATE ... FROM unnest(...)`, on one connection; none when H = 0 | `maestro.lock.ttl` / 3 = **10 s** |
 | Recovery pass — instance reads | ⌊A / 200⌋ + 1 page reads, i.e. ⌈A / 200⌉ plus one empty page when A is a multiple of 200 (A = 0 costs one read) | `maestro.recovery.poll-interval` = **60 s** |
 | Recovery pass — lock reads | at most 1 `heldKeys` read of `maestro_distributed_lock` per non-empty page, ≤ ⌈A / 200⌉ | same pass |
-| Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) | same pass |
+| Recovery pass — lock acquisitions | 1 `tryAcquire` per instance that is neither running on this node nor reported held by another (normally only orphans: a parked workflow's run keeps its lock) and that its task queue has room for on this node; with bounded queues, at most 2 × `concurrency` per queue for runs that are running or queued (a recovered run that parks gives its slot back, so a later pass can adopt more) | same pass |
+| Recovery capacity pass | 0 statements with no free room; otherwise ⌈rows read / page⌉ page reads (a page is twice the free room, 20 to 200 rows) + as many `heldKeys` reads + 3 per adoption | at most once per second per node, only while a recovery backlog drains |
 | Parked-workflow wake re-check | 2 reads per parked `sleep()` (instance status, timer row), 3 per parked `awaitSignal()` (status, signals, deadline row): 2P–3P reads | `maestro.signal.wake-recheck-interval` = **30 s** (unchanged by this cycle) |
 | Clock-skew check | 1 `SELECT now()` | at timer-poller start, then every **10 min** |
 
@@ -1310,10 +1338,13 @@ pass.
 `maestro.worker.task-queues` runs at most **20 workflow runs and 20 live
 activities per node** (`maestro.worker.default-concurrency` /
 `default-activity-concurrency`; each unlisted queue has its own pools, so Q
-unlisted queues allow up to 20·Q of each). Recovery adopts without waiting for
-slots and the excess queues on its own threads, holding its instance locks
-(`docs/open-issues.md` Issue 30) — so after a deploy the backlog drains at the
-queue bound, not all at once. Both defaults `0` restores unbounded queues.
+unlisted queues allow up to 20·Q of each). Recovery adopts per queue at most
+C running plus C queued runs on a node at a time (C = the queue's
+`concurrency`; a recovered run that parks frees its slot and keeps its lock,
+so parked runs come on top) and leaves the rest unlocked for a peer or a later pass, so after a deploy the
+backlog drains at the queue bound on every node that has room, not all at
+once and not on one node. Both defaults `0` restores unbounded queues, and
+unbounded recovery.
 
 **Pool sizing.** If Maestro shares the application's pool, its traffic above
 competes with the application's own. If Maestro has its own pool
@@ -1331,6 +1362,35 @@ one re-check's duration (its 2–3 reads). In the worked example above, and
 assuming 5 ms per re-check, 2,000 × 5 ms / 30 s ≈ 0.3 slots, so re-checks rarely crowd out runs; with
 slow reads or a short interval, check the product. A pool that runs dry shows up as `STORE_UNAVAILABLE` abandons
 (§10.9), not as workflow failures, and as `store: "timed out"` with status `UNKNOWN` on `/actuator/health` (§14).
+
+### 13.1 Recovery sizing
+
+*Arithmetic, not measurement*, for a backlog of N recoverable runs on one task
+queue, T seconds per run, K nodes of the service and C = the queue's
+`concurrency`:
+
+- **Drain time** ≈ N · T / (K · C). At 5,000 runs, C = 20 and T = 2 s: about
+  500 s on one node and about 250 s on two. Before this release the first node
+  to start locked the whole backlog, so two nodes still took about 500 s while
+  the second one idled.
+- **A full pass** over that backlog costs 25 page reads, 25 `heldKeys` reads
+  and 40 × 3 adoption statements (C running plus C queued): **170
+  statements**, where the ungated pass before this release made about 15,026
+  (3 per adoption for all 5,000, plus the reads).
+- **In a steady drain**, each adopted run costs about
+  3 + (1 page read + 1 `heldKeys` read) / (runs adopted per capacity pass). At
+  the example's 10 runs finishing per second and one capacity pass per
+  second, that is about **3.2 statements per adopted run**. A capacity pass
+  starts at the first run it left on a queue that has room, so a full queue's
+  backlog is not re-read for another queue's room
+  (`RecoveryPollerCapacityTest.aQueueThatDrainsIsNotReReadBehindAQueueThatIsFull`).
+- **`maestro.recovery.deferred`** (a gauge, `docs/observability.md`) is the
+  number of runs this node's latest full pass left for lack of capacity: `0`
+  on a healthy fleet, the visible backlog during a drain. A value that stays
+  high over several full passes (`maestro.recovery.poll-interval` apart) means
+  this node's queues cannot keep up with recovery: add nodes or raise
+  `concurrency`. Every node of a service sees the same unadopted rows, so do
+  not sum it across pods.
 
 ## 14. Health checks and Kubernetes probes
 
