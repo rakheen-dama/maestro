@@ -2032,7 +2032,8 @@ successful probe after recovery.
 > been finalised by another runner in the meantime. On exhaustion it **stands
 > down** rather than propagating. Commits `a0905f6` (RED), `158aa6e` (fix +
 > boundary pins + Postgres pin), `108cd73` (mechanism pins). The rest of this
-> section is the record of the defect.
+> section is the record of the defect. Two branches parking on the *same*
+> signal name is a different collision, in the parking lot: [Issue 82](#issue-82).
 
 **What was wrong.** Every branch thread of a `parallel()` fork writes its own
 park status into the **one** instance row. `InstanceStatusWriter.write` read
@@ -4986,9 +4987,11 @@ reads `DOWN`, with its streak in the details, and one that recovers reads
    the lock and is rethrown, so it does not leave this state.)
 2. **One lost lock per pass after an observer `Error`.** `renewPass()` walks
    the handles `renewAll` reported lost and calls `lockLost` for each. If
-   `observer.instanceLockLost` throws an `Error` — possible only with an
-   observer the builder was given unwrapped; the starter always wraps in
-   `CompositeEngineObserver.of`, which contains it — `lockLost` still drops
+   `observer.instanceLockLost` throws an `Error` — possible with any observer:
+   the lock manager's own `emit` catches only `RuntimeException`, and so does
+   `CompositeEngineObserver.fanOut`, which the starter wraps every observer
+   in (the composite contains an `Error` only in `backgroundLoopError`); the
+   same gap in `WorkflowExecutor.emit` is [Issue 81](#issue-81) — `lockLost` still drops
    the handle and stands the run down (review d2), but the `Error` leaves the
    loop over `lost`. The remaining lost handles stay in `heldLocks` until a
    later pass reports them again, so an observer that throws deterministically
@@ -5448,7 +5451,9 @@ emitted before the thread starts, so an `Error` there fails the launch:
 the lock is released and the error reaches the caller of `startWorkflow`.
 
 **Where.** `WorkflowExecutor.emit`; `WorkflowExecutor.launchWorkflow`;
-`WorkflowExecutor.recoverPage`.
+`WorkflowExecutor.recoverPage`. The starter's `CompositeEngineObserver`
+does not help: its `fanOut` also contains only `RuntimeException`. The same
+gap in the lock renewer's `emit` is part of [Issue 68](#issue-68).
 
 **Harm.** A faulty observer (a metrics or tracing adapter hitting a
 `LinkageError`, say) under-counts adoptions, cuts recovery passes short and
@@ -5484,7 +5489,10 @@ refuses a second waiter on an occupied key with `IllegalStateException`
 signal name while neither has its signal, the second branch's park throws.
 
 **Where.** `SignalManager` (the two `parkKey` assignments, `workflowId +
-":signal:" + signalName`); `ParkingLot.register`.
+":signal:" + signalName`); `ParkingLot.register`. [Issue 21](#issue-21)
+made two branches parking at once safe for the instance status write they
+share; it does not cover two branches parking on the same signal name, which
+collide in the parking lot.
 
 **Harm.** The second branch fails with an `IllegalStateException`, an
 ordinary branch failure: the `parallel()` call throws, and unless the
@@ -5617,7 +5625,10 @@ capture; it fails closed, never with a bad fixture.
 package `io.b2mash.maestro.integration.upgrade.cbf5a2a`.
 
 **Harm.** The first such API change forces an unplanned choice between
-deleting evidence and editing it, under time pressure. The stderr merge
+deleting evidence and editing it, under time pressure. `RELEASING.md` already
+allows a re-capture with the maintainer's explicit approval, but only of a
+fixture that is itself defective, and only at the *same* ref, whose workflow
+source would no longer compile either; it does not cover this case. The stderr merge
 costs a retry.
 
 **How to tackle it.** Write the procedure before it is needed (for example:
