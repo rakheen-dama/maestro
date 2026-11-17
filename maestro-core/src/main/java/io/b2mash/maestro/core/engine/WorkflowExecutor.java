@@ -2315,7 +2315,12 @@ public final class WorkflowExecutor {
                 // no run will park on it now (3.2).
                 parkingLot.clearPending(instance.workflowId());
             }
-            instanceLockManager.release(instance.workflowId());
+            try {
+                instanceLockManager.release(instance.workflowId());
+            } catch (RuntimeException | Error releaseFailure) {
+                // The launch's own failure is what the caller must see.
+                e.addSuppressed(releaseFailure);
+            }
             throw e;
         }
         if (replaying) {

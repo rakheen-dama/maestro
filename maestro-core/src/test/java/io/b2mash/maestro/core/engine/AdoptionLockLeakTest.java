@@ -169,6 +169,97 @@ class AdoptionLockLeakTest {
         assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass adopted and ran the workflow");
     }
 
+    /**
+     * Review d6: when the release that follows a failed launch itself throws
+     * an {@code Error}, the launch's original {@code Error} still reaches the
+     * caller, with the release failure suppressed on it — at each of the three
+     * release sites.
+     */
+    @Test
+    void aReleaseThatThrowsDoesNotReplaceTheLaunchsError_afterAdmission() {
+        var releaseFails = new ReleaseFailsLock();
+        executor = WorkflowExecutor.builder(store, serializer, "svc")
+                .distributedLock(releaseFails)
+                .lifecycleEventsEnabled(false)
+                .build();
+        executor.afterLaunchAdmission = () -> {
+            throw new AssertionError("injected after admission");
+        };
+        seedRecoverable("wf-1");
+
+        var thrown = assertThrows(AssertionError.class, () -> executor.recoverWorkflows(registrations()));
+
+        assertEquals("injected after admission", thrown.getMessage());
+        assertSuppressedReleaseFailure(thrown);
+    }
+
+    @Test
+    void aReleaseThatThrowsDoesNotReplaceTheLaunchsError_inStartWorkflow() {
+        var releaseFails = new ReleaseFailsLock();
+        executor = WorkflowExecutor.builder(new AdoptFailsOnceStore(), serializer, "svc")
+                .distributedLock(releaseFails)
+                .lifecycleEventsEnabled(false)
+                .build();
+
+        var thrown = assertThrows(AssertionError.class, () -> executor.startWorkflow("wf-d6", "LeakWorkflow",
+                "default", null, () -> new LeakWorkflow(ran), workflowMethod()));
+
+        assertEquals("injected in adoptOrphanedSignals", thrown.getMessage());
+        assertSuppressedReleaseFailure(thrown);
+    }
+
+    @Test
+    void aReleaseThatThrowsDoesNotReplaceTheLaunchsError_inTryAcquire() {
+        manager = new WorkflowInstanceLockManager(new ReleaseFailsLock(), "svc", "maestro:lock:",
+                Duration.ofSeconds(30), Duration.ofMillis(50), EngineObserver.NOOP);
+        manager.renewerThreadStarter = () -> {
+            throw new OutOfMemoryError("unable to create native thread");
+        };
+
+        var thrown = assertThrows(OutOfMemoryError.class, () -> manager.tryAcquire("wf-1"));
+
+        assertEquals("unable to create native thread", thrown.getMessage());
+        assertSuppressedReleaseFailure(thrown);
+    }
+
+    private static void assertSuppressedReleaseFailure(Throwable thrown) {
+        assertEquals(List.of("release bug"),
+                java.util.Arrays.stream(thrown.getSuppressed()).map(Throwable::getMessage).toList(),
+                "the release failure is suppressed on the original");
+    }
+
+    /** Grants every lock; {@code release} throws an {@code AssertionError}, as a broken backend might. */
+    static final class ReleaseFailsLock implements DistributedLock {
+
+        private final GrantingLock delegate = new GrantingLock();
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            return delegate.tryAcquire(key, ttl);
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            delegate.release(handle);
+            throw new AssertionError("release bug");
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            return delegate.renew(handle, ttl);
+        }
+
+        @Override
+        public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+            return Set.of();
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return true;
+        }
+    }
+
     /** Throws an {@code AssertionError} from the first {@code adoptOrphanedSignals}, after the row exists. */
     static final class AdoptFailsOnceStore extends VersionedInMemoryStore {
 

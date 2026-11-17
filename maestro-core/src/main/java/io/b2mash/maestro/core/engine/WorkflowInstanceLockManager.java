@@ -224,14 +224,20 @@ final class WorkflowInstanceLockManager {
                         workflowId, e.getMessage(), e);
             }
             emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
-        } catch (Error e) {
+        } catch (RuntimeException | Error e) {
             // An Error (from the renewer start or the observer) reaches the
             // caller instead of ACQUIRED, so no run will ever own — or release
             // — this handle. Kept, the renewer would renew it forever and the
             // workflow would be unacquirable on every node until this one
             // restarts: give it back first, then rethrow (a control-flow
-            // Error included).
-            release(workflowId);
+            // Error included). A RuntimeException cannot reach here today
+            // (both calls above contain it); caught so that stays true if
+            // either changes. A failing release is suppressed on the original.
+            try {
+                release(workflowId);
+            } catch (RuntimeException | Error releaseFailure) {
+                e.addSuppressed(releaseFailure);
+            }
             throw e;
         }
         return Acquisition.ACQUIRED;
