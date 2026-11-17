@@ -158,6 +158,17 @@
 # their timing per stage (the per-level arrival counts in the database,
 # validity.levels and the level table, show that).
 #
+# ── Sample timing ──────────────────────────────────────────────────────────
+# Each sample is one psql session running pgss-window.sql (snapshotAt) and
+# then s1-progress.sql (progressAt, completed): the completion count is read
+# just after the statement snapshot, and both the per-level statements and
+# the hold-window rate use snapshotAt for the pair. The gap is measured, not
+# assumed: progressAt - snapshotAt was 3.3-18.7 ms over all 270 samples of
+# r20261112t223114z, r20261116t232948z and r20261116t234614z, under 0.2 % of
+# a 10 s rate interval (about 0.5 ms of engineOverheadMs at the ceiling,
+# below its 1.4-4 ms within-run resolution). A sampler that ran the two
+# statements apart would need progressAt for the completion rate.
+#
 # ── Per-level statements ───────────────────────────────────────────────────
 # The scenario samples, every sampleSecs (5 s), the engine's cumulative
 # statement count (pgss-window, sweepCalls included) and the s1 rows'
