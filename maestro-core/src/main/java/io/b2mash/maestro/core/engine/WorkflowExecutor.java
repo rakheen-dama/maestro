@@ -196,6 +196,7 @@ public final class WorkflowExecutor {
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
+    private final AtomicReference<OneShotRecovery> oneShotRecovery = new AtomicReference<>();
     private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
     private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
@@ -801,7 +802,8 @@ public final class WorkflowExecutor {
      * <p>This pass is <b>ungated</b>: it adopts every instance it can lock,
      * whatever this node's task-queue capacity, and the runs beyond a queue's
      * bound wait for their slots on their own threads. It is the startup pass
-     * when the recovery poller is disabled. The recovery poller's passes are
+     * when the recovery poller is disabled
+     * ({@link #startOneShotRecovery(Map, Duration)}). The recovery poller's passes are
      * gated instead — see {@link #startRecoveryPoller(Map, Duration)}.
      *
      * <p>An instance whose registration's factory throws
@@ -1859,6 +1861,40 @@ public final class WorkflowExecutor {
         recoveryPollerStarted.set(true);
     }
 
+    /**
+     * Starts the startup recovery pass of a node whose recovery poller is
+     * disabled: one <b>ungated</b> pass ({@link #recoverWorkflows(Map)}) on its
+     * own virtual thread, {@code maestro-startup-recovery-<service>}, so the
+     * caller does not wait for it.
+     *
+     * <p>A pass that throws is logged and counted like a recovery-poller
+     * failure ({@code maestro.loop.errors{loop=recovery-poller}}) and retried
+     * after {@code retryInterval}, until one pass completes; then the thread
+     * ends. A {@code MaestroControlFlowError} ends it at once.
+     * {@link #shutdown()} stops it. It does not occupy the recovery poller's
+     * slot: {@link #startRecoveryPoller(Map, Duration)} may still be called,
+     * and {@link #isRecoveryPollerRunning()} does not report it.
+     *
+     * <p>The Spring Boot starter calls this at startup when
+     * {@code maestro.recovery.enabled=false}, with
+     * {@code maestro.recovery.poll-interval} as the retry interval.
+     *
+     * @param registrations map of workflow type → registration metadata
+     * @param retryInterval the wait after a failed pass before the next; must be positive
+     * @throws IllegalArgumentException if {@code retryInterval} is {@code null},
+     *                                  zero or negative
+     * @throws IllegalStateException    if it was already started on this
+     *                                  executor, or the executor is shutting down
+     */
+    public void startOneShotRecovery(Map<String, WorkflowRegistration> registrations, Duration retryInterval) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start the one-shot startup recovery");
+        }
+        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval, observer);
+        installAndStart(oneShotRecovery, recovery, "One-shot startup recovery", recovery::start, recovery::stop);
+    }
+
     // ── Signal janitor ──────────────────────────────────────────────────
 
     /**
@@ -2042,7 +2078,8 @@ public final class WorkflowExecutor {
      * milliseconds of bookkeeping even when every step is stuck. In order:
      * <ol>
      *   <li>Stop taking work, without waiting: the timer poller, recovery
-     *       poller, signal janitor and retention sweeper are asked to stop;
+     *       poller, one-shot startup recovery, signal janitor and retention
+     *       sweeper are asked to stop;
      *       every park and retry backoff is abandoned; every run queued for a
      *       task-queue slot is released.</li>
      *   <li>Drain the runs in flight until the deadline.</li>
@@ -2126,9 +2163,9 @@ public final class WorkflowExecutor {
         // the background loops to stop — no new timer fires and no new
         // recovery launches — and join them only after the drain (step 6),
         // so a loop stuck in a store call never delays it.
-        var loops = new ArrayList<StoppableLoop>(4);
+        var loops = new ArrayList<StoppableLoop>(5);
         for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(
-                timerPoller, recoveryPoller, signalJanitor, retentionSweeper)) {
+                timerPoller, recoveryPoller, oneShotRecovery, signalJanitor, retentionSweeper)) {
             var loop = slot.getAndSet(null);
             if (loop != null) {
                 loop.requestStop();
@@ -2434,6 +2471,19 @@ public final class WorkflowExecutor {
     public boolean isRecoveryPollerRunning() {
         var poller = recoveryPoller.get();
         return poller != null && poller.isRunning();
+    }
+
+    /**
+     * Returns whether the one-shot startup recovery
+     * ({@link #startOneShotRecovery(Map, Duration)}) is still in progress or
+     * waiting to retry a failed pass.
+     *
+     * @return {@code false} once a pass has completed, the executor has shut
+     *         it down, or it was never started
+     */
+    boolean isOneShotRecoveryRunning() {
+        var recovery = oneShotRecovery.get();
+        return recovery != null && recovery.isRunning();
     }
 
     /**

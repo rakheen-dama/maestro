@@ -39,10 +39,11 @@ import org.springframework.core.Ordered;
  * resolvable coordinate) is not deduplicated — a redelivery of it becomes a
  * second signal, which a later await of the same name would consume.
  *
- * <p>Ordered {@code HIGHEST_PRECEDENCE + 20}: right after
- * {@link StartupRecoveryRunner} (+10), so recovery replay completes before
- * the transport consumer starts. Earlier delivery would still be safe —
- * {@code deliverSignal} needs only the store — but this keeps startup calm.
+ * <p>Ordered {@code HIGHEST_PRECEDENCE + 20}, right after
+ * {@link StartupRecoveryRunner} (+10), which starts recovery but does not
+ * wait for it. A signal can therefore arrive before its workflow is
+ * re-adopted; that is safe, since {@code deliverSignal} needs only the store
+ * and the adopting replay finds the signal.
  *
  * <p><b>Thread safety:</b> this class is thread-safe. {@link #run} is invoked
  * once by Spring at startup; {@code handleSignal} may be invoked concurrently
