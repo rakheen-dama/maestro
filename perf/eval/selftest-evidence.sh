@@ -46,4 +46,29 @@ done
 bash "${PERF_DIR}/eval/selftest-wp12.sh" "${work}/${S2_RUN}" "${work}/${S5_AFTER_RUN}" "${work}/${S5_BEFORE_RUN}" \
   "${work}/${S4_AFTER_RUN}" "${work}/${S4_BEFORE_RUN}" "${work}/${S6_BEFORE_RUN}" \
   "${work}/${S6_AFTER_RUN}" "${work}/${S2_PREVIEW_RUN}" "${work}/${S2_AFTER_RUN}" || rc=1
+# Superseded WP12 runs stay committed as run; their verdict under today's
+# evaluators is pinned too, so a change that silently flips one shows up:
+# S4's first pair (before the per-level latency) and S6's first pair (before
+# the sampler measured its span gap: INVALID, validity.samplerResolution).
+superseded=(
+  "r20261117t155519z PASS"    # S4 after, first take
+  "r20261117t160028z FAIL"    # S4 before, first take
+  "r20261117t161125z INVALID" # S6 before, first take
+  "r20261117t163846z INVALID" # S6 after, first take
+)
+for entry in "${superseded[@]}"; do
+  run=${entry% *} want=${entry#* }
+  dir="${work}/superseded-${run}"
+  mkdir "$dir"
+  jq .identity "${EVIDENCE12}/${run}.result.json" >"${dir}/identity.json"
+  jq .measurements "${EVIDENCE12}/${run}.result.json" >"${dir}/measurements.json"
+  got=$(bash "${PERF_DIR}/lib/evaluate.sh" "$dir" "$(jq -r .scenario "${dir}/identity.json")" "" >/dev/null 2>&1 \
+    && jq -r .verdict "${dir}/result.json" || echo CRASH)
+  if [[ "$got" == "$want" ]]; then
+    printf 'ok    %-70s %s\n' "superseded ${run}: verdict" "$got"
+  else
+    printf 'FAIL  %-70s expected %s, got %s\n' "superseded ${run}: verdict" "$want" "$got"
+    rc=1
+  fi
+done
 exit "$rc"
