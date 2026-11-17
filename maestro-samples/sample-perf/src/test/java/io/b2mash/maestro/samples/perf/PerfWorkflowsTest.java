@@ -123,6 +123,20 @@ class PerfWorkflowsTest {
     }
 
     @Test
+    void holdIsNeverRetried() throws TimeoutException {
+        var db = new FailingDbActivities();
+        env.registerActivities(PerfDbActivities.class, db);
+
+        var h = env.startWorkflow("hold-fail-1", PerfHoldWorkflow.class, new HoldInput(3, 250));
+
+        // One attempt only: a hold that times out (or fails) under pool
+        // exhaustion fails its run (correctness.holdsCompleted sees it) instead
+        // of re-running and adding load the scenario does not control.
+        assertEquals(WorkflowStatus.FAILED, h.awaitTerminal(WAIT));
+        assertEquals(1, db.calls.get());
+    }
+
+    @Test
     void signalsConsumesEachNameInOrder() throws TimeoutException {
         var h = env.startWorkflow("signals-1", PerfSignalsWorkflow.class, new SignalsInput(5, 7200));
         for (var k = 0; k < 5; k++) {
@@ -167,6 +181,18 @@ class PerfWorkflowsTest {
         public int step(int index, long millis) {
             indices.add(index);
             return index + 1;
+        }
+    }
+
+    /** Fails every {@code hold} call, counting them. */
+    static final class FailingDbActivities implements PerfDbActivities {
+
+        final java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+
+        @Override
+        public int hold(int index, long holdMillis) {
+            calls.incrementAndGet();
+            throw new IllegalStateException("hold " + index + " failed");
         }
     }
 
