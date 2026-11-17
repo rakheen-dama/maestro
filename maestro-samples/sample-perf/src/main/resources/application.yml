@@ -1,0 +1,62 @@
+# sample-perf runs Maestro's TRUE defaults: it is the system under test of the
+# k6 load harness (perf/), and a number measured on tuned settings says nothing
+# about what an adopter gets out of the box. So it sets only what Maestro cannot
+# default (service name, store, transport, the signals topic) plus
+# maestro.admin.events.enabled, which the harness sets explicitly per run from
+# PERF_ADMIN_EVENTS (default false, the engine's default since 3.11c; true to
+# measure the cost of publishing lifecycle events) and reads back from
+# GET /perf/info. No maestro.worker.*, maestro.signal.*, maestro.recovery.*,
+# maestro.retention.* or maestro.lock.* property, and no Hikari pool size.
+# Every addition under maestro.* or spring.datasource.hikari.* must be justified
+# in docs/test-plan.md.
+
+spring:
+  application:
+    name: sample-perf
+
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/maestro}
+    username: ${SPRING_DATASOURCE_USERNAME:maestro}
+    password: ${SPRING_DATASOURCE_PASSWORD:maestro}
+
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+
+server:
+  port: 8080
+  # The harness's own connection setting, not a Maestro one: keep an idle
+  # keep-alive connection open longer than any k6 VU waits between two
+  # requests (at most about 120 s: 600 pre-allocated VUs at 5 starts/s, the
+  # full S1 profile's first level). With Tomcat's default (the 60 s
+  # connection timeout) the node can close a connection just as a VU reuses
+  # it, and k6 reports "Request Failed ... EOF" with no HTTP status: the
+  # probable cause of the one start lost in the full S1 run
+  # r20261116t234614z. k6/lib/common.js retries such a start once.
+  tomcat:
+    keep-alive-timeout: 5m
+
+maestro:
+  service-name: perf
+  store:
+    type: postgres
+  messaging:
+    type: kafka
+    topics:
+      signals: maestro.signals.perf
+  admin:
+    events:
+      enabled: ${PERF_ADMIN_EVENTS:false}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  metrics:
+    distribution:
+      # Histogram buckets for the harness's latency percentiles. A key for a
+      # meter the engine does not register (maestro.workflow.duration on an
+      # engine older than WP11) is harmless.
+      percentiles-histogram:
+        "[maestro.workflow.duration]": true
+        "[maestro.activity.duration]": true

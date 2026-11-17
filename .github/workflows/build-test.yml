@@ -43,7 +43,8 @@ jobs:
   # (that is what took E2E (loan-origination) offline from 2026-10-10 until
   # this cycle). A scheduled keepalive would be disabled with it; a push is
   # the only event that proves the repository is alive, so the first push
-  # after a dormant period turns the nightly schedule back on.
+  # after a dormant period turns the scheduled workflows back on: the nightly
+  # E2E (e2e-nightly.yml) and the weekly k6 load job (perf.yml).
   keep-nightly-enabled:
     name: Re-enable the nightly E2E schedule
     if: github.event_name == 'push'
@@ -56,3 +57,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: gh workflow enable e2e-nightly.yml
+
+      - name: Enable Perf (k6) if GitHub disabled it
+        # Independent of the step above: a failure to re-enable one schedule
+        # must not leave the other disabled.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow enable perf.yml

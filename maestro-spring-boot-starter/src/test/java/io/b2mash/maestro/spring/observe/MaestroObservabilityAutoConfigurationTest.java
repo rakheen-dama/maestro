@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -14,6 +15,8 @@ import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.StartupRecoveryRunner;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Tag;
+import io.micrometer.core.instrument.search.MeterNotFoundException;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.propagation.Propagator;
@@ -36,6 +39,8 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -77,6 +82,34 @@ class MaestroObservabilityAutoConfigurationTest {
      * application depending on {@code spring-boot-starter-actuator} gets, so
      * it fails exactly the way production would if the ordering were wrong.
      */
+    /**
+     * An application that builds its own {@link WorkflowExecutor} and keeps
+     * its {@link WorkflowStore} out of the context: {@link
+     * MaestroAutoConfiguration} is then skipped (it is
+     * {@code @ConditionalOnBean(WorkflowStore.class)}), so no {@code
+     * WorkflowRegistrar} exists. The observer and the engine gauges need only
+     * the registry and the executor and must still register; the task-queue
+     * gauges need the registrar and must step aside instead of failing
+     * startup with an unsatisfied dependency.
+     */
+    @Test
+    @DisplayName("a hand-built WorkflowExecutor without a WorkflowStore bean: starts, no task-queue gauges")
+    void handBuiltExecutorWithoutStoreBeanStartsWithoutTaskQueueGauges() {
+        new ApplicationContextRunner()
+                .withConfiguration(AutoConfigurations.of(
+                        MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
+                .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withBean(WorkflowExecutor.class, () -> WorkflowExecutor.builder(
+                        new InMemoryWorkflowStore(), new PayloadSerializer(new ObjectMapper()), "hand-built").build())
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).doesNotHaveBean(MaestroAutoConfiguration.class);
+                    assertThat(context).hasSingleBean(MicrometerEngineObserver.class);
+                    assertThat(context).hasSingleBean(MaestroEngineGauges.class);
+                    assertThat(context).doesNotHaveBean(MaestroTaskQueueGauges.class);
+                });
+    }
+
     @Test
     @DisplayName("registers through the real Boot metrics auto-configuration chain, not a withBean MeterRegistry stub")
     void wiresThroughRealBootMetricsAutoConfigurationChain() {
@@ -99,6 +132,7 @@ class MaestroObservabilityAutoConfigurationTest {
                             .hasSingleBean(MeterRegistry.class);
                     assertThat(context).hasSingleBean(MicrometerEngineObserver.class);
                     assertThat(context).hasSingleBean(MaestroEngineGauges.class);
+                    assertThat(context).hasSingleBean(MaestroTaskQueueGauges.class);
 
                     var client = context.getBean(MaestroClient.class);
                     var registry = context.getBean(MeterRegistry.class);
@@ -223,6 +257,30 @@ class MaestroObservabilityAutoConfigurationTest {
     }
 
     @Test
+    @DisplayName("maestro.workflow.duration{outcome=completed} records a workflow run through the starter's engine")
+    void workflowDurationRecordedThroughRealEngineRun() {
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var client = context.getBean(MaestroClient.class);
+                    var registry = context.getBean(MeterRegistry.class);
+
+                    client.newWorkflow(EchoWorkflow.class, options("observability-duration-1"))
+                            .startAndWait("hi", Duration.ofSeconds(10), String.class);
+
+                    // workflowFinished fires right after workflowCompleted, on the
+                    // workflow thread, which may still be running when startAndWait
+                    // returns on the completion it observed.
+                    await().atMost(Duration.ofSeconds(5))
+                            .ignoreException(MeterNotFoundException.class)
+                            .untilAsserted(() -> assertThat(registry.get("maestro.workflow.duration")
+                                    .tag("workflow", "ObservabilityEchoWorkflow")
+                                    .tag("outcome", "completed")
+                                    .timer().count()).isEqualTo(1));
+                });
+    }
+
+    @Test
     @DisplayName("maestro.observability.metrics.enabled=false — no maestro.* meters registered at all")
     void disabledFlagRegistersNoMeters() {
         runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
@@ -311,6 +369,149 @@ class MaestroObservabilityAutoConfigurationTest {
                     await().atMost(Duration.ofSeconds(2)).until(() ->
                             registry.get("maestro.workflows.running").gauge().value() == 0.0
                                     && registry.get("maestro.workflows.parked").gauge().value() == 0.0);
+                });
+    }
+
+    /**
+     * {@code maestro.taskqueue.slots.used} reads the {@code TaskQueueGovernor},
+     * not the executor's run counts: a parked run is live on this node
+     * ({@code runningCount() == 1}) yet holds no workflow slot, while a run
+     * blocked inside a live activity holds exactly one workflow and one
+     * activity slot. Queue {@code default} is bounded by the starter's
+     * {@code maestro.worker.default-*} limits (20/20).
+     */
+    @Test
+    @DisplayName("maestro.taskqueue.slots.used{queue,kind} reads the governor's held slots during real runs")
+    void slotGaugesTrackRealRuns() {
+        BlockingActivitiesImpl.reset();
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withUserConfiguration(BlockingWorkflowConfiguration.class)
+                .run(context -> {
+                    try {
+                        assertThat(context).hasNotFailed();
+                        assertThat(context).hasSingleBean(MaestroTaskQueueGauges.class);
+                        var registry = context.getBean(MeterRegistry.class);
+                        var executor = context.getBean(WorkflowExecutor.class);
+                        var store = context.getBean(WorkflowStore.class);
+                        var client = context.getBean(MaestroClient.class);
+
+                        var workflowGauge = registry.get("maestro.taskqueue.slots.used")
+                                .tag("queue", "default").tag("kind", "workflow").gauge();
+                        var activityGauge = registry.get("maestro.taskqueue.slots.used")
+                                .tag("queue", "default").tag("kind", "activity").gauge();
+                        assertThat(workflowGauge.getId().getTags())
+                                .containsExactlyInAnyOrder(Tag.of("queue", "default"), Tag.of("kind", "workflow"));
+                        assertThat(activityGauge.getId().getTags())
+                                .containsExactlyInAnyOrder(Tag.of("queue", "default"), Tag.of("kind", "activity"));
+                        assertThat(registry.find("maestro.taskqueue.slots.used").gauges())
+                                .as("every registered workflow names queue 'default': one gauge per kind")
+                                .hasSize(2);
+                        assertThat(workflowGauge.value()).isZero();
+                        assertThat(activityGauge.value()).isZero();
+
+                        // A parked run is live on this node but gives its slot back.
+                        client.newWorkflow(ParkingActivityWorkflow.class, options("slots-parked-1"))
+                                .startAsync(null);
+                        await().atMost(Duration.ofSeconds(10)).until(() ->
+                                store.getInstance("slots-parked-1")
+                                        .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+                        // WAITING_SIGNAL is written just before the park gives the slot back.
+                        await().atMost(Duration.ofSeconds(5))
+                                .untilAsserted(() -> assertThat(workflowGauge.value()).isZero());
+                        assertThat(executor.runningCount())
+                                .as("the parked run is still live on this node — the gauge is not runningCount")
+                                .isEqualTo(1);
+                        assertThat(activityGauge.value()).isZero();
+
+                        executor.deliverSignal("slots-parked-1", "resume", "go");
+                        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                                assertThat(store.getInstance("slots-parked-1").orElseThrow().status())
+                                        .isEqualTo(WorkflowStatus.COMPLETED));
+                        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                                assertThat(executor.runningCount()).isZero());
+                        assertThat(workflowGauge.value()).isZero();
+
+                        // A run blocked inside a live activity holds one slot of each kind.
+                        client.newWorkflow(BlockingActivityWorkflow.class, options("slots-blocked-1"))
+                                .startAsync(null);
+                        assertThat(BlockingActivitiesImpl.entered.await(10, TimeUnit.SECONDS))
+                                .as("the blocking activity started")
+                                .isTrue();
+                        assertThat(workflowGauge.value()).isEqualTo(1.0);
+                        assertThat(activityGauge.value()).isEqualTo(1.0);
+
+                        BlockingActivitiesImpl.release.countDown();
+                        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                                assertThat(store.getInstance("slots-blocked-1").orElseThrow().status())
+                                        .isEqualTo(WorkflowStatus.COMPLETED));
+                        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                                assertThat(executor.runningCount()).isZero());
+                        assertThat(workflowGauge.value()).isZero();
+                        assertThat(activityGauge.value()).isZero();
+                    } finally {
+                        BlockingActivitiesImpl.release.countDown();
+                    }
+                });
+    }
+
+    @Test
+    @DisplayName("no maestro.taskqueue.slots.used gauge when every queue is unbounded")
+    void noSlotGaugesWhenUnbounded() {
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .withPropertyValues(
+                        "maestro.worker.default-concurrency=0",
+                        "maestro.worker.default-activity-concurrency=0")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MaestroTaskQueueGauges.class);
+                    var registry = context.getBean(MeterRegistry.class);
+                    assertThat(registry.find("maestro.workflows.running").gauge())
+                            .as("the engine gauges still register: only the slot gauges are absent")
+                            .isNotNull();
+                    assertThat(registry.find("maestro.taskqueue.slots.used").gauges()).isEmpty();
+                });
+    }
+
+    /**
+     * On a single node that both handles the terminate and runs the workflow,
+     * a terminate moves two meters, each once: {@code maestro.workflow.terminated}
+     * from {@code workflowTerminated} on the operator's thread, and
+     * {@code maestro.run.abandoned{reason=terminated}} from {@code runAbandoned}
+     * when the parked run unwinds on its own workflow thread.
+     */
+    @Test
+    @DisplayName("maestro.run.abandoned{reason=terminated} counts a terminate on the workflow thread, "
+            + "alongside maestro.workflow.terminated")
+    void runAbandonedCountsATerminateOnTheWorkflowThread() {
+        runner.withBean(MeterRegistry.class, SimpleMeterRegistry::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    var registry = context.getBean(MeterRegistry.class);
+                    var store = context.getBean(WorkflowStore.class);
+                    var client = context.getBean(MaestroClient.class);
+
+                    client.newWorkflow(ParkingActivityWorkflow.class, options("abandon-terminated-1"))
+                            .startAsync(null);
+                    await().atMost(Duration.ofSeconds(10)).until(() ->
+                            store.getInstance("abandon-terminated-1")
+                                    .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+                    client.getWorkflow("abandon-terminated-1").terminate("wp11");
+
+                    // runAbandoned fires asynchronously, when the parked run unwinds.
+                    await().atMost(Duration.ofSeconds(5))
+                            .ignoreException(MeterNotFoundException.class)
+                            .untilAsserted(() -> assertThat(registry.get("maestro.run.abandoned")
+                                    .tag("reason", "terminated").counter().count()).isEqualTo(1.0));
+                    assertThat(store.getInstance("abandon-terminated-1").orElseThrow().status())
+                            .isEqualTo(WorkflowStatus.TERMINATED);
+                    assertThat(registry.get("maestro.run.abandoned")
+                            .tag("reason", "terminated").counter().count())
+                            .as("a terminate abandons the local run exactly once")
+                            .isEqualTo(1.0);
+                    assertThat(registry.get("maestro.workflow.terminated")
+                            .tag("workflow", "ObservabilityParkingActivityWorkflow")
+                            .counter().count()).isEqualTo(1.0);
                 });
     }
 
@@ -593,6 +794,69 @@ class MaestroObservabilityAutoConfigurationTest {
         @Override
         public void step() {
             // no-op
+        }
+    }
+
+    /** The slot-gauge pin's extra workflow, kept out of the shared configuration. */
+    @Configuration(proxyBeanMethods = false)
+    static class BlockingWorkflowConfiguration {
+
+        @Bean
+        @Scope(BeanDefinition.SCOPE_PROTOTYPE)
+        BlockingActivityWorkflow blockingActivityWorkflow() {
+            return new BlockingActivityWorkflow();
+        }
+
+        @Bean
+        BlockingActivities blockingActivities() {
+            return new BlockingActivitiesImpl();
+        }
+    }
+
+    /** Runs one activity that blocks until the test releases it — holds a slot of each kind meanwhile. */
+    @DurableWorkflow(name = "ObservabilityBlockingActivityWorkflow")
+    public static class BlockingActivityWorkflow {
+
+        @ActivityStub
+        private BlockingActivities activities;
+
+        /**
+         * @param input ignored
+         * @return a constant once the activity is released
+         */
+        @WorkflowMethod
+        public String run(String input) {
+            activities.block();
+            return "done";
+        }
+    }
+
+    /** One activity that blocks on a test-controlled latch. */
+    @Activity(name = "ObservabilityBlockingActivities")
+    public interface BlockingActivities {
+        /** Signals {@code entered}, then waits (bounded) for {@code release}. */
+        void block();
+    }
+
+    /** {@link BlockingActivities} on static latches, reset by each test that uses them. */
+    public static class BlockingActivitiesImpl implements BlockingActivities {
+
+        static volatile CountDownLatch entered = new CountDownLatch(1);
+        static volatile CountDownLatch release = new CountDownLatch(1);
+
+        static void reset() {
+            entered = new CountDownLatch(1);
+            release = new CountDownLatch(1);
+        }
+
+        @Override
+        public void block() {
+            entered.countDown();
+            try {
+                release.await(10, TimeUnit.SECONDS); // bounded: a failed test never wedges the run
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
     }
 

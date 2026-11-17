@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "scenario": "s3-parked",
+  "profile": "local",
+  "runId": "r20261116t231822z",
+  "recordedAtUtc": "2026-11-16T23:18:23Z",
+  "engineCommit": "9eb7ca6fc0a499a5ef26bfda9573995d0646c716",
+  "harnessCommit": "9a7d381896b265944df916729d5b6b9ca893ef10",
+  "replicas": 1,
+  "adminEventsEnabled": false,
+  "parkMode": "signal",
+  "wakeRecheckInterval": "PT30S",
+  "recoveryPollInterval": "PT1M",
+  "lockTtl": "PT30S",
+  "plateaus": [
+    1000,
+    2000
+  ],
+  "Pmax": 2000,
+  "perParkedCallsPerMin": 6.0137,
+  "perParkedCallsPer30s": 3.0068,
+  "perParkedTolerancePerMin": 0.0007
+}

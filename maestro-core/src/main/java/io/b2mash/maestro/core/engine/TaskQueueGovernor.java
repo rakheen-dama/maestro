@@ -89,8 +89,8 @@ public final class TaskQueueGovernor {
     /** A governor with no configured queues and no default limits: nothing is ever bounded. */
     public static final TaskQueueGovernor UNBOUNDED = new TaskQueueGovernor(Map.of());
 
-    /** One bounded queue's two slot pools. */
-    private record Bucket(String name, Semaphore workflowSlots, Semaphore activitySlots) {}
+    /** One bounded queue's two slot pools, and the limits they were sized from. */
+    private record Bucket(String name, TaskQueueLimits limits, Semaphore workflowSlots, Semaphore activitySlots) {}
 
     /** One run's claim on its queue's workflow pool. */
     private static final class RunSlot {
@@ -301,6 +301,44 @@ public final class TaskQueueGovernor {
         return bucket == null ? OptionalInt.empty() : OptionalInt.of(bucket.activitySlots().availablePermits());
     }
 
+    /**
+     * Returns how many workflow slots of {@code taskQueue} are held right now:
+     * the queue's workflow limit minus its free slots. A run parked on
+     * {@code sleep()} or {@code awaitSignal()} holds none (see {@link #parked}).
+     *
+     * <p>Read-only and non-blocking: it never takes or waits for a slot, so it
+     * is safe to call from a metrics scrape thread. Like
+     * {@link #availableWorkflowSlots}, a call naming an unconfigured queue
+     * under default limits creates that queue's pools.
+     *
+     * @param taskQueue the task queue
+     * @return the held slot count, or empty if the queue is unbounded
+     */
+    public OptionalInt workflowSlotsInUse(String taskQueue) {
+        var bucket = bucket(taskQueue);
+        return bucket == null ? OptionalInt.empty()
+                : OptionalInt.of(bucket.limits().workflowConcurrency() - bucket.workflowSlots().availablePermits());
+    }
+
+    /**
+     * Returns how many activity slots of {@code taskQueue} are held right now:
+     * the queue's activity limit minus its free slots — that is, the live
+     * activity executions of the queue's runs on this node.
+     *
+     * <p>Read-only and non-blocking: it never takes or waits for a slot, so it
+     * is safe to call from a metrics scrape thread. Like
+     * {@link #availableActivitySlots}, a call naming an unconfigured queue
+     * under default limits creates that queue's pools.
+     *
+     * @param taskQueue the task queue
+     * @return the held slot count, or empty if the queue is unbounded
+     */
+    public OptionalInt activitySlotsInUse(String taskQueue) {
+        var bucket = bucket(taskQueue);
+        return bucket == null ? OptionalInt.empty()
+                : OptionalInt.of(bucket.limits().activityConcurrency() - bucket.activitySlots().availablePermits());
+    }
+
     // ── internals ──────────────────────────────────────────────────────
 
     /**
@@ -318,7 +356,7 @@ public final class TaskQueueGovernor {
     }
 
     private static Bucket newBucket(String queue, TaskQueueLimits limit) {
-        return new Bucket(queue,
+        return new Bucket(queue, limit,
                 new Semaphore(limit.workflowConcurrency(), true),
                 new Semaphore(limit.activityConcurrency(), true));
     }
