@@ -35,20 +35,32 @@ if ((${#files[@]} == 0)); then
 fi
 ((${#files[@]} > 0)) || { echo "evidence-selftest: no file to check"; exit 1; }
 
-for f in "${files[@]}"; do
-  name=${f##*/}
-  problems=$(jq -r '
+# problems_of <json file>: one line per personal detail found (nothing when
+# clean); "not readable as JSON" when jq cannot read it.
+problems_of() {
+  jq -r '
     def host_keys: ["uname", "cpus", "memoryMb", "dockerServer", "dockerCompose", "dockerMemoryMb"];
+    def container_id: type == "string" and test("^[0-9a-f]{12}$");
     [ (paths(type == "string") as $p | getpath($p) as $v
        | select(($v | startswith("/")) or ($v | test("/Users/|/home/")))
        | "string at \($p | map(tostring) | join(".")) is a path: \($v[0:40])"),
       (.identity // empty
        | (if has("pwd") then "identity.pwd is present" else empty end),
          (.host // {} | keys[] | select(. as $k | host_keys | index($k) | not) | "identity.host.\(.) is not a field run.sh writes"),
-         (.host.uname // null | select(. != null and (test("^[^ ]+ [^ ]+ [^ ]+$") | not)) | "identity.host.uname is not three words (uname -srm): \(.)"),
-         ((.nodes // []) + (.nodesAfter // []) | .[] | .hostname // null
-          | select(. != null and (test("^[0-9a-f]{12}$") | not)) | "a node hostname is not a container id: \(.)"))
-    ] | .[]' "$f" 2>&1) || problems="not readable as JSON: ${problems}"
+         (.host.uname // null | select(. != null and (test("^[^ ]+ [^ ]+ [^ ]+$") | not)) | "identity.host.uname is not three words (uname -srm): \(.)")),
+      # Any key named like a host or node name, anywhere (identity.nodes[],
+      # .nodesAfter[] and the check values that copy them): its value must be
+      # a node container id (12 hex), or a list of them.
+      (paths as $p | select(($p[-1] | type) == "string" and ($p[-1] | test("^(host|node)_?names?$"; "i")))
+       | getpath($p) as $v
+       | select((($v | container_id) or (($v | type) == "array" and ($v | all(container_id)))) | not)
+       | "\($p | map(tostring) | join(".")) is not a node container id: \($v | tojson | .[0:40])")
+    ] | .[]' "$1" 2>&1 || echo "not readable as JSON"
+}
+
+for f in "${files[@]}"; do
+  name=${f##*/}
+  problems=$(problems_of "$f")
   if [[ -n "$problems" ]]; then
     while IFS= read -r p; do fail "${name}: ${p}"; done <<<"$problems"
   fi
@@ -59,6 +71,26 @@ printf 'checked %s file(s)\n' "${#files[@]}"
 grep -q -- '--arg uname "$(uname -srm)"' "${PERF_DIR}/run.sh" || fail "perf/run.sh does not record host.uname as uname -srm"
 if grep -E -- '--arg pwd|pwd: \$pwd|\$\(uname -a\)' "${PERF_DIR}/run.sh" >/dev/null; then
   fail "perf/run.sh records pwd or uname -a in identity.json"
+fi
+
+# The check itself: each negative fixture (a clean committed result with one
+# personal detail planted) must be caught.
+fixture_src=$(git -C "${PERF_DIR}/.." ls-files -- 'perf/.evidence/*/*.result.json' | head -1)
+if [[ -n "$fixture_src" ]]; then
+  fx=$(mktemp -d "${TMPDIR:-/tmp}/perf-evidence-selftest.XXXXXX")
+  n=0
+  for plant in '.identity.hostname = "developer-laptop"' '.identity.host.hostname = "developer-laptop"' \
+    '.identity.nodes[0].hostname = "developer-laptop"' '.measurements.nodename = "developer-laptop.local"' \
+    '.identity.pwd = "/Users/someone/src/maestro"' '.identity.host.uname = "Darwin someones-laptop.local 25.5.0 Darwin Kernel arm64"' \
+    '.measurements.note = "ran in /home/someone/maestro"'; do
+    n=$((n + 1))
+    jq -c "$plant" "${PERF_DIR}/../${fixture_src}" >"${fx}/${n}.json"
+    if [[ -z "$(problems_of "${fx}/${n}.json")" ]]; then
+      fail "negative fixture not caught: ${plant}"
+    fi
+  done
+  rm -rf "$fx"
+  printf 'negative fixtures: %s planted details, each caught unless reported above\n' "$n"
 fi
 
 if ((failures > 0)); then
