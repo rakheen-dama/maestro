@@ -444,7 +444,7 @@ An activity body runs on an attempt thread of its own, but the engine re-binds t
 ```java
 public Receipt charge(Payment payment) {                      // an activity method
     var receipt = gateway.charge(payment);
-    WorkflowContext.current().sleep(Duration.ofSeconds(30));   // a workflow operation inside the activity
+    WorkflowContext.current().sleep(Duration.ofSeconds(5));    // a workflow operation inside the activity
     return receipt;
 }
 ```
@@ -453,10 +453,10 @@ public Receipt charge(Payment payment) {                      // an activity met
 
 ```java
 var receipt = payments.charge(payment);
-workflow.sleep(Duration.ofSeconds(30));
+workflow.sleep(Duration.ofSeconds(5));
 ```
 
-**What you see** (traced, not tested): the first run looks right. Most of these operations take the run's next sequence number and record an event there, so the operation inside the activity takes the slot after the activity's own and records its event in it. A replay returns the activity's recorded result without running its body, so that slot is not taken again: the workflow's next step reads the event the activity body recorded, and the run stands down as `nondeterministic_history` on its first recovery and on every one after it. Changing the code does not help a run already recorded this way: it stays active until it is terminated. The body also runs outside the engine's store-fault handling: a database error in such an operation fails the activity attempt and is retried under the activity's `RetryPolicy` instead of abandoning the run for recovery. A `parallel()` branch's compensation buffer is not re-bound on the attempt thread, and an attempt that outlives its timeout still holds the run's context.
+**What you see** (traced, not tested): the first run looks right, as long as the operation finishes within the activity's `startToCloseTimeout` (30 s by default); past it the attempt times out and is retried, and the activity's own work runs again. Most of these operations take the run's next sequence number and record an event there, so the operation inside the activity takes the slot after the activity's own and records its event in it. `sleep` takes two (`TIMER_SCHEDULED`, then the timer's outcome), and while it waits it sets the instance to `WAITING_TIMER` and hands the run's task-queue workflow slot back, although the workflow is still inside the activity. A replay returns the activity's recorded result without running its body, so that slot is not taken again: the workflow's next step reads the event the activity body recorded, and the run stands down as `nondeterministic_history` on its first recovery and on every one after it. Changing the code does not help a run already recorded this way: it stays active until it is terminated. The body also runs outside the engine's store-fault handling: a database error in such an operation fails the activity attempt and is retried under the activity's `RetryPolicy` instead of abandoning the run for recovery. A `parallel()` branch's compensation buffer is not re-bound on the attempt thread, and an attempt that outlives its timeout still holds the run's context.
 
 **Test it:** catch it in review: no `WorkflowContext.current()`, and no field holding a `WorkflowContext` or an activity stub, in a class that implements an `@Activity` interface. A crash test that crashes after the activity and recovers (`env.crashAfter(n)`, `crash.recover()`, `handle.awaitStandDown(...)`) should show the stand-down (traced, not tested).
 
