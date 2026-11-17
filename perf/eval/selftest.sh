@@ -70,6 +70,8 @@ expect "unchanged run" PASS "$(jq -r .verdict <<<"$out")"
 out=$(evaluate_with dropped '.k6[-1].droppedIterations = 3')
 expect "dropped iterations > 0: verdict" INVALID "$(jq -r .verdict <<<"$out")"
 expect "dropped iterations > 0: validity.droppedIterations" INVALID "$(jq -r '.checks["validity.droppedIterations"]' <<<"$out")"
+expect "dropped iterations > 0: the detail blames neither side" yes \
+  "$(check_field dropped validity.droppedIterations .detail | grep -qF 'virtual users exhausted: the system under test was slow or the generator was starved; the run measures neither' && echo yes || echo no)"
 
 out=$(evaluate_with nosummary '.k6[-1] = {phase: .k6[-1].phase, script: .k6[-1].script, exitCode: 0, summaryMissing: true}')
 expect "k6 exit 0 without a summary: verdict" INVALID "$(jq -r .verdict <<<"$out")"

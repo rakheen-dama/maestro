@@ -491,10 +491,12 @@ def k6_check($m):
         (if ($bad | length) > 0 then "k6 failed in: \($bad | map("\(.phase) (exit \(.exitCode))") | join(", "))" else null end)
       ] | reasons end);
 
-# validity.droppedIterations: a load generator that could not start every
-# iteration it was asked for measured itself, not the system under test.
-# INVALID when any phase dropped iterations or has no droppedIterations
-# value at all (no summary).
+# validity.droppedIterations: k6 could not start every iteration it was asked
+# for because its virtual users were all busy. That happens when the system
+# under test answers slowly (each VU waits on its request) or when the
+# generator itself is starved of CPU; the run cannot tell which, so it
+# measures neither, and the detail blames neither. INVALID when any phase
+# dropped iterations or has no droppedIterations value at all (no summary).
 def dropped_iterations_check($m):
   ($m.k6 // []) as $runs
   | ($runs | map(select((.droppedIterations | type) != "number"))) as $unknown
@@ -507,7 +509,7 @@ def dropped_iterations_check($m):
       elif $ok then "no k6 phase dropped an iteration"
       else [
         (if ($unknown | length) > 0 then "droppedIterations unknown (no k6 summary) for: \($unknown | map(.phase) | join(", "))" else null end),
-        (if ($dropped | length) > 0 then "generator saturated, not the SUT: \($dropped | map("\(.phase) dropped \(.droppedIterations)") | join(", "))" else null end)
+        (if ($dropped | length) > 0 then "virtual users exhausted: the system under test was slow or the generator was starved; the run measures neither: \($dropped | map("\(.phase) dropped \(.droppedIterations)") | join(", "))" else null end)
       ] | reasons end);
 
 # Every advisory is built through advisory_guarded: whatever goes wrong
