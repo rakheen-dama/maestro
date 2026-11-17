@@ -18,6 +18,9 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
 
@@ -115,6 +118,90 @@ class OneShotRecoveryTest {
                 () -> assertFalse(a.isOneShotRecoveryRunning()));
     }
 
+    /**
+     * The public ungated pass keeps its old behaviour on an interrupted
+     * thread: it adopts everything. Only the poller's gated passes treat the
+     * interrupt as a stop.
+     */
+    @Test
+    void recoverWorkflowsOnAnInterruptedThreadStillAdoptsEverything() {
+        var store = new CountingStore();
+        for (var i = 0; i < 3; i++) {
+            seedRecoverable(store, "wf-" + i, "orders");
+        }
+        var a = node(store, 1);
+        var regs = registrations(a, store);
+        Thread.currentThread().interrupt();
+        int adopted;
+        try {
+            adopted = a.recoverWorkflows(regs);
+        } finally {
+            Thread.interrupted();
+        }
+        assertEquals(3, adopted);
+    }
+
+    @Test
+    void aGatedPassOnAnInterruptedThreadStopsWithoutDeferring() {
+        var store = new CountingStore();
+        for (var i = 0; i < 3; i++) {
+            seedRecoverable(store, "wf-" + i, "orders");
+        }
+        var a = node(store, 1);
+        var regs = registrations(a, store);
+        Thread.currentThread().interrupt();
+        WorkflowExecutor.RecoveryPass pass;
+        try {
+            pass = a.recoveryPass(regs);
+        } finally {
+            Thread.interrupted();
+        }
+        var result = pass;
+        assertAll(
+                () -> assertEquals(0, result.adopted()),
+                () -> assertEquals(0, result.deferred()));
+    }
+
+    /**
+     * A stop ends the one-shot pass at its next instance through its own flag,
+     * not an interrupt: the store call in progress is never interrupted.
+     */
+    @Test
+    void aStopEndsTheOneShotPassAtTheNextInstanceWithoutAnInterrupt() throws Exception {
+        var store = new CountingStore();
+        for (var i = 0; i < 3; i++) {
+            seedRecoverable(store, "wf-" + i, "orders");
+        }
+        var a = node(store, 0);
+        var inAdoption = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        var interruptedInStoreCall = new AtomicBoolean();
+        store.getInstanceHooks.put("wf-0", actual -> {
+            inAdoption.countDown();
+            try {
+                resume.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                interruptedInStoreCall.set(true);
+                Thread.currentThread().interrupt();
+            }
+            interruptedInStoreCall.compareAndSet(false, Thread.currentThread().isInterrupted());
+            return actual;
+        });
+        var recovery = new OneShotRecovery(a, registrations(a, store), SERVICE, Duration.ofHours(1),
+                EngineObserver.NOOP);
+        recovery.start();
+        try {
+            assertTrue(inAdoption.await(5, TimeUnit.SECONDS), "the pass is adopting wf-0");
+            recovery.requestStop();
+        } finally {
+            resume.countDown();
+        }
+        assertTrue(recovery.awaitStopped(Duration.ofSeconds(5)), "the pass ended");
+        assertAll(
+                () -> assertFalse(interruptedInStoreCall.get(), "the store call was not interrupted"),
+                () -> assertEquals(1, lock.heldCount(), "only wf-0, adopted before the stop"));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────
 
     /** Fails its first {@code failures} recovery-page reads with what {@code failure} supplies. */
@@ -152,7 +239,7 @@ class OneShotRecoveryTest {
                 .distributedLock(lock)
                 .lifecycleEventsEnabled(false)
                 .observer(EngineObserver.NOOP)
-                .defaultTaskQueueLimits(new TaskQueueLimits(c, c))
+                .defaultTaskQueueLimits(c > 0 ? new TaskQueueLimits(c, c) : null)
                 .shutdownTimeout(Duration.ofSeconds(2))
                 .build();
         nodes.add(executor);

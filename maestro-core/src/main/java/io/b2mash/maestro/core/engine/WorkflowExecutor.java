@@ -66,6 +66,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -820,8 +821,29 @@ public final class WorkflowExecutor {
      * @return the number of workflows recovered
      */
     public int recoverWorkflows(Map<String, WorkflowRegistration> registrations) {
-        return fullPass(registrations, RecoveryGate.UNGATED).adopted();
+        return fullPass(registrations, RecoveryGate.UNGATED, NEVER).adopted();
     }
+
+    /**
+     * {@link #recoverWorkflows(Map)} that also ends at the next instance once
+     * {@code stop} answers {@code true} — the one-shot startup pass's own stop
+     * flag. Like every pass it also ends once the executor is shutting down.
+     *
+     * @return the number of workflows recovered
+     */
+    int recoverWorkflowsUntil(Map<String, WorkflowRegistration> registrations, BooleanSupplier stop) {
+        return fullPass(registrations, RecoveryGate.UNGATED, stop).adopted();
+    }
+
+    /** A pass that only the executor's shutdown ends. */
+    private static final BooleanSupplier NEVER = () -> false;
+
+    /**
+     * The recovery poller's passes end on its thread's interrupt (its stop),
+     * as well as on shutdown. The ungated passes ignore the interrupt: an
+     * interrupted caller of {@link #recoverWorkflows(Map)} still adopts.
+     */
+    private static final BooleanSupplier INTERRUPTED = () -> Thread.currentThread().isInterrupted();
 
     /** The most recoverable instances one recovery-pass store read returns. */
     static final int RECOVERY_PAGE_SIZE = 200;
@@ -909,10 +931,11 @@ public final class WorkflowExecutor {
      * left for a peer or a later pass. Returns the pass's full outcome.
      */
     RecoveryPass recoveryPass(Map<String, WorkflowRegistration> registrations) {
-        return fullPass(registrations, RecoveryGate.GATED);
+        return fullPass(registrations, RecoveryGate.GATED, INTERRUPTED);
     }
 
-    private RecoveryPass fullPass(Map<String, WorkflowRegistration> registrations, RecoveryGate gate) {
+    private RecoveryPass fullPass(Map<String, WorkflowRegistration> registrations, RecoveryGate gate,
+                                  BooleanSupplier stop) {
         var tally = new PassTally();
 
         // Keyset paging: each page is read strictly after the last row of the
@@ -926,7 +949,7 @@ public final class WorkflowExecutor {
             if (page.isEmpty()) {
                 break;
             }
-            recoverPage(page, after, registrations, gate, tally);
+            recoverPage(page, after, registrations, gate, stop, tally);
             after = RecoveryCursor.of(page.getLast());
             if (page.size() < RECOVERY_PAGE_SIZE) {
                 break;
@@ -995,7 +1018,7 @@ public final class WorkflowExecutor {
             if (page.isEmpty()) {
                 break;
             }
-            recoverPage(page, after, registrations, RecoveryGate.GATED, tally);
+            recoverPage(page, after, registrations, RecoveryGate.GATED, INTERRUPTED, tally);
             after = RecoveryCursor.of(page.getLast());
             if (page.size() < size) {
                 break;
@@ -1050,15 +1073,18 @@ public final class WorkflowExecutor {
      * authority on ownership.
      *
      * <p>Ends the pass ({@link PassTally#stopped}) as soon as the executor is
-     * shutting down or the calling thread is interrupted (the recovery
-     * poller's stop).
+     * shutting down or {@code stop} answers {@code true}: the recovery
+     * poller's interrupt for a gated pass, the one-shot pass's own flag, or
+     * never for {@link #recoverWorkflows(Map)}.
      *
      * @param pageAfter the cursor this page was read after ({@code null}: the first row)
+     * @param stop      the caller's own stop condition
      */
     private void recoverPage(List<WorkflowInstance> page,
                              @Nullable RecoveryCursor pageAfter,
                              Map<String, WorkflowRegistration> registrations,
                              RecoveryGate gate,
+                             BooleanSupplier stop,
                              PassTally tally) {
         var heldElsewhere = instanceLockManager.heldElsewhere(page.stream()
                 .map(WorkflowInstance::workflowId)
@@ -1066,7 +1092,7 @@ public final class WorkflowExecutor {
                 .toList());
 
         for (var i = 0; i < page.size(); i++) {
-            if (shuttingDown.get() || Thread.currentThread().isInterrupted()) {
+            if (shuttingDown.get() || stop.getAsBoolean()) {
                 tally.stopped = true;
                 return;
             }
@@ -1089,6 +1115,12 @@ public final class WorkflowExecutor {
             var reservation = gate == RecoveryGate.GATED
                     ? taskQueueGovernor.admitRecovery(instance.taskQueue())
                     : TaskQueueGovernor.SlotReservation.UNBOUNDED;
+            if (reservation == null && stop.getAsBoolean()) {
+                // admitRecovery returns null on an interrupt (the poller's
+                // stop): that row was not deferred for capacity.
+                tally.stopped = true;
+                return;
+            }
             if (reservation == null) {
                 tally.deferredByQueue.merge(instance.taskQueue(), 1, Integer::sum);
                 if (!tally.deferredAny) {

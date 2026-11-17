@@ -27,9 +27,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code retryInterval}, until one pass completes. Then the thread ends. A
  * {@code MaestroControlFlowError} ends it at once.
  *
- * <p>{@link #requestStop()} ends the retry wait at once, without the
- * interrupt, and a pass in progress ends at its next instance once the
- * executor is shutting down.
+ * <p>{@link #requestStop()} never interrupts the thread: it ends the retry
+ * wait at once, and a pass in progress ends at its next instance on this
+ * loop's own stop flag (or once the executor is shutting down), so a store
+ * call in progress is never interrupted.
  *
  * <p><b>Thread safety:</b> {@link #start()}, {@link #stop()},
  * {@link #requestStop()}, {@link #awaitStopped(Duration)} and
@@ -114,17 +115,13 @@ final class OneShotRecovery implements StoppableLoop {
 
     /**
      * Asks the pass to stop and returns at once: no retry starts, the retry
-     * wait ends, and the thread is interrupted, as the recovery poller's is.
-     * Never joins. Idempotent.
+     * wait ends, and a pass in progress ends at its next instance. Never
+     * interrupts the thread and never joins. Idempotent.
      */
     @Override
-    public synchronized void requestStop() {
+    public void requestStop() {
         running = false;
         stopRequested.countDown();
-        var t = thread;
-        if (t != null) {
-            t.interrupt();
-        }
     }
 
     /**
@@ -160,7 +157,7 @@ final class OneShotRecovery implements StoppableLoop {
     private void runUntilOnePassCompletes() {
         while (running) {
             try {
-                var adopted = executor.recoverWorkflows(registrations);
+                var adopted = executor.recoverWorkflowsUntil(registrations, () -> !running);
                 guard.succeeded();
                 if (running) {
                     logger.info("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) without "
@@ -177,6 +174,7 @@ final class OneShotRecovery implements StoppableLoop {
                     break;
                 }
             } catch (InterruptedException e) {
+                // Not from requestStop(), which never interrupts; end as asked.
                 Thread.currentThread().interrupt();
                 break;
             }
