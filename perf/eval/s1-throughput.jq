@@ -516,16 +516,21 @@ $identity[0] as $id
     ( ($k6s1.iterations // null) as $its
       | ($k6s1.checksPassed // null) as $cp
       | ($k6s1.checksFailed // null) as $cf
+      # Starts retried once after a transport error (k6/lib/common.js,
+      # start_retries): a note, never a failure; null when not recorded.
+      | ($k6s1.startRetries // null) as $retries
+      | (if ($retries | isnum) and $retries > 0
+         then "; \($retries) start(s) retried once after a transport error (status 0), same workflowId, accepted only on 202 or 409" else "" end) as $retryNote
       | (($its | isnum) and ($cp | isnum) and ($cf | isnum) and $cf == 0 and $cp == $its and $accepted == $cp) as $startsOk
       | ($startsOk and $accepted > 0 and $done == $accepted and $failed == 0 and $open == 0
        and ($m.runStatus.total // 0) == $accepted and $m.drain.timedOut == false) as $ok
       | check("correctness.allCompleted"; "correctness"; if $ok then "PASS" else "FAIL" end;
-          {accepted: $accepted, iterations: $its, checksPassed: $cp, checksFailed: $cf,
+          {accepted: $accepted, iterations: $its, checksPassed: $cp, checksFailed: $cf, s1StartRetries: $retries,
            completed: $done, failed: $failed, nonTerminal: $open, total: $m.runStatus.total,
            byStatus: $by, drainTimedOut: $m.drain.timedOut, drainSecs: $m.drain.waitedSecs};
           {checksFailed: 0, checksPassed: "== k6 iterations (every start accepted)",
            completed: "== accepted starts (k6 checks passed on name:start)", failed: 0, nonTerminal: 0};
-          if $ok then "\($accepted)/\($accepted) starts accepted and COMPLETED; drained in \($m.drain.waitedSecs) s"
+          (if $ok then "\($accepted)/\($accepted) starts accepted and COMPLETED; drained in \($m.drain.waitedSecs) s"
           else [
             (if ($its | isnum | not) or ($cp | isnum | not) or ($cf | isnum | not)
                then "k6 recorded no start check counts (iterations \($its | tojson), passed \($cp | tojson), failed \($cf | tojson)): whether every start was accepted is unknown"
@@ -539,7 +544,7 @@ $identity[0] as $id
             (if $failed > 0 then "\($failed) FAILED" else null end),
             (if $open > 0 then "\($open) not terminal" else null end),
             (if $m.drain.timedOut != false then "drain timed out after \($m.drain.waitedSecs) s, residue by status \($by | tojson)" else null end)
-          ] | reasons end) ),
+          ] | reasons end) + $retryNote) ),
     check("correctness.noForeignRows"; "correctness";
           if $m.foreignRows == 0 then "PASS" else "FAIL" end;
           $m.foreignRows; 0;

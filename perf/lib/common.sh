@@ -121,6 +121,9 @@ k6_run() {
        vusMax: (.metrics.vus_max.values.max // null),
        checksPassed: v("checks"; "passes"),
        checksFailed: v("checks"; "fails"),
+       # k6/lib/common.js start_retries: k6 emits the counter only once it is
+       # added to, so a summary without it means 0.
+       startRetries: (v("start_retries"; "count") // 0),
        startMs: (.metrics["http_req_duration{name:start}"].values // null
                  | if . then {p50: .med, p95: .["p(95)"], p99: .["p(99)"], max: .max} else null end)}' \
       "$summary" >>"${RESULTS}/k6-runs.jsonl"

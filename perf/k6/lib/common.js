@@ -3,6 +3,7 @@
 // harness measures completion, latency and statement counts in SQL.
 import http from 'k6/http';
 import { check } from 'k6';
+import { Counter } from 'k6/metrics';
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -27,13 +28,37 @@ export function nodeFor(i) {
   return list[i % list.length];
 }
 
-/** POST /perf/workflows; the sample answers 202 once the instance row has committed. */
+/**
+ * Starts retried after a transport error. Every phase's summary has its own
+ * count; the harness records it as startRetries per k6 record, and Scenario
+ * 1's evaluator reports the s1 phase's as s1StartRetries (a note, never a
+ * failure).
+ */
+const START_RETRIES = new Counter('start_retries');
+
+/**
+ * POST /perf/workflows; the sample answers 202 once the instance row has
+ * committed, 409 when the workflowId already exists.
+ *
+ * On a transport error only (status 0: the connection failed or was closed
+ * under the request, e.g. "Request Failed ... EOF", or k6's request timeout),
+ * the start is retried ONCE with the same body, so the same workflowId: the
+ * first attempt may or may not have reached the node. The start is accepted
+ * when the first attempt got 202, or the retry got 202 or 409 (409 = the
+ * first attempt had created the row). Any other status is never retried. One
+ * check per start either way, so passed checks == iterations still holds.
+ */
 export function startWorkflow(base, body, tags) {
-  const res = http.post(`${base}/perf/workflows`, JSON.stringify(body), {
-    headers: JSON_HEADERS,
-    tags: tags,
-  });
-  check(res, { 'start 202': (r) => r.status === 202 }, tags);
+  const payload = JSON.stringify(body);
+  const params = { headers: JSON_HEADERS, tags: tags };
+  let res = http.post(`${base}/perf/workflows`, payload, params);
+  let retried = false;
+  if (res.status === 0) {
+    START_RETRIES.add(1);
+    retried = true;
+    res = http.post(`${base}/perf/workflows`, payload, params);
+  }
+  check(res, { 'start 202': (r) => r.status === 202 || (retried && r.status === 409) }, tags);
   return res;
 }
 

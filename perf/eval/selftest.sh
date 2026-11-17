@@ -562,6 +562,24 @@ if [[ -n "$s1src" ]]; then
   expect "s1, one iteration with no passed check: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
   out=$(s1_eval s1-no-checks '(.k6[] | select(.phase == "s1")) |= del(.checksPassed, .checksFailed)')
   expect "s1, k6 recorded no check counts: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  # A start retried once after a transport error (status 0), with the same
+  # workflowId: accepted when the retry got 202, or 409 (the first attempt
+  # had created the row). The check passes, so the counts agree; the retry
+  # count is a note, never a failure.
+  out=$(s1_eval s1-retry-409 '(.k6[] | select(.phase == "s1")) |= (.startRetries = 1 | .httpReqs += 1)')
+  expect "s1, one start retried and accepted via 409: correctness.allCompleted" PASS "$(st "$out" correctness.allCompleted)"
+  expect "s1, one start retried and accepted: verdict" PASS "$(jq -r .verdict <<<"$out")"
+  expect "s1, one start retried: the detail notes it" yes \
+    "$(s1_field s1-retry-409 '.checks[] | select(.id == "correctness.allCompleted") | .detail' | grep -q '1 start(s) retried once after a transport error' && echo yes || echo no)"
+  expect "s1, one start retried: s1StartRetries in the check's value" 1 \
+    "$(s1_field s1-retry-409 '.checks[] | select(.id == "correctness.allCompleted") | .value.s1StartRetries')"
+  out=$(s1_eval s1-retry-failed '(.k6[] | select(.phase == "s1")) |= (.startRetries = 1 | .checksPassed -= 1 | .checksFailed = 1)
+    | .accepted -= 1 | .runStatus.total -= 1 | .runStatus.byStatus.COMPLETED -= 1')
+  expect "s1, a retried start that failed again: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  expect "s1, a retried start that failed again: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  out=$(s1_eval s1-retry-none '(.k6[] | select(.phase == "s1")) |= (.startRetries = 0)')
+  expect "s1, no retry: the detail says nothing about retries" no \
+    "$(s1_field s1-retry-none '.checks[] | select(.id == "correctness.allCompleted") | .detail' | grep -q 'retried' && echo yes || echo no)"
 
   # The statement gate: baseline matched on shape, profile and replicas.
   net=$(s1_field s1-pass '.measurements.statements.statementsPerWorkflowNet')

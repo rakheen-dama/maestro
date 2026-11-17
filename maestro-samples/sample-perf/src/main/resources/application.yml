@@ -24,6 +24,16 @@ spring:
 
 server:
   port: 8080
+  # The harness's own connection setting, not a Maestro one: keep an idle
+  # keep-alive connection open longer than any k6 VU waits between two
+  # requests (at most about 120 s: 600 pre-allocated VUs at 5 starts/s, the
+  # full S1 profile's first level). With Tomcat's default (the 60 s
+  # connection timeout) the node can close a connection just as a VU reuses
+  # it, and k6 reports "Request Failed ... EOF" with no HTTP status: the
+  # probable cause of the one start lost in the full S1 run
+  # r20261116t234614z. k6/lib/common.js retries such a start once.
+  tomcat:
+    keep-alive-timeout: 5m
 
 maestro:
   service-name: perf
