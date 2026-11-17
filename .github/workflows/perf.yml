@@ -12,7 +12,8 @@ name: Perf (k6)
 # Pull requests that touch perf/**, sample-perf or this file run only the
 # `selftest` job: the harness's no-Docker self-tests on committed files
 # (evidence privacy guard, evaluator self-test rebuilt from
-# perf/.evidence/wp11/, the baseline-record self-test), a few minutes, with
+# perf/.evidence/wp11/ and, for the WP12 finding-linked scenarios,
+# perf/.evidence/wp12/, the baseline-record self-test), a few minutes, with
 # contents: read. The run-lock race test (perf/lib/lock-selftest.sh) is not
 # in it: it is timing-based and meant for a local shell.
 #
@@ -32,7 +33,15 @@ name: Perf (k6)
 #   - Scenario 3's plateau wait: each plateau must park within 600 s
 #     (correctness.plateauReached -> FAIL);
 #   - drain timeouts: S1 300 s (local) / 1200 s (full), S3 probes 120 s, the
-#     S3 release 120 s + Pmax / 10 s (correctness.* -> FAIL).
+#     S3 release 120 s + Pmax / 10 s (correctness.* -> FAIL);
+#   - the WP12 finding-linked scenarios (docs/test-plan.md § Finding-linked
+#     scenarios): S2 (s2-recovery-drain) its 1,800 s drain timeout per phase
+#     (correctness.allRecovered -> FAIL; about 20 min a run); S4 (s4-signals)
+#     dropped iterations at 100 signals/s on 2 nodes (INVALID), which is why
+#     it is dispatch-only; S5 (s5-pool-health) none: the pool is exhausted by
+#     hold activities, not by load, and its gates are answer counts; S6
+#     (s6-retention) its 180 s sweep allowance (validity.windows -> INVALID).
+#     Their gates are counts and within-run ratios, never absolute latency.
 # So read a FAIL's detail before calling it an engine regression.
 #
 # The schedule is subject to GitHub's 60-day inactivity disable. build-test.yml's
@@ -55,7 +64,7 @@ on:
       scenario:
         description: Scenario to run
         type: choice
-        options: [smoke, s1-throughput, s3-parked]
+        options: [smoke, s1-throughput, s3-parked, s2-recovery-drain, s4-signals, s5-pool-health, s6-retention]
         default: s1-throughput
       profile:
         description: Load profile
@@ -63,9 +72,9 @@ on:
         options: [local, full]
         default: local
       replicas:
-        description: Node replicas (a positive integer)
+        description: Node replicas (a positive integer; empty = the scenario's default, 2 for s2/s4/s6, else 1)
         type: string
-        default: '1'
+        default: ''
       admin_events:
         description: maestro.admin.events.enabled on the nodes
         type: choice
@@ -78,7 +87,9 @@ on:
       - '.github/workflows/perf.yml'
   schedule:
     # 04:00 UTC Saturday: clear of the 02:30 nightly E2E and the Sunday 01:00
-    # soak (e2e-nightly.yml).
+    # soak (e2e-nightly.yml). Runs s1-throughput, s3-parked, s5-pool-health,
+    # s2-recovery-drain and s6-retention (the matrix below) at their local
+    # profile and default replicas, in parallel jobs.
     - cron: '0 4 * * 6'
 
 permissions:
@@ -119,7 +130,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ github.event_name == 'schedule' && fromJSON('["s1-throughput","s3-parked"]') || fromJSON(format('["{0}"]', inputs.scenario)) }}
+        # Weekly: S5 from WP12's merge (MD-9); S2 and S6 since their fixes
+        # (WP6, WP8) are on main, so their fix-linked gates are expected to
+        # PASS. S4 stays dispatch-only (see Hardware-sensitive above).
+        scenario: ${{ github.event_name == 'schedule' && fromJSON('["s1-throughput","s3-parked","s5-pool-health","s2-recovery-drain","s6-retention"]') || fromJSON(format('["{0}"]', inputs.scenario)) }}
 
     steps:
       - name: Checkout
@@ -144,7 +158,7 @@ jobs:
         env:
           PERF_SCENARIO: ${{ matrix.scenario }}
           PERF_PROFILE: ${{ inputs.profile || 'local' }}
-          PERF_REPLICAS: ${{ inputs.replicas || '1' }}
+          PERF_REPLICAS: ${{ inputs.replicas || '' }}
           PERF_ADMIN_EVENTS: ${{ inputs.admin_events || 'false' }}
         # jq (which run.sh needs) is preinstalled on ubuntu-latest (the
         # runner image's tool list, actions/runner-images Ubuntu2404-Readme).
@@ -152,7 +166,11 @@ jobs:
         # every other non-zero exit fails it (header: Verdicts).
         run: |
           rc=0
-          perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" --replicas "$PERF_REPLICAS" || rc=$?
+          # An empty replica count leaves the scenario's own default (run.sh:
+          # 2 for s2-recovery-drain, s4-signals and s6-retention, else 1).
+          replicas=()
+          if [[ -n "$PERF_REPLICAS" ]]; then replicas=(--replicas "$PERF_REPLICAS"); fi
+          perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" "${replicas[@]}" || rc=$?
           if [[ "$rc" == 2 && "$GITHUB_EVENT_NAME" == schedule ]]; then
             echo "::warning title=Perf INVALID (${PERF_SCENARIO})::the measurement could not be trusted (see the validity checks in the step summary); a scheduled INVALID does not fail the job"
             exit 0
