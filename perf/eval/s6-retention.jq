@@ -28,9 +28,17 @@
 #                            sample to the last <= 0.65
 #   gate.janitorServiceScoped (3.11b)  jforeign's unconsumed signals all kept
 #   gate.janitorBatched (3.11b)  janitor DELETE calls >= 2 in the sweep window
-#                            and rows per call <= jown / 2 (assumes WP8's
-#                            batch is < 5,000 at the local profile; Task 9
-#                            re-checks it against WP8's constant)
+#                            and rows per call <= jown / 2. WP8's batch is
+#                            SignalJanitor.BATCH_SIZE = 1,000
+#                            (maestro-core SignalJanitor.java:64; at most
+#                            MAX_BATCHES_PER_SWEEP = 1,000 batches, :70), well
+#                            under jown / 2 = 5,000 locally: the after of
+#                            record ran 11 calls (10 x 1,000 + one empty).
+#                            WP8 kept the janitor's leading text ("DELETE
+#                            FROM maestro_workflow_signal WHERE consumed = ",
+#                            AbstractJdbcWorkflowStore.java:1809-1816) and the
+#                            candidate select's (":331-332", scoped form
+#                            ":357-358"), so no pattern changed.
 #   advisory.foreground      probe p95 during / pre and post / pre <= 1.5
 #   advisory.dutyCrossCheck  pg_stat_statements purge execution time / sweep
 #                            span, next to the sampler's busy fraction
