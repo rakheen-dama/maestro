@@ -95,6 +95,7 @@ public interface WorkflowStore {
     default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease); // the payload as stored (Postgres: INSERT … RETURNING); a live activity returns what replay reads; a store decorator must forward it (the default returns the payload sent, not the jsonb form)
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);
     List<WorkflowEvent> getEvents(UUID instanceId);
+    int deleteFailureEvents(UUID instanceId);            // the pre-WP3 Retry's delete; reopenFailedInstance's default calls it
 
     void saveSignal(WorkflowSignal signal);
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
@@ -111,7 +112,9 @@ public interface WorkflowStore {
     default Optional<Instant> storeTime(); // the store's clock, for the skew WARN; empty = no clock
     Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
     boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
-    void markTimerCancelled(UUID timerId);
+    boolean markTimerCancelled(UUID timerId);             // CAS: false if already fired/cancelled
+    // plus default RunLease-fenced overloads of updateInstance, completeInstance, appendEvent,
+    // markSignalConsumed, saveTimer, markTimerFired and markTimerCancelled; saveSignalIfAbsent; appendEventAndConsumeSignal
 }
 
 public interface WorkflowMessaging {
@@ -222,7 +225,7 @@ Due timers are polled on the database clock (`fire_at <= now()`); `fire_at` and 
 
 Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; at shutdown its poll thread `UNLISTEN`s and returns it to the pool (no interrupt, Issue 38); `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
 
-Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via one `heldKeys` read per page: every node of a service must share one service name, or its workflows are stranded. At startup each node runs one advisory read off the runner thread and WARNs once per other `service_name` holding active instances of its workflow types (`WorkflowExecutor.startForeignServiceCheck`). Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
+Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via at most one `heldKeys` read per page (none when every row of the page runs here): every node of a service must share one service name, or its workflows are stranded. At startup each node runs one advisory read off the runner thread and WARNs once per other `service_name` holding active instances of its workflow types (`WorkflowExecutor.startForeignServiceCheck`). Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
@@ -324,9 +327,11 @@ any other value fails startup. Removed (setting either fails startup):
 ## Build
 
 ```bash
-./gradlew build
+./gradlew build                                        # everything except e2eTest; needs Docker
 ./gradlew :maestro-core:test
-./gradlew :maestro-store-postgres:integrationTest
+./gradlew :maestro-store-postgres:test                 # its Testcontainers suites run under `test`
+./gradlew :maestro-integration-tests:test              # real Postgres + Kafka
+./gradlew :maestro-integration-tests:e2eTest           # chaos/soak harness, not part of build
 ./gradlew :maestro-samples:sample-order-service:bootRun
 ```
 
