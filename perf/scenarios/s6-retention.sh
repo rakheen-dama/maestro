@@ -122,11 +122,10 @@ scenario_run() {
 
   # Foreground on node 1, and the pre window.
   psql_json pgss-reset >/dev/null
-  K6_NODES=$(node_url 1) k6_run foreground start-rate.js "PERF_ID_PREFIX=${fg_prefix}" "PERF_ID_OFFSET=0" \
+  K6_NODES=$(node_url 1) bg_start k6_run foreground start-rate.js "PERF_ID_PREFIX=${fg_prefix}" "PERF_ID_OFFSET=0" \
     "PERF_RATE=${S6_FG_RATE}" "PERF_DURATION=$((S6_PRE_SECS + allowance + S6_POST_SECS))" \
-    'PERF_BODY={"type":"chain","activities":3,"activityMillis":20}' &
-  fg_pid=$!
-  bg_register "$fg_pid"
+    'PERF_BODY={"type":"chain","activities":3,"activityMillis":20}'
+  fg_pid=$BG_LAST_PID
   sleep "$S6_PRE_SECS"
   pre_window=$(psql_json pgss-window)
 
@@ -160,14 +159,14 @@ scenario_run() {
 
   # Post window, to the foreground's end.
   psql_json pgss-reset >/dev/null
-  wait "$fg_pid" || true
+  bg_wait "$fg_pid"
   post_window=$(psql_json pgss-window)
   n1_1=$(s6_counters 1)
   n2_1=$(s6_counters 2)
   dc exec -T postgres psql -U postgres -d maestro -At -c \
     "SELECT count(pg_cancel_backend(pid)) FROM pg_stat_activity WHERE query LIKE 'CALL perf_harness.sample_activity(%' AND pid <> pg_backend_pid()" \
     </dev/null >>"${RESULTS}/harness.log" 2>&1
-  wait "$sampler_pid" || true
+  bg_wait "$sampler_pid"
   sampler=$(psql_json activity-samples -v label=s6)
   wait_terminal "$fg_prefix" 1 120 2 >/dev/null
   fg_lat=$(psql_json s6-foreground -v "prefix=${fg_prefix}" \

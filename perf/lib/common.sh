@@ -31,21 +31,52 @@ dc() {
 # Background work a scenario starts (S2's probe and hoard loops, samplers,
 # a background k6) must never outlive the harness: an orphaned probe loop
 # would keep running `docker compose run k6` against a torn-down stack and
-# recreate its network. Register every such pid with bg_register; run.sh's
-# on_exit calls bg_kill_all, which kills each recorded pid and its direct
-# children BY PID (never by name or pattern). A loop also guards itself with
-# bg_should_continue <deadline epoch>: false once the harness (PERF_MAIN_PID,
-# run.sh's own pid) is gone, e.g. after a SIGKILL that ran no trap, or once
-# the deadline has passed. perf/lib/bgloop-selftest.sh pins all three.
+# recreate its network.
+#   bg_start <cmd…>  runs <cmd…> in the background with its stdout appended
+#       to harness.log, never the caller's stdout: inside `x=$(phase)` (S2's
+#       s2_phase) that stdout is the command substitution's pipe, and a loop
+#       holding it open makes the parent wait for the loop's own end after a
+#       die or an interrupt. Registers the pid; sets BG_LAST_PID.
+#   bg_register <pid>  records the pid with its process start time (ps
+#       lstart) in ${RESULTS}/.bg-pids.
+#   bg_wait <pid>  waits for it and forgets it, so a pid the kernel may
+#       reuse later is never in the registry.
+#   bg_kill_all  (run.sh's on_exit) kills each recorded pid whose live
+#       process still has the recorded start time (the same process, not a
+#       reused pid), with its direct children, BY PID — never by name or
+#       pattern.
+#   bg_should_continue <deadline epoch>  a loop's guard: false once the
+#       harness (PERF_MAIN_PID, run.sh's own pid) is gone, e.g. after a
+#       SIGKILL that ran no trap, or once the deadline has passed.
+# perf/lib/bgloop-selftest.sh pins all of it.
+bg_start_time() {
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' | tr ' ' '_'
+}
 bg_register() {
-  printf '%s\n' "$1" >>"${RESULTS}/.bg-pids"
+  printf '%s|%s|%s\n' "$1" "$(bg_start_time "$1")" "${BASHPID:-$$}" >>"${RESULTS}/.bg-pids"
+}
+bg_start() {
+  "$@" >>"${RESULTS}/harness.log" &
+  BG_LAST_PID=$!
+  bg_register "$BG_LAST_PID"
+}
+bg_forget() {
+  [[ -s "${RESULTS}/.bg-pids" ]] || return 0
+  grep -v "^$1|" "${RESULTS}/.bg-pids" >"${RESULTS}/.bg-pids.tmp" || true
+  mv "${RESULTS}/.bg-pids.tmp" "${RESULTS}/.bg-pids"
+}
+bg_wait() {
+  wait "$1" || true
+  bg_forget "$1"
 }
 bg_kill_all() {
-  local pid child
+  local pid started rest child
   [[ -n "${RESULTS:-}" && -s "${RESULTS}/.bg-pids" ]] || return 0
-  while IFS= read -r pid; do
+  while IFS='|' read -r pid started rest; do
     [[ "$pid" =~ ^[0-9]+$ ]] || continue
     kill -0 "$pid" 2>/dev/null || continue
+    # The same process, not a pid the kernel has since given to another.
+    [[ -n "$started" && "$(bg_start_time "$pid")" == "$started" ]] || continue
     for child in $(ps -axo pid=,ppid= | awk -v p="$pid" '$2 == p {print $1}'); do
       kill "$child" 2>/dev/null || true
     done

@@ -148,7 +148,7 @@ scenario_run() {
   dc exec -T postgres psql -U postgres -d maestro -At -c \
     "SELECT count(pg_cancel_backend(pid)) FROM pg_stat_activity WHERE query LIKE 'CALL perf_harness.sample_activity(%' AND pid <> pg_backend_pid()" \
     </dev/null >>"${RESULTS}/harness.log" 2>&1
-  wait "$sampler_pid" || true
+  bg_wait "$sampler_pid"
   start=$(jq -r '.from' <<<"$idle")
   sampler_all=$(psql_json activity-samples -v label=s5 -v "min=${min_busy}" -v "from=${start}")
 

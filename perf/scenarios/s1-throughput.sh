@@ -242,8 +242,8 @@ scenario_run() {
   log "s1: $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain")"
 
   touch "$stop"
-  wait "$sampler" || true
-  wait "$cstats_sampler" || true
+  bg_wait "$sampler"
+  bg_wait "$cstats_sampler"
   host_end=$(host_load)
   rm -f "$stop"
   # The closing sample, taken after the drain, so the last level is bracketed.

@@ -188,19 +188,18 @@ s2_phase() {
   # Both loops end at the latest a minute past the phase's whole budget
   # (drain timeout, plus readiness and the probes' own wait).
   deadline=$(($(date +%s) + 2 * S2_TIMEOUT + 300))
-  s2_hoard_loop "$lc" "$stop_hoard" "$deadline" &
-  hoard_pid=$!
-  bg_register "$hoard_pid"
-  s2_probe_loop "$lc" "$stop_probes" "$probe_prefix" "$deadline" &
-  probe_pid=$!
-  bg_register "$probe_pid"
+  # bg_start: stdout to harness.log, never this $(s2_phase …) substitution's
+  # pipe (a loop holding it would keep a die or an interrupt waiting).
+  bg_start s2_hoard_loop "$lc" "$stop_hoard" "$deadline"
+  hoard_pid=$BG_LAST_PID
+  bg_start s2_probe_loop "$lc" "$stop_probes" "$probe_prefix" "$deadline"
+  probe_pid=$BG_LAST_PID
   if [[ -n "$fresh_rate" ]]; then
-    K6_NODES=$(node_url 1) k6_run "fresh${lc}" start-rate.js \
+    K6_NODES=$(node_url 1) bg_start k6_run "fresh${lc}" start-rate.js \
       "PERF_ID_PREFIX=${fresh_prefix}" "PERF_ID_OFFSET=0" "PERF_RATE=${fresh_rate}" \
       "PERF_DURATION=${fresh_secs}" "PERF_K6_VUS=50" "PERF_K6_MAX_VUS=200" \
-      "PERF_BODY=$(jq -nc --argjson d "$S2_D" '{type: "chain", activities: 1, activityMillis: $d}')" &
-    fresh_k6=$!
-    bg_register "$fresh_k6"
+      "PERF_BODY=$(jq -nc --argjson d "$S2_D" '{type: "chain", activities: 1, activityMillis: $d}')"
+    fresh_k6=$BG_LAST_PID
   fi
   ready1=$(node_wait_ready 1 "$S2_TIMEOUT") || ready1=""
   log "s2 ${name}: node 1 ready at ${ready1:-never}"
@@ -216,9 +215,9 @@ s2_phase() {
   drain=$(wait_terminal "$prefix" "$rows" "$S2_TIMEOUT" 5)
   log "s2 ${name}: drain $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain")"
   touch "$stop_probes"
-  wait "$probe_pid" || true
+  bg_wait "$probe_pid"
   if [[ "$fresh_k6" != null ]]; then
-    wait "$fresh_k6" || true
+    bg_wait "$fresh_k6"
   fi
   probes=$(cat "${RESULTS}/.s2-probes-${lc}" 2>/dev/null || echo 0)
   probe_status=$(wait_terminal "$probe_prefix" "$probes" 120 2)
@@ -226,7 +225,7 @@ s2_phase() {
     wait_terminal "$fresh_prefix" 1 600 5 >/dev/null
   fi
   touch "$stop_hoard"
-  wait "$hoard_pid" || true
+  bg_wait "$hoard_pid"
 
   window=$(psql_json pgss-window)
   components=$(psql_json s3-components)

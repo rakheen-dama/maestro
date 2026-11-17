@@ -91,6 +91,102 @@ expect "loop past its deadline: the harness was still alive (not the guard's oth
 kill "$h" 2>/dev/null || true
 wait "$h" 2>/dev/null || true
 
+# A harness shaped like run.sh: EXIT trap -> bg_kill_all, INT/TERM -> exit
+# 130, and a phase run as `x=$(phase)` (S2's s2_phase) that starts a guarded
+# loop and then dies (mode die) or blocks (mode block). <starter> is how the
+# phase starts its loop: "bg_start" (the helper) or "plain" (a bare `&`, whose
+# stdout is the command substitution's pipe).
+phase_harness() { # <starter> <mode> <dir> <loop deadline offset s>
+  exec bash -c '
+    set -Eeuo pipefail
+    RESULTS=$2; COMPOSE_PROJECT=none; PERF_MAIN_PID=$$
+    : >"$RESULTS/harness.log"
+    source "$1/lib/common.sh"
+    trap "bg_kill_all" EXIT
+    trap "exit 130" INT TERM
+    loop_body() { while bg_should_continue "$1"; do sleep 1 || true; done; }
+    phase() {
+      local deadline=$(($(date +%s) + $5))
+      if [[ $3 == bg_start ]]; then
+        bg_start loop_body "$deadline"
+        printf "%s\n" "$BG_LAST_PID" >"$RESULTS/loop.pid"
+      else
+        loop_body "$deadline" &
+        bg_register "$!"
+        printf "%s\n" "$!" >"$RESULTS/loop.pid"
+      fi
+      if [[ $4 == die ]]; then die "phase failed"; fi
+      while :; do sleep 1; done
+    }
+    x=$(phase "$@")
+  ' _ "$PERF_DIR" "$3" "$1" "$2" "$4"
+}
+elapsed_of() { # <start epoch> : seconds since
+  echo $(($(date +%s) - $1))
+}
+
+# 4. The hazard (control): a bare `&` inside $(...) keeps the substitution's
+#    pipe open, so after a die the harness waits for the loop's own end.
+mkdir "$work/t4"
+t=$(date +%s)
+(phase_harness plain die "$work/t4" 4) 2>/dev/null || true
+e=$(elapsed_of "$t")
+expect "control: a bare & inside \$(...) then die: the harness waited for the loop (>= 3 s)" yes "$( ((e >= 3)) && echo yes || echo "no (${e} s)")"
+
+# 5. bg_start inside $(...) then die: the harness exits at once, the loop is killed.
+mkdir "$work/t5"
+t=$(date +%s)
+(phase_harness bg_start die "$work/t5" 60) 2>/dev/null || true
+e=$(elapsed_of "$t")
+expect "bg_start inside \$(...) then die: the loop had started" yes "$([[ -s "$work/t5/loop.pid" ]] && echo yes || echo no)"
+expect "bg_start inside \$(...) then die: the harness exits within 3 s" yes "$( ((e <= 3)) && echo yes || echo "no (${e} s)")"
+expect "bg_start inside \$(...) then die: the loop is gone" gone "$(gone_within "$(cat "$work/t5/loop.pid")" 3)"
+
+# 6. An interrupt (SIGINT to the whole process group, as a terminal's Ctrl-C)
+#    while the phase blocks: the harness exits within a few seconds.
+mkdir "$work/t6"
+set -m
+phase_harness bg_start block "$work/t6" 60 2>/dev/null &
+h=$!
+set +m
+for _ in $(seq 1 50); do [[ -s "$work/t6/loop.pid" ]] && break; sleep 0.1; done
+t=$(date +%s)
+expect "interrupt during a phase: the loop had started" yes "$([[ -s "$work/t6/loop.pid" ]] && echo yes || echo no)"
+kill -INT -- "-$h" 2>/dev/null || true
+expect "interrupt during a phase: the harness exits within 3 s" gone "$(gone_within "$h" 3)"
+wait "$h" 2>/dev/null || true
+expect "interrupt during a phase: the loop is gone" gone "$(gone_within "$(cat "$work/t6/loop.pid")" 3)"
+
+# 7. A pid waited for leaves the registry; a registry entry whose process no
+#    longer has the recorded start time (a reused pid) is never killed.
+mkdir "$work/t7"
+out=$(bash -c '
+  set -Eeuo pipefail
+  RESULTS=$2; COMPOSE_PROJECT=none; PERF_MAIN_PID=$$
+  source "$1/lib/common.sh"
+  sleep 0.2 & p=$!
+  bg_register "$p"
+  bg_wait "$p"
+  if grep -q "^$p|" "$RESULTS/.bg-pids" 2>/dev/null; then echo kept; else echo forgotten; fi
+' _ "$PERF_DIR" "$work/t7" 2>&1 || true)
+expect "a pid waited for with bg_wait leaves the registry" forgotten "$out"
+mkdir "$work/t8"
+sleep 30 &
+stranger=$!
+bash -c '
+  set -Eeuo pipefail
+  RESULTS=$2; COMPOSE_PROJECT=none; PERF_MAIN_PID=$$
+  source "$1/lib/common.sh"
+  bg_register "$3"
+  # as if the registered process had ended and its pid been reused: the
+  # recorded start time no longer matches the live process
+  sed -i.bak "s/^\($3\)|[^|]*|/\1|Thu_Jan__1_00:00:00_1970|/" "$RESULTS/.bg-pids"
+  bg_kill_all
+' _ "$PERF_DIR" "$work/t8" "$stranger" 2>/dev/null || true
+expect "a registered pid whose start time does not match is not killed" alive "$(alive "$stranger")"
+kill "$stranger" 2>/dev/null || true
+wait "$stranger" 2>/dev/null || true
+
 if ((failures > 0)); then
   echo "bgloop-selftest: ${failures} case(s) failed"
   exit 1
