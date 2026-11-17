@@ -12,8 +12,10 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import org.jspecify.annotations.Nullable;
@@ -33,6 +35,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -100,6 +104,7 @@ class AdminRetryTest {
         TestTerminalWait.awaitStatus(store, "fallback-1", WorkflowStatus.FAILED, Duration.ofSeconds(5));
 
         impl.outageOver.set(true);   // the operator's "dependency is back"
+        TestTerminalWait.awaitRunEnded(executor, "fallback-1", BOUND);
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, executor.retryWorkflow("fallback-1", registration));
 
         pollUntil(() -> store.getInstance("fallback-1").orElseThrow().status() == WorkflowStatus.COMPLETED
@@ -124,6 +129,7 @@ class AdminRetryTest {
         assertEquals(1, impl.alertCalls.get());
 
         impl.outageOver.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "d10", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("d10", reg));
         assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("d10", WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
         assertEquals(List.of("1 ACTIVITY_COMPLETED Acts.primary", "2 ACTIVITY_COMPLETED Acts.finish",
@@ -139,6 +145,7 @@ class AdminRetryTest {
         awaitFailed("d10b");
 
         // the outage is NOT over
+        TestTerminalWait.awaitRunEnded(executor, "d10b", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("d10b", reg));
         assertEquals(WorkflowStatus.FAILED, lastStatusWithin("d10b", WorkflowStatus.FAILED, Duration.ofSeconds(5)));
         assertEquals(2, impl.alertCalls.get());
@@ -165,6 +172,7 @@ class AdminRetryTest {
         assertEquals(1, impl.alertCalls.get());
 
         impl.outageOver.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "par", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("par", reg));
         assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("par", WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
         assertEquals(1, impl.siblingCalls.get());
@@ -182,10 +190,12 @@ class AdminRetryTest {
         assertEquals("[2001]", failurePayload("two").path("failedSequences").toString());
 
         impl.outageOver.set(true);   // both fixed
+        TestTerminalWait.awaitRunEnded(executor, "two", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("two", reg));
         assertEquals(WorkflowStatus.FAILED, lastStatusWithin("two", WorkflowStatus.FAILED, Duration.ofSeconds(5)));
         assertEquals("[3001]", failurePayload("two").path("failedSequences").toString());
 
+        TestTerminalWait.awaitRunEnded(executor, "two", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("two", reg));
         assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("two", WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
         assertEquals(2, impl.primaryCalls.get());
@@ -217,6 +227,7 @@ class AdminRetryTest {
 
         executor.deliverSignal("i33a", "gate", "late");
         executor.deliverSignal("i33a", "main", "go");
+        TestTerminalWait.awaitRunEnded(executor, "i33a", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("i33a", reg));
         assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("i33a", WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
         assertEquals(1, store.getUnconsumedSignals("i33a", "gate").size());   // the caught gate replayed its timeout
@@ -243,6 +254,7 @@ class AdminRetryTest {
 
         executor.deliverSignal("i33b", "gate", "late");
         executor.deliverSignal("i33b", "a", "go");
+        TestTerminalWait.awaitRunEnded(executor, "i33b", BOUND);
         assertEquals(RetryOutcome.RETRIED, executor.retryWorkflow("i33b", reg));
         assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("i33b", WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
         assertEquals(1, store.getUnconsumedSignals("i33b", "gate").size());
@@ -310,6 +322,61 @@ class AdminRetryTest {
             assertEquals(0, impl.primaryCalls.get(), "nothing was launched");
         } finally {
             purgingExecutor.shutdown();
+        }
+    }
+
+    // ── A Retry while the failed run is still registered here (PR #57 review 4) ──
+
+    @Test
+    void aRetryBeforeTheFailedRunLeavesThisNode_reopensTheRowAndRecoveryRelaunchesIt() throws Exception {
+        // Holds the failing run after its FAILED write (workflowFailed is
+        // emitted after it) and before its finally leaves the local registry.
+        var failedWritten = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var holdsTheRun = new EngineObserver() {
+            @Override
+            public void workflowFailed(WorkflowInfo w, String exceptionType) {
+                failedWritten.countDown();
+                try {
+                    release.await(5, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        var holding = WorkflowExecutor.builder(store, serializer, "svc")
+                .lifecycleEventsEnabled(false)
+                .observer(holdsTheRun)
+                .build();
+        try {
+            var reg = registration(this::catchAlertRethrow);
+            holding.startWorkflow("held", reg.workflowType(), reg.taskQueue(), null,
+                    reg.workflowFactory(), reg.workflowMethod());
+            assertTrue(failedWritten.await(5, TimeUnit.SECONDS), "the run did not fail");
+            awaitFailed("held");
+            assertTrue(holding.isRunning("held"), "the FAILED run has not left this node's registry yet");
+
+            impl.outageOver.set(true);
+            assertEquals(RetryOutcome.ALREADY_RUNNING_LOCALLY, holding.retryWorkflow("held", reg));
+            // The reopen committed (the planned deletes and RUNNING), but nothing was launched.
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("held").orElseThrow().status());
+            assertEquals(List.of(), history("held"), "the failure [1], its alert and WORKFLOW_FAILED are deleted");
+            assertEquals(1, impl.primaryCalls.get(), "the retry launched nothing");
+
+            release.countDown();
+            TestTerminalWait.awaitRunEnded(holding, "held", BOUND);
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("held").orElseThrow().status(),
+                    "left RUNNING with no run anywhere until a recovery pass adopts it");
+            assertEquals(1, impl.primaryCalls.get());
+
+            // What this node's recovery poller does every poll interval.
+            assertEquals(1, holding.recoverWorkflows(Map.of("Body", reg)));
+            assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("held", WorkflowStatus.COMPLETED, BOUND));
+            assertEquals(2, impl.primaryCalls.get(), "the recovered run re-ran the deleted primary");
+            assertEquals(1, impl.alertCalls.get(), "and, the primary now succeeding, no alert");
+        } finally {
+            release.countDown();
+            holding.shutdown();
         }
     }
 

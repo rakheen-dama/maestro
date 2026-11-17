@@ -86,6 +86,8 @@ class PostgresInstanceRewriteEngineTest extends PostgresTestSupport {
         nodeB.deliverSignal(id, Priced.GO, "go");
         awaitStatus(id, WorkflowStatus.FAILED);
         facts.add("after failure: " + inputText(id));
+        // FAILED is written before the run leaves nodeB's registry; a retry in between does not relaunch.
+        await().atMost(BOUND).until(() -> !nodeB.isRunning(id));
         facts.add("retry: " + nodeB.retryWorkflow(id, registration));
         awaitStatus(id, WorkflowStatus.COMPLETED);
         facts.add("after retry and completion: " + inputText(id));

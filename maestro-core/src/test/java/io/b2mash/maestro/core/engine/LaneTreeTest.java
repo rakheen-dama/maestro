@@ -74,6 +74,39 @@ class LaneTreeTest {
     }
 
     @Test
+    void afterHoldsOnly_agreesWithAfterForEveryPlacedSlotAndPredicate() {
+        var histories = List.of(
+                List.of(fork(1, 2), fork(2001, 2), ev(2002001, ACTIVITY_FAILED, "f"), ev(2002002, ACTIVITY_COMPLETED, "alert"),
+                        ev(2003001, ACTIVITY_COMPLETED, "sib"), ev(2004001, ACTIVITY_COMPLETED, "b0tail"),
+                        ev(3001, ACTIVITY_COMPLETED, "b1"), ev(4001, ACTIVITY_COMPLETED, "roottail"), ev(4002, WORKFLOW_FAILED, null)),
+                List.of(ev(1, ACTIVITY_FAILED, "p"), fork(2, 2), ev(3001, ACTIVITY_COMPLETED, "a1"),
+                        ev(4001, ACTIVITY_COMPLETED, "a2"), ev(5001, WORKFLOW_FAILED, null)),
+                List.of(ev(1, ACTIVITY_FAILED, "p"), fork(2, 2), ev(3001, ACTIVITY_FAILED, "a1"),
+                        ev(4001, ACTIVITY_COMPLETED, "a2"), ev(5001, WORKFLOW_FAILED, null)));
+        for (var history : histories) {
+            var t = LaneTree.of(history);
+            var byType = new java.util.HashMap<Integer, EventType>();
+            history.forEach(e -> byType.put(e.sequenceNumber(), e.eventType()));
+            var predicates = List.<java.util.function.IntPredicate>of(
+                    s -> byType.get(s) == WORKFLOW_FAILED,
+                    s -> byType.get(s) != ACTIVITY_FAILED,                   // forks pass: their subtrees are checked
+                    s -> byType.get(s) != ACTIVITY_COMPLETED,
+                    s -> true,
+                    s -> false);
+            for (var e : history) {
+                var seq = e.sequenceNumber();
+                if (!t.isPlaced(seq)) {
+                    continue;
+                }
+                for (var p : predicates) {
+                    assertEquals(t.after(seq).stream().allMatch(p::test), t.afterHoldsOnly(seq, p),
+                            "slot " + seq + " of " + history);
+                }
+            }
+        }
+    }
+
+    @Test
     void aWorkflowFailedAfterAGapIsNotUnplaced() {
         var t = LaneTree.of(List.of(ev(1, ACTIVITY_COMPLETED, "a"), ev(3, WORKFLOW_FAILED, null)));
         assertEquals(Set.of(), t.unplaced());

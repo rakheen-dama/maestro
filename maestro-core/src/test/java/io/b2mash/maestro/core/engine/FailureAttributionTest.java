@@ -30,6 +30,7 @@ import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * WP3 Task 1 — the run that records {@code WORKFLOW_FAILED} names, in the
@@ -204,13 +205,26 @@ class FailureAttributionTest {
     @Test
     @DisplayName("the registry does not keep an exception alive once nothing else reaches it")
     void anExceptionNoLongerReachableIsCollectable() throws InterruptedException {
+        // The JVM does not promise that System.gc() clears a weak reference, so
+        // a control twin, allocated beside the registered exception and reached
+        // by nothing at all, tells a collection that cleared weak references
+        // from one that did not. No clearing within the bound: inconclusive.
+        // The control cleared but the registered exception kept: the registry
+        // holds its keys strongly (PR #57 review 5).
         var root = new WorkflowContext(UUID.randomUUID(), "w", UUID.randomUUID(), "T", "q", "svc", 0, false);
-        var ref = registerUnreachable(root, 1);
-        for (int i = 0; i < 100 && ref.get() != null; i++) {
+        var refs = registerUnreachableBesideAControl(root, 1);
+        for (int i = 0; i < 100 && refs.control().get() != null; i++) {
             System.gc();
             Thread.sleep(10);
         }
-        assertNull(ref.get(), "a registered exception nothing else reaches must be collectable");
+        assumeTrue(refs.control().get() == null,
+                "no collection cleared an unreachable control object within 100 System.gc() calls");
+        for (int i = 0; i < 10 && refs.registered().get() != null; i++) {
+            System.gc();
+            Thread.sleep(10);
+        }
+        assertNull(refs.registered().get(), "a collection cleared the unreachable control object, but the "
+                + "registry kept the registered exception alive: it must not hold its keys strongly");
     }
 
     @Test
@@ -240,11 +254,15 @@ class FailureAttributionTest {
 
     // ── Fixture ─────────────────────────────────────────────────────────
 
-    /** Registers a fresh exception and returns only a weak reference to it. */
-    private static WeakReference<Throwable> registerUnreachable(WorkflowContext ctx, int sequence) {
+    /** Weak references to a registered exception and to its unregistered twin. */
+    private record Unreachable(WeakReference<Throwable> registered, WeakReference<Throwable> control) {}
+
+    /** Registers a fresh exception beside an unregistered twin and returns only weak references to both. */
+    private static Unreachable registerUnreachableBesideAControl(WorkflowContext ctx, int sequence) {
+        var control = new IllegalStateException("unreachable");
         var thrown = new IllegalStateException("unreachable");
         WorkflowContextInternals.recordFailureMemo(ctx, thrown, sequence);
-        return new WeakReference<>(thrown);
+        return new Unreachable(new WeakReference<>(thrown), new WeakReference<>(control));
     }
 
     private String catchAlertRethrow() {

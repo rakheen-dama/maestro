@@ -182,9 +182,15 @@ Maestro cannot place (a slot consumed without a memo and followed by more
 work, or two lanes claiming one slot), Retry deletes what it always did:
 every `ACTIVITY_FAILED`, the `WORKFLOW_FAILED` and, for an await timeout, the
 highest `SIGNAL_TIMEOUT` with its park memo. Every deleted timer slot takes
-its timer row, of any status; the deletes and the `FAILED → RUNNING`
-compare-and-set are one transaction, and the relaunch bumps the lease epoch
-through the normal adoption. If the deleted region holds a consumed signal
+its timer row, of any status. In the shipped JDBC/Postgres store and the
+in-memory test store, the deletes and the `FAILED → RUNNING` compare-and-set
+are one transaction (`PostgresReopenFailedInstanceTest`,
+`InMemoryWorkflowStoreTest`). A third-party store that inherits the SPI
+default `WorkflowStore.reopenFailedInstance` is not atomic and does not apply
+this plan: the default ignores both delete sets and runs the old two-step
+Retry, `deleteFailureEvents` then `updateInstance`, as separate operations
+(`WorkflowStoreReopenDefaultTest`; Issue 62). The relaunch bumps the lease
+epoch through the normal adoption. If the deleted region holds a consumed signal
 (`SIGNAL_RECEIVED`) — the failure's handling awaited one — Retry writes
 nothing and returns `SIGNAL_CONSUMED_AFTER_FAILURE`, and the engine logs a
 `WARN` naming the workflow, the signal, its sequence and the remedy
@@ -222,6 +228,31 @@ an admin command is not deduplicated by its message id, only by the row's
 status. A retry whose relaunch finds the row already terminated, or loses
 the adoption compare-and-set to another node, also returns
 `LOCK_HELD_ELSEWHERE`.
+
+**A Retry that lands as the failed run finishes.** A run commits `FAILED`
+(and its `WORKFLOW_FAILED`) first, then reports `workflowFailed` to the
+observer, hands the lifecycle event to its publisher and only in its
+`finally` leaves the node's local running registry and then releases its
+instance lock. A Retry on the same node in the gap before the registry
+removal still finds the row `FAILED`: it commits the reopen (the planned
+deletes and `RUNNING`), then finds the run registered locally, launches
+nothing and returns `ALREADY_RUNNING_LOCALLY`. The row is then `RUNNING`
+with no run anywhere until a recovery pass adopts it; that pass re-runs the
+deleted failure and completes
+(`AdminRetryTest.aRetryBeforeTheFailedRunLeavesThisNode_reopensTheRowAndRecoveryRelaunchesIt`).
+The rest of this paragraph is traced, not tested. `AdminCommandDispatcher`
+logs that outcome as a `WARN` no-op and acknowledges the command. With a
+lock backend, a Retry after the registry removal but before the lock release
+returns `LOCK_HELD_ELSEWHERE` with the same end state. The first recovery
+pass on any node once the failed run has left the registry (and, with a lock
+backend, released its lock) adopts it, so the retried run starts within one
+`maestro.recovery.poll-interval` (default 60 s) of the failed run's end; no
+`WORKFLOW_RETRIED` lifecycle event is published for it. The build before
+this change behaved the same way: it deleted the failure memos and wrote
+`RUNNING` before the same local check. The check is not moved ahead of the
+reopen because the dispatcher acknowledges `ALREADY_RUNNING_LOCALLY`: a
+Retry refused before writing would leave the workflow `FAILED` and the
+operator's Retry lost.
 
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only
@@ -525,8 +556,12 @@ traceable to engine code and its pinning tests rather than to a timing run.*
 *Admin Retry in a mixed fleet: a node of the previous build retries the old
 way (it deletes failure memos by type and ignores `failedSequences`); a node of
 this build retries history an older node wrote by matching the recorded
-message. Nothing either build writes is unreadable to the other. The details
-are in `docs/release-notes.md`, "Mixed fleets", under the admin Retry entry.*
+message. An older node reads the new `failedSequences` field of a newer
+`WORKFLOW_FAILED` by ignoring it (Jackson's default) — except in a host whose
+`ObjectMapper` enables `FAIL_ON_UNKNOWN_PROPERTIES`, where
+`WorkflowHandle.failure()` throws on the older node until the deploy completes
+(traced, not tested). The details are in `docs/release-notes.md`, "Mixed
+fleets", under the admin Retry entry.*
 
 ### 10.1 The deploy rule has not changed: upgrade all nodes together
 

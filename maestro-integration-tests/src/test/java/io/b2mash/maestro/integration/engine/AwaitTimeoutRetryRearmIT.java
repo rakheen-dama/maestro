@@ -73,6 +73,8 @@ class AwaitTimeoutRetryRearmIT extends PostgresIntegrationSupport {
         var spentRowId = failOnTimeout(harness, handle.instanceId());
 
         var retryStart = Instant.now().truncatedTo(ChronoUnit.MICROS);
+        // FAILED is written before the run leaves the executor's registry; a retry in between does not relaunch.
+        await().atMost(BOUND).pollInterval(Duration.ofMillis(20)).until(() -> !harness.executor().isRunning(workflowId));
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, harness.retry(workflowId, ApprovalWorkflow.class));
         // RED before R61: the retried run was FAILED again before it ever parked.
         handle.awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
@@ -111,6 +113,8 @@ class AwaitTimeoutRetryRearmIT extends PostgresIntegrationSupport {
         failOnTimeout(harness, handle.instanceId());
 
         harness.deliverSignal(workflowId, ApprovalWorkflow.SIGNAL, "granted-early");
+        // FAILED is written before the run leaves the executor's registry; a retry in between does not relaunch.
+        await().atMost(BOUND).pollInterval(Duration.ofMillis(20)).until(() -> !harness.executor().isRunning(workflowId));
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, harness.retry(workflowId, ApprovalWorkflow.class));
 
         assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
