@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
@@ -276,11 +277,11 @@ final class RecoveryPoller implements StoppableLoop {
         var lastPassStart = nextFull;
         var awaitingCapacity = false;
         var seen = 0L;
-        @Nullable RecoveryCursor resumeAfter = null;
-        Set<String> queues = Set.of();
+        // Per deferred queue, where its capacity pass resumes (a null value: the first row).
+        Map<String, @Nullable RecoveryCursor> cursors = new HashMap<>();
         while (running) {
             try {
-                var capacityPass = awaitingCapacity && awaitCapacity(seen, nextFull, lastPassStart, queues);
+                var capacityPass = awaitingCapacity && awaitCapacity(seen, nextFull, lastPassStart, cursors.keySet());
                 if (!capacityPass && !sleepUntil(nextFull)) {
                     break;
                 }
@@ -293,29 +294,26 @@ final class RecoveryPoller implements StoppableLoop {
                 lastPassStart = System.nanoTime();
                 WorkflowExecutor.RecoveryPass pass;
                 if (capacityPass) {
-                    pass = executor.capacityPass(registrations, resumeAfter, queues);
+                    // Only the queues with room now, from the earliest of their own cursors:
+                    // a full queue's deferred rows are not re-read for another queue's room.
+                    var ready = new HashSet<String>();
+                    for (var queue : cursors.keySet()) {
+                        if (executor.recoveryHeadroom(Set.of(queue)) > 0) {
+                            ready.add(queue);
+                        }
+                    }
+                    var start = earliest(cursors, ready);
+                    pass = executor.capacityPass(registrations, start, ready);
+                    cursors = afterCapacityPass(cursors, start, pass);
                 } else {
                     nextFull = lastPassStart + pollNanos;
                     pass = executor.recoveryPass(registrations);
+                    cursors = new HashMap<>(pass.resumeAfterByQueue());
                 }
                 guard.succeeded();
                 log(pass, capacityPass, first);
                 first = false;
-                if (pass.deferred() > 0 || pass.outOfCapacity()) {
-                    var deferredOn = pass.deferredByQueue().keySet();
-                    if (pass.outOfCapacity()) {
-                        // Rows past the stop were not read: any queue deferred before may own some.
-                        var union = new HashSet<>(queues);
-                        union.addAll(deferredOn);
-                        queues = Set.copyOf(union);
-                    } else {
-                        queues = Set.copyOf(deferredOn);
-                    }
-                    resumeAfter = pass.resumeAfter();
-                    awaitingCapacity = true;
-                } else {
-                    awaitingCapacity = false;
-                }
+                awaitingCapacity = !cursors.isEmpty();
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
@@ -326,12 +324,68 @@ final class RecoveryPoller implements StoppableLoop {
                 guard.failed(t);
                 first = false;
                 awaitingCapacity = false;
-                resumeAfter = null;
-                queues = Set.of();
+                cursors = new HashMap<>();
                 nextFull = System.nanoTime() + pollNanos;
             }
         }
         logger.debug("Recovery poller loop exited");
+    }
+
+    /** The earliest cursor of {@code queues} in keyset order; {@code null} (the first row) is the earliest. */
+    private static @Nullable RecoveryCursor earliest(Map<String, @Nullable RecoveryCursor> cursors,
+                                                     Set<String> queues) {
+        RecoveryCursor min = null;
+        var any = false;
+        for (var queue : queues) {
+            var cursor = cursors.get(queue);
+            if (cursor == null) {
+                return null;
+            }
+            if (!any || before(cursor, min)) {
+                min = cursor;
+                any = true;
+            }
+        }
+        return min;
+    }
+
+    /** Whether {@code a} comes strictly before {@code b}; {@code null} is the first row. */
+    private static boolean before(@Nullable RecoveryCursor a, @Nullable RecoveryCursor b) {
+        if (a == null) {
+            return b != null;
+        }
+        if (b == null) {
+            return false;
+        }
+        var byStart = a.startedAt().compareTo(b.startedAt());
+        return byStart < 0 || (byStart == 0 && a.id().compareTo(b.id()) < 0);
+    }
+
+    /**
+     * The per-queue cursors after a capacity pass that read from {@code start}.
+     * A queue whose cursor lies before {@code start} was not re-read and keeps
+     * it. Any other queue takes the position before its first deferral in this
+     * pass; with none, it is drained if the pass read to the end, and
+     * otherwise resumes where the pass stopped reading.
+     */
+    static Map<String, @Nullable RecoveryCursor> afterCapacityPass(Map<String, @Nullable RecoveryCursor> cursors,
+                                                                   @Nullable RecoveryCursor start,
+                                                                   WorkflowExecutor.RecoveryPass pass) {
+        var next = new HashMap<String, @Nullable RecoveryCursor>();
+        var queues = new HashSet<>(cursors.keySet());
+        queues.addAll(pass.resumeAfterByQueue().keySet());
+        for (var queue : queues) {
+            var old = cursors.get(queue);
+            if (cursors.containsKey(queue) && before(old, start)) {
+                next.put(queue, old);
+            } else if (pass.resumeAfterByQueue().containsKey(queue)) {
+                next.put(queue, pass.resumeAfterByQueue().get(queue));
+            } else if (!pass.reachedEnd()) {
+                var readTo = pass.readTo();
+                next.put(queue, readTo != null && before(old, readTo) ? readTo : old);
+            }
+        }
+        return next;
     }
 
     /**

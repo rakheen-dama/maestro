@@ -10,6 +10,7 @@ import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.Work;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.WorkWorkflow;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -232,6 +233,35 @@ class RecoveryPollerCapacityTest {
         assertTrue(drained >= 20, "the backlog drains, drained=" + drained);
         assertTrue(passes <= 1 + elapsedMs / spacing.toMillis() + 1,
                 "at most one capacity pass per spacing: passes=" + passes + " in " + elapsedMs + " ms");
+    }
+
+    /**
+     * Carry c1: capacity passes resume per queue. Queue {@code a}'s 60 rows
+     * come first and stay deferred (its runs never finish); queue {@code b}'s
+     * 20 rows, after them, finish at once. Each capacity pass for {@code b}
+     * starts at {@code b}'s own first deferred row, so no capacity pass
+     * re-reads {@code a}'s backlog — the reads for draining {@code b} stay
+     * linear in {@code b}'s rows, not in {@code a}'s.
+     */
+    @Test
+    void aQueueThatDrainsIsNotReReadBehindAQueueThatIsFull() {
+        for (var i = 0; i < 60; i++) {
+            seedRecoverable(store, "a-%02d".formatted(i), "a");
+        }
+        for (var i = 0; i < 20; i++) {
+            seedRecoverable(store, "b-%02d".formatted(i), "b");
+        }
+        work.completeAtOnceFor(id -> id.startsWith("b-"));
+        var lastA = RecoveryCursor.of(store.getInstance("a-59").orElseThrow());
+        var a = node(1);
+        a.startRecoveryPoller(registrations(a), Duration.ofHours(1), Duration.ofMillis(20));
+        assertEquals(20, valueWithin(() -> store.completed("b-"), 20, Duration.ofSeconds(20)), "b drained");
+        var capacityReads = store.pageReads.subList(1, store.pageReads.size());
+        var reReadA = capacityReads.stream()
+                .filter(r -> r.after() == null || r.after().startedAt().isBefore(lastA.startedAt()))
+                .count();
+        assertEquals(0, reReadA, "capacity page reads that re-read queue a's deferred rows, of "
+                + capacityReads.size());
     }
 
     @Test

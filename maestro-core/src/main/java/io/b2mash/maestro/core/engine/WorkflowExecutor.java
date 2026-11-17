@@ -878,10 +878,19 @@ public final class WorkflowExecutor {
      * @param outOfCapacity   a capacity pass stopped because its queues had no
      *                        headroom left while rows after {@code resumeAfter}
      *                        may remain unread; always {@code false} for a full pass
+     * @param resumeAfterByQueue per task queue that deferred, the keyset position
+     *                        just before its first deferred instance in this pass
+     *                        (a {@code null} value: the first row) — where a
+     *                        capacity pass for that queue resumes
+     * @param readTo          the position after the last row this pass read;
+     *                        {@code null} if it read nothing
+     * @param reachedEnd      the pass read to the last recoverable row (a short
+     *                        or empty page), rather than stopping early
      */
     record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType,
                         Map<String, Integer> deferredByQueue, @Nullable RecoveryCursor resumeAfter,
-                        boolean outOfCapacity) {
+                        boolean outOfCapacity, Map<String, @Nullable RecoveryCursor> resumeAfterByQueue,
+                        @Nullable RecoveryCursor readTo, boolean reachedEnd) {
         /** @return instances skipped because their factory threw, across all types */
         int skipped() {
             return skippedByType.values().stream().mapToInt(Integer::intValue).sum();
@@ -905,10 +914,15 @@ public final class WorkflowExecutor {
         boolean stopped;
         /** Set when a capacity pass stops for lack of headroom; see {@link RecoveryPass#outOfCapacity()}. */
         boolean outOfCapacity;
+        /** Per queue, the position before its first deferral; a {@code null} value is the first row. */
+        final Map<String, @Nullable RecoveryCursor> resumeAfterByQueue = new LinkedHashMap<>();
+        @Nullable RecoveryCursor readTo;
+        boolean reachedEnd;
 
         RecoveryPass toPass() {
             return new RecoveryPass(scanned, adopted, Collections.unmodifiableMap(skippedByType),
-                    Collections.unmodifiableMap(deferredByQueue), resumeAfter, outOfCapacity);
+                    Collections.unmodifiableMap(deferredByQueue), resumeAfter, outOfCapacity,
+                    Collections.unmodifiableMap(resumeAfterByQueue), readTo, reachedEnd);
         }
     }
 
@@ -947,11 +961,14 @@ public final class WorkflowExecutor {
             var page = store.getRecoverableInstances(serviceName, after, RECOVERY_PAGE_SIZE);
             tally.scanned += page.size();
             if (page.isEmpty()) {
+                tally.reachedEnd = true;
                 break;
             }
             recoverPage(page, after, registrations, gate, stop, tally);
             after = RecoveryCursor.of(page.getLast());
+            tally.readTo = after;
             if (page.size() < RECOVERY_PAGE_SIZE) {
+                tally.reachedEnd = !tally.stopped;
                 break;
             }
         }
@@ -1016,11 +1033,14 @@ public final class WorkflowExecutor {
             var page = store.getRecoverableInstances(serviceName, after, size);
             tally.scanned += page.size();
             if (page.isEmpty()) {
+                tally.reachedEnd = true;
                 break;
             }
             recoverPage(page, after, registrations, RecoveryGate.GATED, INTERRUPTED, tally);
             after = RecoveryCursor.of(page.getLast());
+            tally.readTo = after;
             if (page.size() < size) {
+                tally.reachedEnd = !tally.stopped;
                 break;
             }
         }
@@ -1123,9 +1143,13 @@ public final class WorkflowExecutor {
             }
             if (reservation == null) {
                 tally.deferredByQueue.merge(instance.taskQueue(), 1, Integer::sum);
+                var before = i == 0 ? pageAfter : RecoveryCursor.of(page.get(i - 1));
                 if (!tally.deferredAny) {
                     tally.deferredAny = true;
-                    tally.resumeAfter = i == 0 ? pageAfter : RecoveryCursor.of(page.get(i - 1));
+                    tally.resumeAfter = before;
+                }
+                if (!tally.resumeAfterByQueue.containsKey(instance.taskQueue())) {
+                    tally.resumeAfterByQueue.put(instance.taskQueue(), before);
                 }
                 continue;
             }
