@@ -275,8 +275,8 @@ Put the qualifier on one bean, on the `@Bean` method or on the bean's class.
 If several carry it, Spring's usual tie-breakers pick Maestro's: the `@Primary`
 one, else the one named `maestroDataSource` (the name of Maestro's injection
 points). With neither, startup fails with `Maestro found 2 @MaestroDataSource
-beans and none is @Primary: [...]. Keep one, or mark the one Maestro should use
-@Primary.` With no qualified bean and two or more
+beans, none @Primary and none named maestroDataSource: [...]. Keep one, mark the
+one Maestro should use @Primary, or name its bean maestroDataSource.` With no qualified bean and two or more
 unqualified `DataSource`s, none `@Primary`, startup fails with `Maestro found
 <n> DataSource beans and none is @Primary or @MaestroDataSource. Annotate the
 one Maestro should use with @MaestroDataSource.`
@@ -289,7 +289,9 @@ connections as well as an activity slot's: a run replaying its history, or a
 parked run's wake re-check, holds a workflow slot without running an
 activity. Size the pool at **at least `max(maestro.worker.default-concurrency,
 maestro.worker.default-activity-concurrency) + 5`** (25 at the defaults); if
-several task queues are busy at once, add the same `max(...)` for each. As arithmetic, wake re-checks keep on average
+several task queues are busy at once, add the same `max(...)` for each. This is
+a heuristic, not a bound: workflow and activity slot holders can borrow at the
+same time, so the sum of the two limits, plus 5, is the conservative figure. As arithmetic, wake re-checks keep on average
 P × d / `wake-recheck-interval` workflow slots busy, where P is the number of
 parked workflows and d one re-check's duration (2–3 reads). For example,
 assuming 5 ms per re-check, 2,000 parked workflows × 5 ms / 30 s ≈ 0.3 slots. A
