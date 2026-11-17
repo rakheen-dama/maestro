@@ -2328,8 +2328,10 @@ public final class WorkflowExecutor {
         // recoverable — a park abandoned this way is not a workflow failure.
         parkingLot.shutdown();
         // Abandon every retry backoff the same way. Shutdown is not checked
-        // before an activity attempt, so in-flight work still drains.
-        runningWorkflows.values().forEach(r -> r.cancellation().requestShutdown());
+        // before an activity attempt, so in-flight work still drains. Over
+        // unreleasedRuns, the runs step 5 waits for: each is asked to stop
+        // (idempotent, and inert for a run whose body has already ended).
+        unreleasedRuns.values().forEach(r -> r.cancellation().requestShutdown());
         // Step 4: release every run queued for a task-queue slot (Issue 29):
         // the governor's poison permit wakes each waiter in turn, without an
         // interrupt, and each stands down recoverable.
