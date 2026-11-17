@@ -285,6 +285,34 @@ a warning annotation. Results are uploaded for 14 days.
 else; `run.sh` dispatches on the file names (add the name to its scenario
 `case` and to `perf.yml`'s choice list).
 
+**First numbers** (2026-11-16/17, engine 9eb7ca6 = `main` 525b287 merged
+into the harness branch; one node unless stated; admin events off unless
+stated; MacBook Pro, 10 CPUs, Docker 7837 MiB, a **shared** host: "contended"
+= `advisory.contention` WARN, host load above 2 per CPU). Every runId's
+`result.json` is committed under `perf/.evidence/wp11/`; the baselines are
+`perf/baselines/s1-throughput.json` (r20261116t231034z) and
+`perf/baselines/s3-parked.json` (r20261116t231822z).
+
+| Run | runId | Verdict | Figures |
+|---|---|---|---|
+| smoke, local | r20261116t230707z, r20261116t230851z | PASS, PASS | net statements per workflow 16.98, 16.97 (chain 2 × 10 ms); foreign rows 0 |
+| smoke, 2 replicas | r20261116t231624z | PASS | 17.06; two distinct hostnames |
+| S1 local, baseline record | r20261116t231034z | PASS | 26 net statements per workflow (6337 workflows); ceiling 71.60 completions/s; sustained level 40; contended |
+| S1 local, gate re-run | r20261116t232948z | PASS | gate 26 against 26 ± 0.52; ceiling 73.43/s, hold-window 75.36/s, engine overhead 16.96 ± 2.9 ms; quiet |
+| S1 local, admin events on ×2 | r20261116t222331z, r20261116t225610z | PASS, PASS | 26 and 26 net (164860, 164857 calls vs 164862, 164858 off: r20261116t221747z, r20261116t222856z); ceilings 73.16, 73.48 on vs 73.01, 70.61 off; all four contended |
+| S1 full | r20261116t234614z | PASS (gate NO_BASELINE: the baseline is local) | 26.01 net over 42972 workflows; completions/s per level L5 4.99, L10 9.80, L20 19.57, L40 39.21, L60 59.19, L80 74.26, L120 75.61 (offered 79.24 / 118.43); p95 309.2 / 321.4 / 397.7 / 417.8 / 395.3 / 8379.0 / 82102.9 ms; contended (2.06 per CPU) |
+| S3 local, baseline record | r20261116t231822z | PASS | 6.0154 / 6.0137 statements per parked run per minute at P = 1000 / 2000 (3.0077 / 3.0068 per 30 s); linearity 0.9997; arithmetic centre 6.017 |
+| S3 local, gate re-run | r20261116t233507z | PASS | 6.0165 / 6.0161; baseline gate 6.0161 against 6.0137 ± 0.121; quiet |
+| S3 local, sleep mode | r20261116t224549z | PASS | 4.0173 / 4.0169 against the 4.017 arithmetic; re-check 2.0001 / 1.9999 reads per parked run per 30 s |
+| S3 full | r20261117t000526z | **INVALID** | the generator saturated seeding P = 5000 (723 dropped iterations at a start p95 of 4 s, host load up to 14.48 per CPU), so 4278 runs parked and the plateau was not reached; P = 1000 measured 6.0151 (arithmetic gate PASS). Not a finding about the engine; to be re-run on a quiet host |
+| cherry-pick onto cbf5a2a (pre-WP11 engine): smoke | r20261117t002705z | PASS | 21.07; `engineCommit` fe7e548 (the last engine commit at cbf5a2a, same engine tree), `harnessCommit` 64416c3; four empty queries (the three WP11 meters and `maestro_wake_permits`) |
+| cherry-pick onto cbf5a2a: S1 local | r20261117t002853z | **FAIL**, on the baseline gate only | 36 net statements per workflow (228232 calls) against the 26 baseline: the gate sees the per-activity lock's 10 statements; the WP11-meter advisories say "not available" |
+
+The pre-merge engine measured 36 net statements per workflow in S1 (four quiet
+local runs, e.g. r20261112t223114z) and the same S3 figures (6.0141–6.0172,
+r20261113t030358z and others): removing the per-activity lock (3.10) took
+exactly 10 statements (2 × 5 activities) off S1 and nothing off a parked run.
+
 **An older engine with this harness:**
 
 ```bash
