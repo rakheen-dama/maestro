@@ -32,8 +32,14 @@ record_baseline() {
   local results=$1 scenario=$2 baseline=$3 verdict tmp old prev_traps
   identity_set_in "$results" '.notes += [$n]' --arg n "record-baseline: evaluated without the existing baseline perf/baselines/${scenario}.json (validity and correctness must PASS to record; baseline gates read NO_BASELINE); the old and new values: baseline-record.txt" \
     || { log "--record-baseline: could not write identity.json; ${baseline##*/} unchanged"; return 1; }
-  bash "${PERF_DIR}/lib/evaluate.sh" "$results" "$scenario" "" >/dev/null
-  verdict=$(jq -r .verdict "${results}/result.json")
+  # A results directory may already hold a result.json (a re-used directory):
+  # remove it, so only this evaluation's verdict can be read.
+  rm -f "${results}/result.json"
+  if ! bash "${PERF_DIR}/lib/evaluate.sh" "$results" "$scenario" "" >/dev/null; then
+    log "--record-baseline refused: the evaluation failed (see the evaluator's error above); ${baseline##*/} unchanged"
+    return 1
+  fi
+  verdict=$(jq -r .verdict "${results}/result.json") || verdict=none
   if [[ "$verdict" != PASS ]]; then
     log "--record-baseline refused: verdict ${verdict} evaluated without the existing baseline (validity and correctness must PASS); ${baseline##*/} unchanged"
     return 1

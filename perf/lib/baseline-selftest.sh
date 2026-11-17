@@ -202,6 +202,19 @@ for target in 'harnessCommit: .identity.repo.harnessCommit' '.notes += [$n]'; do
     "$(sum "${dir}/identity.json") $(find "$dir" -name 'identity.json.*' | wc -l | tr -d ' ')"
 done
 
+# 8b. A failed evaluation is a refusal even in a directory that already
+# holds a PASS result.json (a re-used results directory): the stale verdict
+# and candidate must not be recorded.
+dir=$(canned stale "$S1_RUN")
+bash "${PERF_DIR}/lib/evaluate.sh" "$dir" s1-throughput "" >/dev/null
+printf '{"not": "valid JSON"' >"${dir}/measurements.json"
+base="${work}/stale.baseline.json"
+old36 >"$base"
+before=$(sum "$base")
+expect "stale PASS result.json, evaluation fails: record_baseline refuses" 1 "$(record "$dir" s1-throughput "$base")"
+expect "stale PASS result.json, evaluation fails: old baseline byte-identical" "$before" "$(sum "$base")"
+expect "stale PASS result.json, evaluation fails: says the evaluation failed" yes "$(has "$dir" 'evaluation failed')"
+
 # 9. The committed baselines are untouched by all of the above.
 expect "perf/baselines/ byte-identical to how this test found it" "$BASELINES_BEFORE" "$(baselines_state)"
 
