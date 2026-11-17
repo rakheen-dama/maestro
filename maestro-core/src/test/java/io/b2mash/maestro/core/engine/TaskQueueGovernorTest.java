@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.engine.TaskQueueGovernor.SlotReservation;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -20,6 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static io.b2mash.maestro.core.engine.TaskQueueGovernor.UNBOUNDED;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -27,6 +29,9 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -643,6 +648,150 @@ class TaskQueueGovernorTest {
 
         boolean interruptFlag() {
             return flag.get();
+        }
+    }
+
+    /**
+     * WP6 / Issue 30: the recovery poller asks for a slot without blocking
+     * before it locks an instance (D-1), and C2's bounded queue of recovered
+     * runs (D-2), with the capacity signal it waits on (D-3).
+     */
+    @Nested
+    @DisplayName("Recovery admission")
+    class RecoveryAdmission {
+
+        private final TaskQueueGovernor g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)));
+
+        @Test
+        void admitRecoveryReservesAFreeSlotWithoutBlocking() {
+            var r = g.admitRecovery("q");
+            assertEquals(SlotReservation.Kind.RESERVED, r.kind());
+            assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+        }
+
+        @Test
+        void admitRecoveryQueuesAtMostTheQueuesConcurrencyThenDefers() {
+            var kinds = Stream.generate(() -> g.admitRecovery("q")).limit(5)
+                    .map(r -> r == null ? "DEFERRED" : r.kind().name()).toList();
+            assertEquals(List.of("RESERVED", "RESERVED", "QUEUED", "QUEUED", "DEFERRED"), kinds);
+        }
+
+        @Test
+        void admitRecoveryNeverOvertakesAWaitingRun() throws Exception {
+            g.acquireWorkflowSlot("q", "a");
+            g.acquireWorkflowSlot("q", "b"); // both slots held
+            var waiterGotIt = new CountDownLatch(1);
+            var waiter = Thread.ofVirtual().start(() -> {
+                g.acquireWorkflowSlot("q", "c");
+                waiterGotIt.countDown();
+            });
+            await().atMost(Duration.ofSeconds(5)).until(() -> waiter.getState() == Thread.State.WAITING); // c queued
+            g.releaseWorkflowSlot("a"); // a permit is free for an instant, but c is first in line
+            var r = g.admitRecovery("q"); // same thread, before c has been scheduled
+            assertEquals(SlotReservation.Kind.QUEUED, r.kind(), "never RESERVED past a waiting run");
+            assertTrue(waiterGotIt.await(5, SECONDS), "c got the permit");
+        }
+
+        @Test
+        void aReservationIsReleasedOrClaimedExactlyOnce() {
+            var r = g.admitRecovery("q");
+            r.release();
+            r.release();
+            assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q"), "one permit given back, not two");
+            g.acquireWorkflowSlot("q", "wf", r); // claim after release: falls back
+            assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+            var s = g.admitRecovery("q");
+            g.acquireWorkflowSlot("q", "wf2", s);
+            s.release(); // release after claim: no-op
+            assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"));
+        }
+
+        @Test
+        void aClaimedReservedSlotIsTheRunsSlot() {
+            var r = g.admitRecovery("q");
+            g.acquireWorkflowSlot("q", "wf", r);
+            assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"), "no second permit taken");
+            g.releaseWorkflowSlot("wf");
+            assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q"));
+        }
+
+        @Test
+        void aQueuedRunTakesItsTurnAndReturnsItsTicket() throws Exception {
+            g.acquireWorkflowSlot("q", "a");
+            g.acquireWorkflowSlot("q", "b");
+            var r = g.admitRecovery("q"); // QUEUED
+            assertEquals(1, g.recoveryHeadroom("q"));
+            var got = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> {
+                g.acquireWorkflowSlot("q", "rec", r);
+                got.countDown();
+            });
+            g.releaseWorkflowSlot("a");
+            assertTrue(got.await(5, SECONDS));
+            assertEquals(2, g.recoveryHeadroom("q"), "the ticket is back once the run holds its slot");
+        }
+
+        @Test
+        void aQueuedRunInterruptedWhileWaitingReturnsItsTicket() throws Exception {
+            g.acquireWorkflowSlot("q", "a");
+            g.acquireWorkflowSlot("q", "b");
+            var r = g.admitRecovery("q"); // QUEUED
+            assertEquals(SlotReservation.Kind.QUEUED, r.kind());
+            var thrown = new AtomicReference<@Nullable Throwable>();
+            var claimer = Thread.ofVirtual().start(() -> {
+                try {
+                    g.acquireWorkflowSlot("q", "rec", r);
+                } catch (Throwable t) {
+                    thrown.set(t);
+                }
+            });
+            await().atMost(Duration.ofSeconds(5)).until(() -> claimer.getState() == Thread.State.WAITING);
+            claimer.interrupt();
+            claimer.join(5_000);
+            assertInstanceOf(ExecutorShutdownException.class, thrown.get());
+            assertEquals(2, g.recoveryHeadroom("q"), "the ticket came back although the wait ended in an interrupt");
+        }
+
+        @Test
+        void aClosedGovernorAdmitsNothingAndWakesTheWaiter() throws Exception {
+            var seen = g.capacitySignal().epoch();
+            var woke = new CompletableFuture<Boolean>();
+            Thread.ofVirtual().start(() -> {
+                try {
+                    woke.complete(g.capacitySignal().awaitChange(seen, Duration.ofMinutes(1)));
+                } catch (InterruptedException e) {
+                    woke.complete(false);
+                }
+            });
+            g.shutdown();
+            assertTrue(woke.get(5, SECONDS));
+            assertNull(g.admitRecovery("q"));
+            assertEquals(0, g.recoveryHeadroom("q"));
+        }
+
+        @Test
+        void anUnboundedQueueAdmitsWithTheSharedSingleton() {
+            assertSame(SlotReservation.UNBOUNDED, UNBOUNDED.admitRecovery("x"));
+            assertSame(SlotReservation.UNBOUNDED, UNBOUNDED.admitRecovery("y"));
+            assertEquals(Integer.MAX_VALUE, UNBOUNDED.recoveryHeadroom("x"));
+        }
+
+        @Test
+        void aDefaultBoundedQueueHasItsOwnTickets() {
+            var d = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(1, 1));
+            assertEquals(2, d.recoveryHeadroom("a"));
+            d.admitRecovery("a");
+            d.admitRecovery("a");
+            assertEquals(0, d.recoveryHeadroom("a"));
+            assertEquals(2, d.recoveryHeadroom("b"), "queue b has separate pools and tickets");
+        }
+
+        @Test
+        void aGiveSignalsCapacity() {
+            var seen = g.capacitySignal().epoch();
+            g.acquireWorkflowSlot("q", "a");
+            g.releaseWorkflowSlot("a");
+            assertNotEquals(seen, g.capacitySignal().epoch());
         }
     }
 
