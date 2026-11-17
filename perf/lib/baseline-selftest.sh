@@ -59,6 +59,11 @@ record() {
 has() { grep -qE -- "$2" "$1/record.out" && echo yes || echo no; }
 sum() { if [[ -f "$1" ]]; then shasum -a 256 "$1" | awk '{print $1}'; else echo absent; fi; }
 
+# The baselines as this test found them (a developer may be reviewing an
+# intentional, uncommitted change): the test must leave them byte-identical.
+baselines_state() { (cd "${PERF_DIR}/baselines" && for f in *.json; do printf '%s %s\n' "$f" "$(sum "$f")"; done); }
+BASELINES_BEFORE=$(baselines_state)
+
 old36() { jq -c '.statementsPerWorkflowNet = 36 | .runId = "r20261112t223114z" | .engineCommit = "f6518d0000000000000000000000000000000000"' \
   "${PERF_DIR}/baselines/s1-throughput.json"; }
 
@@ -198,7 +203,7 @@ for target in 'harnessCommit: .identity.repo.harnessCommit' '.notes += [$n]'; do
 done
 
 # 9. The committed baselines are untouched by all of the above.
-expect "committed baselines untouched" "" "$(git -C "$PERF_DIR" status --porcelain -- baselines)"
+expect "perf/baselines/ byte-identical to how this test found it" "$BASELINES_BEFORE" "$(baselines_state)"
 
 if ((failures > 0)); then
   echo "baseline-selftest: ${failures} case(s) failed"
