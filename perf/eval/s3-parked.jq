@@ -181,8 +181,10 @@
 #   "released", each with exactly one perf.release signal row, consumed, none
 #   unconsumed, every signal accepted (202), within the release timeout
 #   (120 s + Pmax / 10 s); crossNode is recorded (true when replicas > 1:
-#   signal n went to nodeFor(n + 1), so every signal landed on a node that
-#   does not own its run). That timeout is longer than the 30 s wake
+#   signal n went to nodeFor(n + 1), a node other than the one that started
+#   run n, nodeFor(n); that this node still owned the run at release is
+#   assumed, not recorded per signal: a run moves only by adoption after a
+#   node failure, and validity.noRestart excludes a restart). That timeout is longer than the 30 s wake
 #   re-check, so releaseWakes also passes a broken cross-node NOTIFY (the
 #   runs then wake on their own re-checks): advisory.crossNodeWake WARNs at
 #   replicas > 1 when the drain took longer than one wake-recheck interval.
@@ -589,7 +591,7 @@ $identity[0] as $id
             {released: "== Pmax (\($pmax)) COMPLETED with result \"released\"", signalRowsPerRun: "exactly 1, consumed",
              within: "\($rel.timeoutSecs // "n/a") s"};
             if $rel == null then "no release was run\(if $m.stopped != null then " (\($m.stopped))" else "" end)"
-            elif $ok then "\($s.released)/\($pmax) parked runs released (COMPLETED, result \"released\"), each with exactly one consumed perf.release row; all terminal \($drainSecs) s after the release window opened\(if $relCross == true then "; every signal was sent to a node that does not own its run (whether the wake crossed nodes by NOTIFY rather than by re-check: advisory.crossNodeWake)" else "" end)"
+            elif $ok then "\($s.released)/\($pmax) parked runs released (COMPLETED, result \"released\"), each with exactly one consumed perf.release row; all terminal \($drainSecs) s after the release window opened\(if $relCross == true then "; every signal was sent to a node other than the one that started its run (routing nodeFor(n + 1) vs nodeFor(n); per-signal ownership is not recorded; whether the wake crossed nodes by NOTIFY rather than by re-check: advisory.crossNodeWake)" else "" end)"
             else [
               (if $s.total != $pmax then "\($s.total) park rows for \($pmax) parked" else null end),
               (if $s.released != $pmax then "\($s.released) of \($pmax) COMPLETED with result \"released\" (results \($s.results | tojson), by status \($s.byStatus | tojson))" else null end),
@@ -780,7 +782,7 @@ $identity[0] as $id
           | check("advisory.crossNodeWake"; "advisory"; if $ok then "PASS" else "WARN" end;
                   {replicas: $replicas, crossNode: $relCross, drainSecs: $d, wakeRecheckSecs: $recheckSecs};
                   {drainSecs: "<= wakeRecheckSecs (\($recheckSecs))"};
-                  if $ok then "\($replicas) replicas: every signal went to a node that does not own its run, and all \($rel.count // "?") released runs were terminal \($d) s after the release window opened, within one \($recheckSecs) s wake re-check: consistent with a cross-node NOTIFY wake (with NOTIFY broken, the runs wake on their own re-checks, whose phases are spread over the interval, so the last would take close to a full interval)"
+                  if $ok then "\($replicas) replicas: every signal went to a node other than the one that started its run, and all \($rel.count // "?") released runs were terminal \($d) s after the release window opened, within one \($recheckSecs) s wake re-check: consistent with a cross-node NOTIFY wake (with NOTIFY broken, the runs wake on their own re-checks, whose phases are spread over the interval, so the last would take close to a full interval)"
                   else "\($replicas) replicas: the release drained in \($d) s, longer than the \($recheckSecs) s wake re-check: the runs may have woken on their own re-check rather than by a cross-node NOTIFY, and correctness.releaseWakes (timeout \($rel.timeoutSecs // "n/a") s) cannot tell the two apart, so cross-node wake is NOT demonstrated" end)
         end),
     advisory_guarded("advisory.runAbandoned";

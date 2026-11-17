@@ -4,9 +4,10 @@
 //
 // Routing: the signal for workflow n goes to nodeFor(n + 1). start-rate.js
 // (Scenario 3's seeding) started workflow n on nodeFor(n), and a run
-// executes on the node that started it, so with two or more replicas EVERY
-// signal lands on a node that does not own the run: the signal row commits
-// there and the parked await on the owning node must be woken across nodes
+// executes on the node that started it (it moves only by adoption after a
+// node failure), so with two or more replicas EVERY signal lands on a node
+// other than the one that started the run: the signal row commits there and
+// the parked await on the starting node must be woken across nodes
 // (Postgres NOTIFY, or at worst its next wake re-check). With one replica
 // nodeFor(n + 1) is that replica.
 //
