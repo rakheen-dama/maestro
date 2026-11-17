@@ -49,10 +49,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '25'
           distribution: 'temurin'
@@ -71,7 +71,7 @@ jobs:
       # what make a failure diagnosable, and the run asserts process identity
       # against those pids.
       - name: Upload E2E logs
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: e2e-logs
@@ -95,10 +95,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '25'
           distribution: 'temurin'
@@ -118,7 +118,7 @@ jobs:
       # failure reaches the developer; the JUnit message names the seed, the
       # violated invariants and the dump paths inside this artifact.
       - name: Upload chaos evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: chaos-pr-gate-evidence
@@ -136,10 +136,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '25'
           distribution: 'temurin'
@@ -153,7 +153,7 @@ jobs:
           -Dmaestro.chaos.soak=true -Dmaestro.chaos.durationMinutes=120
 
       - name: Upload chaos evidence
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: chaos-soak-evidence
