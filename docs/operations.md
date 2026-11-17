@@ -229,6 +229,31 @@ status. A retry whose relaunch finds the row already terminated, or loses
 the adoption compare-and-set to another node, also returns
 `LOCK_HELD_ELSEWHERE`.
 
+**A Retry that lands as the failed run finishes.** A run commits `FAILED`
+(and its `WORKFLOW_FAILED`) first, then reports `workflowFailed` to the
+observer, hands the lifecycle event to its publisher and only in its
+`finally` leaves the node's local running registry and then releases its
+instance lock. A Retry on the same node in the gap before the registry
+removal still finds the row `FAILED`: it commits the reopen (the planned
+deletes and `RUNNING`), then finds the run registered locally, launches
+nothing and returns `ALREADY_RUNNING_LOCALLY`. The row is then `RUNNING`
+with no run anywhere until a recovery pass adopts it; that pass re-runs the
+deleted failure and completes
+(`AdminRetryTest.aRetryBeforeTheFailedRunLeavesThisNode_reopensTheRowAndRecoveryRelaunchesIt`).
+The rest of this paragraph is traced, not tested. `AdminCommandDispatcher`
+logs that outcome as a `WARN` no-op and acknowledges the command. With a
+lock backend, a Retry after the registry removal but before the lock release
+returns `LOCK_HELD_ELSEWHERE` with the same end state. The first recovery
+pass on any node once the failed run has left the registry (and, with a lock
+backend, released its lock) adopts it, so the retried run starts within one
+`maestro.recovery.poll-interval` (default 60 s) of the failed run's end; no
+`WORKFLOW_RETRIED` lifecycle event is published for it. The build before
+this change behaved the same way: it deleted the failure memos and wrote
+`RUNNING` before the same local check. The check is not moved ahead of the
+reopen because the dispatcher acknowledges `ALREADY_RUNNING_LOCALLY`: a
+Retry refused before writing would leave the workflow `FAILED` and the
+operator's Retry lost.
+
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only
 *after* the retry. That works because a retry waits the full timeout again,
