@@ -310,6 +310,12 @@ health answers that read `UP` when they should not. Issues 69–70, from
 shutdown (WP5), Issues 72–73, from recovery capacity (WP6), and Issues 74
 and 77–79, from store hygiene (WP8), are filed **open**; see the table. No Issue 71 was
 filed; 75 and 76 are held for the load-test package (WP12).
+Issues 80–86, filed by the housekeeping package (WP13) from findings the
+cycle's reviews deferred, are **open**: the shutdown drain can miss a late
+launch, an observer `Error` escapes the engine's guard, two branches cannot
+await one signal name at once, orphaned-signal adoption has two owners, the
+wake listener leaves autocommit on, the upgrade fixtures have no procedure
+for a breaking core API change, and retried store faults are invisible.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -403,6 +409,13 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | Open |
 | [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | Open |
 | [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | Open |
+| [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | Open |
+| [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | Open |
+| [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | Open |
+| [83](#issue-83) | Orphaned-signal adoption has two owners, and the executor's call is unpinned over the in-memory store | Testing gap — SPI contract | Low | Open |
+| [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | Open |
+| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
+| [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -5368,6 +5381,265 @@ the maintainer accepted the conditional wording instead.
 **Done when.** A node beside a live co-tenant with a same-named type logs no
 warning for it, and still warns for a name with no live leader, pinned by a
 starter test.
+
+---
+
+<a id="issue-80"></a>
+
+### Issue 80 — Shutdown's drain can miss a run registered after it began, and not wait for it {#issue-80}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP5
+> and WP6 reviews (pre-existing; reached more often since WP6's capacity
+> passes launch adoptions while a node runs). Traced, not tested.
+
+**Kind:** Library gap — shutdown. **Severity:** Low.
+
+**What happens.** `WorkflowExecutor.shutdown` drains by iterating
+`runningWorkflows.entrySet()` once, joining each run against the deadline.
+`runningWorkflows` is a `ConcurrentHashMap`, whose iterator is weakly
+consistent: an entry put after the iterator passed its bucket is not visited.
+A launch that passed its `shuttingDown` check before shutdown began, and
+registers only after the drain's iterator passed, is asked to stop (the
+launch re-checks `shuttingDown` after its `put`, R22(1)) but is never joined.
+Shutdown can then return, and bean destruction take the `DataSource`, while
+that run is still unwinding.
+
+**Where.** `WorkflowExecutor.shutdown(ShutdownDeadline)`, step 5 (the drain
+loop), and `WorkflowExecutor.launchWorkflow` (register, re-check, start).
+
+**Harm.** The late run's next store call fails on a closed pool. The store
+fault guard then abandons it as `STORE_UNAVAILABLE` and it writes nothing, so
+the workflow stays recoverable (traced): the cost is a misleading abandon
+reason and a run that outlives the summary line's count. Nothing is recorded
+as a failure.
+
+**How to tackle it.** Drain until the map holds no entry the drain has not
+joined: iterate over a snapshot, then re-snapshot and join any new entry,
+until a pass finds none or the deadline passes. A test can hold a launch
+between its `shuttingDown` check and its `put` (a test hook there, like the
+executor's existing `beforeRunThreadStart`) and assert `shutdown()` does not return before that run's thread
+ends.
+
+**Done when.** That test passes, and a run registered during the drain is
+either joined or reported in the "still running" summary.
+
+---
+
+<a id="issue-81"></a>
+
+### Issue 81 — An `Error` from an observer callback escapes the engine's guard {#issue-81}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP6
+> scoped re-review. Traced, not tested.
+
+**Kind:** Library gap — observer isolation. **Severity:** Low.
+
+**What happens.** `WorkflowExecutor.emit`, which wraps every `EngineObserver`
+callback, catches `RuntimeException` only. An `Error` thrown by an observer
+propagates into whatever engine path made the call. In `launchWorkflow`,
+`workflowResumed` is emitted after the run's thread has started: an `Error`
+there leaves the run running (the slot reservation's compare-and-set keeps
+the cleanup from double-releasing), but it propagates out of
+`resumeWorkflow`, so the recovery page loop skips `tally.adopted++` and the
+whole pass ends (`recoverPage` isolates only `WorkflowInstantiationException`);
+the background-loop guard then logs it and backs off. `workflowStarted` is
+emitted before the thread starts, so an `Error` there fails the launch:
+the lock is released and the error reaches the caller of `startWorkflow`.
+
+**Where.** `WorkflowExecutor.emit`; `WorkflowExecutor.launchWorkflow`;
+`WorkflowExecutor.recoverPage`.
+
+**Harm.** A faulty observer (a metrics or tracing adapter hitting a
+`LinkageError`, say) under-counts adoptions, cuts recovery passes short and
+can fail fresh starts. Every other emit site lets an observer `Error` into
+the engine the same way.
+
+**How to tackle it.** Decide what an observer may break. Either catch every
+`Throwable` in `emit` except `MaestroControlFlowError` and
+`VirtualMachineError` (logging it like a `RuntimeException`), or, at least,
+count the adoption before emitting `workflowResumed` and emit it outside the
+pass's failure path.
+
+**Done when.** An observer that throws an `Error` from `workflowResumed` does
+not end a recovery pass and does not change the pass's `adopted` count, pinned
+by a core test.
+
+---
+
+<a id="issue-82"></a>
+
+### Issue 82 — Two `parallel()` branches awaiting the same signal name at once collide on one park key {#issue-82}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP2
+> review ("existing tests cover the supported shapes"). Traced, not tested.
+
+**Kind:** Library gap — parallel signals. **Severity:** Low.
+
+**What happens.** A signal await parks on the key
+`<workflowId>:signal:<signalName>`, with no branch in it. `ParkingLot.register`
+refuses a second waiter on an occupied key with `IllegalStateException`
+("Parking key '…' already occupied"). So when two branches of one
+`parallel()` both reach `awaitSignal` (or `collectSignals`) on the same
+signal name while neither has its signal, the second branch's park throws.
+
+**Where.** `SignalManager` (the two `parkKey` assignments, `workflowId +
+":signal:" + signalName`); `ParkingLot.register`.
+
+**Harm.** The second branch fails with an `IllegalStateException`, an
+ordinary branch failure: the `parallel()` call throws, and unless the
+workflow catches it the workflow fails and compensates (traced). Nothing in
+`docs/pitfalls.md` or `docs/concepts.md` says this shape is unsupported.
+
+**How to tackle it.** Either key a branch's park by its sequence slot (each
+await already has one), so two waiters on one name can park side by side and
+a delivered signal wakes one of them; or document the shape as unsupported
+and fail it with a clear message at the second await.
+
+**Done when.** Two branches awaiting one signal name each consume a signal
+when two are delivered, pinned by a core test; or the restriction is
+documented and the error names it.
+
+---
+
+<a id="issue-83"></a>
+
+### Issue 83 — Orphaned-signal adoption has two owners, and the executor's call is unpinned over the in-memory store {#issue-83}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
+> final review.
+
+**Kind:** Testing gap — SPI contract. **Severity:** Low.
+
+**What happens.** The `WorkflowStore` Javadoc gives the duty of adopting
+pre-delivered signals (self-recovery case 2) to two parties:
+`createInstance` says the store "should adopt any orphaned signals" after
+creating the row, and `adoptOrphanedSignals` says it "should be called during
+workflow instance creation". Both happen: the JDBC store adopts inside
+`createInstance`, and `WorkflowExecutor.startWorkflow` calls
+`signalManager.adoptOrphanedSignals` right after `createInstance`.
+`InMemoryWorkflowStore.createInstance` does not adopt, so over the test kit
+only the executor's call does it. A mutation that deletes the executor's
+call survives every suite, because the JDBC store covers for it on Postgres
+and no in-memory test sends a signal before the start.
+
+**Where.** `WorkflowStore.createInstance` and `adoptOrphanedSignals` Javadoc;
+`WorkflowExecutor.startWorkflow`; `AbstractJdbcWorkflowStore.createInstance`;
+`InMemoryWorkflowStore.createInstance`.
+
+**Harm.** A third-party store that follows `adoptOrphanedSignals`' wording
+and does not adopt in `createInstance` depends on the executor's call, which
+nothing pins: removing it would lose pre-delivered signals on such stores
+(they stay unconsumed until the janitor purges them).
+
+**How to tackle it.** Give the duty one owner: the executor's call (the store
+then only implements `adoptOrphanedSignals`), and say so in both Javadocs.
+Add a kit test that signals a workflow id before starting it and asserts the
+await consumes it.
+
+**Done when.** The Javadoc names one owner and that kit test fails with the
+executor's call removed.
+
+---
+
+<a id="issue-84"></a>
+
+### Issue 84 — The wake listener turns autocommit on for its pooled connection and never restores it {#issue-84}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP10
+> whole-branch review. Traced, not tested.
+
+**Kind:** Library gap — connection hygiene. **Severity:** Low.
+
+**What happens.** `PostgresWakeListener.connect` borrows a connection from the
+`DataSource` and calls `setAutoCommit(true)` before `LISTEN`.
+`releaseConnection` issues `UNLISTEN *`, restores the network timeout it
+changed, and closes (returns) the connection, but does not put autocommit
+back.
+
+**Where.** `PostgresWakeListener.connect` and `releaseConnection`
+(`maestro-store-postgres/.../notify/PostgresWakeListener.java`).
+
+**Harm.** None with HikariCP, which resets a connection's autocommit to the
+pool's setting when it is returned (HikariCP's documented behaviour, not
+tested here). A pool that does not reset state, configured with
+`autoCommit=false`, would hand the next borrower a connection in autocommit
+mode, once per listener reconnect or shutdown.
+
+**How to tackle it.** Record `getAutoCommit()` before the change and restore
+it in `releaseConnection`, as is already done for the network timeout.
+
+**Done when.** A test with a `DataSource` whose connections start with
+autocommit off sees it off again after the listener releases the connection.
+
+---
+
+<a id="issue-85"></a>
+
+### Issue 85 — The upgrade fixtures have no procedure for a core API change that breaks a frozen package {#issue-85}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
+> final review.
+
+**Kind:** Testing gap — upgrade fixtures. **Severity:** Low.
+
+**What happens.** A seeded-history fixture's workflow source
+(`io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows`) is
+frozen: `RELEASING.md` § Upgrade fixtures forbids editing it, because its
+SHA-256 is pinned and editing it voids the dump it produced. It is compiled
+with the rest of `maestro-integration-tests` against today's `maestro-core`.
+A future change to the public workflow-author API it uses (annotations,
+`WorkflowContext`, activity interfaces, model and exception types) would stop
+it compiling, and no procedure says what to do then. Separately, the capture
+driver's git helper (`SeededHistoryCapture`, `redirectErrorStream(true)`)
+reads git's stderr as output, so a git warning makes the driver refuse to
+capture; it fails closed, never with a bad fixture.
+
+**Where.** `RELEASING.md` § Upgrade fixtures; `maestro-integration-tests`
+package `io.b2mash.maestro.integration.upgrade.cbf5a2a`.
+
+**Harm.** The first such API change forces an unplanned choice between
+deleting evidence and editing it, under time pressure. The stderr merge
+costs a retry.
+
+**How to tackle it.** Write the procedure before it is needed (for example:
+keep the frozen source compiling through a deprecated shim in `maestro-core`
+until the next fixture replaces it, or move the frozen package to its own
+source set compiled against the fixture's tag). Read git's stderr separately
+in the driver.
+
+**Done when.** `RELEASING.md` states the procedure, and the driver ignores
+git's stderr when parsing its output.
+
+---
+
+<a id="issue-86"></a>
+
+### Issue 86 — A store fault the guard retries away is logged at `DEBUG` only and counted nowhere {#issue-86}
+
+> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the
+> host-safety cycle's handover (§4.2, "not filed yet").
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** `StoreFaultGuard` retries a run's outcome append in place
+when the store reports itself unavailable (`StoreUnavailableException`),
+logging each retry at `DEBUG` ("Store unavailable on … (attempt n/m),
+retrying in …"). A fault the retries absorb leaves no `WARN`, no meter and no
+observer callback. Only a fault that outlasts them is visible: one `WARN`,
+the `STORE_UNAVAILABLE` abandon and `maestro.run.abandoned{reason="store_unavailable"}`.
+
+**Where.** `StoreFaultGuard.waitBeforeRetry`
+(`maestro-core/src/main/java/io/b2mash/maestro/core/engine/StoreFaultGuard.java`).
+
+**Harm.** A database that drops connections often but briefly is invisible
+from Maestro's side until a fault lasts long enough to abandon runs.
+
+**How to tackle it.** Count each in-place retry on a meter (for example
+`maestro.store.retries{method}`) through a new observer callback, and keep the
+log line at `DEBUG`.
+
+**Done when.** A test that fails one append once sees the counter move by one
+and the run continue.
 
 ---
 
