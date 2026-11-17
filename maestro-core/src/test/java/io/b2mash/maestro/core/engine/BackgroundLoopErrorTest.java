@@ -501,19 +501,21 @@ class BackgroundLoopErrorTest {
     }
 
     /**
-     * close() while renewAll swallows the interrupt and then throws: the guard
-     * sees the renewer stopping, does not count or report the failure, and the
-     * thread ends.
+     * close() while renewAll is in flight and then throws: the guard sees the
+     * renewer stopping, does not count or report the failure, and the thread
+     * ends. Since WP5 (Issue 64) close() no longer interrupts the renewer, so
+     * the in-flight call ends when the test releases it, after close().
      */
     @Test
     void renewer_closeWhileRenewAllSwallowsTheInterruptAndThrows_endsUncounted() throws Exception {
         var thread = captureRenewerThread();
         var entered = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
         lock.alwaysFail = true;
         lock.answer = () -> {
             entered.countDown();
             try {
-                new CountDownLatch(1).await();                   // until close() interrupts
+                release.await();                                 // until the test releases it, after close()
             } catch (InterruptedException swallowed) {
                 // a driver that swallows the interrupt (flag cleared) and then fails
             }
@@ -523,6 +525,7 @@ class BackgroundLoopErrorTest {
         assertTrue(entered.await(5, TimeUnit.SECONDS), "the renewer never reached renewAll");
 
         manager.close();
+        release.countDown();
 
         assertTrue(thread.get().join(Duration.ofSeconds(4)), "the renewer thread outlived close()");
         assertEquals(0, manager.renewFailureStreak(), "a failure while stopping is not counted");

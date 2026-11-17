@@ -14,6 +14,8 @@ import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
@@ -49,7 +51,9 @@ import java.util.function.Supplier;
  * thaws). An {@code Error} in a pass is contained by the renewer's guard:
  * every handle is kept and the next pass runs one interval later.
  *
- * <p><b>Thread safety:</b> all methods are thread-safe.
+ * <p><b>Thread safety:</b> all methods are thread-safe. {@link #close(Duration)}
+ * never interrupts the renewer: a pass in progress finishes, and
+ * {@code close(join)} waits for it for at most {@code join}.
  */
 final class WorkflowInstanceLockManager {
 
@@ -58,6 +62,8 @@ final class WorkflowInstanceLockManager {
     static final Duration DEFAULT_LOCK_TTL = Duration.ofSeconds(30);
     static final Duration DEFAULT_RENEW_INTERVAL = Duration.ofSeconds(10);
     static final String DEFAULT_KEY_PREFIX = "maestro:lock:";
+    /** How long {@link #close()} waits for the renewer to end; the wake listener's bound too (WP10). */
+    static final Duration CLOSE_JOIN = Duration.ofSeconds(2);
     private static final String WORKFLOW_KEY_SEGMENT = "workflow:";
 
     /** Outcome of a lock acquisition attempt. */
@@ -80,6 +86,8 @@ final class WorkflowInstanceLockManager {
     private final ConcurrentHashMap<String, LockHandle> heldLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean renewerStarted = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
+    /** Counted down by {@link #close(Duration)}: ends the renewer's wait between passes at once. */
+    private final CountDownLatch stop = new CountDownLatch(1);
     private volatile @Nullable Thread renewerThread;
     private volatile Consumer<String> lockLostCallback = _ -> { };
 
@@ -352,17 +360,42 @@ final class WorkflowInstanceLockManager {
     }
 
     /**
+     * Stops the renewer thread, waiting for it for at most {@link #CLOSE_JOIN}.
+     * Same as {@code close(CLOSE_JOIN)}.
+     */
+    void close() {
+        close(CLOSE_JOIN);
+    }
+
+    /**
      * Stops the renewer thread. Still-held locks are left to expire via TTL —
      * their workflow threads may still be mid-activity during shutdown, and
      * TTL expiry is the safe handoff to another node.
+     *
+     * <p>Never interrupts the renewer (Issue 64): a pass in progress is a
+     * backend call — JDBC, for Postgres — and an interrupt on a virtual thread
+     * closes its socket and fails the pass. A latch ends the wait between
+     * passes at once; a pass in progress finishes, and this call waits for it
+     * for at most {@code join}. A pass that fails once the manager is closed
+     * counts no renewal failure. If the calling thread is interrupted while it
+     * waits, its interrupt status is restored and the call returns as if the
+     * wait had timed out. Idempotent: a second call returns at once.
+     *
+     * @param join how long to wait for the renewer to end; zero or negative
+     *             does not wait
      */
-    void close() {
+    void close(Duration join) {
         if (!closed.compareAndSet(false, true)) {
             return;
         }
+        stop.countDown();
         var thread = renewerThread;
-        if (thread != null) {
-            thread.interrupt();
+        if (thread != null && thread != Thread.currentThread() && join.isPositive()) {
+            try {
+                thread.join(join);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
         if (!heldLocks.isEmpty()) {
             logger.info("{} instance lock(s) still held at close — they will expire via TTL ({})",
@@ -396,8 +429,11 @@ final class WorkflowInstanceLockManager {
     private void renewLoop() {
         while (!closed.get()) {
             try {
-                Thread.sleep(renewInterval);
+                if (stop.await(renewInterval.toNanos(), TimeUnit.NANOSECONDS)) {
+                    return; // closed
+                }
             } catch (InterruptedException e) {
+                // Nothing in Maestro interrupts the renewer; whoever did is stopping it.
                 Thread.currentThread().interrupt();
                 return;
             }
@@ -444,6 +480,12 @@ final class WorkflowInstanceLockManager {
                 // Backend failure — nothing is known, so nothing is lost: keep
                 // every handle and retry next pass. Logged through the guard:
                 // once loudly, then quietly with a reminder every 5 minutes.
+                // Once closed it is a routine shutdown, not an outage: nothing
+                // is counted (Issue 64), and the guard logs at DEBUG.
+                if (closed.get()) {
+                    guard.failed(e);
+                    return false;
+                }
                 snapshot.forEach((_, workflowId) -> emit("instanceLockRenewFailed", workflowId,
                         () -> observer.instanceLockRenewFailed(workflowId)));
                 guard.failed(e);

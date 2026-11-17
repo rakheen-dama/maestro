@@ -1847,7 +1847,7 @@ public final class WorkflowExecutor {
         taskQueueGovernor.reclaimShutdownPermits();
 
         // Stop the lock renewer; locks of overrunning workflows expire via TTL
-        instanceLockManager.close();
+        instanceLockManager.close(WorkflowInstanceLockManager.CLOSE_JOIN);
 
         // Give the lifecycle publisher a short, bounded window to flush events
         // queued by workflows that just drained, then force it down — a stalled
