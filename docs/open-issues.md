@@ -333,7 +333,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
 | [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
 | [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
-| [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
+| [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | **Resolved** |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
 | [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
 | [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
@@ -3410,7 +3410,20 @@ shipped them), and a builder test pins each default.
 
 ### Issue 38 — `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` {#issue-38}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> **Resolved** (WP10, PR pending). The `WARN` came from the pool, not Maestro:
+> `com.zaxxer.hikari.pool.ProxyConnection` logged `Connection … marked as
+> broken because of SQLSTATE(08003)` (connection does not exist) when
+> `close()` ran `UNLISTEN *` on the connection the interrupt had already
+> closed, and the pool evicted it. `close()` no longer interrupts: the poll
+> thread leaves within one poll, sets a 1 s network timeout, issues
+> `UNLISTEN *`, restores the timeout and returns the connection itself;
+> `close()` joins it for at most 2 s and never touches the connection.
+> Pinned by `PostgresWakeListenerShutdownTest` (Hikari: no pool `WARN`, the
+> same backend reused, nothing listening, the network timeout as lent),
+> `PostgresWakeListenerCloseOrderTest` (the order, by construction) and
+> `PostgresSignalWakeAutoConfigurationTest.closingTheContextLogsNoPoolWarnAndClosesTheListenerBeforeThePool`.
+>
+> Filed by the final whole-branch review of the bounded-host-load
 > cycle (2026-11-11). Recorded, not fixed, in that cycle.
 
 **Kind:** Library defect — log noise. **Severity:** Low (nothing is lost; a

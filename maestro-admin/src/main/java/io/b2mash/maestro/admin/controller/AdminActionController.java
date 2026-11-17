@@ -42,7 +42,8 @@ public class AdminActionController {
     /**
      * Sends a retry command for a failed workflow.
      *
-     * <p>The workflow will resume execution from its last failed step.
+     * <p>The service removes the failure that ended the run and what handled it,
+     * then re-runs the workflow. It may refuse (the row then stays FAILED).
      *
      * @param workflowId    the business workflow ID to retry
      * @param redirectAttrs flash attributes for the redirect response
