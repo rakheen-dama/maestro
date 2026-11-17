@@ -17,6 +17,11 @@ chaos evidence, which still measures the residual one-step side-effect window.
 **Updated:** 2026-11-11 — Issue 34 (a store outage during a state write fails
 a healthy workflow) filed and **resolved** on branch
 `fix/store-fault-stand-down`; it generalises Issue 20.
+**Updated:** 2026-11-17, after the engine-hardening cycle (PRs #50–#63):
+issues 29, 30, 33, 36, 37, 38 and 39 are **resolved** and 64 is partly
+resolved; issues 40–79 were filed along the way (no Issue 71 was filed; 75
+and 76 are held for the load-test package), and 80 onward by its
+housekeeping package.
 
 This document is self-contained. You should not need to read the PR, the commit
 history, or `docs/test-plan.md` to act on anything here — though
@@ -32,8 +37,7 @@ issue you are tackling in section 5; each is written to stand alone.
 
 Maestro is an embeddable durable workflow engine shipped as a Spring Boot
 starter. It gives you Temporal-style workflow durability without a central
-server, using infrastructure you already run: Postgres, Kafka, and
-Valkey/Redis.
+server, using infrastructure you already run: Postgres and Kafka.
 
 **The core trick is memoization against an event log.**
 
@@ -69,8 +73,10 @@ Only active workflows are recoverable.
 | SPI | Job | Implementations |
 |---|---|---|
 | `WorkflowStore` | Durable state — instances, events, signals, timers | Postgres (via `maestro-store-jdbc`) |
-| `WorkflowMessaging` | Signal transport, lifecycle events (Kafka only) | Kafka, Postgres |
-| `DistributedLock` | Instance locking, leader election | Valkey, Postgres |
+| `WorkflowMessaging` | Signal transport, lifecycle events | Kafka (`maestro-messaging-kafka`) |
+| `DistributedLock` | Instance locking, leader election | Postgres row locks (`maestro-store-postgres`) |
+
+`maestro-test` has an in-memory implementation of each, for unit tests.
 
 **Locks are an optimisation, not the correctness backstop.** The SPI explicitly
 says the engine proceeds unlocked if the lock backend is unavailable; the unique
@@ -80,19 +86,26 @@ this in mind — several issues below are only sensible in that light.
 ### Module map
 
 ```
+maestro-bom                   Platform aligning every module's version.
 maestro-core                  Engine. Pure Java, NEVER depends on Spring.
 maestro-spring-boot-starter   Auto-configuration, annotations, MaestroClient.
 maestro-store-jdbc            Abstract JDBC store.
-maestro-store-postgres        Postgres store + Flyway migrations (version band 1-99).
-maestro-messaging-kafka       Kafka transport.        [primary]
-maestro-messaging-postgres    Postgres transport.     (band 200-299)
-maestro-lock-valkey           Valkey lock.
-maestro-lock-postgres         Postgres lock.          (band 100-199)
+maestro-store-postgres        Postgres store, Postgres lock, LISTEN/NOTIFY wake;
+                              Flyway migrations (store V1-V9 and V101, lock V100;
+                              every new one takes the next number in 101-199).
+maestro-messaging-kafka       Kafka transport (the only one).
 maestro-test                  In-memory SPIs, TestWorkflowEnvironment, DeterminismChecker.
 maestro-integration-tests     Real-backend suites (not published).
-maestro-admin / -admin-client Dashboard + event publisher.
-maestro-samples/…             Demos, incl. the loan-origination E2E.
+maestro-admin                 Dashboard.
+maestro-admin-client          One hand-built lifecycle-event publisher; no
+                              auto-configuration (Issue 52).
+maestro-samples/…             Demos, incl. the loan-origination E2E and
+                              sample-perf (the k6 load-test app, not published).
 ```
+
+The Valkey lock, the RabbitMQ transport and the Postgres messaging transport
+named in older sections below were removed (2026-11-04); band 200–299, the
+Postgres transport's migrations, stays retired.
 
 ---
 
@@ -102,16 +115,19 @@ Until recently **every engine test ran against in-memory fakes.** The engine had
 never executed against real Postgres in CI. That gap shipped real bugs, so
 P0–P6 built out real-backend testing. The result:
 
-- `maestro-integration-tests` runs **65 tests** against Testcontainers Postgres
-  and Kafka on every PR, via the normal `./gradlew build`.
-- `maestro-lock-postgres` and `maestro-messaging-postgres` gained their first
-  real suites (37 tests).
-- The loan-origination E2E (6 scenarios, including `kill -9` recovery and a
-  two-node scenario) runs nightly in CI.
-- A module coverage gate fails the build if a `maestro-*` module with production
-  code has no tests. As of this update the allowlist is **empty**:
-  `maestro-messaging-rabbitmq`, `maestro-admin`, `maestro-admin-client`, and
-  `maestro-store-jdbc` all gained real suites closing former Issue 10 (see §5).
+- `maestro-integration-tests` runs against Testcontainers Postgres and Kafka
+  on every PR, via the normal `./gradlew build` (65 tests at the time; the
+  count has grown since).
+- The Postgres lock and the Postgres messaging transport, then separate
+  modules, gained their first real suites (37 tests). The transport has since
+  been removed and the lock now lives in `maestro-store-postgres`.
+- The loan-origination E2E (then 6 scenarios, now 10, including `kill -9`
+  recovery and multi-node scenarios) runs nightly in CI.
+- A module coverage gate (`verifyModuleTestCoverage`, part of `check`) fails
+  the build if a module with production code has no test class. The allowlist
+  is **empty**: `maestro-admin`, `maestro-admin-client`, `maestro-store-jdbc`
+  and the since-removed RabbitMQ transport all gained real suites, closing
+  former Issue 10 (see §5).
 
 **Six defects were found and fixed** in the process. They are listed here only
 so you don't re-report them: a Flyway version collision that made the
@@ -169,8 +185,8 @@ how to read its evidence, and `.superpowers/sdd/multi-instance/
 chaos-harness-design.md` for the full design. The separate
 loan-origination E2E script above (`sample-loan-origination/e2e/run-e2e.sh`,
 10 scenarios including multi-node owner-kill adoption, rolling restart,
-timer-leader failover, and cross-node admin commands on both lock backends)
-still runs nightly and on demand in the same CI file, independent of
+timer-leader failover, and cross-node admin commands; Postgres is the only
+lock backend since 2026-11-04) still runs nightly and on demand in the same CI file, independent of
 `e2eTest`.
 
 **Where tests belong.** Unit tests live in their module. Tests that need a real
@@ -252,8 +268,11 @@ new migration above V100. Four more (36–39), found by that cycle's final
 whole-branch review, were filed **open**: the test kit cannot apply the default
 concurrency limits, `WorkflowExecutor`'s constructors need a builder, the wake
 listener's shutdown WARN, and silent stranding under another `service_name`.
-Issue 37 is since **resolved** by `WorkflowExecutor.builder(...)` and the
-removal of the ten constructors — see its section; 36, 38 and 39 remain open.
+All four are since **resolved** by the engine-hardening cycle: 37 by
+`WorkflowExecutor.builder(...)` and the removal of the ten constructors
+(PR #50), 38 by the wake listener's non-interrupting close (PR #56), 36 by the
+test kit's opt-in limits (PR #62) and 39 by a startup WARN (PR #63). The same
+cycle resolved 29 (PR #60), 30 (PR #62) and 33 (PR #57).
 Issue 40, found by the review of WP9's production schema guidance
 (2026-11-12), is filed **open**: under `validate`, a role that cannot see
 `maestro_schema_history` is told to apply every migration. Issue 41, found by
@@ -279,6 +298,18 @@ failure analysis, and an ambiguous unqualified `byte[]` template point is only
 warned about. Issues 57–58, from the same work's final fix wave, are filed
 **open**: the `byte[]` template check runs a programmatic serializer supplier
 once, and it precedes Maestro's consumers only by registration order.
+Issues 59–63, from admin Retry (WP3), are filed **open**: Retry refuses
+when the failure's handling consumed a signal, two failed branches need two
+Retries, an unplaceable history falls back to the old delete-all Retry, a
+store without `reopenFailedInstance` keeps the two-step Retry, and the
+dashboard reports a refused Retry as sent. Issues 64–68, from loop liveness
+and health (WP4), are filed **open** (64 since partly resolved by WP5):
+background-thread interrupts during JDBC calls, the cleaner and wake listener
+outside health, a probe timeout that can close a pooled connection, and two
+health answers that read `UP` when they should not. Issues 69–70, from
+shutdown (WP5), Issues 72–73, from recovery capacity (WP6), and Issues 74
+and 77–79, from store hygiene (WP8), are filed **open**; see the table. No Issue 71 was
+filed; 75 and 76 are held for the load-test package (WP12).
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -2913,7 +2944,7 @@ removed.
 
 ### Issue 29 — Shutdown never interrupts threads blocked waiting for a task-queue slot {#issue-29}
 
-> **Resolved** (WP5, PR pending). `WorkflowExecutor.shutdown()` now shuts
+> **Resolved** (WP5, PR #60, merged 2026-11-17). `WorkflowExecutor.shutdown()` now shuts
 > the `TaskQueueGovernor` down: it lends one permit (a "poison permit") to
 > each of its pools, and a waiter that wakes — or that would start waiting —
 > on a shut-down governor gives the permit straight back and throws
@@ -2986,7 +3017,7 @@ the old (unbounded, so never-waiting) behaviour.
 
 ### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
 
-> **Resolved** in WP6 (branch fix/recovery-capacity): the recovery poller
+> **Resolved** in WP6 (PR #62, merged 2026-11-17): the recovery poller
 > reserves a slot before locking, queues at most one queue's concurrency
 > (C2), and re-polls on capacity; pinned by RecoveryCapacityTest,
 > RecoveryPollerCapacityTest, RecoveryStarvationTest,
@@ -3190,7 +3221,7 @@ notification fix above remains what bounds the call itself.
 
 ### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
 
-> **Resolved** in WP3 (branch fix/admin-retry): the failing await is the one the WORKFLOW_FAILED payload attributes; pinned by AdminRetryTest.issue33_*.
+> **Resolved** in WP3 (PR #57, merged 2026-11-17): the failing await is the one the WORKFLOW_FAILED payload attributes; pinned by AdminRetryTest.issue33_*.
 
 > Raised by the R61 implementer and sharpened by the R61 reviewer
 > (commit `53ca7e9`, "admin retry after an awaitSignal timeout re-arms a fresh
@@ -3463,7 +3494,7 @@ index itself can stay, because V101 finds it.
 
 ### Issue 36 — The test kit cannot apply production's default concurrency limits {#issue-36}
 
-> **Resolved** in WP6 (branch fix/recovery-capacity):
+> **Resolved** in WP6 (PR #62, merged 2026-11-17):
 > `TestWorkflowEnvironment.builder().defaultConcurrency(w, a)
 > .taskQueueConcurrency(q, w, a)` and `@MaestroTest(defaultConcurrency,
 > defaultActivityConcurrency)` bound the kit's task queues, validated like
@@ -3507,7 +3538,7 @@ limits unset (or both `0`) completes.
 
 ### Issue 37 — `WorkflowExecutor` has ten public constructors {#issue-37}
 
-> **Resolved (2026-11-12, branch `refactor/executor-builder`).** Filed by the
+> **Resolved (2026-11-12, PR #50).** Filed by the
 > final whole-branch review of the bounded-host-load cycle (2026-11-11).
 > `WorkflowExecutor.builder(store, serializer, serviceName)` returns a
 > `WorkflowExecutor.Builder` with one named setter per engine setting, each
@@ -3547,7 +3578,7 @@ shipped them), and a builder test pins each default.
 
 ### Issue 38 — `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` {#issue-38}
 
-> **Resolved** (WP10, PR pending). The `WARN` came from the pool, not Maestro:
+> **Resolved** (WP10, PR #56, merged 2026-11-17). The `WARN` came from the pool, not Maestro:
 > `com.zaxxer.hikari.pool.ProxyConnection` logged `Connection … marked as
 > broken because of SQLSTATE(08003)` (connection does not exist) when
 > `close()` ran `UNLISTEN *` on the connection the interrupt had already
@@ -3590,7 +3621,7 @@ no WARN, and the connection returned to the pool has no active `LISTEN`.
 
 ### Issue 39 — Workflows recorded under another `service_name` are stranded silently {#issue-39}
 
-> **Resolved** in WP8 (branch fix/store-hygiene): one advisory query per node
+> **Resolved** in WP8 (PR #63, merged 2026-11-17): one advisory query per node
 > start, off the startup path; one WARN per other service_name holding active
 > instances of this node's workflow types. Pinned by
 > StartupForeignServiceCheckTest, ForeignServiceCheckTest,
@@ -4668,7 +4699,7 @@ page.
 
 ### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
 
-> **Partly resolved** (WP5, PR pending): the renewer.
+> **Partly resolved** (WP5, PR #60, merged 2026-11-17; follow-up PR #61): the renewer.
 > `WorkflowInstanceLockManager.close(Duration)` no longer interrupts the
 > instance-lock renewer: it counts down a latch the renewer waits on between
 > passes, lets a pass in progress finish, and joins the thread for at most
