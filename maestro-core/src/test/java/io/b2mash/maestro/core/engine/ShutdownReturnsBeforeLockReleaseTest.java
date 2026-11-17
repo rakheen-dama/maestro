@@ -32,6 +32,7 @@ import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SERVICE;
+import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueMatching;
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -337,6 +338,34 @@ class ShutdownReturnsBeforeLockReleaseTest {
         }
     }
 
+    /**
+     * Two runs of one workflow id on a node without a lock backend: the run
+     * replaced in {@code runningWorkflows} ends first, and its end leaves the
+     * other run's entry in place.
+     */
+    @Test
+    void aRunThatEndsRemovesOnlyItsOwnRunningEntry() throws Exception {
+        var invocations = new AtomicInteger();
+        var replacedRunGo = new CountDownLatch(1);
+        var replacedRunThread = new AtomicReference<@Nullable Thread>();
+        var twin = twinExecutor();
+        try {
+            var replacedRun = new LatchWorkflow(replacedRunGo, replacedRunThread);
+            launchTwins(twin, () -> new WorkflowExecutorTerminateTest.BackoffWorkflow(
+                            WorkflowExecutorTerminateTest.failingProxy(store, serializer, invocations)),
+                    backoffMethod(), () -> replacedRun, latchMethod());
+            assertEquals(1, valueWithin(invocations::get, 1, Duration.ofSeconds(5)), "the replacing run is in backoff");
+
+            replacedRunGo.countDown();
+            var thread = valueMatching(replacedRunThread::get, t -> t != null, Duration.ofSeconds(5));
+            assertTrue(thread.join(Duration.ofSeconds(5)), "the replaced run ended");
+
+            assertTrue(twin.isRunning("wf-twin"), "the replaced run's end removed the replacing run's entry");
+        } finally {
+            twin.shutdown();
+        }
+    }
+
     /** No lock backend, so two resumes of one workflow id can both launch on this node. */
     private WorkflowExecutor twinExecutor() {
         return WorkflowExecutor.builder(store, serializer, SERVICE)
@@ -375,6 +404,10 @@ class ShutdownReturnsBeforeLockReleaseTest {
 
     private static Method backoffMethod() throws NoSuchMethodException {
         return WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run");
+    }
+
+    private static Method latchMethod() throws NoSuchMethodException {
+        return LatchWorkflow.class.getMethod("run");
     }
 
     private void awaitParked(String workflowId) {
@@ -443,6 +476,24 @@ class ShutdownReturnsBeforeLockReleaseTest {
         /** @return a constant */
         @WorkflowMethod
         public String run() {
+            return "done";
+        }
+    }
+
+    /** Records its run's thread, then returns once {@code go} opens. */
+    public static final class LatchWorkflow {
+        private final CountDownLatch go;
+        private final AtomicReference<@Nullable Thread> runThread;
+
+        LatchWorkflow(CountDownLatch go, AtomicReference<@Nullable Thread> runThread) {
+            this.go = go;
+            this.runThread = runThread;
+        }
+
+        /** @return a constant */
+        public String run() {
+            awaitOrFail(go, "the test let the run finish");
+            runThread.set(Thread.currentThread());
             return "done";
         }
     }

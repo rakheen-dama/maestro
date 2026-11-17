@@ -3311,8 +3311,12 @@ public final class WorkflowExecutor {
             // that ended in a control-flow Error already gave it back.
             taskQueueGovernor.releaseWorkflowSlot(ctx.workflowId());
             // Remove-then-release: a concurrent recovery attempt in the gap
-            // still sees the lock held and skips — retried by the next poll
-            runningWorkflows.remove(ctx.workflowId());
+            // still sees the lock held and skips — retried by the next poll.
+            // Only this run's own entry (matched by its thread, as
+            // runThreadDiedBeforeItsBody does): without a lock backend another
+            // run of this id may have registered over it, and its entry stays.
+            var self = Thread.currentThread();
+            runningWorkflows.computeIfPresent(ctx.workflowId(), (_, r) -> r.thread() == self ? null : r);
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
             // that arrived after the last await) now that the run is over —
             // BEFORE the release: once the lock is free a new run of this id
