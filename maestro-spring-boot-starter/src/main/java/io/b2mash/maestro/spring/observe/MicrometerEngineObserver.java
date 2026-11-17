@@ -15,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -42,7 +43,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.retention.purged}</td><td>Counter</td><td>kind=instance|event|signal|timer</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.retention.sweeps}</td><td>Counter</td><td>—</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.lock.renew.failures}</td><td>Counter</td><td>outcome=error|lost</td><td>{@link #instanceLockRenewFailed}/{@link #instanceLockLost}</td></tr>
- *   <tr><td>{@code maestro.loop.errors}</td><td>Counter</td><td>loop</td><td>{@link #backgroundLoopError}</td></tr>
+ *   <tr><td>{@code maestro.loop.errors}</td><td>Counter</td><td>loop</td><td>{@link #backgroundLoopError}; the five engine loops' series are registered at zero on construction</td></tr>
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
  * </table>
  *
@@ -93,6 +94,16 @@ public final class MicrometerEngineObserver implements EngineObserver {
 
     private static final String UNKNOWN_WORKFLOW_TYPE = "unknown";
 
+    private static final String LOOP_ERRORS = "maestro.loop.errors";
+
+    /**
+     * The five engine loops' fixed names, as {@code EngineObserver#backgroundLoopError}
+     * lists them; {@code LoopErrorCounterWiringTest} fails if a loop reports
+     * under any other name.
+     */
+    private static final List<String> ENGINE_LOOPS = List.of(
+            "timer-poller", "recovery-poller", "signal-janitor", "retention-sweeper", "instance-lock-renewer");
+
     private final MeterRegistry registry;
     private final Set<String> warnedMeterNames = ConcurrentHashMap.newKeySet();
 
@@ -101,6 +112,12 @@ public final class MicrometerEngineObserver implements EngineObserver {
      */
     public MicrometerEngineObserver(MeterRegistry registry) {
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
+        // Registered at zero up front, one series per engine loop: a rate or
+        // increase() query then sees the first Error, instead of a series that
+        // first appears already at 1.
+        for (var loop : ENGINE_LOOPS) {
+            safely(LOOP_ERRORS, () -> Counter.builder(LOOP_ERRORS).tag(TAG_LOOP, loop).register(registry));
+        }
     }
 
     @Override
@@ -249,7 +266,7 @@ public final class MicrometerEngineObserver implements EngineObserver {
      */
     @Override
     public void backgroundLoopError(String loop, String errorType) {
-        increment("maestro.loop.errors", TAG_LOOP, loop);
+        increment(LOOP_ERRORS, TAG_LOOP, loop);
     }
 
     private static String reasonTag(StandDownReason reason) {

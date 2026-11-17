@@ -27,8 +27,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertAll;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * {@code maestro.loop.errors} end to end for the five engine loops: an
@@ -47,7 +47,7 @@ class LoopErrorCounterWiringTest {
             "timer-poller", "recovery-poller", "signal-janitor", "retention-sweeper", "instance-lock-renewer");
 
     private final SimpleMeterRegistry registry = new SimpleMeterRegistry();
-    private final Map<String, AtomicInteger> throwsByLoop = new ConcurrentHashMap<>();
+    private final Map<String, AtomicInteger> callsByLoop = new ConcurrentHashMap<>();
     private final WorkflowStore store = erroringStore(new InMemoryWorkflowStore());
     private final WorkflowExecutor executor = WorkflowExecutor.builder(
                     store, new PayloadSerializer(new ObjectMapper()), "svc")
@@ -72,27 +72,32 @@ class LoopErrorCounterWiringTest {
         executor.startWorkflow("wf-1", "AwaitForever", "default", null, AwaitForever::new,
                 AwaitForever.class.getMethod("run"));                    // starts the renewer
 
-        // Each loop's fault fired twice: the first one's handling (the counter) is complete.
-        await("every loop hit its Error twice").atMost(Duration.ofSeconds(10))
-                .until(() -> ENGINE_LOOPS.stream().allMatch(loop -> throwsOf(loop) >= 2));
+        // Each loop's first call threw; its second call (which does not throw) has
+        // started, so the first one's handling (the counter) is complete.
+        await("every loop called its store or backend twice").atMost(Duration.ofSeconds(10))
+                .until(() -> ENGINE_LOOPS.stream().allMatch(loop -> callsOf(loop) >= 2));
 
         assertAll(ENGINE_LOOPS.stream().map(loop -> () -> {
             var counter = registry.find("maestro.loop.errors").tag("loop", loop).counter();
             assertNotNull(counter, "no maestro.loop.errors{loop=" + loop + "}: " + registry.getMetersAsString());
-            assertTrue(counter.count() >= 1.0, loop + " counted " + counter.count());
+            assertEquals(1.0, counter.count(), loop + ": one Error, counted once");
         }));
     }
 
-    private int throwsOf(String loop) {
-        var count = throwsByLoop.get(loop);
+    private int callsOf(String loop) {
+        var count = callsByLoop.get(loop);
         return count == null ? 0 : count.get();
     }
 
-    private void thrown(String loop) {
-        throwsByLoop.computeIfAbsent(loop, l -> new AtomicInteger()).incrementAndGet();
+    /** Counts a call by {@code loop}; {@code true} for its first call, the one that throws. */
+    private boolean firstCall(String loop) {
+        return callsByLoop.computeIfAbsent(loop, l -> new AtomicInteger()).incrementAndGet() == 1;
     }
 
-    /** Delegates every call, but each loop's own store read throws an {@code AssertionError}. */
+    /**
+     * Delegates every call, but each loop's own store read throws an
+     * {@code AssertionError} on its first call only.
+     */
     private WorkflowStore erroringStore(InMemoryWorkflowStore delegate) {
         var loopsByMethod = Map.of(
                 "getDueTimers", "timer-poller",
@@ -102,8 +107,7 @@ class LoopErrorCounterWiringTest {
         return (WorkflowStore) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[] {WorkflowStore.class},
                 (self, method, args) -> {
                     var loop = loopsByMethod.get(method.getName());
-                    if (loop != null) {
-                        thrown(loop);
+                    if (loop != null && firstCall(loop)) {
                         throw new AssertionError("injected in " + method.getName());
                     }
                     try {
@@ -114,7 +118,7 @@ class LoopErrorCounterWiringTest {
                 });
     }
 
-    /** Grants locks and leadership; {@code renewAll} throws an {@code AssertionError}. */
+    /** Grants locks and leadership; the first {@code renewAll} throws an {@code AssertionError}. */
     private final class RenewErrorLock implements DistributedLock {
 
         private final InMemoryDistributedLock delegate = new InMemoryDistributedLock();
@@ -136,8 +140,10 @@ class LoopErrorCounterWiringTest {
 
         @Override
         public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
-            thrown("instance-lock-renewer");
-            throw new AssertionError("injected in renewAll");
+            if (firstCall("instance-lock-renewer")) {
+                throw new AssertionError("injected in renewAll");
+            }
+            return delegate.renewAll(handles, ttl);
         }
 
         @Override

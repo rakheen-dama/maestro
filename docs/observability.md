@@ -120,14 +120,18 @@ that found nothing to purge registers the four `kind` series at zero).
 `maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)
 and the wake listener (`maestro-pg-wake-listener`) — contain an `Error` the
 same way and log it at `ERROR`, but they reach no `EngineObserver`, so they
-are logged and **not counted** ([Issue 65](open-issues.md#issue-65)). Like
-every counter here, the series appears with the first increment, not at zero
-beforehand; it never decreases until the node restarts, so
-`maestro_loop_errors_total > 0` is a usable alert. The error type is not a
-tag (open-ended); the log line names it. Pinned by
-`MicrometerEngineObserverTest.backgroundLoopErrorCountsByLoop` and, through
-the composite observer and a real executor, by
-`LoopErrorCounterWiringTest`.
+are logged and **not counted** ([Issue 65](open-issues.md#issue-65)). Unlike
+the other counters here, its five series are registered at zero when
+`MicrometerEngineObserver` is created, so a rate query sees the first `Error`
+rather than a series that appears already at 1. Alert on
+`increase(maestro_loop_errors_total[15m]) > 0`: it fires on a new `Error` and
+clears once the loop stops hitting them, where `maestro_loop_errors_total > 0`
+would stay firing until the node restarts. The error type is not a tag
+(open-ended); the log line names it. Pinned by
+`MicrometerEngineObserverTest.backgroundLoopErrorCountsByLoop` and
+`loopErrorSeriesExistAtZeroBeforeAnyFailure` and, through the composite
+observer and a real executor, by `LoopErrorCounterWiringTest` (one `Error` per
+loop counts exactly 1).
 
 The `reason` tag value set is closed at five, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
