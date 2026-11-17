@@ -53,7 +53,8 @@ class NodeStoreViewTest {
 
     private static final Set<String> READS = Set.of(
             "getInstance", "getRecoverableInstances", "getEventBySequence", "getEvents",
-            "getUnconsumedSignals", "getDueTimers", "findTimer", "storeTime");
+            "getUnconsumedSignals", "getDueTimers", "findTimer", "storeTime",
+            "getActiveInstanceCountsUnderOtherServices");
 
     private final InMemoryWorkflowStore delegate = new InMemoryWorkflowStore();
 

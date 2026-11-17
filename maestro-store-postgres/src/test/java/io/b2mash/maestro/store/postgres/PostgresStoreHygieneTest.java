@@ -22,7 +22,10 @@ import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -30,6 +33,7 @@ import java.util.stream.IntStream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -37,7 +41,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * The store halves of the housekeeping paths, against a real Postgres: the
  * signal janitor's bounded, service-scoped delete; the service-scoped
- * retention purge and the documented manual purge; and the guards that pin the
+ * retention purge and the documented manual purge; the startup check's count
+ * of active instances under other service names; and the guards that pin the
  * leading text of each housekeeping statement, which the load suite's
  * {@code perf/sql/pgss-window.sql} matches.
  */
@@ -283,6 +288,100 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                         + " AND NOT EXISTS (SELECT 1 FROM maestro_workflow_instance i WHERE i.id = c.workflow_instance_id)");
             }
             return total;
+        }
+    }
+
+    /**
+     * {@code orders} (this node) / {@code order}: 2 RUNNING. {@code orders-old}
+     * / {@code order}: RUNNING, WAITING_SIGNAL, WAITING_TIMER, and 5 COMPLETED.
+     * {@code orders-1} / {@code payment}: 2 COMPENSATING. {@code billing} /
+     * {@code invoice}: 4 RUNNING.
+     */
+    @Nested
+    class ForeignServiceCounts {
+
+        @BeforeEach
+        void fixture() {
+            seed("own-1", "orders", "order", WorkflowStatus.RUNNING);
+            seed("own-2", "orders", "order", WorkflowStatus.RUNNING);
+            seed("old-1", "orders-old", "order", WorkflowStatus.RUNNING);
+            seed("old-2", "orders-old", "order", WorkflowStatus.WAITING_SIGNAL);
+            seed("old-3", "orders-old", "order", WorkflowStatus.WAITING_TIMER);
+            seed("pay-1", "orders-1", "payment", WorkflowStatus.COMPENSATING);
+            seed("pay-2", "orders-1", "payment", WorkflowStatus.COMPENSATING);
+            for (int i = 0; i < 4; i++) {
+                seed("inv-" + i, "billing", "invoice", WorkflowStatus.RUNNING);
+            }
+            for (int i = 0; i < 5; i++) {
+                seed("old-done-" + i, "orders-old", "order", WorkflowStatus.COMPLETED);
+            }
+        }
+
+        @Test
+        void countsActiveInstancesOfTheGivenTypesUnderEveryOtherServiceName() {
+            var counts = store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 21);
+            assertEquals(List.of(Map.entry("orders-old", 3L), Map.entry("orders-1", 2L)),
+                    List.copyOf(counts.entrySet()));
+        }
+
+        @Test
+        void theLimitCapsTheNamesReturned() {
+            assertEquals(Set.of("orders-old"),
+                    store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 1).keySet());
+        }
+
+        @Test
+        void noTypesMeansNoStatement() {
+            var sql = new CopyOnWriteArrayList<String>();
+            var counts = new PostgresWorkflowStore(recording(dataSource, sql), objectMapper)
+                    .getActiveInstanceCountsUnderOtherServices("orders", Set.of(), 21);
+            assertEquals(Map.of(), counts);
+            assertEquals(List.of(), sql);
+        }
+
+        /**
+         * Guard: the check is one read, and its text never matches the load
+         * suite's recovery-page pattern ({@code WHERE service_name = ...}).
+         */
+        @Test
+        void theQueryOnlyReadsAndNeverLooksLikeTheRecoveryPage() throws Exception {
+            var before = tableRowCounts();
+            var sql = new CopyOnWriteArrayList<String>();
+            new PostgresWorkflowStore(recording(dataSource, sql), objectMapper)
+                    .getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 21);
+            var statements = sql.stream().map(s -> s.replaceAll("\\s+", " ").strip()).toList();
+            assertEquals(1, statements.size(), statements.toString());
+            assertTrue(statements.getFirst().startsWith(
+                    "SELECT service_name, count(*) FROM maestro_workflow_instance WHERE status IN ("),
+                    statements.getFirst());
+            assertFalse(statements.getFirst().contains("WHERE service_name = ?"), statements.getFirst());
+            assertEquals(before, tableRowCounts());
+        }
+
+        private List<Long> tableRowCounts() throws Exception {
+            var counts = new ArrayList<Long>();
+            for (var table : List.of("maestro_workflow_instance", "maestro_workflow_event",
+                    "maestro_workflow_signal", "maestro_workflow_timer")) {
+                counts.add(count("SELECT count(*) FROM " + table));
+            }
+            return counts;
+        }
+
+        private void seed(String workflowId, String serviceName, String type, WorkflowStatus status) {
+            store.createInstance(WorkflowInstance.builder()
+                    .id(UUID.randomUUID())
+                    .workflowId(workflowId)
+                    .runId(UUID.randomUUID())
+                    .workflowType(type)
+                    .taskQueue("default")
+                    .status(status)
+                    .serviceName(serviceName)
+                    .eventSequence(0)
+                    .startedAt(now.minus(Duration.ofDays(2)))
+                    .updatedAt(now)
+                    .completedAt(status.isTerminal() ? now.minus(Duration.ofDays(1)) : null)
+                    .version(0)
+                    .build());
         }
     }
 

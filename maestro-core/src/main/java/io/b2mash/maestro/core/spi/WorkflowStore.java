@@ -14,6 +14,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -185,6 +186,49 @@ public interface WorkflowStore {
                 .sorted(RecoveryCursor.ORDER)
                 .limit(limit)
                 .toList();
+    }
+
+    /**
+     * Counts, per other service name, the active instances of the given
+     * workflow types: for each {@link WorkflowInstance#serviceName()} other
+     * than {@code serviceName} that holds at least one instance whose status
+     * is {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isActive()
+     * active} and whose {@link WorkflowInstance#workflowType()} is in
+     * {@code workflowTypes}, that name's count of such instances.
+     *
+     * <p><b>Advisory, and it never writes.</b> Recovery adopts only the
+     * instances recorded under this node's own service name, so active
+     * instances of this node's types recorded under another name never
+     * resume unless a node runs under that name (Issue 39). The engine calls
+     * this once per node start, off the startup path, and logs a warning per
+     * name it returns; nothing else depends on the answer. Terminal instances
+     * are not counted, and neither are other workflow types: a co-tenant
+     * service with its own types is not reported.
+     *
+     * <p><b>Ordering and limit.</b> The entries iterate by count descending,
+     * then by name ascending; at most {@code limit} are returned. An empty
+     * {@code workflowTypes} returns an empty map without reading the store.
+     *
+     * <p><b>The default</b> returns an empty map — "nothing to report" — so
+     * the engine's check logs nothing over a store that does not override
+     * this. The shipped JDBC store and the in-memory test store override it.
+     *
+     * @param serviceName   this node's service name, whose instances are not counted
+     * @param workflowTypes the workflow types to count
+     * @param limit         the most service names to return; positive
+     * @return the counts, ordered as above; never {@code null}
+     * @throws NullPointerException     if {@code serviceName} or
+     *                                  {@code workflowTypes} is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return Map.of();
     }
 
     /**

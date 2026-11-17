@@ -17,6 +17,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.IntStream;
 
@@ -139,6 +141,58 @@ class InMemoryStoreHygieneTest {
             var consumed = newSignal(instance.workflowId(), instance.id());
             store.saveSignal(consumed);
             assertTrue(store.markSignalConsumed(consumed.id()));
+        }
+    }
+
+    /** The fixture of {@code PostgresStoreHygieneTest.ForeignServiceCounts}. */
+    @Nested
+    class ForeignServiceCounts {
+
+        @BeforeEach
+        void fixture() {
+            seed("own-1", "orders", "order", WorkflowStatus.RUNNING);
+            seed("own-2", "orders", "order", WorkflowStatus.RUNNING);
+            seed("old-1", "orders-old", "order", WorkflowStatus.RUNNING);
+            seed("old-2", "orders-old", "order", WorkflowStatus.WAITING_SIGNAL);
+            seed("old-3", "orders-old", "order", WorkflowStatus.WAITING_TIMER);
+            seed("pay-1", "orders-1", "payment", WorkflowStatus.COMPENSATING);
+            seed("pay-2", "orders-1", "payment", WorkflowStatus.COMPENSATING);
+            for (int i = 0; i < 4; i++) {
+                seed("inv-" + i, "billing", "invoice", WorkflowStatus.RUNNING);
+            }
+            for (int i = 0; i < 5; i++) {
+                seed("old-done-" + i, "orders-old", "order", WorkflowStatus.COMPLETED);
+            }
+        }
+
+        @Test
+        void countsActiveInstancesOfTheGivenTypesUnderEveryOtherServiceName() {
+            var counts = store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 21);
+            assertEquals(List.of(Map.entry("orders-old", 3L), Map.entry("orders-1", 2L)),
+                    List.copyOf(counts.entrySet()));
+        }
+
+        @Test
+        void theLimitCapsTheNamesReturned() {
+            assertEquals(Set.of("orders-old"),
+                    store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 1).keySet());
+        }
+
+        private void seed(String workflowId, String serviceName, String type, WorkflowStatus status) {
+            store.createInstance(WorkflowInstance.builder()
+                    .id(UUID.randomUUID())
+                    .workflowId(workflowId)
+                    .runId(UUID.randomUUID())
+                    .workflowType(type)
+                    .taskQueue("default")
+                    .status(status)
+                    .serviceName(serviceName)
+                    .eventSequence(0)
+                    .startedAt(now.minus(Duration.ofDays(2)))
+                    .updatedAt(now)
+                    .completedAt(status.isTerminal() ? now.minus(Duration.ofDays(1)) : null)
+                    .version(0)
+                    .build());
         }
     }
 

@@ -23,7 +23,9 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -31,6 +33,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * In-memory {@link WorkflowStore} for fast, deterministic workflow tests.
@@ -266,6 +269,38 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                 .sorted(RecoveryCursor.ORDER)
                 .limit(limit)
                 .toList();
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Counts over the instances map, as the JDBC store's query does: active
+     * instances of the given types under every other service name, by count
+     * descending, then name.
+     */
+    @Override
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        if (workflowTypes.isEmpty()) {
+            return Map.of();
+        }
+        var counts = instances.values().stream()
+                .filter(i -> i.status().isActive())
+                .filter(i -> !serviceName.equals(i.serviceName()))
+                .filter(i -> workflowTypes.contains(i.workflowType()))
+                .collect(Collectors.groupingBy(WorkflowInstance::serviceName, Collectors.counting()));
+        var ordered = new LinkedHashMap<String, Long>();
+        counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .forEach(e -> ordered.put(e.getKey(), e.getValue()));
+        return ordered;
     }
 
     @Override

@@ -14,6 +14,7 @@ import org.jspecify.annotations.Nullable;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -154,6 +155,12 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     public List<WorkflowInstance> getRecoverableInstances(
             String serviceName, @Nullable RecoveryCursor after, int limit) {
         return delegate.getRecoverableInstances(serviceName, after, limit);
+    }
+
+    @Override
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, workflowTypes, limit);
     }
 
     @Override

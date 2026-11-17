@@ -10,7 +10,9 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -20,7 +22,8 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * The housekeeping defaults of {@link WorkflowStore}: a third-party store that
  * overrides none of them behaves exactly as before — the unscoped, unbounded
- * janitor delete and the unscoped retention purge.
+ * janitor delete and the unscoped retention purge — and has nothing to report
+ * to the startup service-name check.
  */
 class WorkflowStoreHygieneDefaultsTest {
 
@@ -51,6 +54,11 @@ class WorkflowStoreHygieneDefaultsTest {
         store.purges(scripted);
         assertEquals(scripted, store.purgeTerminalInstancesBefore("orders", WorkflowStatus.FAILED, cutoff, 250));
         assertEquals(List.of(new Purge(WorkflowStatus.FAILED, cutoff, 250)), store.purgeCalls());
+    }
+
+    @Test
+    void theForeignCountsDefaultIsEmpty() {
+        assertEquals(Map.of(), store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order"), 21));
     }
 
     private record Purge(WorkflowStatus status, Instant cutoff, int batchSize) {
