@@ -672,7 +672,8 @@ def named_windows($m):
 # JVM) predicts passes only inside its own lifetime: from its start to the
 # container's next recorded stop (the window is clipped to [a, min(b, end)]).
 # A planned start whose start-up span [jvmStart, reportedAt + drift] meets a
-# window is counted in that window's plannedStarts, and each allows its
+# window, and whose JVM was not already stopped when the window opened, is
+# counted in that window's plannedStarts, and each allows its
 # startup sweep there: planned_start_janitor_calls signal-janitor calls and
 # planned_start_retention_calls retention calls (an empty-backlog sweep: one
 # candidates select per terminal status). A window flagged sweepWindow: true
@@ -709,7 +710,9 @@ def sweeps_problems_and_value($id; $m):
                     jp: sweep_passes(.start; .reported; .janitor; $w.a; $b).possible,
                     rp: (if .retentionEnabled then sweep_passes(.start; .reported; .retention; $w.a; $b).possible else 0 end)}
               end]) as $per
-        | ([$nodes[] | select(.planned and .start <= $w.b and .reported + sweep_drift_secs >= $w.a)] | length) as $ps
+        # a planned JVM already stopped when the window opened allows nothing in it
+        | ([$nodes[] | select(.planned and .start <= $w.b and .reported + sweep_drift_secs >= $w.a
+                              and (.end == null or .end >= $w.a))] | length) as $ps
         | {name: $w.name,
            sinceEarliestNodeStartSecs: [($w.a - ($nodes | map(.start) | min) | round),
                                         ($w.b - ($nodes | map(.start) | min) | round)],

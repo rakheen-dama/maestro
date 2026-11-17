@@ -336,6 +336,17 @@ out=$(evaluate_with sw-planned-janitor-2 "${tp_in} | .window.sweepCalls.signalJa
 expect "sweeps: 2 janitor calls, one planned start: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
 out=$(evaluate_with sw-planned-elsewhere "$(tp_restart "$((tp_snap + 1))" "$((tp_snap + 2))") | .window.sweepCalls.retention = 3" "$(tp_after "$((tp_snap + 2))")")
 expect "sweeps: 3 retention calls, the planned start after the window: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# A planned JVM whose start-up span meets the window but which was stopped
+# before the window opened allows nothing in it (review r10).
+tp_gone="$(printf '.topology = [{at: %s, dbNow: null, action: "stop", container: "%s", jvm: null},
+                       {at: %s, dbNow: null, action: "start", container: "%s", jvm: %s},
+                       {at: %s, dbNow: null, action: "stop", container: "%s", jvm: null}]' \
+  "$((tp_reset - 10))" "$tp_container" "$((tp_reset - 9))" "$tp_container" "$(tp_jvm "$((tp_reset - 9))" "")" \
+  "$(jq -n "$tp_reset - 0.5")" "$tp_container") | .window.snapshotAt = (${tp_reset} + 60 | todate) | .window.sweepCalls.retention = 3"
+out=$(evaluate_with sw-planned-stopped "$tp_gone")
+expect "sweeps: a planned JVM stopped before the window opened allows no retention call: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+expect "sweeps: a planned JVM stopped before the window opened: plannedStarts 0" 0 \
+  "$(check_field sw-planned-stopped validity.sweeps '.value.windows[] | select(.name == "window") | .plannedStarts')"
 out=$(evaluate_with sw-sweep-window '.window.sweepWindow = true | .window.sweepCalls.retention = 600 | .window.sweepCalls.signalJanitor = 2')
 expect "sweeps: sweepWindow with 600 retention calls: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
 out=$(evaluate_with sw-sweep-window-lc '.window.sweepWindow = true | .window.sweepCalls.lockCleaner = 2')
