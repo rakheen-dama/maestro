@@ -5033,8 +5033,10 @@ starter test.
 ### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
 
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
-> `fix/store-hygiene`): the consequence of scoping the retention sweep to
-> this node's service (maintainer decision MD-1). Recorded, not fixed.
+> `fix/store-hygiene`): the consequence of the maintainer's decision that a
+> retention sweep purges only its own service's workflows, so that each
+> service's retentions govern its own rows in shared tables. Recorded, not
+> fixed.
 
 **Kind:** Library gap — retention. **Severity:** Low.
 
@@ -5111,7 +5113,9 @@ shared table, pinned by an `EXPLAIN` test.
 ### Issue 79 — The service-name check warns about a live co-tenant service that registers the same workflow type names {#issue-79}
 
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
-> `fix/store-hygiene`): maintainer decision MD-4. Recorded, not fixed.
+> `fix/store-hygiene`): the maintainer accepted this false positive, with a
+> conditional remedy in the warning and a type filter, rather than couple
+> the check to the lock SPI. Recorded, not fixed.
 
 **Kind:** Library gap — false positive. **Severity:** Low.
 
@@ -5138,7 +5142,7 @@ its Postgres override and tests. A rolling rename still warns until the old
 nodes stop.
 
 **Why it is not WP8.** It couples an advisory store check to the lock SPI;
-MD-4 accepted the conditional wording instead.
+the maintainer accepted the conditional wording instead.
 
 **Done when.** A node beside a live co-tenant with a same-named type logs no
 warning for it, and still warns for a name with no live leader, pinned by a
