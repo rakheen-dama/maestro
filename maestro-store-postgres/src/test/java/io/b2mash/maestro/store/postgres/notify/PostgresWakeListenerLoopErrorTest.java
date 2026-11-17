@@ -104,11 +104,12 @@ class PostgresWakeListenerLoopErrorTest {
 
     /**
      * Review d4: a session whose poll throws a {@code RuntimeException} (not an
-     * {@code SQLException}) is dropped — closed without {@code UNLISTEN}, as a
-     * failed session is — and the listener reconnects through its back-off,
-     * which grows while each new session fails again, instead of retrying the
-     * same connection every second for ever while {@code isConnected()} says
-     * {@code true}.
+     * {@code SQLException}) is dropped and the listener reconnects through its
+     * back-off, which grows while each new session fails again, instead of
+     * retrying the same connection every second for ever while
+     * {@code isConnected()} says {@code true}. Since fix wave e5 the dropped
+     * session is released as at close — a bounded {@code UNLISTEN *}, then
+     * closed — so a healthy pooled connection is not handed back listening.
      */
     @Test
     @DisplayName("a session that keeps throwing a RuntimeException is dropped and reconnected with a growing back-off")
@@ -121,8 +122,10 @@ class PostgresWakeListenerLoopErrorTest {
         var events = scripted.events();
         var firstPoll = events.indexOf("poll");
         var secondPoll = events.subList(firstPoll + 1, events.size()).indexOf("poll") + firstPoll + 1;
-        assertEquals(List.of("close", "LISTEN " + ScriptedPgDataSource.CHANNEL), events.subList(firstPoll + 1, secondPoll),
-                "between the failed poll and the next one: the session is dropped, then a new one listens");
+        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close",
+                        "LISTEN " + ScriptedPgDataSource.CHANNEL), events.subList(firstPoll + 1, secondPoll),
+                "between the failed poll and the next one: the session is released (UNLISTEN before close), "
+                        + "then a new one listens");
         var starts = scripted.pollStartNanos();
         var firstGap = Duration.ofNanos(starts.get(1) - starts.get(0));
         var secondGap = Duration.ofNanos(starts.get(2) - starts.get(1));
@@ -206,10 +209,99 @@ class PostgresWakeListenerLoopErrorTest {
         assertTrue(elapsed.compareTo(Duration.ofMillis(900)) < 0,
                 "close() must end the one-second wait, not wait it out: took " + elapsed);
         var events = scripted.events();
-        // Since review d4 the session that threw is dropped like a failed one (closed
-        // without UNLISTEN) before the back-off, so close() finds nothing left to release.
-        assertEquals(List.of("close"), events.subList(events.lastIndexOf("poll") + 1, events.size()),
-                "the failed session is closed once, without UNLISTEN");
+        // Since review d4 the session that threw is dropped before the back-off, so
+        // close() finds nothing left to release; since fix wave e5 that drop is the
+        // bounded release (UNLISTEN, then close), not a bare close.
+        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close"),
+                events.subList(events.lastIndexOf("poll") + 1, events.size()),
+                "the session that threw is released once, UNLISTEN before close");
+    }
+
+    /**
+     * Fix wave e5: the session that threw may be half-open, so its
+     * {@code UNLISTEN *} is bounded by the one-second network timeout; when it
+     * times out the failure is ignored, the connection is still closed, and
+     * the back-off that follows is the usual one second, not eaten by the
+     * release.
+     */
+    @Test
+    @DisplayName("after a RuntimeException, an UNLISTEN that times out is ignored and the back-off is unchanged")
+    void anUnlistenThatTimesOutAfterARuntimeExceptionIsIgnoredAndTheBackOffIsUnchanged() {
+        scripted.unlistenTimesOut(true);
+        scripted.failNextPollWith(() -> new IllegalStateException("driver bug"));
+        var listener = track(scripted.newListener());
+        listener.start();
+        await("a second poll on a new session").atMost(Duration.ofSeconds(10))
+                .until(() -> scripted.pollStartNanos().size() >= 2);
+        scripted.unlistenTimesOut(false);
+
+        var events = scripted.events();
+        var firstPoll = events.indexOf("poll");
+        var secondPoll = events.subList(firstPoll + 1, events.size()).indexOf("poll") + firstPoll + 1;
+        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "UNLISTEN * timed out", "setNetworkTimeout 0",
+                        "close", "LISTEN " + ScriptedPgDataSource.CHANNEL), events.subList(firstPoll + 1, secondPoll),
+                "the UNLISTEN is bounded by the network timeout, its failure ignored, the connection still closed");
+        var starts = scripted.pollStartNanos();
+        var gap = Duration.ofNanos(starts.get(1) - starts.get(0));
+        assertTrue(gap.compareTo(Duration.ofMillis(1900)) >= 0,
+                "the one-second UNLISTEN timeout, then the full one-second back-off: " + gap);
+        assertTrue(gap.compareTo(Duration.ofMillis(4000)) < 0, "the back-off did not grow: " + gap);
+    }
+
+    /**
+     * Fix wave e5: a {@code close()} that arrives while the session that threw
+     * is being released (its {@code UNLISTEN *} hanging to the network timeout)
+     * still returns within its two-second join, with the poll thread ended and
+     * no new session opened.
+     */
+    @Test
+    @DisplayName("close() during the release of a session that threw returns within its join and opens no new session")
+    void closeDuringTheReleaseOfASessionThatThrewReturnsWithinItsJoin() {
+        scripted.unlistenTimesOut(true);
+        scripted.failPollsWith(() -> new IllegalStateException("driver bug"));
+        var listener = track(new PostgresWakeListener(scripted, ScriptedPgDataSource.CHANNEL, Duration.ofSeconds(2)));
+        listener.start();
+        await("the release's UNLISTEN to start").atMost(Duration.ofSeconds(5))
+                .until(() -> scripted.events().contains("UNLISTEN *"));
+
+        var started = System.nanoTime();
+        listener.close();
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(2)) < 0, "close() exceeded its join: " + elapsed);
+        assertTrue(infos().stream().anyMatch(m -> m.endsWith("' closed")),
+                "close() saw the poll thread end within its join: " + infos());
+        var events = scripted.events();
+        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "UNLISTEN * timed out", "setNetworkTimeout 0",
+                        "close"), events.subList(events.lastIndexOf("poll") + 1, events.size()),
+                "the release completes and no new session is opened after close()");
+        assertFalse(listener.isConnected());
+    }
+
+    /**
+     * Fix wave e5: the release after a {@code RuntimeException} never runs
+     * with the interrupt flag set (Issue 38: an interrupted virtual thread
+     * entering a socket read closes the socket under the pool).
+     */
+    @Test
+    @DisplayName("the release after a RuntimeException runs with the interrupt flag clear")
+    void theReleaseAfterARuntimeExceptionRunsWithTheInterruptFlagClear() throws Exception {
+        var spy = new InterruptSpyDataSource(scripted);
+        var pollThread = new AtomicReference<Thread>();
+        scripted.failNextPollWith(() -> {
+            pollThread.set(Thread.currentThread());
+            Thread.currentThread().interrupt();              // an interrupt pending when the poll throws
+            return new IllegalStateException("driver bug");
+        });
+        var listener = track(new PostgresWakeListener(spy, ScriptedPgDataSource.CHANNEL, Duration.ofMillis(300)));
+        listener.start();
+        await("the failed poll").atMost(Duration.ofSeconds(5)).until(() -> pollThread.get() != null);
+
+        assertTrue(pollThread.get().join(Duration.ofSeconds(4)), "the interrupt ends the loop after the release");
+        assertEquals(List.of(), spy.interruptedCalls(), "connection calls made with the interrupt flag set");
+        var events = scripted.events();
+        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close"),
+                events.subList(events.lastIndexOf("poll") + 1, events.size()));
     }
 
     @Test
@@ -286,6 +378,16 @@ class PostgresWakeListenerLoopErrorTest {
         }
         if (interrupted) {
             Thread.currentThread().interrupt();
+        }
+    }
+
+    /** @return the formatted messages {@link PostgresWakeListener} logged at {@code INFO} */
+    private List<String> infos() {
+        synchronized (listenerLog) {
+            return listenerLog.list.stream()
+                    .filter(e -> e.getLevel() == Level.INFO)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
         }
     }
 
