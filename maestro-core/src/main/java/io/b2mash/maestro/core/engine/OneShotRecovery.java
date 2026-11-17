@@ -22,10 +22,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * task-queue capacity; runs beyond a queue's bound wait for their slots on
  * their own threads. With no poller behind it, a failed pass would strand
  * every orphan until the next restart, so a pass that throws is contained by
- * a {@link BackgroundLoopGuard} (named {@value BackgroundLoopGuard#RECOVERY_POLLER},
- * logged and counted like the poller's failures) and retried after
- * {@code retryInterval}, until one pass completes. Then the thread ends. A
- * {@code MaestroControlFlowError} ends it at once.
+ * a {@link BackgroundLoopGuard} (named {@value BackgroundLoopGuard#RECOVERY_POLLER}:
+ * logged like the poller's failures, and an {@link Error} counted on
+ * {@code maestro.loop.errors} under that name; a store fault is logged, not
+ * counted) and retried after {@code retryInterval}, with no limit, until one
+ * pass completes. Then the thread ends. A {@code MaestroControlFlowError}
+ * ends it at once.
  *
  * <p>{@link #requestStop()} never interrupts the thread: it ends the retry
  * wait at once, and a pass in progress ends at its next instance on this
@@ -114,8 +116,8 @@ final class OneShotRecovery implements StoppableLoop {
     /**
      * {@value #LOOP_NAME}, the name shutdown's log uses for this loop. Its
      * guard keeps the name {@value BackgroundLoopGuard#RECOVERY_POLLER}, so its
-     * failures are logged and counted under that fixed
-     * {@code maestro.loop.errors} tag value.
+     * failures are logged under that name, and an {@link Error} is counted
+     * under that fixed {@code maestro.loop.errors} tag value.
      */
     @Override
     public String loopName() {

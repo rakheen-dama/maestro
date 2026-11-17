@@ -4966,7 +4966,13 @@ poller (or, with `maestro.recovery.enabled=false`, a one-shot pass) and
 returns, so the application reports ready while the startup pass is still
 adopting orphans. `MaestroHealthIndicator` reports `recoveryPollerRunning`
 (whether the loop is alive), but nothing says whether the first pass has
-finished, and the one-shot pass is not reported at all.
+finished, and the one-shot pass is not reported at all. With
+`maestro.recovery.enabled=false` the one-shot pass has no health detail and
+no meter of its own: a store fault in it is logged (one `ERROR`, then a
+reminder every 5 minutes), not counted (`maestro.loop.errors` counts only
+`Error`s), and it is retried every `poll-interval` with no limit, so a node
+whose store stays unreachable retries for ever with only its log to show
+it.
 
 **Where.** `StartupRecoveryRunner.run`
 (`maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/config/StartupRecoveryRunner.java:61`,
@@ -4981,7 +4987,8 @@ and queries (owning node only), but a dashboard or a deploy script that wants
 
 **How to tackle it.** A `startupRecovery` detail on `MaestroHealthIndicator`:
 `"running"` until the poller's first pass (or the one-shot pass) completes,
-then `"complete"`, informational only (never `DOWN`). Holding readiness
+then `"complete"`, informational only (never `DOWN`); for the one-shot pass,
+also its failed-attempt streak, as the renewer reports its own. Holding readiness
 instead was rejected (MD-6): it would tie readiness to the backlog again, and
 a store fault in the pass would keep the pod out of service.
 

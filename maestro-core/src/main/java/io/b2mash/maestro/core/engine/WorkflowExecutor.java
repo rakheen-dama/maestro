@@ -1929,10 +1929,14 @@ public final class WorkflowExecutor {
      * own virtual thread, {@code maestro-startup-recovery-<service>}, so the
      * caller does not wait for it.
      *
-     * <p>A pass that throws is logged and counted like a recovery-poller
-     * failure ({@code maestro.loop.errors{loop=recovery-poller}}) and retried
-     * after {@code retryInterval}, until one pass completes; then the thread
-     * ends. A {@code MaestroControlFlowError} ends it at once.
+     * <p>A pass that throws is logged like a recovery-poller failure (one
+     * {@code ERROR} with the stack trace, then an {@code ERROR} reminder every
+     * 5 minutes while it continues) and retried after {@code retryInterval},
+     * with no limit, until one pass completes; then the thread ends. Only an
+     * {@link Error} it contains is counted, on
+     * {@code maestro.loop.errors{loop=recovery-poller}}; a store fault is
+     * logged, not counted. No health detail or meter reports the pass itself.
+     * A {@code MaestroControlFlowError} ends it at once.
      * {@link #shutdown()} stops it. It does not occupy the recovery poller's
      * slot: {@link #startRecoveryPoller(Map, Duration)} may still be called,
      * and {@link #isRecoveryPollerRunning()} does not report it.
