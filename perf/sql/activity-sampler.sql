@@ -15,9 +15,15 @@
 -- fresh snapshot (within one transaction Postgres serves the same one);
 -- pg_stat_clear_snapshot() makes that explicit. perf/sql/activity-samples.sql
 -- summarises a label.
+--
+-- The sample table is UNLOGGED and the procedure commits with
+-- synchronous_commit off: a sample's COMMIT then waits for no WAL flush, so
+-- the sampler keeps its 10 Hz while the very work it watches (S6's purge)
+-- floods the WAL. With a logged table the first S6 runs saw gaps of 0.4-0.6 s
+-- under the sweep (review r8; validity.samplerResolution judges the gap).
 CREATE SCHEMA IF NOT EXISTS perf_harness;
 
-CREATE TABLE IF NOT EXISTS perf_harness.activity_sample (
+CREATE UNLOGGED TABLE IF NOT EXISTS perf_harness.activity_sample (
     at             timestamptz NOT NULL,
     label          text        NOT NULL,
     matching       int         NOT NULL,
@@ -29,6 +35,7 @@ LANGUAGE plpgsql AS $$
 DECLARE
     deadline timestamptz := clock_timestamp() + make_interval(secs => secs);
 BEGIN
+    SET synchronous_commit = off;
     WHILE clock_timestamp() < deadline LOOP
         PERFORM pg_stat_clear_snapshot();
         INSERT INTO perf_harness.activity_sample (at, label, matching, maestro_active)
