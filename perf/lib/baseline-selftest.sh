@@ -132,7 +132,37 @@ base="${work}/smoke.baseline.json"
 expect "smoke: record_baseline refuses (no gate uses a baseline)" 1 "$(record "$dir" smoke "$base")"
 expect "smoke: nothing written" absent "$(sum "$base")"
 
-# 8. The committed baselines are untouched by all of the above.
+# 8. A jq that fails while writing the new baseline (or the identity note)
+# leaves the old baseline byte-identical and no temporary file. run.sh calls
+# record_baseline through `||`, which disables set -e inside it, so every
+# write must check its own status. A wrapper jq on PATH fails only on the
+# filter named in FAIL_ON.
+realjq=$(command -v jq)
+mkdir -p "${work}/fakebin"
+cat >"${work}/fakebin/jq" <<EOF
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" != *"\${FAIL_ON}"* ]] || exit 5; done
+exec "${realjq}" "\$@"
+EOF
+chmod +x "${work}/fakebin/jq"
+for target in 'harnessCommit: .identity.repo.harnessCommit' '.notes += [$n]'; do
+  case $target in harness*) name="write" ;; *) name="note" ;; esac
+  dir=$(canned "jqfail-${name}" "$S1_RUN")
+  base="${work}/jqfail-${name}.baseline.json"
+  old36 >"$base"
+  before=$(sum "$base")
+  idBefore=$(sum "${dir}/identity.json")
+  rc=0
+  (PATH="${work}/fakebin:${PATH}" FAIL_ON="$target" record_baseline "$dir" s1-throughput "$base") \
+    >"${dir}/record.out" 2>&1 || rc=$?
+  expect "jq fails on the ${name}: record_baseline returns non-zero" yes "$( ((rc != 0)) && echo yes || echo no)"
+  expect "jq fails on the ${name}: old baseline byte-identical" "$before" "$(sum "$base")"
+  expect "jq fails on the ${name}: no temporary file beside it" 0 "$(find "$work" -maxdepth 1 -name "jqfail-${name}.baseline.json.*" | wc -l | tr -d ' ')"
+  [[ "$name" != note ]] || expect "jq fails on the note: identity.json byte-identical, no temp" "${idBefore} 0" \
+    "$(sum "${dir}/identity.json") $(find "$dir" -name 'identity.json.*' | wc -l | tr -d ' ')"
+done
+
+# 9. The committed baselines are untouched by all of the above.
 expect "committed baselines untouched" "" "$(git -C "$PERF_DIR" status --porcelain -- baselines)"
 
 if ((failures > 0)); then
