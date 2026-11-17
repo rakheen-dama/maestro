@@ -13,7 +13,15 @@
 #                            (run, name) key exactly one row, every run
 #                            COMPLETED with output M; every sleep run
 #                            COMPLETED "slept"
-#   gate.noStrayPermits (3.2)  sum over nodes of P1-P0, P2-P1 and P3-P2: each 0
+#   validity.phases          both signal phases were set up as planned before
+#                            signalling: every run parked (no timeout on the
+#                            wait, W runs WAITING_SIGNAL), the local phase
+#                            routed "own", the cross phase routed "next"
+#                            with crossNode true (review r5)
+#   gate.noStrayPermits (3.2)  every node's P1-P0, P2-P1 and P3-P2: each 0.
+#                            Per node, never a sum over nodes, which a +k on
+#                            one node and -k on another would cancel
+#                            (review r6)
 #   gate.crossNodeStatementParity  net engine statements per consumed signal:
 #                            |cross - local| <= tolerance + 0.05 x local (the
 #                            larger phase tolerance: one tick per background
@@ -54,6 +62,16 @@ $identity[0] as $id
         {every: "node at P0..P3 reports maestro_wake_permits"};
         if $ok then "every node reported its wake-permit count at P0..P3"
         else "a node did not report maestro_wake_permits at some read: the permit count is not measured (absent is never 0)" end),
+    ([$loc, $cr] | map(select(. != null) | {phase: .name, route, planRoute: .plan.route, crossNode: .plan.crossNode,
+        parkedTimedOut: .parked.timedOut, parked: (.parked.byStatus.WAITING_SIGNAL // 0), w})) as $v
+    | (($v | length) == 2
+       and ($v | all(.parkedTimedOut == false and .parked == .w))
+       and ($v[0].phase == "local" and $v[0].route == "own" and $v[0].planRoute == "own")
+       and ($v[1].phase == "cross" and $v[1].route == "next" and $v[1].planRoute == "next" and $v[1].crossNode == true)) as $ok
+    | check("validity.phases"; "validity"; if $ok then "PASS" else "INVALID" end; $v;
+        {parked: "every run WAITING_SIGNAL before signalling", local: "route own", cross: "route next, crossNode true"};
+        if $ok then "both phases parked every run before signalling; local routed to the owner, cross to another node"
+        else "a signal phase was not set up as planned (runs not all parked, or the routing not as named): its figures do not mean what the phase name says" end),
     ([$loc, $cr] | map(select(. != null) | {phase: .name, w, accepted, rows: .status.signals.rows,
         consumed: .status.signals.consumed, unconsumed: .status.signals.unconsumed,
         keysNotExactlyOneRow: .status.signals.keysNotExactlyOneRow,
@@ -69,16 +87,24 @@ $identity[0] as $id
         {rows: "= accepted", unconsumed: 0, keysNotExactlyOneRow: 0, completed: "every run, output M"};
         if $ok then "every accepted signal has exactly one row, consumed; every run COMPLETED with output \($mm); every sleep run slept"
         else "a signal was lost, duplicated or left unconsumed, or a run did not complete as planned" end),
-    ({p1p0: (if $P[0] != null and $P[1] != null then $P[1] - $P[0] else null end),
-      p2p1: (if $P[1] != null and $P[2] != null then $P[2] - $P[1] else null end),
-      p3p2: (if $P[2] != null and $P[3] != null then $P[3] - $P[2] else null end)}) as $d
+    ([["P0", $m.permits.P0], ["P1", $m.permits.P1], ["P2", $m.permits.P2], ["P3", $m.permits.P3]]
+     | map(.[1].nodes // [] | map({key: .container, value: .value}) | from_entries)) as $pn
+    | ([$pn[0] | keys[]] | map(. as $c
+        | {container: $c,
+           p1p0: (if ($pn[1][$c] | isnum) and ($pn[0][$c] | isnum) then $pn[1][$c] - $pn[0][$c] else null end),
+           p2p1: (if ($pn[2][$c] | isnum) and ($pn[1][$c] | isnum) then $pn[2][$c] - $pn[1][$c] else null end),
+           p3p2: (if ($pn[3][$c] | isnum) and ($pn[2][$c] | isnum) then $pn[3][$c] - $pn[2][$c] else null end)})) as $per
+    | ({p1p0: ($per | map(.p1p0) | if all(isnum) then add else null end),
+        p2p1: ($per | map(.p2p1) | if all(isnum) then add else null end),
+        p3p2: ($per | map(.p3p2) | if all(isnum) then add else null end)}) as $d
+    | ([$per[] | .p1p0, .p2p1, .p3p2]) as $all
     | check("gate.noStrayPermits"; "gate";
-        if ($d | to_entries | any(.value | isnum | not)) then "INVALID"
-        elif ($d | to_entries | all(.value == 0)) then "PASS" else "FAIL" end;
-        $d + {sums: $P}; {p1p0: 0, p2p1: 0, p3p2: 0};
-        if ($d | to_entries | any(.value | isnum | not)) then "a permit read is missing"
-        elif ($d | to_entries | all(.value == 0)) then "no delivery left a wake permit behind on any node"
-        else "wake permits grew: local \($d.p1p0), cross \($d.p2p1), timer \($d.p3p2) (3.2: a delivery that wakes nobody on the node stores a permit for good)" end),
+        if ($per | length) < 2 or ($all | any(isnum | not)) then "INVALID"
+        elif ($all | all(. == 0)) then "PASS" else "FAIL" end;
+        $d + {perNode: $per, sums: $P}; {perNode: "every delta 0"};
+        if ($per | length) < 2 or ($all | any(isnum | not)) then "a permit read is missing"
+        elif ($all | all(. == 0)) then "no delivery left a wake permit behind on any node"
+        else "wake permits moved: local \($d.p1p0), cross \($d.p2p1), timer \($d.p3p2) in total; per node \($per | map("\(.container): \(.p1p0) / \(.p2p1) / \(.p3p2)") | join(", ")) (3.2: a delivery that wakes nobody on the node stores a permit for good)" end),
     ($sl.statementsPerWorkflowNet // null) as $nl
     | ($sx.statementsPerWorkflowNet // null) as $nx
     | ([$sl.netTolerancePerWorkflow, $sx.netTolerancePerWorkflow] | map(select(isnum)) | max) as $tol
