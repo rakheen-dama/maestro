@@ -1446,7 +1446,7 @@ public final class WorkflowExecutor {
             logger.warn("Cannot retry workflow '{}' — no such instance in this service (purged?)", workflowId);
             return RetryOutcome.NOT_FOUND;
         }
-        logger.info("Workflow '{}' reopened for retry: {} event(s) and {} timer id(s) deleted (basis {})",
+        logger.info("Workflow '{}' reopened for retry: {} event(s) deleted and {} timer id(s) named for deletion (basis {})",
                 workflowId, plan.deleteSequences().size(), plan.deleteTimerIds().size(), plan.basis());
         logger.debug("Workflow '{}' retry deleted sequences {} and timer ids {}",
                 workflowId, plan.deleteSequences(), plan.deleteTimerIds());

@@ -522,6 +522,12 @@ measured:
 measured numbers — it is a behaviour playbook, and every statement in it is
 traceable to engine code and its pinning tests rather than to a timing run.*
 
+*Admin Retry in a mixed fleet: a node of the previous build retries the old
+way (it deletes failure memos by type and ignores `failedSequences`); a node of
+this build retries history an older node wrote by matching the recorded
+message. Nothing either build writes is unreadable to the other. The details
+are in `docs/release-notes.md`, "Mixed fleets", under the admin Retry entry.*
+
 ### 10.1 The deploy rule has not changed: upgrade all nodes together
 
 **Upgrade every node of a service together, or drain the service first.** The
