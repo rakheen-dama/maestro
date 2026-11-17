@@ -540,6 +540,37 @@ class TaskQueueGovernorTest {
             assertEquals(OptionalInt.of(2), g.availableActivitySlots("q"));
         }
 
+        /**
+         * Review c1: a reclaim that runs while the poison permit is still
+         * travelling — a deadline-hit drain, or here at once after
+         * {@code shutdown()}, before the woken head waiter has run — must not
+         * take the permit from under the waiters still queued.
+         */
+        @Test
+        void waitersStillQueuedWhenTheReclaimRunsAllLeave() throws Exception {
+            for (var round = 0; round < 20; round++) {
+                var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+                g.acquireWorkflowSlot("q", "holder");
+                holderReleases.add(() -> g.releaseWorkflowSlot("holder"));
+                var queued = new ArrayList<Waiter>();
+                for (var i = 0; i < 3; i++) {
+                    var id = "r" + round + "-w" + i;
+                    var w = waitFor(id, () -> g.acquireWorkflowSlot("q", id));
+                    awaitParked(w);
+                    queued.add(w);
+                }
+
+                g.shutdown();
+                g.reclaimShutdownPermits();
+
+                for (var w : queued) {
+                    assertTrue(w.left().await(2, SECONDS),
+                            "round " + round + ": the waiter " + w.thread().getName() + " left");
+                    assertInstanceOf(ExecutorShutdownException.class, w.thrown(), w.thread().getName());
+                }
+            }
+        }
+
         @Test
         void shutdownIsIdempotent() {
             var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)));

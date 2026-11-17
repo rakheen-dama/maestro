@@ -81,7 +81,7 @@ import java.util.concurrent.locks.ReentrantLock;
  * closed, hands the permit straight back and throws
  * {@link ExecutorShutdownException}, which wakes the next waiter, until the
  * queue is empty; {@link #reclaimShutdownPermits}, called after the drain,
- * takes the loans back.
+ * takes the loans back from every pool with no thread still queued.
  * <ul>
  *   <li><b>No interrupts.</b> Nothing interrupts a waiting thread and the
  *       closed path sets no interrupt flag, so a waiter's own instance-lock
@@ -371,14 +371,27 @@ public final class TaskQueueGovernor {
 
     /**
      * Takes back the permits {@link #shutdown} lent, so each pool's count is
-     * exact again. Called once, after the drain. A pool whose every permit is
-     * held keeps its loan (it reads one over its limit). Idempotent: a loan is
-     * taken back at most once.
+     * exact again. Called once, after the drain. Never takes a permit from a
+     * pool that still has threads queued: the reclaim honours the pool's
+     * fairness, so a poison permit still travelling down a queue (a drain
+     * that hit its deadline) keeps waking it. Such a pool, and a pool whose
+     * every permit is held, keeps its loan and reads one over its limit.
+     * Never blocks; the caller's interrupt status is left as it was.
+     * Idempotent: a loan is taken back at most once.
      */
     void reclaimShutdownPermits() {
-        for (var slots : lent) {
-            if (slots.tryAcquire()) {
-                lent.remove(slots);
+        var interrupted = Thread.interrupted(); // a zero-timeout tryAcquire never waits; restored below
+        try {
+            for (var slots : lent) {
+                if (slots.tryAcquire(0, TimeUnit.SECONDS)) {
+                    lent.remove(slots);
+                }
+            }
+        } catch (InterruptedException unreachable) {
+            interrupted = true; // the flag was cleared above; kept for the compiler
+        } finally {
+            if (interrupted) {
+                Thread.currentThread().interrupt();
             }
         }
     }
