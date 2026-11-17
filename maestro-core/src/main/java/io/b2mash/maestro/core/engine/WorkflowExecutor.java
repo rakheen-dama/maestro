@@ -180,6 +180,14 @@ public final class WorkflowExecutor {
      * Package-private; production never assigns it.
      */
     volatile Runnable beforeShutdownDrain = () -> { };
+
+    /**
+     * Test seam: runs on the launching thread after a run has been registered
+     * in {@code runningWorkflows} and before its thread is started. A test
+     * holds it to put a registered-but-unstarted run in front of a shutdown.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRunThreadStart = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
@@ -1793,7 +1801,8 @@ public final class WorkflowExecutor {
      *       poller, signal janitor and retention sweeper are asked to stop;
      *       every park and retry backoff is abandoned; every run queued for a
      *       task-queue slot is released.</li>
-     *   <li>Drain the runs in flight until the deadline.</li>
+     *   <li>Drain the runs in flight until the deadline, a run whose launch has
+     *       registered it but not yet started its thread included.</li>
      *   <li>Join the background loops for what is left. A loop still inside
      *       a store call at the deadline is named in a {@code WARN} and ends
      *       after that call.</li>
@@ -1899,8 +1908,21 @@ public final class WorkflowExecutor {
         beforeShutdownDrain.run();
         var drainStart = System.nanoTime();
         for (var entry : runningWorkflows.entrySet()) {
+            var run = entry.getValue();
             try {
-                entry.getValue().thread().join(deadline.remaining());
+                // A run registered before its thread is started (launchWorkflow
+                // registers, then starts) is waited for, not skipped: its
+                // cancellation was requested at step 3, so once started it
+                // stands down at its first stop point or completes, and the
+                // join below follows it. Thread.join(Duration) would throw
+                // IllegalThreadStateException on the still-NEW thread.
+                if (!run.launched().await(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)) {
+                    continue; // still not started at the deadline: reported as still running
+                }
+                if (run.thread().getState() == Thread.State.NEW) {
+                    continue; // its start failed: the launcher unregistered it and released its lock
+                }
+                run.thread().join(deadline.remaining());
             } catch (InterruptedException e) {
                 // Restored at once: every bounded wait below then ends at once
                 // too, and the non-blocking steps still run.
@@ -2465,7 +2487,7 @@ public final class WorkflowExecutor {
             // Register before starting to prevent the race where a fast workflow
             // finishes and removes itself before the put() below executes
             running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
-                    cancellation);
+                    cancellation, new CountDownLatch(1));
             runningWorkflows.put(instance.workflowId(), running);
             // R22(1): shutdown() requests a shutdown on every run it finds
             // registered. A launch that passed its shuttingDown check before
@@ -2476,10 +2498,13 @@ public final class WorkflowExecutor {
             if (shuttingDown.get()) {
                 cancellation.requestShutdown();
             }
+            beforeRunThreadStart.run();
             thread.start();
+            running.launched().countDown();
         } catch (RuntimeException | Error e) {
             if (running != null) {
                 runningWorkflows.remove(instance.workflowId(), running);
+                running.launched().countDown(); // never started: a drain waiting for it moves on
                 // A wake that saw this run registered may have stored a permit;
                 // no run will park on it now (3.2).
                 parkingLot.clearPending(instance.workflowId());
@@ -3559,7 +3584,10 @@ public final class WorkflowExecutor {
      * {@link WorkflowContext} holds — terminate/shutdown requests to the run.
      * {@code workflowImpl} is the object the registration's factory built for
      * this run alone; queries against the run are invoked on it.
+     * {@code launched} is counted down once the launch has started
+     * {@code thread}, or has failed to and unregistered the run — so a
+     * shutdown drain never joins a thread that is not started yet.
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
-                           Object workflowImpl, RunCancellation cancellation) {}
+                           Object workflowImpl, RunCancellation cancellation, CountDownLatch launched) {}
 }
