@@ -52,6 +52,19 @@ management:
     web:
       exposure:
         include: health,info,prometheus
+  endpoint:
+    health:
+      group:
+        # Maestro's health component alone, with its details, at
+        # /actuator/health/perf: Scenario 5 (perf/scenarios/s5-pool-health.sh)
+        # judges what Maestro itself reports while the host exhausts the pool,
+        # apart from Boot's own indicators (db, diskSpace, ...). The root
+        # /actuator/health is unchanged (details never shown), so run.sh's
+        # '"status":"UP"' readiness grep stays valid. A management setting of
+        # the harness, not a Maestro one.
+        perf:
+          include: maestro
+          show-details: always
   metrics:
     distribution:
       # Histogram buckets for the harness's latency percentiles. A key for a

@@ -3,12 +3,15 @@ package io.b2mash.maestro.samples.perf.web;
 import com.zaxxer.hikari.HikariDataSource;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.samples.perf.workflow.PerfChainWorkflow;
+import io.b2mash.maestro.samples.perf.workflow.PerfHoldWorkflow;
 import io.b2mash.maestro.samples.perf.workflow.PerfParkWorkflow;
+import io.b2mash.maestro.samples.perf.workflow.PerfSignalsWorkflow;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
 import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.jspecify.annotations.Nullable;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.info.BuildProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -33,7 +36,8 @@ import java.util.Objects;
  * identify this node. The JSON shapes are the harness's wire contract.
  *
  * <ul>
- *   <li>{@code POST /perf/workflows} — {@link StartRequest} → {@code 202 {"workflowId"}},
+ *   <li>{@code POST /perf/workflows} — {@link StartRequest} ({@code chain}, {@code park},
+ *       {@code hold} or {@code signals}) → {@code 202 {"workflowId"}},
  *       {@code 400 {"error"}} on validation, {@code 409 {"error"}} if the ID exists</li>
  *   <li>{@code POST /perf/workflows/{id}/signals/{name}} — {@code {"payload"?}} →
  *       {@code 202 {"workflowId", "signal"}}, {@code 400 {"error"}} on validation
@@ -47,6 +51,7 @@ import java.util.Objects;
 @RequestMapping("/perf")
 public class PerfController {
 
+    private final WorkflowStarter starter;
     private final MaestroClient maestro;
     private final MaestroProperties properties;
     private final DataSource dataSource;
@@ -61,8 +66,28 @@ public class PerfController {
      * @param dataSource the application's {@code DataSource}
      * @param build      the jar's build info; absent when run without {@code bootBuildInfo}
      */
+    @Autowired
     public PerfController(MaestroClient maestro, MaestroProperties properties, DataSource dataSource,
                           ObjectProvider<BuildProperties> build) {
+        this((workflowClass, workflowId, input) -> maestro
+                        .newWorkflow(workflowClass, WorkflowOptions.builder().workflowId(workflowId).build())
+                        .startAsync(input),
+                maestro, properties, dataSource, build);
+    }
+
+    /**
+     * Creates the controller with its own way of starting a run: the seam
+     * {@code PerfControllerTest} records starts through, without an engine.
+     *
+     * @param starter    starts a run of a workflow class with an ID and an input
+     * @param maestro    the Maestro client (signals)
+     * @param properties the bound {@code maestro.*} properties
+     * @param dataSource the application's {@code DataSource}
+     * @param build      the jar's build info; absent when run without {@code bootBuildInfo}
+     */
+    public PerfController(WorkflowStarter starter, MaestroClient maestro, MaestroProperties properties,
+                          DataSource dataSource, ObjectProvider<BuildProperties> build) {
+        this.starter = starter;
         this.maestro = maestro;
         this.properties = properties;
         this.dataSource = dataSource;
@@ -70,7 +95,8 @@ public class PerfController {
     }
 
     /**
-     * Starts a {@code perf-chain} or {@code perf-park} run.
+     * Starts a {@code perf-chain}, {@code perf-park}, {@code perf-hold} or
+     * {@code perf-signals} run.
      *
      * @param request the run's ID, type and knobs
      * @return {@code 202} with the workflow ID, {@code 400} or {@code 409} with an error
@@ -82,12 +108,13 @@ public class PerfController {
             return ResponseEntity.badRequest().body(new ErrorResponse(error.get()));
         }
         var workflowId = Objects.requireNonNull(request.workflowId());
-        var options = WorkflowOptions.builder().workflowId(workflowId).build();
         try {
-            if (StartRequest.CHAIN.equals(request.type())) {
-                maestro.newWorkflow(PerfChainWorkflow.class, options).startAsync(request.chainInput());
-            } else {
-                maestro.newWorkflow(PerfParkWorkflow.class, options).startAsync(request.parkInput());
+            // The validator accepted the type, so it is one of the four.
+            switch (Objects.requireNonNull(request.type())) {
+                case StartRequest.CHAIN -> starter.start(PerfChainWorkflow.class, workflowId, request.chainInput());
+                case StartRequest.PARK -> starter.start(PerfParkWorkflow.class, workflowId, request.parkInput());
+                case StartRequest.HOLD -> starter.start(PerfHoldWorkflow.class, workflowId, request.holdInput());
+                default -> starter.start(PerfSignalsWorkflow.class, workflowId, request.signalsInput());
             }
         } catch (WorkflowAlreadyExistsException e) {
             return ResponseEntity.status(HttpStatus.CONFLICT)
@@ -190,6 +217,24 @@ public class PerfController {
         } catch (UnknownHostException e) {
             return Objects.requireNonNullElse(System.getenv("HOSTNAME"), "unknown");
         }
+    }
+
+    /**
+     * How the controller starts a run; in production
+     * {@code maestro.newWorkflow(workflowClass, options).startAsync(input)}.
+     */
+    @FunctionalInterface
+    public interface WorkflowStarter {
+
+        /**
+         * Starts a run.
+         *
+         * @param workflowClass the {@code @DurableWorkflow} class
+         * @param workflowId    the run's workflow ID
+         * @param input         the run's input
+         * @throws WorkflowAlreadyExistsException if the ID exists
+         */
+        void start(Class<?> workflowClass, String workflowId, Object input);
     }
 
     /**
