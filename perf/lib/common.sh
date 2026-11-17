@@ -28,6 +28,35 @@ dc() {
   docker compose -p "${COMPOSE_PROJECT}" -f "${PERF_DIR}/compose.yml" --profile tools "$@"
 }
 
+# Background work a scenario starts (S2's probe and hoard loops, samplers,
+# a background k6) must never outlive the harness: an orphaned probe loop
+# would keep running `docker compose run k6` against a torn-down stack and
+# recreate its network. Register every such pid with bg_register; run.sh's
+# on_exit calls bg_kill_all, which kills each recorded pid and its direct
+# children BY PID (never by name or pattern). A loop also guards itself with
+# bg_should_continue <deadline epoch>: false once the harness (PERF_MAIN_PID,
+# run.sh's own pid) is gone, e.g. after a SIGKILL that ran no trap, or once
+# the deadline has passed. perf/lib/bgloop-selftest.sh pins all three.
+bg_register() {
+  printf '%s\n' "$1" >>"${RESULTS}/.bg-pids"
+}
+bg_kill_all() {
+  local pid child
+  [[ -n "${RESULTS:-}" && -s "${RESULTS}/.bg-pids" ]] || return 0
+  while IFS= read -r pid; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    for child in $(ps -axo pid=,ppid= | awk -v p="$pid" '$2 == p {print $1}'); do
+      kill "$child" 2>/dev/null || true
+    done
+    kill "$pid" 2>/dev/null || true
+  done <"${RESULTS}/.bg-pids"
+  return 0
+}
+bg_should_continue() {
+  kill -0 "${PERF_MAIN_PID:-$$}" 2>/dev/null && (($(date +%s) < $1))
+}
+
 # Rewrites identity.json in place: identity_set '<jq filter>' [jq args…]
 identity_set() {
   local filter=$1

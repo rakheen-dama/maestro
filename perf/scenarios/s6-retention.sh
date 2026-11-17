@@ -126,6 +126,7 @@ scenario_run() {
     "PERF_RATE=${S6_FG_RATE}" "PERF_DURATION=$((S6_PRE_SECS + allowance + S6_POST_SECS))" \
     'PERF_BODY={"type":"chain","activities":3,"activityMillis":20}' &
   fg_pid=$!
+  bg_register "$fg_pid"
   sleep "$S6_PRE_SECS"
   pre_window=$(psql_json pgss-window)
 
@@ -134,6 +135,7 @@ scenario_run() {
   dc exec -T postgres psql -U postgres -d maestro -q -c \
     "CALL perf_harness.sample_activity($((allowance + 60)), 's6', '${S6_PURGE_RE}')" </dev/null >>"${RESULTS}/harness.log" 2>&1 &
   sampler_pid=$!
+  bg_register "$sampler_pid"
   sweep_reset=$(psql_json pgss-reset)
   wal0=$(dc exec -T postgres psql -U postgres -d maestro -At -c 'SELECT wal_bytes FROM pg_stat_wal' </dev/null)
   jvm2=$(node_start 2)

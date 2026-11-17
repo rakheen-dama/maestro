@@ -214,6 +214,7 @@ scenario_run() {
     done
   ) &
   sampler=$!
+  bg_register "$sampler"
   local cstats="${RESULTS}/s1-container-stats.jsonl" cstats_sampler
   : >"$cstats"
   (
@@ -225,6 +226,7 @@ scenario_run() {
     done
   ) &
   cstats_sampler=$!
+  bg_register "$cstats_sampler"
   host_load_start=$(host_load)
   log "s1: host load at load start $(jq -c '{load1, load5, load15}' <<<"$host_load_start")"
 

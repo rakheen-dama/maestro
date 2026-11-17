@@ -108,6 +108,7 @@ scenario_run() {
   dc exec -T postgres psql -U postgres -d maestro -q -c \
     "CALL perf_harness.sample_activity(${sampler_secs}, 's5', 'pg_sleep')" </dev/null >>"${RESULTS}/harness.log" 2>&1 &
   sampler_pid=$!
+  bg_register "$sampler_pid"
   sleep 2
 
   log "s5: idle health, ${S5_IDLE_SECS} s"

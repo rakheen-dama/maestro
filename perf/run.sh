@@ -157,6 +157,8 @@
 set -Eeuo pipefail
 
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# This harness's own pid: background loops end when it is gone (lib/common.sh).
+PERF_MAIN_PID=$$
 ROOT=$(cd "${PERF_DIR}/.." && pwd)
 COMPOSE_PROJECT=maestro-perf
 # Host-wide, not per worktree or per TMPDIR: the compose project and the
@@ -188,6 +190,8 @@ on_exit() {
   local rc=$?
   set +e
   trap - EXIT ERR
+  # Background loops a scenario started end first, by pid (lib/common.sh).
+  bg_kill_all
   if ((STACK_TOUCHED)) && [[ -n "$RESULTS" ]]; then
     dc logs --no-color --timestamps >"${RESULTS}/compose.log" 2>&1
     if [[ "${PERF_KEEP_UP:-0}" == "1" ]]; then

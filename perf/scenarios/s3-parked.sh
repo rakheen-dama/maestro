@@ -235,6 +235,7 @@ scenario_run() {
     done
   ) &
   sampler=$!
+  bg_register "$sampler"
 
   local warmCount=$((40 * REPLICAS)) warmup background
   log "s3: warm-up, ${warmCount} chain runs"

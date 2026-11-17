@@ -102,10 +102,12 @@ s2_node_metrics() {
 }
 
 # Background loop: every S2_HOARD_SECS, every up node's metrics to
-# hoard-<phase>.jsonl, until <stop-file> exists.
+# hoard-<phase>.jsonl, until <stop-file> exists, the harness is gone or the
+# phase's deadline (<deadline epoch>) has passed (bg_should_continue,
+# lib/common.sh); its pid is registered, so run.sh's on_exit kills it.
 s2_hoard_loop() {
-  local phase=$1 stop=$2 url i
-  while [[ ! -e "$stop" ]]; do
+  local phase=$1 stop=$2 deadline=$3 url i
+  while [[ ! -e "$stop" ]] && bg_should_continue "$deadline"; do
     while IFS= read -r url || [[ -n "$url" ]]; do
       [[ -n "$url" ]] || continue
       i=${url##*-node-}
@@ -117,12 +119,13 @@ s2_hoard_loop() {
 }
 
 # Background loop: probe k6 runs (30 s each, 6 starts of chain(1 x d) at
-# 0.2/s) to the nodes listed in the up-nodes file, until <stop-file> exists.
+# 0.2/s) to the nodes listed in the up-nodes file, until <stop-file> exists,
+# the harness is gone or <deadline epoch> has passed (as the hoard loop).
 s2_probe_loop() {
-  local phase=$1 stop=$2 prefix=$3 k=0
+  local phase=$1 stop=$2 prefix=$3 deadline=$4 k=0
   local body
   body=$(jq -nc --argjson d "$S2_D" '{type: "chain", activities: 1, activityMillis: $d}')
-  while [[ ! -e "$stop" ]]; do
+  while [[ ! -e "$stop" ]] && bg_should_continue "$deadline"; do
     K6_NODES=$(cat "$(s2_up_nodes_file)") k6_run "probe${phase}-${k}" start-rate.js \
       "PERF_ID_PREFIX=${prefix}" "PERF_ID_OFFSET=$((k * S2_PROBES_PER_RUN))" "PERF_COUNT=${S2_PROBES_PER_RUN}" \
       "PERF_RATE=1" "PERF_TIME_UNIT=5" "PERF_DURATION=${S2_PROBE_SECS}" "PERF_BODY=${body}"
@@ -161,7 +164,7 @@ s2_phase() {
   lc=$(tr '[:upper:]' '[:lower:]' <<<"$name")
   local prefix="${RUN_ID}-s2${lc}-" probe_prefix="${RUN_ID}-p2${lc}-" fresh_prefix="${RUN_ID}-f2${lc}-"
   local seed seeded reset t0 jvm1 ready1="" jvm2="" ready2="" n2rec="null" drain stop_probes stop_hoard
-  local probe_pid hoard_pid window components recovery status probes probe_status nodes_end i
+  local probe_pid hoard_pid deadline window components recovery status probes probe_status nodes_end i
   local fresh_k6="null" per_minute="null"
 
   s2_assert_nodes_down
@@ -182,16 +185,22 @@ s2_phase() {
   stop_hoard="${RESULTS}/.s2-stop-hoard-${lc}"
   rm -f "$stop_probes" "$stop_hoard"
   jvm1=$(node_start 1)
-  s2_hoard_loop "$lc" "$stop_hoard" &
+  # Both loops end at the latest a minute past the phase's whole budget
+  # (drain timeout, plus readiness and the probes' own wait).
+  deadline=$(($(date +%s) + 2 * S2_TIMEOUT + 300))
+  s2_hoard_loop "$lc" "$stop_hoard" "$deadline" &
   hoard_pid=$!
-  s2_probe_loop "$lc" "$stop_probes" "$probe_prefix" &
+  bg_register "$hoard_pid"
+  s2_probe_loop "$lc" "$stop_probes" "$probe_prefix" "$deadline" &
   probe_pid=$!
+  bg_register "$probe_pid"
   if [[ -n "$fresh_rate" ]]; then
     K6_NODES=$(node_url 1) k6_run "fresh${lc}" start-rate.js \
       "PERF_ID_PREFIX=${fresh_prefix}" "PERF_ID_OFFSET=0" "PERF_RATE=${fresh_rate}" \
       "PERF_DURATION=${fresh_secs}" "PERF_K6_VUS=50" "PERF_K6_MAX_VUS=200" \
       "PERF_BODY=$(jq -nc --argjson d "$S2_D" '{type: "chain", activities: 1, activityMillis: $d}')" &
     fresh_k6=$!
+    bg_register "$fresh_k6"
   fi
   ready1=$(node_wait_ready 1 "$S2_TIMEOUT") || ready1=""
   log "s2 ${name}: node 1 ready at ${ready1:-never}"
