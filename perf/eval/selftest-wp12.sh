@@ -159,6 +159,20 @@ expect "s2: recovery statements 2.51 per run: gate.recoveryStatements" FAIL "$(s
 out=$(s2 s2-stmts-250 "$(ratio_b 0.55) | ${after_shape} | $(stmts_at 2.5)")
 expect "s2: recovery statements 2.5 per run (the bound): gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
 
+# Phase B (two nodes) has its own limit, 3.0 (coordinator's ruling,
+# s2-recovery-drain.jq): lock attempts lost to the peer are expected there.
+stmts_b() { # <x>: phase B alone at exactly x recovery statements per run, phase A untouched
+  printf '.phases[1] |= (((.components.components.lockAcquire.calls // 0) - .probes.started
+       + (.components.components.recoveryPage.calls // 0) + (.components.components.heldKeys.calls // 0)) as $other
+      | .recovery.adoptCas.calls = (%s * .rows - $other | round))' "$1"
+}
+out=$(s2 s2-stmts-b-300 "$(ratio_b 0.55) | ${after_shape} | $(stmts_b 3.0)")
+expect "s2: phase B recovery statements 3.0 per run (its bound): gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
+out=$(s2 s2-stmts-b-301 "$(ratio_b 0.55) | ${after_shape} | $(stmts_b 3.01)")
+expect "s2: phase B recovery statements 3.01 per run: gate.recoveryStatements" FAIL "$(st "$out" gate.recoveryStatements)"
+out=$(s2 s2-stmts-b-260 "$(ratio_b 0.55) | ${after_shape} | $(stmts_b 2.6)")
+expect "s2: phase B 2.6 per run (above the one-node 2.5, below 3.0): gate.recoveryStatements" PASS "$(st "$out" gate.recoveryStatements)"
+
 out=$(s2 s2-full-noc '.' '.profile = "full"')
 expect "s2: full profile without phase C: advisory.c2Stream" WARN "$(st "$out" advisory.c2Stream)"
 out=$(s2 s2-local-c '.')

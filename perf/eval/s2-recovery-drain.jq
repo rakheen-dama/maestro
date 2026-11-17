@@ -28,8 +28,21 @@
 #                                used; 2 = sampling slack between the gauges)
 #   gate.freshStartsNotStarved (3.1)  phase A probe p95 <= 0.25 x drainA
 #   gate.recoveryStatements      (lockAcquire - probe starts + adoptCas +
-#                                recoveryPage + heldKeys) / N <= 2.5, phases
-#                                A and B
+#                                recoveryPage + heldKeys) / N: phase A (one
+#                                node) <= 2.5, phase B (two nodes) <= 3.0.
+#                                Why two limits (coordinator's ruling,
+#                                2026-11-17): on two nodes the excess over
+#                                one node is lock attempts lost to the peer
+#                                between its heldKeys read and its lock call,
+#                                inherent while the store has no claim
+#                                protocol; measured 2.41 (preview
+#                                r20261117t122039z) and 2.45 (after of record
+#                                r20261117t162103z: 677 lockAcquire calls
+#                                beyond one per run and per probe, about 670
+#                                pages and 670 heldKeys reads), so 2.5 was a
+#                                coin flip on a loaded host. Hoarding (one
+#                                node adopting everything and re-polling) or
+#                                a re-poll storm would still exceed 3.0.
 #   advisory.readiness           readiness delay over the empty-database
 #                                start, per phase start (WARN above 5 s)
 #   advisory.adoptionShare       per-node adoptions in phase B (WARN when one
@@ -46,6 +59,8 @@ def s2_max_ratio: 0.65;
 def s2_hoard_slack: 2;
 def s2_probe_fraction: 0.25;
 def s2_max_statements: 2.5;
+def s2_max_statements_two_nodes: 3.0;
+def s2_statement_limit($phase): if $phase == "B" then s2_max_statements_two_nodes else s2_max_statements end;
 def s2_min_statements: 1.5;
 def s2_rolling_max_secs: 15;
 def s2_min_hoard_samples: 3;
@@ -158,13 +173,14 @@ $identity[0] as $id
          {fraction: "<= \(s2_probe_fraction)"};
          if $f == null then "phase A has no probe p95 or no drain time"
          else "a fresh start during phase A took \($f | round4) of the drain at p95" end)),
-    ([$ab[] | {phase: .name} + recovery_stmts(.)] as $v
-     | ($v | map(.perRun) | max) as $mx
+    ([$ab[] | {phase: .name} + recovery_stmts(.) + {limit: s2_statement_limit(.name)}] as $v
+     | ($v | map(select((.perRun | isnum) and .perRun > .limit))) as $over
      | check("gate.recoveryStatements"; "gate";
          if ($v | length) < 2 or ($v | any(.perRun | isnum | not)) then "INVALID"
-         elif $mx <= s2_max_statements then "PASS" else "FAIL" end;
-         $v; {perRun: "<= \(s2_max_statements)"};
-         "recovery statements per seeded run (lockAcquire - probe starts + adoptCas + recoveryPage + heldKeys), max \($mx)")),
+         elif ($over | length) == 0 then "PASS" else "FAIL" end;
+         $v; {perRunA: "<= \(s2_max_statements) (one node)", perRunB: "<= \(s2_max_statements_two_nodes) (two nodes: lock attempts lost to the peer are expected)"};
+         "recovery statements per seeded run (lockAcquire - probe starts + adoptCas + recoveryPage + heldKeys): \($v | map("\(.phase) \(.perRun) (<= \(.limit))") | join(", "))"
+         + (if ($over | length) > 0 then "; over the limit: \($over | map(.phase) | join(", "))" else "" end))),
     # ── advisories ──
     advisory_guarded("advisory.readiness";
       ($m.emptyStarts | map({key: (.node | tostring), value: .readinessDelaySecs}) | from_entries) as $e
