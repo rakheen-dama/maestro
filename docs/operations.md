@@ -1134,7 +1134,13 @@ sweep at startup, then every `maestro.retention.interval`), but only the
 calls `trySetLeader("maestro:leader:retention:<service>", candidateId, 15 s)` —
 the same election the timer poller uses — and a node that is not the leader
 stops at once, emits nothing and logs at `DEBUG`. A leader that dies hands over
-within the 15 s TTL. Each batch (`batch-size` instances, 500 by default) is one
+within the 15 s TTL. The leader purges **this service's workflows only** —
+those recorded under its `maestro.service-name`; services sharing the tables
+each purge their own, with their own retentions (`RetentionSweeperScopeTest`,
+`PostgresStoreHygieneTest$ScopedPurge`). Rows recorded under a name no node runs
+any more are therefore purged by nobody (§11.5).
+
+Each batch (`batch-size` instances, 500 by default) is one
 transaction: Postgres selects the candidates `FOR UPDATE SKIP LOCKED`, deletes
 signals, timers and events, then the instances. A sweep stops a status's loop
 when a batch comes back short or after `max-batches-per-sweep` batches — a
@@ -1144,10 +1150,34 @@ go. Raise `batch-size`/`max-batches-per-sweep` or lower `interval` to drain
 faster; the per-batch transaction size is what bounds lock duration and WAL
 burst.
 
+**Pacing.** Between two batches the sweeper waits as long as the previous
+batch took — the store call alone, on the monotonic clock — at most 5 s. The
+first batch of a sweep is not paused, nothing is paused after the last, and the
+step from one status to the next counts as between two batches
+(`RetentionSweeperPacingTest`). So a sweep keeps the database busy about half
+of the time it runs, instead of issuing up to 3 × `max-batches-per-sweep` (300
+at the defaults) transactions back to back. It reduces no total: the same rows,
+WAL and I/O are spread over about twice the time — a sweep of B batches of t
+each takes about B·t + (B−1)·min(t, 5 s) (arithmetic). The 5 s cap is a third
+of the leader TTL: leadership is renewed only by the election before each
+batch, so the gap between two renewals is one batch plus one pause, and the cap
+keeps that within the 15 s TTL for every batch shorter than 10 s — the pause
+alone never costs a sweeper its leadership. Leadership is still re-checked
+right before each batch, after the pause. A stop ends a pause at once, without
+an interrupt (`RetentionSweeperPacingTest`, `BatchPacerTest`).
+
 `maestro.signal.terminal-retention` (7 d, every node, no election) is the older,
-narrower purge: it removes only the *unconsumed signals* of `COMPLETED`/
-`TERMINATED` workflows. The two coexist; the retention sweeper later removes
-the workflow itself.
+narrower purge, the **signal janitor**: it removes only the *unconsumed
+signals* of `COMPLETED`/`TERMINATED` workflows, and only this service's —
+signals of workflows recorded under this node's `maestro.service-name`. It
+deletes them in batches of 1,000, one short statement each, until a batch
+deletes fewer, pausing between batches by the same rule as the sweeper, and
+issues at most 1,000 batches (1,000,000 signals) per sweep; a larger backlog
+continues at the next `janitor-interval` (`SignalJanitorBatchingTest`,
+`PostgresStoreHygieneTest$ScopedJanitorDelete`). Two nodes sweeping at once
+wait at most one batch on each other's row locks, and the later one then ends
+its sweep early (traced, not tested). The two purges coexist; the retention
+sweeper later removes the workflow itself.
 
 ### 11.2 What a purge means downstream
 
@@ -1195,7 +1225,12 @@ sweep's counts. `/actuator/health` reports `retentionSweeperRunning` (`true`,
 `false` after a start is a dead loop and turns the status `DOWN`.
 `signalJanitorRunning` and `instanceLockRenewerRunning` read the same way (the renewer reads `"idle"` until this node takes its first instance lock); see §14. A sweep that
 purged anything logs one `INFO` line with its counts; a store failure logs
-`WARN` and the loop retries next interval.
+`WARN` and the loop retries next interval. The lines:
+
+- `Retention sweep purged {} workflow instance(s) with {} event(s), {} signal(s) and {} timer(s) in {} batch(es)`
+- `Signal janitor purged {} unconsumed signal(s) of service '{}' workflows finished before {} in {} batch(es)`
+- `Signal janitor started (interval={}, terminalRetention={}, batchSize={}, service={})`
+- `Signal janitor ended this sweep after {} batches ({} signal(s)); the rest is left to the next sweep, in {}` — the janitor reached its 1,000-batch cap. Once after a large backlog is expected; every interval means a backlog above a million stale signals, or a custom store whose delete reports more rows than it removes.
 
 ### 11.4 Deploying it
 
@@ -1226,6 +1261,134 @@ purged anything logs one `INFO` line with its counts; a store failure logs
 - **Mixed-version deploy** (§10.1 still applies): an older node's engine does
   not know the sweeper and keeps running; it merely sees finished workflows
   disappear, which no active-path read depends on.
+- **Mixed-version deploy of the paced, service-scoped housekeeping:** a node of
+  an older build still sweeps and runs its janitor unscoped and unpaced, as
+  before. The retention leader key is the same in both builds, so an old and a
+  new node of one service never sweep at once; the janitor has no leader, so an
+  old node's janitor still deletes every service's stale signals in one
+  statement. Nothing is worse than before the upgrade (traced, not tested). No
+  migration, history or configuration change.
+
+### 11.5 Rows recorded under another `maestro.service-name`
+
+Every row of `maestro_workflow_instance` carries the `service_name` of the node
+that started it. Recovery adopts only active rows recorded under this node's
+`maestro.service-name`, and the retention sweep and the signal janitor touch
+only this service's rows. Rows under any other name are another service's
+business — or nobody's, after a rename, or when replicas once ran with
+per-replica names.
+
+**The startup warning (Issue 39).** Once per node start, on its own thread
+right after recovery has started, each node runs one read and logs one `WARN`
+per other service name that holds **active** instances (`RUNNING`,
+`WAITING_SIGNAL`, `WAITING_TIMER`, `COMPENSATING`) of a workflow type this node
+registers:
+
+```text
+3 active workflow instance(s) of a type this node runs are recorded under maestro.service-name 'orders-old', not 'orders'. Recovery adopts only 'orders' instances, so unless a node runs with maestro.service-name=orders-old these workflows never resume: start one under that name, or correct the rows (docs/operations.md §11.5).
+```
+
+- It counts neither terminal rows (they are not stranded work) nor other
+  workflow types (a co-tenant service with its own types is not reported).
+- It warns about at most 20 names; when there are more, one `INFO` says so,
+  and the listing query below shows them all.
+- A clean node logs nothing above `DEBUG`. A failed read logs one `INFO`,
+  `Maestro service-name check skipped: …`, without a stack trace. The check
+  never fails or delays startup, and never writes
+  (`StartupForeignServiceCheckTest`, `ForeignServiceCheckTest`,
+  `PostgresStoreHygieneTest$ForeignServiceCounts`).
+- It runs once per node start: ten replicas starting log ten copies.
+- A live co-tenant service that registers the same type name is reported too:
+  the wording is conditional for that reason (Issue 79).
+
+**Listing every name** (not exercised by a test; the release notes' pre-upgrade
+query, by type):
+
+```sql
+SELECT service_name, workflow_type, count(*)
+FROM maestro_workflow_instance
+WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING')
+GROUP BY service_name, workflow_type ORDER BY service_name, workflow_type;
+```
+
+**Remedies for active rows** (traced, not tested):
+
+1. Run a node with `maestro.service-name` set to the recorded name. Its
+   recovery adopts the rows and finishes them; then retire it.
+2. Or correct `service_name` on those rows to the name the service runs under
+   now — **only while no node runs the old name**, so no run of those
+   workflows is in flight anywhere: `UPDATE maestro_workflow_instance SET
+   service_name = '<current>' WHERE service_name = '<old>' AND status IN
+   ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING')`. The next
+   recovery pass adopts them.
+
+**Terminal rows under a name no node runs are never purged** (Issue 77): each
+service's sweep purges only its own name. Find them (not exercised by a test):
+
+```sql
+SELECT service_name, status, count(*), min(completed_at)
+FROM maestro_workflow_instance WHERE completed_at IS NOT NULL
+GROUP BY 1, 2;
+```
+
+To remove one abandoned name's history, run this script in `psql`. It deletes
+at most 500 terminal workflows finished over 30 days ago per run, children
+before the instances; repeat it until the last `DELETE` reports `DELETE 0`.
+
+```sql
+\set service 'orders-old'
+BEGIN;
+CREATE TEMPORARY TABLE maestro_purge_ids ON COMMIT DROP AS
+  SELECT id FROM maestro_workflow_instance
+  WHERE service_name = :'service' AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')
+  AND completed_at < now() - interval '30 days'
+  ORDER BY completed_at LIMIT 500 FOR UPDATE SKIP LOCKED;
+DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN (SELECT p.id FROM maestro_purge_ids p
+  JOIN maestro_workflow_instance i ON i.id = p.id
+  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
+  AND i.completed_at < now() - interval '30 days');
+DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN (SELECT p.id FROM maestro_purge_ids p
+  JOIN maestro_workflow_instance i ON i.id = p.id
+  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
+  AND i.completed_at < now() - interval '30 days');
+DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN (SELECT p.id FROM maestro_purge_ids p
+  JOIN maestro_workflow_instance i ON i.id = p.id
+  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
+  AND i.completed_at < now() - interval '30 days');
+DELETE FROM maestro_workflow_instance WHERE id IN (SELECT p.id FROM maestro_purge_ids p
+  JOIN maestro_workflow_instance i ON i.id = p.id
+  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
+  AND i.completed_at < now() - interval '30 days');
+COMMIT;
+```
+
+**Run it as one transaction, as written** (`BEGIN` … `COMMIT`; never in
+autocommit). That is what makes it safe beside running services:
+
+- The first statement locks its candidates (`FOR UPDATE SKIP LOCKED`) until the
+  `COMMIT`. An operator Retry of a `FAILED` candidate waits for the batch, then
+  finds no row; a candidate another transaction holds is skipped, not waited
+  on, and keeps its row and history.
+- Every delete re-checks name, status and age, so a candidate that stopped
+  qualifying keeps its row and its whole history.
+- Without the transaction, the temporary table is dropped after its own
+  statement and the locks are released at once.
+
+The statements are, whitespace aside, the ones `PostgresStoreHygieneTest$ScopedPurge`
+runs (`MANUAL_PURGE_SQL`, its parameters bound to the service name):
+`theDocumentedManualPurgeRemovesAnAbandonedServicesHistory`,
+`aRetryStartedAfterTheManualPurgesSelectNeverLosesTheRetriedWorkflow`,
+`aCandidateThatNoLongerQualifiesAtDeleteTimeKeepsItsRowAndHistory` and
+`theManualPurgeSkipsACandidateLockedElsewhereAndLeavesItsHistory`, on Postgres
+16. Change `30 days` to the age you want.
+
+**The cost of scoping in shared tables (Issue 78).** The sweep's candidate
+select still walks `idx_wf_instance_terminal (status, completed_at)` and
+filters `service_name` on the heap. A single-service database pays nothing for
+the filter. When a co-tenant keeps a longer retention for the same status,
+every batch reads past the co-tenant's rows in that window: 86 ms per batch
+reading past 34,960 co-tenant rows, measured on the planning probe (Postgres 16,
+412,500 instances, not production-sized).
 
 ---
 
@@ -1315,6 +1478,9 @@ P = workflows parked on this node):
 | Recovery capacity pass | 0 statements with no free room; otherwise ⌈rows read / page⌉ page reads (a page is twice the free room, 20 to 200 rows) + as many `heldKeys` reads + 3 per adoption | at most once per second per node, only while a recovery backlog drains |
 | Parked-workflow wake re-check | 2 reads per parked `sleep()` (instance status, timer row), 3 per parked `awaitSignal()` (status, signals, deadline row): 2P–3P reads | `maestro.signal.wake-recheck-interval` = **30 s** (unchanged by this cycle) |
 | Clock-skew check | 1 `SELECT now()` | at timer-poller start, then every **10 min** |
+| Retention sweep (leader only) | per batch 1 leader upsert + 1 candidate select + 4 deletes; ≤ 3 × `max-batches-per-sweep` batches, each after the first paused as long as the previous one (≤ 5 s) | `maestro.retention.interval` = **1 h** |
+| Signal janitor (every node) | ⌈(U + 1) / 1,000⌉ deletes for U stale unconsumed signals of this service, at most 1,000 per sweep, paced the same way | `maestro.signal.janitor-interval` = **1 h** |
+| Service-name check | 1 read, over the active rows of every service in the tables | once per node start |
 
 Worked example (arithmetic): a node holding 2,000 parked workflows of a
 service with 10,000 active instances spread over five nodes renews them with
