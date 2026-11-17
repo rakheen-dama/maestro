@@ -72,6 +72,9 @@ final class TimerPoller implements StoppableLoop {
     private static final Duration LEADER_TTL = Duration.ofSeconds(15);
     private static final String LEADER_KEY_PREFIX = "maestro:leader:timer-poller:";
 
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
+
     private final WorkflowStore store;
     private final WorkflowExecutor executor;
     private final @Nullable DistributedLock distributedLock;
@@ -169,9 +172,6 @@ final class TimerPoller implements StoppableLoop {
         logger.info("Timer poller started (interval={}, batchSize={}, service={})",
                 pollInterval, batchSize, serviceName);
     }
-
-    /** How long {@link #stop()} waits for the loop's thread to end. */
-    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     /**
      * Stops the polling loop: {@link #requestStop()}, then

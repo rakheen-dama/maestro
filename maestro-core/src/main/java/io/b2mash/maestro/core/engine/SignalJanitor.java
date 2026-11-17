@@ -55,6 +55,9 @@ final class SignalJanitor implements StoppableLoop {
     /** Name of the virtual thread the sweep loop runs on. */
     static final String THREAD_NAME = "maestro-signal-janitor";
 
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
+
     private final WorkflowStore store;
     private final Duration interval;
     private final Duration retention;
@@ -131,9 +134,6 @@ final class SignalJanitor implements StoppableLoop {
                 .start(this::sweepLoop);
         logger.info("Signal janitor started (interval={}, terminalRetention={})", interval, retention);
     }
-
-    /** How long {@link #stop()} waits for the loop's thread to end. */
-    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     /**
      * Stops the sweep loop: {@link #requestStop()}, then

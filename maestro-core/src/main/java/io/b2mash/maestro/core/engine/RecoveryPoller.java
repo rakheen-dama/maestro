@@ -39,6 +39,9 @@ final class RecoveryPoller implements StoppableLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(RecoveryPoller.class);
 
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
+
     private final WorkflowExecutor executor;
     private final Map<String, WorkflowRegistration> registrations;
     private final String serviceName;
@@ -101,9 +104,6 @@ final class RecoveryPoller implements StoppableLoop {
                 .start(this::pollLoop);
         logger.info("Recovery poller started (interval={}, service={})", pollInterval, serviceName);
     }
-
-    /** How long {@link #stop()} waits for the loop's thread to end. */
-    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     /**
      * Stops the polling loop: {@link #requestStop()}, then

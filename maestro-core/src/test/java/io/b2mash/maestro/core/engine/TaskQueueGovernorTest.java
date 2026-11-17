@@ -487,7 +487,7 @@ class TaskQueueGovernorTest {
         }
 
         @Test
-        void aWaitThatStartsAfterShutdownThrowsWithoutWaiting() throws Exception {
+        void aWaitThatStartsAfterShutdownLeavesWithTheShutdownSignal() throws Exception {
             var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
             g.acquireWorkflowSlot("q", "holder");
             holderReleases.add(() -> g.releaseWorkflowSlot("holder"));

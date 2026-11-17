@@ -79,6 +79,9 @@ final class RetentionSweeper implements StoppableLoop {
     /** TTL of the leadership claim; renewed by every batch's re-check. */
     static final Duration LEADER_TTL = Duration.ofSeconds(15);
 
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
+
     private final WorkflowStore store;
     private final @Nullable DistributedLock distributedLock;
     private final String serviceName;
@@ -159,9 +162,6 @@ final class RetentionSweeper implements StoppableLoop {
                 settings.interval(), settings.completedRetention(), settings.terminatedRetention(),
                 settings.failedRetention(), settings.batchSize(), settings.maxBatchesPerSweep(), serviceName);
     }
-
-    /** How long {@link #stop()} waits for the loop's thread to end. */
-    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     /**
      * Stops the sweep loop: {@link #requestStop()}, then
