@@ -439,7 +439,8 @@ never PASS. Pass/fail rests on counts and ratios of two figures of one run.
   (capacity passes at most once per second per node counted at one page + one
   heldKeys each — a pass whose page fills reads on, so the real figure can be
   higher —, plus a full pass every recovery poll interval and one at each node
-  start; node-seconds and reads both to the end of the statement window);
+  start; node-seconds from each start, on the database clock, and reads both
+  to the component snapshot that counts them);
   1.25 rests on the measurements: 0.56–0.71 on one node, 0.78–0.82 on two,
   worst 0.824. The old single figure, (lockAcquire −
   probes + adoptCas + pages + heldKeys) / N, is `advisory.recoveryStatements`:
@@ -449,7 +450,10 @@ never PASS. Pass/fail rests on counts and ratios of two figures of one run.
   start (node 2 starts 0–15 s after node 1 reads ready, and reads ready
   itself), every phase's status record present (`validity.statusRecorded`),
   every statement component matched (≥ 1 each, adoptCas = the nodes'
-  adoption counters = N), gauge series for every node.
+  adoption counters = N), gauge series covering every node's drain from the
+  moment it answered to the drain's end with no stretch over two sampling
+  periods (10 s) unobserved (`validity.hoardSeries`), and the hoard and probe
+  loops ended with exit status 0 (`validity.collectors`).
 - **s4-signals** (3.2, WP2): `gate.noStrayPermits` — every node's
   `maestro_wake_permits` delta over the local, cross and timer phases is 0
   (per node: a sum over nodes could cancel); `gate.crossNodeStatementParity`
@@ -525,15 +529,15 @@ re-checks every one):
 
 | Scenario | Role | runId | Engine | As run / now (evaluator) | Key figures |
 |---|---|---|---|---|---|
-| S2 | before | r20261117t115610z | `main` 5b170009 (no WP6) | ERROR (stub) / **FAIL** (40981910) | B/A 0.9962; hoard 4,941; probe p95 / drainA 0.917; lost races 0 |
-| S2 | preview | r20261117t122039z | `fix/recovery-capacity` 25e84962 | ERROR (stub) / **PASS** (40981910) | 0.5165; 21; 0.010; lost 0.124 / run; pass rate 0.82 × designed |
-| S2 | after | r20261117t162103z | `main` d1600bf1 | PASS / **PASS** (40981910) | 0.5113; 21; 0.011; lost 0.185 / run; pass rate 0.78 × designed; adoptions 2,551 / 2,449 |
+| S2 | before | r20261117t115610z | `main` 5b170009 (no WP6) | ERROR (stub) / **FAIL** (2ef6b779) | B/A 0.9962; hoard 4,941; probe p95 / drainA 0.917; lost races 0 |
+| S2 | preview | r20261117t122039z | `fix/recovery-capacity` 25e84962 | ERROR (stub) / **PASS** (2ef6b779) | 0.5165; 21; 0.010; lost 0.124 / run; pass rate 0.82 × designed |
+| S2 | after | r20261117t162103z | `main` d1600bf1 | PASS / **PASS** (2ef6b779) | 0.5113; 21; 0.011; lost 0.185 / run; pass rate 0.78 × designed; adoptions 2,551 / 2,449 |
 | S4 | before | r20261117t171940z | 0c710a1e (`834a9da8` + the gauge, MD-2) | FAIL / **FAIL** (b94a938c) | permits local 0, cross **4,500** (2,250 per node), timer **100**; 24.9 / 24.9 statements per signal |
 | S4 | after | r20261117t171420z | `main` 40aa3c21 | PASS / **PASS** (b94a938c) | permits 0 / 0 / 0; 24.7 / 24.7 statements per signal |
-| S5 | before | r20261117t155013z | bdcc074d | FAIL / **FAIL** (f1a37627) | exhausted: 28 `DOWN` (store "timed out"), 8 `UP`; root 14 `DOWN`, 14 unanswered |
-| S5 | after | r20261117t153355z | `main` bd583f06 | PASS / **PASS** (f1a37627) | 0 `DOWN`, 32 `UNKNOWN`, 4 `UP`; root 24 `UP`, 12 unanswered (Issue 75) |
-| S6 | before | r20261117t165803z | `main` d1600bf1 (no WP8) | FAIL / **FAIL** (a0b01a10) | busy 0.8525; janitor 1 call × 20,000 rows; foreign signals kept 0 / 10,000; `perf-foreign` rows purged 1,000 / 1,000 (Issue 76) |
-| S6 | after | r20261117t170538z | `main` 40aa3c21 | PASS / **PASS** (a0b01a10) | busy 0.4692; 11 calls, 909 rows per call; all foreign signals and rows kept |
+| S5 | before | r20261117t155013z | bdcc074d | FAIL / **FAIL** (2ef6b779) | exhausted: 28 `DOWN` (store "timed out"), 8 `UP`; root 14 `DOWN`, 14 unanswered |
+| S5 | after | r20261117t153355z | `main` bd583f06 | PASS / **PASS** (2ef6b779) | 0 `DOWN`, 32 `UNKNOWN`, 4 `UP`; root 24 `UP`, 12 unanswered (Issue 75) |
+| S6 | before | r20261117t165803z | `main` d1600bf1 (no WP8) | FAIL / **FAIL** (79729932) | busy 0.8525; janitor 1 call × 20,000 rows; foreign signals kept 0 / 10,000; `perf-foreign` rows purged 1,000 / 1,000 (Issue 76) |
+| S6 | after | r20261117t170538z | `main` 40aa3c21 | PASS / **PASS** (79729932) | busy 0.4692; 11 calls, 909 rows per call; all foreign signals and rows kept |
 
 Superseded runs: S4 r20261117t155519z / r20261117t160028z (replaced by the
 per-level re-takes; now PASS / FAIL) and S6 r20261117t161125z /

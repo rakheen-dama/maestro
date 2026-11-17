@@ -192,7 +192,7 @@ Each clone is then exactly a run whose node died after step 0 completed and befo
 | `advisory.decomposition` | advisory | The component calls per seeded run |
 | `advisory.c2Stream` | advisory | `full`: recovered completions in every minute of phase C > 0 → PASS, else WARN. `local`: "not measured". |
 
-> **As built (after review):** the table above is the plan. The shipped evaluator (`perf/eval/s2-recovery-drain.jq`, its header lists every check) replaces `gate.recoveryStatements` with three gates — `gate.lockAcquisitionsPerAdoption` ≤ 2.02, `gate.lostLockRaces` ≤ 0.5 per seeded run, `gate.recoveryPassRate` ≤ 1.25 × a designed floor — and keeps the combined figure as `advisory.recoveryStatements`; `gate.noHoard` is ≤ 2C; `validity.recoveryClassifier` requires every statement component matched and adoptCas = the nodes' adoptions = N; `validity.statusRecorded` is new. Current rules and measured figures: `docs/test-plan.md` § Finding-linked scenarios and the Review section below.
+> **As built (after review):** the table above is the plan. The shipped evaluator (`perf/eval/s2-recovery-drain.jq`, its header lists every check) replaces `gate.recoveryStatements` with three gates — `gate.lockAcquisitionsPerAdoption` ≤ 2.02, `gate.lostLockRaces` ≤ 0.5 per seeded run, `gate.recoveryPassRate` ≤ 1.25 × a designed floor — and keeps the combined figure as `advisory.recoveryStatements`; `gate.noHoard` is ≤ 2C; `validity.recoveryClassifier` requires every statement component matched and adoptCas = the nodes' adoptions = N; `validity.statusRecorded` is new; `validity.hoardSeries` requires the series to cover each node's drain (no stretch over two sampling periods unobserved, from the node's first answer to the drain's end) and `validity.collectors` requires the hoard and probe loops to have exited 0 (PR #65 review). Current rules and measured figures: `docs/test-plan.md` § Finding-linked scenarios and the Review section below.
 
 **Predictions** (N = 5,000, d = 2 s, C = 20, JVM boot ≈ 15 s):
 
@@ -829,7 +829,7 @@ The `type` error becomes `type must be chain, park, hold or signals`.
 | after preview (WP6 branch) | `25e84962` (`fix/recovery-capacity`), overlay of H 24763185 | r20261117t122039z | **PASS** | 520.91 | 269.05 | 0.5165 | 21 / 21 | 0.010 | 2.22 / 2.41 | +0.6; +1.4 / +1.9 | yes: 0.52, ≤ 2C, 0.01; two-node figure above the predicted 2.2 (lost lock races 0.124 / run) |
 | after of record (main) | `d1600bf1` (PR #62; engine ec0458ca), H 1192fabd (S2 files = 24763185) | r20261117t162103z | **PASS** | 517.09 | 264.39 | 0.5113 | 21 / 21 | 0.011 | 2.17 / 2.45 | −0.7; +0.1 / +0.3 | yes, within ±10 % of the preview except phase B's combined statements (lost races 0.185 / run; gate ≤ 0.5) |
 
-S2's statement gates since the final review: `gate.lockAcquisitionsPerAdoption` ≤ 2.02 (2.000 in every run), `gate.lostLockRaces` ≤ 0.5 (0 / 0.124 / 0.185), `gate.recoveryPassRate` ≤ 1.25 × designed floor (0.13 / 0.82 / 0.78, node-seconds to the statement window's end); "recovery stmts / run" above is the former combined figure, now `advisory.recoveryStatements`. Re-evaluated with the S2 evaluator at 40981910.
+S2's statement gates since the final review: `gate.lockAcquisitionsPerAdoption` ≤ 2.02 (2.000 in every run), `gate.lostLockRaces` ≤ 0.5 (0 / 0.124 / 0.185), `gate.recoveryPassRate` ≤ 1.25 × designed floor (0.13 / 0.82 / 0.78, node-seconds from each start on the database clock to the component snapshot); "recovery stmts / run" above is the former combined figure, now `advisory.recoveryStatements`. Re-evaluated with the S2 evaluator at 2ef6b779.
 
 ### S4 `s4-signals` (3.2, WP2)
 
@@ -847,7 +847,7 @@ Consume latency is advisory: per level the cross-node p50 is a steady +2.4 ms (t
 | before | `bdcc074d` (engine 15290b00), overlay of H 634dbc3f | r20261117t155013z | **FAIL** (notDownWhenBusy) | 36 answers; 378 sampler samples | 28 / 0 / 8 / 0 | 8 UP, 14 DOWN, 14 unanswered | 97 % | 0 | yes: 78 % DOWN (store "timed out"), 8 found a free connection |
 | after | `bd583f06` (`main`; engine aa43db6f), H 634dbc3f | r20261117t153355z | **PASS** | 36; 367 | 0 / 32 / 4 / 0 | 24 UP, 0 DOWN, 12 unanswered (Issue 75) | 97 % | 0 | yes: 0 DOWN, 89 % UNKNOWN |
 
-Evaluator f1a37627.
+Evaluator 2ef6b779 (`validity.storeReachable` also requires the sampler to cover each phase, edges included).
 
 ### S6 `s6-retention` (3.11a, 3.11b, WP8)
 
@@ -857,7 +857,7 @@ Evaluator f1a37627.
 | after preview (WP8 branch) | not run: WP8 merged before the preview could be taken | | | | | | | | | |
 | after of record (main) | `40aa3c21` (PR #63; engine 3e75ad8f), H c7bcdcc6 | r20261117t170538z | **PASS** | 120 | 0.4692 (span 10.29 s, 101 samples) | 11 / 909 | 10,000 of 10,000 | 0 of 1,000 | 0.84 | yes: ≈0.5, ≥ 2 / ≤ 1,000, all kept |
 
-The first pair (r20261117t161125z, r20261117t163846z) predates the sampler's span-gap measurement and now reads INVALID (pinned). Evaluator f3d03b30.
+The first pair (r20261117t161125z, r20261117t163846z) predates the sampler's span-gap measurement and now reads INVALID (pinned). Evaluator 79729932.
 
 **MD rulings:** MD-1 … MD-11.
 
