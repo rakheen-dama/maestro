@@ -1,6 +1,6 @@
 # WP12 Finding-Linked Load Scenarios Implementation Plan
 
-> **Status note (added by WP13, 2026-11-17, while this package is still in progress).** The table below is the state when the plan was written. Since then WP6 merged as PR #62 (`d1600bf1`) and WP8 as PR #63 (`40aa3c21`); WP8's MD-1 scoped retention to the node's service, so S6's `perf-foreign` rows are kept after the fix and Issue 76 is not filed for the retention scope (see WP8's MD-1). This package's own Review section is authoritative for its runs.
+> **Status note (added by WP13, 2026-11-17, while this package is still in progress).** The table below is the state when the plan was written. Since then WP6 merged as PR #62 (`d1600bf1`) and WP8 as PR #63 (`40aa3c21`); WP8's MD-1 scoped retention to the node's service, so S6's `perf-foreign` rows are kept after the fix and Issue 76 is not filed for the retention scope (see WP8's MD-1). This package's own Review section is authoritative for its runs. As run so far: every "before" ran on the pre-fix engine commit with this package's harness overlaid in one commit (MD-1), not on today's engine; S2's phase C (`full` profile only) has not been run, and its seeding steps below are as planned, not as run.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
