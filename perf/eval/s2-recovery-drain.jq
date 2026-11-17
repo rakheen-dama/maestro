@@ -23,6 +23,10 @@
 #                                lockAcquire calls >= N: a changed statement
 #                                text would otherwise zero a term silently
 #                                (review r3). INVALID, never a vacuous PASS
+#   validity.statusRecorded      every phase recorded its rows' byStatus and
+#                                outputs, its drain's timedOut and its probes'
+#                                byStatus: without them correctness.allRecovered
+#                                would read a missing record as a failure
 #   validity.hoardSeries         running, parked and workflow-slot gauges for
 #                                every node of every drain (>= 3 samples each)
 #   correctness.allRecovered     every phase row COMPLETED with output 2, none
@@ -82,12 +86,18 @@
 #                                and its heldKeys; 200 = the page,
 #                                WorkflowExecutor RECOVERY_PAGE_SIZE); a full
 #                                pass = 2 x ceil(N / 200); node-seconds: each
-#                                node's start (startIssuedAt) to the phase's
-#                                last completion. The limit 1.25 rests on the
-#                                measurements, not the arithmetic: 0.57-0.73
-#                                on one node, 0.86-0.90 on two after WP6
-#                                (worst 0.896, the preview's phase B), so 1.25
-#                                is 39 % above the worst run seen; a re-poll
+#                                node's start (startIssuedAt) to the END OF
+#                                THE STATEMENT WINDOW (its snapshotAt), the
+#                                interval the reads are counted over (the
+#                                window closes after the post-drain waits for
+#                                the probes and the sampler, and recovery
+#                                keeps polling in them). The limit 1.25 rests on the
+#                                measurements, not the arithmetic: on that
+#                                interval 0.56-0.71 on one node, 0.78-0.82 on
+#                                two after WP6 (worst 0.824, the preview's
+#                                phase B; 0.896 when node-seconds ended at the
+#                                last completion), so 1.25 is 52 % above the
+#                                worst run seen; a re-poll
 #                                storm (passes faster than the spacing, or
 #                                re-reading pages it has adopted) exceeds it
 #   advisory.readiness           readiness delay over the empty-database
@@ -152,7 +162,11 @@ def stmt_figures($p; $pollSecs):
     | ($p.recovery.adoptCas.calls // null) as $cas
     | adopted_by_nodes($p) as $ad
     | ($p.rows) as $n
-    | ($p.status.lastCompletedAt | ts_secs) as $end
+    # node-seconds end where the statement window ends (its snapshot, after
+    # the post-drain waits for the probes and the hoard sampler), the same
+    # interval the page and heldKeys counts cover; the drain's own end only
+    # when the window has no snapshot time
+    | (($p.window.snapshotAt | ts_secs) // ($p.status.lastCompletedAt | ts_secs)) as $end
     | ([$p.starts[]? | .startIssuedAt | select(isnum) | $end - .] ) as $alive
     | (if ($n | isnum) then ($n / s2_page_rows | ceil) * 2 else null end) as $fullPass
     | (2 / s2_capacity_spacing_secs + (if ($fullPass | isnum) and ($pollSecs | isnum) and $pollSecs > 0 then $fullPass / $pollSecs else 0 end)) as $rate
@@ -228,6 +242,16 @@ $identity[0] as $id
          {samples: ">= \(s2_min_hoard_samples) per node per drain, with running, parked and workflow slots"};
          if $ok then "running, parked and workflow-slot gauges sampled for every node of every drain"
          else "a node of a drain has no complete gauge series: the hoard cannot be judged" end)),
+    ([$m.phases // [] | .[]? | select(type == "object")
+      | {phase: .name, byStatus: (.status.byStatus | type), outputs: (.status.outputs | type),
+         timedOut: (.drain.timedOut | type), probeStatus: (.probes.status.byStatus | type)}] as $v
+     | ($v | map(select(.byStatus != "object" or .outputs != "object" or .timedOut != "boolean"
+                        or .probeStatus != "object"))) as $bad
+     | (($v | length) >= 2 and ($bad | length) == 0) as $ok
+     | check("validity.statusRecorded"; "validity"; if $ok then "PASS" else "INVALID" end; $v;
+         {byStatus: "object", outputs: "object", timedOut: "boolean", probeStatus: "object"};
+         if $ok then "every phase recorded its rows' statuses and outputs, its drain's outcome and its probes' statuses"
+         else "phase(s) \($bad | map(.phase) | join(", ")) did not record their status: correctness cannot be judged (INVALID, not a failure)" end)),
     # ── correctness ──
     ([$m.phases // [] | .[]? | select(type == "object")
       | {phase: .name, rows, byStatus: .status.byStatus, completed2: (.status.outputs["2"] // 0),
