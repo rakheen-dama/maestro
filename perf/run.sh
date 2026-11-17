@@ -158,7 +158,7 @@ set -Eeuo pipefail
 
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # This harness's own pid: background loops end when it is gone (lib/common.sh).
-PERF_MAIN_PID=$$
+export PERF_MAIN_PID=$$
 ROOT=$(cd "${PERF_DIR}/.." && pwd)
 COMPOSE_PROJECT=maestro-perf
 # Host-wide, not per worktree or per TMPDIR: the compose project and the
