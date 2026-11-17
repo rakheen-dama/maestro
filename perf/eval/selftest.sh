@@ -525,6 +525,20 @@ if [[ -n "$s1src" ]]; then
     "$(s1_field s1-residue '.checks[] | select(.id == "correctness.allCompleted") | .detail' | grep -q 'drain timed out.*RUNNING' && echo yes || echo no)"
   out=$(s1_eval s1-accepted '.accepted += 1')
   expect "s1, one accepted start has no row: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  # Rejected starts: every accepted start completed, so the rows agree with
+  # "accepted" (k6's passed checks), but 600 starts were refused. Not a PASS.
+  rejected='(.k6[] | select(.phase == "s1")) |= (.checksPassed -= 600 | .checksFailed = 600)
+            | .accepted -= 600 | .runStatus.total -= 600 | .runStatus.byStatus.COMPLETED -= 600'
+  out=$(s1_eval s1-rejected "$rejected")
+  expect "s1, 600 starts rejected (k6 checks failed), the rest completed: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  expect "s1, 600 starts rejected: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  expect "s1, 600 starts rejected: the detail names the count" yes \
+    "$(s1_field s1-rejected '.checks[] | select(.id == "correctness.allCompleted") | .detail' | grep -q '600 of [0-9]* starts rejected' && echo yes || echo no)"
+  # A start without a check result (passed checks below iterations, none failed).
+  out=$(s1_eval s1-unchecked '(.k6[] | select(.phase == "s1") | .checksPassed) -= 1 | .accepted -= 1 | .runStatus.total -= 1 | .runStatus.byStatus.COMPLETED -= 1')
+  expect "s1, one iteration with no passed check: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
+  out=$(s1_eval s1-no-checks '(.k6[] | select(.phase == "s1")) |= del(.checksPassed, .checksFailed)')
+  expect "s1, k6 recorded no check counts: correctness.allCompleted" FAIL "$(st "$out" correctness.allCompleted)"
 
   # The statement gate: baseline matched on shape, profile and replicas.
   net=$(s1_field s1-pass '.measurements.statements.statementsPerWorkflowNet')

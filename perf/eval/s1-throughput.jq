@@ -4,8 +4,12 @@
 #
 # D4: numbers first. The ceiling and every latency figure are REPORTED
 # (advisories), never gated. The verdict rests on validity, on correctness
-# (every accepted start COMPLETED, nothing failed, nothing left) and on the
-# statement gate.
+# (every start k6 made was accepted: passed start checks == iterations and
+# none failed; every accepted start COMPLETED, nothing failed, nothing left)
+# and on the statement gate. A refused start is a correctness FAIL whatever
+# refused it: the full run r20261116t234614z (PASS when it ran) lost one start
+# of 42973 to a connection the node closed ("Request Failed ... EOF" in its k6
+# log), created no row for it, and is FAIL under this rule.
 #
 # ── Levels, "sustains" and the ceiling ─────────────────────────────────────
 # Level L's window [ws, we] is the min/max started_at of its rows (ramp into
@@ -494,14 +498,30 @@ $identity[0] as $id
             (if $wPeak < $lPeak then "warm-up peaked at \($wPeak) VUs, the load at \($lPeak)" else null end),
             (if $wc < 2 * $slots then "warm-up of \($wc) runs is below 2 x \($slots) workflow slots" else null end)
           ] | reasons end) ),
-    ( ($accepted > 0 and $done == $accepted and $failed == 0 and $open == 0
+    # Every start k6 made must have been accepted: one check ("start 202")
+    # per iteration, so passed checks == iterations and none failed. The rows
+    # are compared with the accepted starts, so without this a run whose
+    # starts were refused would pass on the ones that got through.
+    ( ($k6s1.iterations // null) as $its
+      | ($k6s1.checksPassed // null) as $cp
+      | ($k6s1.checksFailed // null) as $cf
+      | (($its | isnum) and ($cp | isnum) and ($cf | isnum) and $cf == 0 and $cp == $its and $accepted == $cp) as $startsOk
+      | ($startsOk and $accepted > 0 and $done == $accepted and $failed == 0 and $open == 0
        and ($m.runStatus.total // 0) == $accepted and $m.drain.timedOut == false) as $ok
       | check("correctness.allCompleted"; "correctness"; if $ok then "PASS" else "FAIL" end;
-          {accepted: $accepted, completed: $done, failed: $failed, nonTerminal: $open, total: $m.runStatus.total,
+          {accepted: $accepted, iterations: $its, checksPassed: $cp, checksFailed: $cf,
+           completed: $done, failed: $failed, nonTerminal: $open, total: $m.runStatus.total,
            byStatus: $by, drainTimedOut: $m.drain.timedOut, drainSecs: $m.drain.waitedSecs};
-          {completed: "== accepted starts (k6 checks passed on name:start)", failed: 0, nonTerminal: 0};
-          if $ok then "\($accepted)/\($accepted) accepted starts COMPLETED; drained in \($m.drain.waitedSecs) s"
+          {checksFailed: 0, checksPassed: "== k6 iterations (every start accepted)",
+           completed: "== accepted starts (k6 checks passed on name:start)", failed: 0, nonTerminal: 0};
+          if $ok then "\($accepted)/\($accepted) starts accepted and COMPLETED; drained in \($m.drain.waitedSecs) s"
           else [
+            (if ($its | isnum | not) or ($cp | isnum | not) or ($cf | isnum | not)
+               then "k6 recorded no start check counts (iterations \($its | tojson), passed \($cp | tojson), failed \($cf | tojson)): whether every start was accepted is unknown"
+             elif $cf > 0 then "\($cf) of \($its) starts rejected (k6 check \"start 202\" failed)"
+             elif $cp != $its then "\($cp) passed start checks for \($its) k6 iterations"
+             else null end),
+            (if ($cp | isnum) and $accepted != $cp then "accepted \($accepted) differs from k6's \($cp) passed start checks" else null end),
             (if $accepted == 0 then "no start was accepted" else null end),
             (if $done != $accepted then "COMPLETED \($done) of \($accepted) accepted" else null end),
             (if ($m.runStatus.total // 0) != $accepted then "\($m.runStatus.total) rows for \($accepted) accepted starts" else null end),
