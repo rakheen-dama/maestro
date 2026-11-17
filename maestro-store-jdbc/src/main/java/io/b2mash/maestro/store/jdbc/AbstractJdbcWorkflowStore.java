@@ -1252,7 +1252,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
-        return purge(status, cutoff, batchSize,
+        return purge(status, cutoff, batchSize, null,
                 conn -> selectPurgeCandidates(conn, getPurgeCandidatesSql(), ps -> {
                     ps.setString(1, status.name());
                     ps.setTimestamp(2, Timestamp.from(cutoff));
@@ -1265,14 +1265,19 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      *
      * <p>The same single transaction as the unscoped form, with the candidate
      * select {@link #getServicePurgeCandidatesSql()}. The instance delete
-     * re-checks status and cutoff only: an instance's {@code service_name}
-     * never changes.
+     * re-checks {@code service_name} as well as status and cutoff: the engine
+     * never changes an instance's service name, but an operator may correct
+     * it by hand (docs/operations.md §11.5). Where the candidate select does
+     * not lock its rows (the portable SQL), a candidate renamed between the
+     * select and the delete makes the delete count fall short, and the whole
+     * batch, children included, rolls back, as for a retried candidate. A
+     * select that locks its rows (Postgres) excludes the race outright.
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
                                                     int batchSize) {
         Objects.requireNonNull(serviceName, "serviceName");
-        return purge(status, cutoff, batchSize,
+        return purge(status, cutoff, batchSize, serviceName,
                 conn -> selectPurgeCandidates(conn, getServicePurgeCandidatesSql(), ps -> {
                     ps.setString(1, status.name());
                     ps.setTimestamp(2, Timestamp.from(cutoff));
@@ -1291,8 +1296,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * One purge batch: validates the arguments, then selects the candidates
      * with {@code select} and deletes them with their history in one
      * transaction (see {@link #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)}).
+     * A non-null {@code serviceName} is re-checked in the instance delete with
+     * the status and the cutoff.
      */
-    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize, CandidateSelect select) {
+    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize, @Nullable String serviceName,
+                              CandidateSelect select) {
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(cutoff, "cutoff");
         if (!status.isTerminal()) {
@@ -1321,20 +1329,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 int events = executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
                         + " WHERE workflow_instance_id IN (" + in + ")", ps -> setIds(ps, ids, 1));
                 int instances = executeUpdate(conn, "DELETE FROM " + tableName("workflow_instance")
-                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?", ps -> {
+                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?"
+                        + (serviceName == null ? "" : " AND service_name = ?"), ps -> {
                     int next = setIds(ps, ids, 1);
                     ps.setString(next, status.name());
                     ps.setTimestamp(next + 1, Timestamp.from(cutoff));
+                    if (serviceName != null) {
+                        ps.setString(next + 2, serviceName);
+                    }
                 });
                 if (instances != ids.size()) {
                     // A candidate stopped qualifying between select and delete
-                    // (a retry flipped it to RUNNING). Its memoization log is
-                    // in this transaction's delete set — roll everything back
-                    // rather than leave a live workflow with no history.
+                    // (a retry flipped it to RUNNING, or its service name was
+                    // corrected). Its history is in this transaction's delete
+                    // set — roll everything back rather than leave a workflow
+                    // with no history.
                     conn.rollback();
                     settled = true;
                     log.warn("Retention purge of {} {} instance(s) rolled back: only {} still qualified at delete "
-                            + "time — a candidate was retried concurrently; will retry next sweep",
+                            + "time — a candidate was retried or moved to another service concurrently; will "
+                            + "retry next sweep",
                             ids.size(), status, instances);
                     return PurgeResult.EMPTY;
                 }

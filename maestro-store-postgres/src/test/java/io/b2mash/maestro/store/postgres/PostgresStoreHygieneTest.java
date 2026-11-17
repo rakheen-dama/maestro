@@ -9,6 +9,8 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.store.jdbc.AbstractJdbcWorkflowStore;
+import io.b2mash.maestro.store.jdbc.JdbcStoreConfiguration;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -261,6 +263,46 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                     List.of("retriedWhileHeld=" + retriedWhileHeld, "purged=" + purged.instances(),
                             "retried=" + retried, "row=" + rowsOfWorkflow("orders-f"),
                             "orphans=" + orphanedChildRows()));
+        }
+
+        /**
+         * On the portable SQL (no row lock on the candidates), an instance
+         * whose {@code service_name} is corrected between the candidate select
+         * and the deletes is no longer this service's: the instance delete's
+         * service re-check falls short, and the whole batch, children
+         * included, rolls back.
+         */
+        @Test
+        void onThePortableSqlAnInstanceRenamedBeforeTheDeleteKeepsItsRowAndHistory() throws Exception {
+            var selected = new CountDownLatch(1);
+            var go = new CountDownLatch(1);
+            var portable = new AbstractJdbcWorkflowStore(
+                    pausingAt(dataSource, "DELETE FROM maestro_workflow_signal", selected, go),
+                    JdbcStoreConfiguration.withDefaults(objectMapper)) {
+                @Override
+                protected String getDueTimersSql() {
+                    throw new UnsupportedOperationException("not used by this test");
+                }
+            };
+            var purge = CompletableFuture.supplyAsync(
+                    () -> portable.purgeTerminalInstancesBefore("orders", WorkflowStatus.COMPLETED, cutoff, 500));
+            try {
+                assertTrue(selected.await(5, SECONDS), "the purge selected its candidates");
+                try (Connection conn = dataSource.getConnection();
+                     var ps = conn.prepareStatement("UPDATE maestro_workflow_instance"
+                             + " SET service_name = 'orders-renamed' WHERE workflow_id = 'orders-c-0'")) {
+                    assertEquals(1, ps.executeUpdate());
+                }
+            } finally {
+                go.countDown();
+            }
+            var purged = purge.get(10, SECONDS);
+            assertEquals(List.of(PurgeResult.EMPTY, 1L, 2L, 2L, 2L, 2L), List.of(purged,
+                    rowsOfWorkflow("orders-c-0"),
+                    childRowsOfWorkflow("maestro_workflow_event", "orders-c-0"),
+                    childRowsOfWorkflow("maestro_workflow_signal", "orders-c-0"),
+                    childRowsOfWorkflow("maestro_workflow_timer", "orders-c-0"),
+                    instancesOf("orders")));
         }
 
         /** A Retry that committed before the scoped purge ran leaves nothing for it to take. */
