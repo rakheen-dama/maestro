@@ -444,6 +444,12 @@ if [[ -n "$s6before" ]]; then
   expect "s6: doctored to the after shape (busy 0.5, foreign kept, 10 janitor calls): verdict" PASS "$(jq -r .verdict <<<"$out")"
   out=$(s6 s6-no-sweep '.counters.node2.after.sweeps = 0')
   expect "s6: node 2's sweeps +0: validity.sweepObserved" INVALID "$(st "$out" validity.sweepObserved)"
+  # PR #65 review, round 2: no purge sample at all (null span timestamps)
+  # is INVALID, never an evaluator crash.
+  out=$(s6 s6-no-purge-sample '.sampler |= (.matchingSamples = 0 | .firstMatchAt = null | .lastMatchAt = null
+    | .spanSecs = null | .busyTimeFraction = null | .spanSamples = 0 | .matchingInSpan = 0 | .spanMaxGapSecs = 0)')
+  expect "s6: no sample saw purge work: verdict (not a crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s6: no sample saw purge work: validity.sweepObserved" INVALID "$(st "$out" validity.sweepObserved)"
   out=$(s6 s6-node1-swept '.counters.node1.after.sweeps = (.counters.node1.before.sweeps + 1)')
   expect "s6: node 1 swept too: validity.sweepObserved" INVALID "$(st "$out" validity.sweepObserved)"
   out=$(s6 s6-young '.final.sets.young.instances -= 1')

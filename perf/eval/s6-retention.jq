@@ -91,8 +91,11 @@ def s6_duty_tolerance: 0.15;
 def s6_max_span_gap: 0.3;
 def s6_short_reads_max: 3;
 # The sweep span in seconds: the sampler's spanSecs, or its first and last
-# purge samples' timestamps.
-def span_secs($smp): ($smp.spanSecs // (($smp.lastMatchAt | ts_secs) - ($smp.firstMatchAt | ts_secs)));
+# purge samples' timestamps; null when there is no purge sample (both null).
+def span_secs($smp):
+  if ($smp.spanSecs | isnum) then $smp.spanSecs
+  else (($smp.lastMatchAt | ts_secs) as $l | ($smp.firstMatchAt | ts_secs) as $f
+        | if ($l | isnum) and ($f | isnum) then $l - $f else null end) end;
 def busy_fraction($smp):
   ($smp.busyTimeFraction // (if ($smp.spanSamples // 0) > 0 and ($smp.matchingInSpan | isnum)
                              then $smp.matchingInSpan / $smp.spanSamples else null end));
