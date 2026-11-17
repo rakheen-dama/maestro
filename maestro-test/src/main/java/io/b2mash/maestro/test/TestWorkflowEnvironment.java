@@ -7,6 +7,7 @@ import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.ActivityProxyFactory;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.TaskQueueLimits;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
 import io.b2mash.maestro.core.model.EventType;
@@ -27,10 +28,12 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -109,6 +112,28 @@ import java.util.function.Supplier;
  * at once. A crashed run releases its lock as it unwinds, so recovery never
  * waits for a TTL.
  *
+ * <h2>Concurrency limits</h2>
+ * <p>By default every task queue is unbounded: a node runs any number of
+ * workflows and activities at once. Production bounds each queue per node
+ * ({@code maestro.worker.default-concurrency} and
+ * {@code maestro.worker.default-activity-concurrency}, 20 and 20 by default),
+ * and some bugs — an activity that waits for a workflow on its own queue
+ * ({@code docs/pitfalls.md} rule 11) — appear only under a bound. Opt in with
+ * {@link #builder()}:
+ * <pre>{@code
+ * var env = TestWorkflowEnvironment.builder()
+ *         .defaultConcurrency(20, 20)                 // production's defaults
+ *         .taskQueueConcurrency("payments", 5, 10)    // like maestro.worker.task-queues[]
+ *         .build();
+ * }</pre>
+ * or {@code @MaestroTest(defaultConcurrency = 20, defaultActivityConcurrency = 20)}.
+ * The limits apply to every node the environment builds, including those
+ * {@link #recover()} starts. {@link #recover()} itself stays <em>ungated</em>:
+ * it re-adopts every active workflow at once, and the runs beyond a queue's
+ * bound wait for their slots on their own threads — as on a production node
+ * whose recovery poller is disabled — so it keeps returning the number of
+ * workflows re-adopted.
+ *
  * <h2>Thread Safety</h2>
  * <p>The environment is thread-safe. Workflows run on virtual threads
  * internally, just like in production.
@@ -151,7 +176,14 @@ public final class TestWorkflowEnvironment {
 
     private final AtomicReference<@Nullable Armed> armed = new AtomicReference<>();
 
-    private TestWorkflowEnvironment(ObjectMapper objectMapper) {
+    // Per-queue and default concurrency limits every node is built with (Builder).
+    private final Map<String, TaskQueueLimits> taskQueueLimits;
+    private final @Nullable TaskQueueLimits defaultTaskQueueLimits;
+
+    private TestWorkflowEnvironment(ObjectMapper objectMapper, Map<String, TaskQueueLimits> taskQueueLimits,
+                                    @Nullable TaskQueueLimits defaultTaskQueueLimits) {
+        this.taskQueueLimits = Map.copyOf(taskQueueLimits);
+        this.defaultTaskQueueLimits = defaultTaskQueueLimits;
         this.clock = new ControllableClock();
         this.store = new InMemoryWorkflowStore();
         this.messaging = new InMemoryWorkflowMessaging();
@@ -173,7 +205,7 @@ public final class TestWorkflowEnvironment {
      * @return a new environment with one live node
      */
     public static TestWorkflowEnvironment create() {
-        return new TestWorkflowEnvironment(JsonMapper.builder().build());
+        return builder().build();
     }
 
     /**
@@ -183,7 +215,122 @@ public final class TestWorkflowEnvironment {
      * @return a new environment with one live node
      */
     public static TestWorkflowEnvironment create(ObjectMapper objectMapper) {
-        return new TestWorkflowEnvironment(objectMapper);
+        return builder().objectMapper(objectMapper).build();
+    }
+
+    /**
+     * Starts building a test environment, to set an object mapper or
+     * concurrency limits. With nothing set, {@link Builder#build()} is
+     * {@link #create()}.
+     *
+     * @return a new builder
+     */
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    /**
+     * Builds a {@link TestWorkflowEnvironment}. The limits mirror the Spring
+     * Boot starter's {@code maestro.worker.*} properties and are validated the
+     * same way, by {@link #build()}.
+     *
+     * <h2>Thread Safety</h2>
+     * <p>Not thread-safe; use one builder on one thread.
+     */
+    public static final class Builder {
+
+        private ObjectMapper objectMapper = JsonMapper.builder().build();
+        private int defaultWorkflowConcurrency;
+        private int defaultActivityConcurrency;
+        private final List<QueueLimits> queues = new ArrayList<>();
+
+        private record QueueLimits(@Nullable String name, int workflowConcurrency, int activityConcurrency) {
+        }
+
+        private Builder() {
+        }
+
+        /**
+         * @param objectMapper the Jackson 3 ObjectMapper to use for serialization
+         * @return this builder
+         */
+        public Builder objectMapper(ObjectMapper objectMapper) {
+            this.objectMapper = Objects.requireNonNull(objectMapper, "objectMapper");
+            return this;
+        }
+
+        /**
+         * Bounds every task queue not named by
+         * {@link #taskQueueConcurrency(String, int, int)}, per node — like
+         * {@code maestro.worker.default-concurrency} and
+         * {@code maestro.worker.default-activity-concurrency}. Both {@code 0}
+         * (the default) leaves those queues unbounded; otherwise both must be
+         * at least 1.
+         *
+         * @param workflowConcurrency workflow runs per queue that may execute at once
+         * @param activityConcurrency live activity executions per queue that may run at once
+         * @return this builder
+         */
+        public Builder defaultConcurrency(int workflowConcurrency, int activityConcurrency) {
+            this.defaultWorkflowConcurrency = workflowConcurrency;
+            this.defaultActivityConcurrency = activityConcurrency;
+            return this;
+        }
+
+        /**
+         * Bounds one task queue, per node — like an entry of
+         * {@code maestro.worker.task-queues}. The name must not be blank, both
+         * limits must be at least 1, and a queue may be named once.
+         *
+         * @param taskQueue           the queue a workflow names in {@code @DurableWorkflow(taskQueue = ...)}
+         * @param workflowConcurrency workflow runs on the queue that may execute at once
+         * @param activityConcurrency live activity executions on the queue that may run at once
+         * @return this builder
+         */
+        public Builder taskQueueConcurrency(String taskQueue, int workflowConcurrency, int activityConcurrency) {
+            queues.add(new QueueLimits(taskQueue, workflowConcurrency, activityConcurrency));
+            return this;
+        }
+
+        /**
+         * Validates the limits and builds the environment, with one live node.
+         *
+         * @return a new environment
+         * @throws IllegalArgumentException if exactly one default limit is 0 or
+         *                                  either is negative; if a queue entry
+         *                                  has a blank name or a limit below 1;
+         *                                  or if a queue is named twice
+         */
+        public TestWorkflowEnvironment build() {
+            TaskQueueLimits defaults = null;
+            var w = defaultWorkflowConcurrency;
+            var a = defaultActivityConcurrency;
+            if (w != 0 || a != 0) {
+                if (w < 1 || a < 1) {
+                    throw new IllegalArgumentException(("defaultConcurrency(%d, %d): both limits must be >= 1, "
+                            + "or both 0 to leave task queues unbounded").formatted(w, a));
+                }
+                defaults = new TaskQueueLimits(w, a);
+            }
+            var limits = new LinkedHashMap<String, TaskQueueLimits>();
+            for (var queue : queues) {
+                var name = queue.name();
+                if (name == null || name.isBlank()) {
+                    throw new IllegalArgumentException("taskQueueConcurrency needs a task queue name, got '"
+                            + name + "'");
+                }
+                if (queue.workflowConcurrency() < 1 || queue.activityConcurrency() < 1) {
+                    throw new IllegalArgumentException(("taskQueueConcurrency('%s', %d, %d): both limits must be "
+                            + ">= 1").formatted(name, queue.workflowConcurrency(), queue.activityConcurrency()));
+                }
+                if (limits.putIfAbsent(name, new TaskQueueLimits(queue.workflowConcurrency(),
+                        queue.activityConcurrency())) != null) {
+                    throw new IllegalArgumentException(
+                            "taskQueueConcurrency names a task queue twice: '%s'".formatted(name));
+                }
+            }
+            return new TestWorkflowEnvironment(objectMapper, limits, defaults);
+        }
     }
 
     // ── Activity registration ────────────────────────────────────────────
@@ -376,6 +523,10 @@ public final class TestWorkflowEnvironment {
      * unwind writing nothing, and a workflow still executing an activity is
      * waited for (up to the engine's 20-second shutdown timeout) and then stops
      * at its next write.
+     *
+     * <p>Recovery is ungated: with concurrency limits set ({@link #builder()}),
+     * every active workflow is re-adopted at once, and the runs beyond a
+     * queue's bound wait for their slots on their own threads.
      *
      * @return the number of workflows the new node re-adopted
      */
@@ -582,6 +733,8 @@ public final class TestWorkflowEnvironment {
                     .lockKeyPrefix(LOCK_KEY_PREFIX)
                     .observer(observer)
                     .instantSource(clock)
+                    .taskQueueLimits(taskQueueLimits)
+                    .defaultTaskQueueLimits(defaultTaskQueueLimits)
                     .build();
         }
 
@@ -820,7 +973,8 @@ public final class TestWorkflowEnvironment {
                     serializer,
                     retryExecutor,
                     LOCK_KEY_PREFIX,
-                    observer
+                    observer,
+                    node.executor.taskQueueGovernor()   // the node's activity limits (Builder)
             );
 
             try {

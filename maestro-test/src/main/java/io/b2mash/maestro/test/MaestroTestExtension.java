@@ -6,12 +6,15 @@ import org.junit.jupiter.api.extension.ExtensionContext;
 import org.junit.jupiter.api.extension.ParameterContext;
 import org.junit.jupiter.api.extension.ParameterResolutionException;
 import org.junit.jupiter.api.extension.ParameterResolver;
+import org.junit.platform.commons.support.AnnotationSupport;
 
 /**
  * JUnit 5 extension that manages the {@link TestWorkflowEnvironment} lifecycle.
  *
  * <p>Creates a fresh environment before each test and shuts it down after.
- * Resolves {@link TestWorkflowEnvironment} parameters in test methods.
+ * Resolves {@link TestWorkflowEnvironment} parameters in test methods. The
+ * environment takes the concurrency limits of the nearest {@link MaestroTest}
+ * (the test class's, else an enclosing class's).
  *
  * <p>Typically not used directly — use the {@link MaestroTest @MaestroTest}
  * annotation instead.
@@ -25,10 +28,21 @@ public final class MaestroTestExtension implements BeforeEachCallback, AfterEach
 
     private static final String ENV_KEY = "testWorkflowEnvironment";
 
+    /**
+     * Builds the test's environment, with the concurrency limits of the
+     * nearest {@link MaestroTest} on the test class or, for a {@code @Nested}
+     * class without one, on the classes enclosing it at run time — so a
+     * nested class inherited from an unannotated base takes the annotated
+     * subclass's limits.
+     */
     @Override
     public void beforeEach(ExtensionContext context) {
-        var env = TestWorkflowEnvironment.create();
-        context.getStore(NAMESPACE).put(ENV_KEY, env);
+        var annotation = AnnotationSupport.findAnnotation(context.getRequiredTestClass(), MaestroTest.class,
+                context.getEnclosingTestClasses());
+        var builder = TestWorkflowEnvironment.builder();
+        annotation.filter(a -> a.defaultConcurrency() != 0 || a.defaultActivityConcurrency() != 0)
+                .ifPresent(a -> builder.defaultConcurrency(a.defaultConcurrency(), a.defaultActivityConcurrency()));
+        context.getStore(NAMESPACE).put(ENV_KEY, builder.build());
     }
 
     @Override

@@ -51,10 +51,12 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.run.abandoned}</td><td>Counter</td><td>reason=shutdown|terminated|converged|terminal_write_failed|node_error|store_unavailable</td><td>{@link #runAbandoned}</td></tr>
  * </table>
  *
- * <p>{@code maestro.workflows.running} and {@code maestro.workflows.parked}
- * (Gauges) are <b>not</b> registered by this class — they need the
+ * <p>The gauges ({@code maestro.workflows.running}, {@code maestro.workflows.parked},
+ * {@code maestro.wake.permits} and {@code maestro.recovery.deferred}) are
+ * <b>not</b> registered by this class — they need the
  * {@code WorkflowExecutor} bean, which this observer never sees; they are
- * registered by {@link MaestroEngineGauges} instead.
+ * registered by {@link MaestroEngineGauges} instead, and
+ * {@code maestro.taskqueue.slots.used} by {@link MaestroTaskQueueGauges}.
  *
  * <h2>Cardinality</h2>
  * Tag values are always code-bounded: {@code workflowType}, {@code

@@ -77,8 +77,8 @@ site.
 
 ## Meter catalog
 
-Twenty-three meters: **17 counters and 2 timers**, registered by
-`MicrometerEngineObserver`, plus **4 gauges** — three registered by
+Twenty-four meters: **17 counters and 2 timers**, registered by
+`MicrometerEngineObserver`, plus **5 gauges** — four registered by
 `MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
 bounded task queue and kind) by `MaestroTaskQueueGauges` — all in the
 `io.b2mash.maestro.spring.observe` package of `maestro-spring-boot-starter`.
@@ -121,7 +121,10 @@ type is known (the instance exists).
 `maestro.recovery.scanned`, `maestro.recovery.adopted` and
 `maestro.retention.purged` are `increment(n)` calls, not `increment()` — one
 recovery pass or retention sweep moves them by the pass's counts (so a leader
-that found nothing to purge registers the four `kind` series at zero).
+that found nothing to purge registers the four `kind` series at zero). The
+recovery poller's capacity passes — run as task-queue capacity frees while a
+recovery backlog drains — count too, but only those that read rows, so during
+a drain `scanned` grows by the rows each capacity pass reads.
 
 `maestro.loop.errors` counts the five engine loops only. The two
 `maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)
@@ -191,13 +194,14 @@ recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 | `maestro.workflows.running` | *(none)* | `WorkflowExecutor.runningCount()` |
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
 | `maestro.wake.permits` | *(none)* | `WorkflowExecutor.wakePermitCount()` |
+| `maestro.recovery.deferred` | *(none)* | `WorkflowExecutor.recoveryDeferredCount()` |
 | `maestro.taskqueue.slots.used` | `queue`, `kind` | `TaskQueueGovernor.workflowSlotsInUse(queue)` (`kind=workflow`) / `activitySlotsInUse(queue)` (`kind=activity`) |
 
 `queue` is the `taskQueue` of a registered `@DurableWorkflow` that is bounded
 on this node; `kind` is `workflow` or `activity`. Prometheus exposes it as
 `maestro_taskqueue_slots_used`.
 
-All four are registered with `.strongReference(true)` — the first three by
+All five are registered with `.strongReference(true)` — the first four by
 `MaestroEngineGauges`, `maestro.taskqueue.slots.used` by
 `MaestroTaskQueueGauges` — because Micrometer's `Gauge.Builder` holds its state
 object behind a `WeakReference` by default, which would report `NaN` once the
@@ -222,6 +226,21 @@ builder went out of scope.
   so the value stays near zero; one that grows with signal or timer throughput
   is a regression. Tests show this: `WakePermitLocalityTest`,
   `ParkingLotWakeGateTest`.
+- `maestro.recovery.deferred` (Prometheus `maestro_recovery_deferred`) is how
+  many recoverable workflows this node's latest **full** recovery pass left
+  unadopted because their task queue had no free slot and no room in its line
+  of queued recovered runs on this node; `0` before the first full pass. A
+  full pass runs when the recovery poller starts and then every
+  `maestro.recovery.poll-interval`; the capacity passes in between do not
+  update it. It reads `0` on a healthy fleet. During a recovery drain it is the
+  backlog this node could see but not yet run, recounted by each full pass, so
+  it falls as the drain proceeds (traced, not tested). A value that stays high
+  over several full passes means this node's queues cannot keep up with
+  recovery. Like the other gauges it is node-local,
+  but do **not** sum it across pods: every node of a service sees the same
+  unadopted rows, so a sum counts each one once per node. Pinned by
+  `MaestroEngineGaugesTest.recoveryDeferredGaugeReadsTheLatestFullPass`
+  (4 instances at limits (1, 1): the gauge reads 2).
 - `maestro.taskqueue.slots.used` is the queue's limit minus the free permits of
   its slot pool in `TaskQueueGovernor` — the slots held right now **on this
   JVM**. `kind=workflow` counts runs executing on the queue; a parked run gives
@@ -244,6 +263,11 @@ builder went out of scope.
   taken back (the drain hit its deadline with runs still queued, or with every
   slot held) reads one less until the node exits
   (`TaskQueueGovernorTest.inUseReadsOneLessWhileTheShutdownLoanIsOutAndIsExactAfterTheReclaim`).
+  **During recovery**, a slot the recovery poller reserved for a run it is
+  adopting counts from the reservation, before that run starts executing (the
+  permit is taken; the run's claim takes no second one), and a recovered run
+  queued for a slot does not count, like any run waiting for one
+  (`TaskQueueGovernorTest$RecoveryAdmission.slotsInUseCountsAReservedSlotButNotAQueuedRecoveredRun`).
 
 **These are node-local, in-JVM values.** They are not store-derived, they do not
 survive a restart, and they say nothing about workflows owned by other nodes.

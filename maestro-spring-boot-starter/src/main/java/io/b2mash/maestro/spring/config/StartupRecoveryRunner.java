@@ -8,16 +8,29 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.Ordered;
 
 /**
- * Recovers workflows that were active when the service last stopped
- * and starts the background timer poller, signal janitor and (unless
- * disabled) retention sweeper and recovery poller.
+ * Starts Maestro's background loops once the context is refreshed: workflow
+ * recovery, the timer poller, the signal janitor and (unless disabled) the
+ * retention sweeper.
+ *
+ * <p>Recovery starts first. With {@code maestro.recovery.enabled=true} (the
+ * default) that is the recovery poller, whose first pass — the startup
+ * recovery of workflows that were active when the service last stopped —
+ * runs at once on the poller's own thread and is gated by task-queue
+ * capacity. With {@code false} it is a one-shot <em>ungated</em> pass on its
+ * own thread, retried every {@code maestro.recovery.poll-interval} until it
+ * completes ({@link WorkflowExecutor#startOneShotRecovery}).
+ *
+ * <p>The runner only starts loops. It adopts nothing itself; keep it that way:
+ * anything slow added here delays readiness. So {@code run} returns while the
+ * startup pass is still in progress, and a store failure in that pass is
+ * logged and retried, never thrown from here.
  *
  * <p>Runs as an {@link ApplicationRunner} after the full context refresh,
  * ensuring all workflow registrations are available (populated by
  * {@link WorkflowRegistrar} during the {@code SmartInitializingSingleton} phase).
  *
- * <p>Ordered with {@code HIGHEST_PRECEDENCE + 10} so recovery happens
- * before any user-defined {@code ApplicationRunner} beans.
+ * <p>Ordered with {@code HIGHEST_PRECEDENCE + 10} so recovery starts before
+ * any user-defined {@code ApplicationRunner} beans.
  */
 public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
 
@@ -39,10 +52,20 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
 
     @Override
     public void run(ApplicationArguments args) {
-        // 1. Recover workflows that were in-flight during last shutdown/crash
+        // 1. Start recovery — never run it here. The poller's first pass, or
+        // the one-shot pass when the poller is disabled, adopts the workflows
+        // that were in flight at the last shutdown/crash on its own thread.
         var registrations = registrar.getRegistrations();
-        var recovered = executor.recoverWorkflows(registrations);
-        logger.info("Maestro startup recovery complete: {} workflow(s) recovered", recovered);
+        var recovery = properties.getRecovery();
+        if (recovery.enabled()) {
+            executor.startRecoveryPoller(registrations, recovery.pollInterval());
+            logger.info("Maestro recovery poller started (interval={}); its first pass runs now, on its own thread",
+                    recovery.pollInterval());
+        } else {
+            executor.startOneShotRecovery(registrations, recovery.pollInterval());
+            logger.info("Maestro recovery poller disabled (maestro.recovery.enabled=false); one startup recovery "
+                    + "pass runs on its own thread, retried every {} until it completes", recovery.pollInterval());
+        }
 
         // 2. Start the timer poller for durable sleep/timer functionality
         var timer = properties.getTimer();
@@ -75,13 +98,6 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
                     + "finished workflows are kept indefinitely");
         }
 
-        // 3. Start the periodic recovery poller — adopts workflows whose
-        // owning node has died (instance lock expired) or shut down
-        var recovery = properties.getRecovery();
-        if (recovery.enabled()) {
-            executor.startRecoveryPoller(registrations, recovery.pollInterval());
-            logger.info("Maestro recovery poller started (interval={})", recovery.pollInterval());
-        }
     }
 
     @Override
