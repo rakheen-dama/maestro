@@ -90,8 +90,17 @@ class RecoveryStarvationTest {
         startFresh(a, "fresh");
         assertEquals(3, valueWithin(() -> a.taskQueueGovernor().workflowSlotWaiters("orders"), 3,
                 Duration.ofSeconds(5)), "the fresh start is in line");
+        // One activity at a time: each release frees one slot, the next run in
+        // line takes it and enters its activity, so the entry order is the
+        // slot order (with every activity released at once, two runs holding
+        // slots together could reach their activities in either order).
+        var order = work.order();
+        for (var step = 1; !order.contains("fresh") && step <= 10; step++) {
+            work.release(1);
+            var entered = 2 + step;
+            order = valueMatching(work::order, o -> o.size() >= entered, Duration.ofSeconds(5));
+        }
         work.releaseAll();
-        var order = valueMatching(work::order, o -> o.contains("fresh"), Duration.ofSeconds(10));
         var ahead = order.indexOf("fresh");
         assertTrue(ahead >= 0 && ahead <= 4, "recovered runs ahead of the fresh start: " + ahead + ", order=" + order);
         assertEquals(10, valueWithin(() -> store.completed("rec-"), 10, Duration.ofSeconds(10)),
