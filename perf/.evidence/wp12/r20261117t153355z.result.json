@@ -1,17 +1,17 @@
 {
   "schema": 1,
   "identity": {
-    "runId": "r20261117t130237z",
+    "runId": "r20261117t153355z",
     "scenario": "s5-pool-health",
     "profile": "local",
-    "startedAtUtc": "2026-11-17T13:02:38Z",
+    "startedAtUtc": "2026-11-17T15:33:56Z",
     "repo": {
-      "head": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
+      "head": "634dbc3f76765a641d5121401af7aae3409e7a92",
       "dirty": false,
       "shallow": false,
       "engineCommit": "aa43db6f077a9c09aaecb1f030b47d1d39d1a635",
-      "harnessCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
-      "engineRefLabel": "WP4 after: engine = WP12 branch (main bd583f06); harness 1a899a2e"
+      "harnessCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
+      "engineRefLabel": "WP4 after: engine = WP12 branch (main bd583f06); harness 634dbc3f"
     },
     "host": {
       "uname": "Darwin 25.5.0 arm64",
@@ -38,10 +38,10 @@
     },
     "notes": [],
     "build": {
-      "bakedCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
-      "expectedCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
-      "jarCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
-      "jarSha256": "cc92ab9db766a04a3018d3e321f58951c3fa2aa12747687a3a70f12bfa1fe77f"
+      "bakedCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
+      "expectedCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
+      "jarCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
+      "jarSha256": "b3665c04dd761ccb22810338d60cfb8f9c3abbb3b91f6d9c0d26cd62dec709d1"
     },
     "imageDigests": [
       "apache/kafka@sha256:fbc7d7c428e3755cf36518d4976596002477e4c052d1f80b5b9eafd06d0fff2f",
@@ -98,12 +98,12 @@
     "nodes": [
       {
         "container": "maestro-perf-node-1",
-        "buildCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
-        "buildTime": "2026-11-17T13:02:54.859Z",
+        "buildCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
+        "buildTime": "2026-11-17T15:33:58.557Z",
         "version": "0.3.0-SNAPSHOT",
-        "hostname": "9fd5e289f52f",
+        "hostname": "95c93e3d4b77",
         "pid": 1,
-        "jvmStartMillis": 1794920591039,
+        "jvmStartMillis": 1794929654648,
         "javaVersion": "25.0.5+8-LTS",
         "availableProcessors": 2,
         "maxHeapBytes": 1037959168,
@@ -121,18 +121,18 @@
         "signalJanitorInterval": "PT1H",
         "retentionEnabled": true,
         "retentionInterval": "PT1H",
-        "reportedAtMillis": 1794920601262
+        "reportedAtMillis": 1794929664677
       }
     ],
     "nodesAfter": [
       {
         "container": "maestro-perf-node-1",
-        "buildCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
-        "buildTime": "2026-11-17T13:02:54.859Z",
+        "buildCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
+        "buildTime": "2026-11-17T15:33:58.557Z",
         "version": "0.3.0-SNAPSHOT",
-        "hostname": "9fd5e289f52f",
+        "hostname": "95c93e3d4b77",
         "pid": 1,
-        "jvmStartMillis": 1794920591039,
+        "jvmStartMillis": 1794929654648,
         "javaVersion": "25.0.5+8-LTS",
         "availableProcessors": 2,
         "maxHeapBytes": 1037959168,
@@ -150,7 +150,7 @@
         "signalJanitorInterval": "PT1H",
         "retentionEnabled": true,
         "retentionInterval": "PT1H",
-        "reportedAtMillis": 1794920781854
+        "reportedAtMillis": 1794929851769
       }
     ],
     "effective": {
@@ -204,7 +204,7 @@
       }
     },
     "warmup": {
-      "prefix": "r20261117t130237z-warmup-",
+      "prefix": "r20261117t153355z-warmup-",
       "count": 20,
       "vus": 10,
       "timeoutSecs": 120,
@@ -225,9 +225,9 @@
       "recoveryPollSecs": 60,
       "idleSecs": 60,
       "window": {
-        "resetAt": "2026-11-17T13:03:25.362506+00:00",
-        "snapshotAt": "2026-11-17T13:04:25.695077+00:00",
-        "windowSecs": 60.333,
+        "resetAt": "2026-11-17T15:34:28.256733+00:00",
+        "snapshotAt": "2026-11-17T15:35:28.70299+00:00",
+        "windowSecs": 60.446,
         "dealloc": 0,
         "maestroCalls": 25,
         "maestroCallsTopLevel": 25,
@@ -244,21 +244,21 @@
             "calls": 12,
             "rows": 12,
             "toplevel": true,
-            "totalMs": 6.960,
+            "totalMs": 2.287,
             "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
           },
           {
             "calls": 12,
             "rows": 0,
             "toplevel": true,
-            "totalMs": 0.555,
+            "totalMs": 0.295,
             "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
           },
           {
             "calls": 1,
             "rows": 0,
             "toplevel": true,
-            "totalMs": 0.148,
+            "totalMs": 0.037,
             "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
           }
         ]
@@ -282,10 +282,10 @@
         "checksFailed": 0,
         "startRetries": 0,
         "startMs": {
-          "p50": 124.8171045,
-          "p95": 148.2296604,
-          "p99": 149.55829848,
-          "max": 149.890458
+          "p50": 94.1327085,
+          "p95": 152.9692208,
+          "p99": 153.15877695999998,
+          "max": 153.206166
         }
       },
       {
@@ -323,10 +323,10 @@
         "checksFailed": 0,
         "startRetries": 0,
         "startMs": {
-          "p50": 34.116020500000005,
-          "p95": 36.2029083,
-          "p99": 36.21214806,
-          "max": 36.214458
+          "p50": 84.733917,
+          "p95": 111.30725464999999,
+          "p99": 114.26828453,
+          "max": 115.008542
         }
       },
       {
@@ -340,7 +340,7 @@
         "iterations": 36,
         "droppedIterations": 0,
         "httpReqs": 72,
-        "httpReqFailedRate": 0.2222222222222222,
+        "httpReqFailedRate": 0.16666666666666666,
         "vusMax": 8,
         "checksPassed": null,
         "checksFailed": null,
@@ -370,8 +370,8 @@
       {
         "name": "idle",
         "plannedSamples": 30,
-        "from": "2026-11-17T13:04:28.076315+00:00",
-        "to": "2026-11-17T13:04:59.609819+00:00",
+        "from": "2026-11-17T15:35:31.194105+00:00",
+        "to": "2026-11-17T15:36:04.779575+00:00",
         "counters": {
           "maestro_up": 31,
           "maestro_unknown": 0,
@@ -384,22 +384,22 @@
           "root_other": 0,
           "root_no_answer": 0,
           "maestroAnswerMs": {
-            "p50": 7.948125,
-            "max": 96.6025,
+            "p50": 5.631959,
+            "max": 50.890458,
             "count": 31
           },
           "rootAnswerMs": {
-            "p50": 8.502708,
-            "max": 54.152958,
+            "p50": 6.268167,
+            "max": 45.091209,
             "count": 31
           },
           "iterations": 31
         },
         "sampler": {
           "samples": 295,
-          "firstAt": "2026-11-17T13:04:28.132578+00:00",
-          "lastAt": "2026-11-17T13:04:59.53034+00:00",
-          "maxGapSecs": 0.272,
+          "firstAt": "2026-11-17T15:35:31.201785+00:00",
+          "lastAt": "2026-11-17T15:36:04.654901+00:00",
+          "maxGapSecs": 0.263,
           "matchingSamples": 0,
           "firstMatchAt": null,
           "lastMatchAt": null,
@@ -412,8 +412,8 @@
       {
         "name": "exhausted",
         "plannedSamples": 35,
-        "from": "2026-11-17T13:05:01.735665+00:00",
-        "to": "2026-11-17T13:05:41.841913+00:00",
+        "from": "2026-11-17T15:36:10.405184+00:00",
+        "to": "2026-11-17T15:36:49.95836+00:00",
         "counters": {
           "maestro_up": 4,
           "maestro_unknown": 32,
@@ -421,32 +421,32 @@
           "maestro_down_store_unreachable": 0,
           "maestro_down_other": 0,
           "maestro_no_answer": 0,
-          "root_up": 20,
+          "root_up": 24,
           "root_down": 0,
           "root_other": 0,
-          "root_no_answer": 16,
+          "root_no_answer": 12,
           "maestroAnswerMs": {
-            "p50": 1013.5845005,
-            "max": 2019.902626,
+            "p50": 1007.8227505,
+            "max": 2017.314001,
             "count": 36
           },
           "rootAnswerMs": {
-            "p50": 3296.3844595,
-            "max": 4844.667821,
-            "count": 20
+            "p50": 2912.1847725,
+            "max": 4977.57728,
+            "count": 24
           },
           "iterations": 36
         },
         "sampler": {
-          "samples": 371,
-          "firstAt": "2026-11-17T13:05:01.740828+00:00",
-          "lastAt": "2026-11-17T13:05:41.820429+00:00",
-          "maxGapSecs": 0.259,
-          "matchingSamples": 362,
-          "firstMatchAt": "2026-11-17T13:05:01.740828+00:00",
-          "lastMatchAt": "2026-11-17T13:05:40.861235+00:00",
-          "spanSamples": 362,
-          "matchingInSpan": 362,
+          "samples": 367,
+          "firstAt": "2026-11-17T15:36:10.411365+00:00",
+          "lastAt": "2026-11-17T15:36:49.956971+00:00",
+          "maxGapSecs": 0.189,
+          "matchingSamples": 356,
+          "firstMatchAt": "2026-11-17T15:36:10.411365+00:00",
+          "lastMatchAt": "2026-11-17T15:36:48.836363+00:00",
+          "spanSamples": 357,
+          "matchingInSpan": 356,
           "maxMatching": 9,
           "min": 9
         }
@@ -454,8 +454,8 @@
       {
         "name": "recovered",
         "plannedSamples": 30,
-        "from": "2026-11-17T13:05:49.433155+00:00",
-        "to": "2026-11-17T13:06:20.810718+00:00",
+        "from": "2026-11-17T15:36:58.992765+00:00",
+        "to": "2026-11-17T15:37:30.783773+00:00",
         "counters": {
           "maestro_up": 31,
           "maestro_unknown": 0,
@@ -468,22 +468,22 @@
           "root_other": 0,
           "root_no_answer": 0,
           "maestroAnswerMs": {
-            "p50": 5.930375,
-            "max": 31.341291,
+            "p50": 7.924042,
+            "max": 43.947291,
             "count": 31
           },
           "rootAnswerMs": {
-            "p50": 5.794084,
-            "max": 31.209666,
+            "p50": 7.730292,
+            "max": 45.967292,
             "count": 31
           },
           "iterations": 31
         },
         "sampler": {
-          "samples": 288,
-          "firstAt": "2026-11-17T13:05:49.535994+00:00",
-          "lastAt": "2026-11-17T13:06:20.810492+00:00",
-          "maxGapSecs": 0.256,
+          "samples": 297,
+          "firstAt": "2026-11-17T15:36:59.072802+00:00",
+          "lastAt": "2026-11-17T15:37:30.751872+00:00",
+          "maxGapSecs": 0.158,
           "matchingSamples": 0,
           "firstMatchAt": null,
           "lastMatchAt": null,
@@ -496,7 +496,7 @@
     ],
     "saturation": {
       "reached": true,
-      "waitedSecs": 0,
+      "waitedSecs": 1,
       "minBusy": 9
     },
     "pendingMax": {
@@ -505,40 +505,40 @@
     },
     "hikari": {
       "start": {
-        "at": 1794920700.003,
+        "at": 1794929766.316,
         "timeouts": 0,
         "creations": 0
       },
       "end": {
-        "at": 1794920781.356,
+        "at": 1794929851.197,
         "timeouts": 0,
         "creations": 0
       }
     },
     "sampler": {
-      "samples": 1050,
-      "firstAt": "2026-11-17T13:04:28.132578+00:00",
-      "lastAt": "2026-11-17T13:06:21.398407+00:00",
-      "maxGapSecs": 0.272,
-      "matchingSamples": 370,
-      "firstMatchAt": "2026-11-17T13:05:00.892925+00:00",
-      "lastMatchAt": "2026-11-17T13:05:40.861235+00:00",
-      "spanSamples": 370,
-      "matchingInSpan": 370,
+      "samples": 1097,
+      "firstAt": "2026-11-17T15:35:31.201785+00:00",
+      "lastAt": "2026-11-17T15:37:31.371054+00:00",
+      "maxGapSecs": 0.263,
+      "matchingSamples": 371,
+      "firstMatchAt": "2026-11-17T15:36:08.748933+00:00",
+      "lastMatchAt": "2026-11-17T15:36:48.836363+00:00",
+      "spanSamples": 372,
+      "matchingInSpan": 371,
       "maxMatching": 9,
       "min": 9
     },
     "pgssReset": {
-      "resetAt": "2026-11-17T13:05:00.22076+00:00"
+      "resetAt": "2026-11-17T15:36:06.683129+00:00"
     },
     "windows": [
       {
-        "resetAt": "2026-11-17T13:05:00.22076+00:00",
-        "snapshotAt": "2026-11-17T13:05:49.262081+00:00",
-        "windowSecs": 49.041,
+        "resetAt": "2026-11-17T15:36:06.683129+00:00",
+        "snapshotAt": "2026-11-17T15:36:58.787056+00:00",
+        "windowSecs": 52.104,
         "dealloc": 0,
-        "maestroCalls": 329,
-        "maestroCallsTopLevel": 269,
+        "maestroCalls": 331,
+        "maestroCallsTopLevel": 271,
         "maestroStatements": 17,
         "sweepCalls": {
           "lockCleaner": 0,
@@ -546,125 +546,125 @@
           "signalJanitor": 0,
           "retention": 0
         },
-        "harnessCalls": 1372,
+        "harnessCalls": 1453,
         "top": [
           {
             "calls": 60,
             "rows": 60,
             "toplevel": false,
-            "totalMs": 3.748,
+            "totalMs": 1.148,
             "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
           },
           {
             "calls": 50,
             "rows": 50,
             "toplevel": true,
-            "totalMs": 400285.193,
+            "totalMs": 400180.798,
             "query": "SELECT pg_sleep($1)"
           },
           {
             "calls": 50,
             "rows": 0,
             "toplevel": true,
-            "totalMs": 1.289,
+            "totalMs": 0.963,
             "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
           },
           {
-            "calls": 30,
-            "rows": 30,
+            "calls": 37,
+            "rows": 37,
             "toplevel": true,
-            "totalMs": 19.975,
-            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
-          },
-          {
-            "calls": 20,
-            "rows": 20,
-            "toplevel": true,
-            "totalMs": 8.523,
+            "totalMs": 9.610,
             "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
           },
           {
             "calls": 20,
             "rows": 0,
             "toplevel": true,
-            "totalMs": 0.310,
+            "totalMs": 0.313,
             "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
           },
           {
             "calls": 20,
             "rows": 0,
             "toplevel": true,
-            "totalMs": 0.056,
+            "totalMs": 0.027,
             "query": "BEGIN"
+          },
+          {
+            "calls": 13,
+            "rows": 13,
+            "toplevel": true,
+            "totalMs": 7.253,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
           },
           {
             "calls": 13,
             "rows": 10,
             "toplevel": true,
-            "totalMs": 2.337,
+            "totalMs": 0.808,
             "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
           },
           {
             "calls": 10,
             "rows": 10,
             "toplevel": true,
-            "totalMs": 3.014,
-            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "totalMs": 1.182,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
           },
           {
             "calls": 10,
             "rows": 10,
             "toplevel": true,
-            "totalMs": 2.279,
-            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
-          },
-          {
-            "calls": 10,
-            "rows": 10,
-            "toplevel": true,
-            "totalMs": 1.919,
+            "totalMs": 0.868,
             "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
           },
           {
             "calls": 10,
             "rows": 10,
             "toplevel": true,
-            "totalMs": 1.639,
-            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+            "totalMs": 0.858,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
           },
           {
             "calls": 10,
             "rows": 10,
             "toplevel": true,
-            "totalMs": 1.003,
-            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            "totalMs": 0.844,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
           },
           {
-            "calls": 6,
-            "rows": 6,
+            "calls": 10,
+            "rows": 10,
             "toplevel": true,
-            "totalMs": 1.055,
+            "totalMs": 0.329,
+            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+          },
+          {
+            "calls": 7,
+            "rows": 7,
+            "toplevel": true,
+            "totalMs": 1.112,
             "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
           },
           {
-            "calls": 6,
+            "calls": 7,
             "rows": 0,
             "toplevel": true,
-            "totalMs": 0.057,
+            "totalMs": 0.088,
             "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
           },
           {
             "calls": 3,
             "rows": 30,
             "toplevel": true,
-            "totalMs": 4.098,
+            "totalMs": 0.781,
             "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
           },
           {
             "calls": 1,
             "rows": 10,
             "toplevel": true,
-            "totalMs": 0.102,
+            "totalMs": 0.085,
             "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
           }
         ]
@@ -673,7 +673,7 @@
     "holds": {
       "prefix": "hold-",
       "drain": {
-        "waitedSecs": 7,
+        "waitedSecs": 8,
         "timedOut": false
       },
       "runStatus": {
@@ -693,8 +693,8 @@
         "rootUp": 31,
         "rootDown": 0,
         "rootNoAnswer": 0,
-        "maestroP50Ms": 7.948125,
-        "maestroMaxMs": 96.6025,
+        "maestroP50Ms": 5.631959,
+        "maestroMaxMs": 50.890458,
         "busySamples": "0/295"
       },
       {
@@ -703,12 +703,12 @@
         "unknown": 32,
         "down": 0,
         "noAnswer": 0,
-        "rootUp": 20,
+        "rootUp": 24,
         "rootDown": 0,
-        "rootNoAnswer": 16,
-        "maestroP50Ms": 1013.5845005,
-        "maestroMaxMs": 2019.902626,
-        "busySamples": "362/371"
+        "rootNoAnswer": 12,
+        "maestroP50Ms": 1007.8227505,
+        "maestroMaxMs": 2017.314001,
+        "busySamples": "356/367"
       },
       {
         "phase": "recovered",
@@ -719,9 +719,9 @@
         "rootUp": 31,
         "rootDown": 0,
         "rootNoAnswer": 0,
-        "maestroP50Ms": 5.930375,
-        "maestroMaxMs": 31.341291,
-        "busySamples": "0/288"
+        "maestroP50Ms": 7.924042,
+        "maestroMaxMs": 43.947291,
+        "busySamples": "0/297"
       }
     ]
   },
@@ -732,16 +732,16 @@
       "status": "PASS",
       "value": {
         "buildCommits": [
-          "1a899a2e72a157d3cf067b192fea0079c2ea9463"
+          "634dbc3f76765a641d5121401af7aae3409e7a92"
         ],
         "nodes": 1,
         "distinctHostnames": 1,
         "hostnames": [
-          "9fd5e289f52f"
+          "95c93e3d4b77"
         ]
       },
       "limit": {
-        "expectedCommit": "1a899a2e72a157d3cf067b192fea0079c2ea9463",
+        "expectedCommit": "634dbc3f76765a641d5121401af7aae3409e7a92",
         "replicas": 1
       },
       "detail": "every node runs the stamped jar on a distinct host"
@@ -753,15 +753,15 @@
       "value": {
         "before": [
           {
-            "hostname": "9fd5e289f52f",
-            "jvmStartMillis": 1794920591039,
+            "hostname": "95c93e3d4b77",
+            "jvmStartMillis": 1794929654648,
             "pid": 1
           }
         ],
         "after": [
           {
-            "hostname": "9fd5e289f52f",
-            "jvmStartMillis": 1794920591039,
+            "hostname": "95c93e3d4b77",
+            "jvmStartMillis": 1794929654648,
             "pid": 1
           }
         ]
@@ -907,7 +907,7 @@
             "name": "background",
             "sinceEarliestNodeStartSecs": [
               14,
-              75
+              74
             ],
             "plannedStarts": 0,
             "sweepWindow": false,
@@ -932,8 +932,8 @@
           {
             "name": "windows[0]",
             "sinceEarliestNodeStartSecs": [
-              109,
-              158
+              112,
+              164
             ],
             "plannedStarts": 0,
             "sweepWindow": false,
@@ -963,7 +963,7 @@
             "signalJanitorSecs": 3600,
             "retentionEnabled": true,
             "retentionSecs": 3600,
-            "schedulerStartBoundSecs": 10.22
+            "schedulerStartBoundSecs": 10.03
           }
         ]
       },
@@ -976,13 +976,207 @@
       "detail": "every measured window's sweeps are accounted for: no signal-janitor or retention statement in any window, none predicted; lock-cleaner calls as predicted from the reported intervals (none in any window)"
     },
     {
-      "id": "correctness.s5",
+      "id": "validity.poolExhausted",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "busySamples": 356,
+        "samples": 367,
+        "fraction": 0.97,
+        "minBusy": 9,
+        "maxBusy": 9,
+        "hikariPendingMax": 10
+      },
+      "limit": {
+        "fraction": ">= 0.8",
+        "hikariPendingMax": ">= 1"
+      },
+      "detail": "the pool was exhausted: 97 % of the exhausted window's samples show >= 9 engine backends in pg_sleep; Hikari pending reached 10"
+    },
+    {
+      "id": "validity.storeReachable",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "maxGapSecs": 0.263,
+        "samples": 1097
+      },
+      "limit": {
+        "maxGapSecs": "<= 1"
+      },
+      "detail": "the database answered the sampler every 0.263 s or better over every phase"
+    },
+    {
+      "id": "validity.noPoolTimeouts",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "start": 0,
+        "end": 0
+      },
+      "limit": {
+        "increase": 0
+      },
+      "detail": "no connection request timed out: the pool was busy, not failing"
+    },
+    {
+      "id": "validity.healthSamples",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "idle",
+          "planned": 30,
+          "answers": 31
+        },
+        {
+          "phase": "exhausted",
+          "planned": 35,
+          "answers": 36
+        },
+        {
+          "phase": "recovered",
+          "planned": 30,
+          "answers": 31
+        }
+      ],
+      "limit": {
+        "answers": ">= 0.8 x planned"
+      },
+      "detail": "every phase has its health samples"
+    },
+    {
+      "id": "correctness.upWhenIdle",
       "class": "correctness",
-      "status": "ERROR",
-      "value": null,
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "idle",
+          "up": 31,
+          "answers": 31
+        },
+        {
+          "phase": "recovered",
+          "up": 31,
+          "answers": 31
+        }
+      ],
+      "limit": {
+        "up": "every answer"
+      },
+      "detail": "Maestro answered UP every time while the pool was free"
+    },
+    {
+      "id": "correctness.holdsCompleted",
+      "class": "correctness",
+      "status": "PASS",
+      "value": {
+        "byStatus": {
+          "COMPLETED": 10
+        },
+        "timedOut": false
+      },
+      "limit": {
+        "completed": 10
+      },
+      "detail": "10/10 hold runs COMPLETED"
+    },
+    {
+      "id": "correctness.noLoopFault",
+      "class": "correctness",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "idle",
+          "downOther": 0
+        },
+        {
+          "phase": "exhausted",
+          "downOther": 0
+        },
+        {
+          "phase": "recovered",
+          "downOther": 0
+        }
+      ],
+      "limit": {
+        "downOther": 0
+      },
+      "detail": "no DOWN answer named a stopped loop or a failing renewer"
+    },
+    {
+      "id": "gate.notDownWhenBusy",
+      "class": "gate",
+      "status": "PASS",
+      "value": {
+        "down": 0,
+        "noAnswer": 0,
+        "unknown": 32,
+        "up": 4,
+        "timedOut": 0
+      },
+      "limit": {
+        "down": 0,
+        "noAnswer": 0
+      },
+      "detail": "a busy pool never read DOWN: 32 UNKNOWN, 4 UP"
+    },
+    {
+      "id": "advisory.rootHealth",
+      "class": "advisory",
+      "status": "WARN",
+      "value": {
+        "root_up": 24,
+        "root_down": 0,
+        "root_other": 0,
+        "root_no_answer": 12,
+        "answerMs": {
+          "p50": 2912.1847725,
+          "max": 4977.57728,
+          "count": 24
+        }
+      },
+      "limit": {
+        "root": "UP every time (MD-7, advisory)"
+      },
+      "detail": "root aggregate while the pool was exhausted: 24 UP, 0 DOWN, 0 other, 12 no answer within 5 s (Boot's db indicator waits on the same pool)"
+    },
+    {
+      "id": "advisory.answerTime",
+      "class": "advisory",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "idle",
+          "p50Ms": 5.63,
+          "maxMs": 50.89
+        },
+        {
+          "phase": "exhausted",
+          "p50Ms": 1007.82,
+          "maxMs": 2017.31
+        },
+        {
+          "phase": "recovered",
+          "p50Ms": 7.92,
+          "maxMs": 43.95
+        }
+      ],
       "limit": null,
-      "detail": "evaluator not written"
+      "detail": "Maestro's answer time per phase (recorded, never a verdict)"
+    },
+    {
+      "id": "advisory.connectionChurn",
+      "class": "advisory",
+      "status": "PASS",
+      "value": {
+        "creations": 0
+      },
+      "limit": {
+        "creations": 0
+      },
+      "detail": "Hikari connections created during the exhausted and recovered phases: 0 (Issue 66)"
     }
   ],
-  "verdict": "ERROR"
+  "verdict": "PASS"
 }
