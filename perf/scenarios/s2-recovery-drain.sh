@@ -60,8 +60,11 @@
 # JVMs, so the counters are the phase's), the hoard every 5 s per node (from
 # its own scrape: maestro_workflows_running - maestro_workflows_parked -
 # maestro_taskqueue_slots_used{kind="workflow"}), probe start-to-complete
-# p50/p95 (instance rows), and the recovery statements (lockAcquire,
-# recoveryPage, heldKeys: s3-components.sql; adoptCas: s2-recovery.sql).
+# p50/p95 (instance rows), the recovery statements (lockAcquire,
+# recoveryPage, heldKeys: s3-components.sql; adoptCas: s2-recovery.sql), and
+# the hoard and probe loops' exit statuses (collectors: 0 when each ended at
+# its stop file; anything else, e.g. a step that failed under errexit, means
+# its series may stop early, and the evaluator says INVALID).
 #
 # Test-only: PERF_S2_STOP_AFTER=seed writes the measurements after phase A's
 # seeded read, deletes the seeded rows and starts both nodes again (so the
@@ -165,7 +168,7 @@ s2_phase() {
   local prefix="${RUN_ID}-s2${lc}-" probe_prefix="${RUN_ID}-p2${lc}-" fresh_prefix="${RUN_ID}-f2${lc}-"
   local seed seeded reset t0 jvm1 ready1="" jvm2="" ready2="" n2rec="null" drain stop_probes stop_hoard
   local probe_pid hoard_pid deadline window components recovery status probes probe_status nodes_end i
-  local fresh_k6="null" per_minute="null"
+  local fresh_k6="null" per_minute="null" hoard_rc probe_rc
 
   s2_assert_nodes_down
   seed=$(psql_json s2-seed -v "prefix=${prefix}" -v "n=${rows}")
@@ -216,7 +219,7 @@ s2_phase() {
   drain=$(wait_terminal "$prefix" "$rows" "$S2_TIMEOUT" 5)
   log "s2 ${name}: drain $(jq -c '{byStatus: .status.byStatus, waitedSecs, timedOut}' <<<"$drain")"
   touch "$stop_probes"
-  bg_wait "$probe_pid"
+  bg_wait "$probe_pid" probe_rc
   if [[ "$fresh_k6" != null ]]; then
     bg_wait "$fresh_k6"
   fi
@@ -226,7 +229,10 @@ s2_phase() {
     wait_terminal "$fresh_prefix" 1 600 5 >/dev/null
   fi
   touch "$stop_hoard"
-  bg_wait "$hoard_pid"
+  bg_wait "$hoard_pid" hoard_rc
+  if ((hoard_rc != 0 || probe_rc != 0)); then
+    log "s2 ${name}: a collector stopped early: hoard loop exit ${hoard_rc}, probe loop exit ${probe_rc}"
+  fi
 
   window=$(psql_json pgss-window)
   components=$(psql_json s3-components)
@@ -254,13 +260,13 @@ s2_phase() {
     --argjson hoard "$(jq -s -c . "${RESULTS}/hoard-${lc}.jsonl" 2>/dev/null || echo '[]')" \
     --argjson probes "$probes" --argjson probeStatus "$probe_status" \
     --argjson probeLatency "$(psql_json latency -v "prefix=${probe_prefix}")" \
-    --argjson perMinute "$per_minute" \
+    --argjson perMinute "$per_minute" --argjson hoardRc "$hoard_rc" --argjson probeRc "$probe_rc" \
     '{name: $n, prefix: $p, rows: $rows, rolling: ($rolling == 1), seed: $seed, seeded: $seeded,
       pgssReset: $reset, t0: $t0,
       starts: ([$n1, $n2] | map(select(. != null))),
       drain: {waitedSecs: $drain.waitedSecs, timedOut: $drain.timedOut},
       status: $status, window: $window, components: $components, recovery: $recovery,
-      nodesEnd: $nodesEnd, hoardSamples: $hoard,
+      nodesEnd: $nodesEnd, hoardSamples: $hoard, collectors: {hoard: $hoardRc, probes: $probeRc},
       probes: {prefix: $pp, started: $probes, status: $probeStatus.status, timedOut: $probeStatus.timedOut,
                latency: $probeLatency},
       perMinute: $perMinute}'
@@ -346,9 +352,9 @@ scenario_run() {
     --argjson warmup "$warmup" --argjson background "$background" --argjson k6 "$(k6_records)" \
     --argjson topology "$(topology_records)" --argjson tmpl "$tmpl" --argjson tmplStatus "$tmpl_status" \
     --argjson empty "[${empty1},${empty2}]" --argjson phases "$with_drain" \
-    --arg stopAfter "${PERF_S2_STOP_AFTER:-}" \
+    --arg stopAfter "${PERF_S2_STOP_AFTER:-}" --argjson hoardSecs "$S2_HOARD_SECS" \
     '{plan: {n: $n, activityMillis: $d, concurrency: $c, drainTimeoutSecs: $timeout,
-             probeRatePerSec: 0.2, rollingDelaySecs: 5, phases: ($phases | map(.name))},
+             probeRatePerSec: 0.2, rollingDelaySecs: 5, hoardSecs: $hoardSecs, phases: ($phases | map(.name))},
       warmup: $warmup, background: $background, k6: $k6, topology: $topology,
       template: ($tmpl + {finalByStatus: $tmplStatus}),
       emptyStarts: $empty,

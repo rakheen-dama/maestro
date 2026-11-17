@@ -170,6 +170,22 @@ out=$(bash -c '
   if grep -q "^$p|" "$RESULTS/.bg-pids" 2>/dev/null; then echo kept; else echo forgotten; fi
 ' _ "$PERF_DIR" "$work/t7" 2>&1 || true)
 expect "a pid waited for with bg_wait leaves the registry" forgotten "$out"
+# bg_wait <pid> <var> hands the waited process's exit status back (S2
+# records its collectors' statuses: a loop that stopped early is INVALID).
+mkdir "$work/t7b"
+out=$(bash -c '
+  set -Eeuo pipefail
+  RESULTS=$2; COMPOSE_PROJECT=none; PERF_MAIN_PID=$$
+  source "$1/lib/common.sh"
+  ( sleep 0.2; exit 3 ) & p=$!
+  bg_register "$p"
+  bg_wait "$p" rc
+  sleep 0.2 & q=$!
+  bg_register "$q"
+  bg_wait "$q" rc2
+  printf "%s,%s\n" "${rc:-unset}" "${rc2:-unset}"
+' _ "$PERF_DIR" "$work/t7b" 2>&1 || true)
+expect "bg_wait <pid> <var>: the exit status of a failed and a clean process" "3,0" "$out"
 mkdir "$work/t8"
 sleep 30 &
 stranger=$!

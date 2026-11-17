@@ -39,8 +39,10 @@ dc() {
 #       die or an interrupt. Registers the pid; sets BG_LAST_PID.
 #   bg_register <pid>  records the pid with its process start time (ps
 #       lstart) in ${RESULTS}/.bg-pids.
-#   bg_wait <pid>  waits for it and forgets it, so a pid the kernel may
-#       reuse later is never in the registry.
+#   bg_wait <pid> [<var>]  waits for it and forgets it, so a pid the kernel
+#       may reuse later is never in the registry. Never fails itself: the
+#       process's exit status goes into <var> when one is named (S2 records
+#       its collectors' statuses, so a loop that stopped early is seen).
 #   bg_kill_all  (run.sh's on_exit) first drops ${RESULTS}/.bg-stop, which
 #       bg_should_continue reads, so no loop begins another iteration; then
 #       for each recorded pid whose live process still has the recorded start
@@ -70,8 +72,10 @@ bg_forget() {
   mv "${RESULTS}/.bg-pids.tmp" "${RESULTS}/.bg-pids"
 }
 bg_wait() {
-  wait "$1" || true
+  local _bg_rc=0
+  wait "$1" || _bg_rc=$?
   bg_forget "$1"
+  if [[ -n "${2:-}" ]]; then printf -v "$2" '%s' "$_bg_rc"; fi
 }
 bg_kill_all() {
   local pid started rest child children

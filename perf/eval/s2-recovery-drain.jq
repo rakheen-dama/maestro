@@ -28,7 +28,31 @@
 #                                byStatus: without them correctness.allRecovered
 #                                would read a missing record as a failure
 #   validity.hoardSeries         running, parked and workflow-slot gauges for
-#                                every node of every drain (>= 3 samples each)
+#                                every node of every drain (>= 3 samples
+#                                each), COVERING the drain: on the harness
+#                                clock, from the node's infoAt (node_start
+#                                returns once the node answers; the sampler
+#                                cannot read it earlier) to the drain's end
+#                                (lastCompletedAt, moved to the harness clock
+#                                by that start's startIssuedAt -
+#                                dbStartIssuedAt pair, read within ~0.25 s of
+#                                each other), no stretch longer than two
+#                                sampling periods (2 x plan.hoardSecs, 5 s;
+#                                files without it ran at 5 s) without a
+#                                complete sample: each scheduled sample may
+#                                run up to one period late (the scrapes, the
+#                                loop; worst measured 7.45 s), none may be
+#                                missing. A scrape that answered nothing
+#                                records nulls and leaves a hole, as does a
+#                                collector that stopped. PR #65 review
+#   validity.collectors          every phase's hoard and probe loops exited 0
+#                                (their exit status, captured by bg_wait).
+#                                Files from before the record carry none in
+#                                any phase: accepted, their hoard is judged
+#                                by its coverage (validity.hoardSeries) and
+#                                the probe loop writes its count
+#                                (probes.started) only once it has ended at
+#                                its stop file
 #   correctness.allRecovered     every phase row COMPLETED with output 2, none
 #                                FAILED, none open, no drain timed out; every
 #                                probe COMPLETED
@@ -127,6 +151,7 @@ def s2_page_rows: 200;
 def s2_capacity_spacing_secs: 1;
 def s2_rolling_max_secs: 15;
 def s2_min_hoard_samples: 3;
+def s2_hoard_secs($m): ($m.plan.hoardSecs // 5);
 
 def phase($m; $name): ($m.phases // [] | if type == "array" then map(select(type == "object" and .name == $name)) | first else null end);
 def drain_secs: if type != "object" then null
@@ -149,6 +174,27 @@ def hoard_by_node($p):
    | map({key: .[0].container, value: {samples: length, max: (map(.running - .parked - .slotsWorkflow) | max)}})
    | from_entries);
 def phase_containers($p): ($p.starts // [] | map(.container));
+# A start's harness-clock minus database-clock offset (null when either
+# stamp is missing).
+def host_offset($s):
+  (($s.dbStartIssuedAt | ts_secs) as $d
+   | if ($s.startIssuedAt | isnum) and ($d | isnum) then $s.startIssuedAt - $d else null end);
+# Coverage of one node's hoard series over a drain, on the harness clock:
+# {samples, fromAt, toAt, maxUncoveredSecs}: the longest stretch of
+# [infoAt, drain end] without a complete sample (null when a bound is
+# missing).
+def hoard_coverage($p; $s):
+  (($p.status.lastCompletedAt | ts_secs) as $e | host_offset($s) as $off
+   | (if ($e | isnum) and ($off | isnum) then $e + $off else null end) as $to
+   | ($s.infoAt) as $from
+   | ([$p.hoardSamples // [] | if type == "array" then .[] else empty end
+       | select(type == "object" and .container == $s.container and (.at | isnum) and (.running | isnum)
+                and (.parked | isnum) and (.slotsWorkflow | isnum)) | .at] | sort) as $t
+   | {samples: ($t | length), fromAt: $from, toAt: $to,
+      maxUncoveredSecs: (if ($from | isnum) and ($to | isnum) and $to > $from
+                         then ([$from] + [$t[] | select(. > $from and . < $to)] + [$to]) as $pts
+                              | [range(1; $pts | length) as $i | $pts[$i] - $pts[$i - 1]] | max | round2
+                         else null end)});
 # The lock-acquire statement's calls and rows in a phase's window (null when
 # the window's list has no such entry).
 def lock_stat($p):
@@ -238,13 +284,28 @@ $identity[0] as $id
          {each: ">= 1", adoptCas: "= nodes' adoptions = N", lockAcquire: ">= N"};
          if $ok then "every recovery statement matched its text in every phase, and the counts agree"
          else "phase(s) \($bad | map(.phase) | join(", ")): a recovery statement was not matched (a changed SQL text?) or the counts disagree, so the statement gates would judge nothing" end)),
-    ([$ab[] | . as $p | hoard_by_node($p) as $h
-      | phase_containers($p)[] | {phase: $p.name, container: ., samples: ($h[.].samples // 0)}] as $v
-     | (($v | length) >= 3 and ($v | all(.samples >= s2_min_hoard_samples))) as $ok
+    (s2_hoard_secs($m) as $period
+     | [$ab[] | . as $p | ($p.starts // [])[]
+        | {phase: $p.name, container} + (hoard_coverage($p; .) | {samples, maxUncoveredSecs})] as $v
+     | ($v | map(select(.samples < s2_min_hoard_samples or (.maxUncoveredSecs | isnum | not)
+                        or .maxUncoveredSecs > 2 * $period))) as $bad
+     | (($v | length) >= 3 and ($bad | length) == 0) as $ok
      | check("validity.hoardSeries"; "validity"; if $ok then "PASS" else "INVALID" end; $v;
-         {samples: ">= \(s2_min_hoard_samples) per node per drain, with running, parked and workflow slots"};
-         if $ok then "running, parked and workflow-slot gauges sampled for every node of every drain"
-         else "a node of a drain has no complete gauge series: the hoard cannot be judged" end)),
+         {samples: ">= \(s2_min_hoard_samples) per node per drain, with running, parked and workflow slots",
+          maxUncoveredSecs: "<= \(2 * $period) (2 sampling periods) from the node's infoAt to the drain's end"};
+         if $ok then "complete gauge samples for every node of every drain, none more than \($v | map(.maxUncoveredSecs) | max) s apart over the drain"
+         elif ($v | length) < 3 then "a node of a drain has no gauge series: the hoard cannot be judged"
+         else "\($bad | map("\(.phase) \(.container)") | join(", ")): the gauge series does not cover the drain (too few samples, a stretch over \(2 * $period) s unobserved, or a start's clock pair missing): the hoard cannot be judged" end)),
+    ([$ab[] | {phase: .name, collectors: (.collectors // null)}] as $v
+     | ($v | map(select(.collectors != null))) as $rec
+     | (if ($rec | length) == 0 then "none"
+        elif ($rec | length) == ($v | length) and ($rec | all((.collectors.hoard == 0) and (.collectors.probes == 0))) then "ok"
+        else "bad" end) as $state
+     | check("validity.collectors"; "validity"; if $state == "bad" then "INVALID" else "PASS" end; $v;
+         {hoard: 0, probes: 0};
+         if $state == "ok" then "every phase's hoard and probe loops exited 0"
+         elif $state == "none" then "not recorded (a run from before the record): the hoard is judged by its coverage (validity.hoardSeries), and the probe count exists only once the probe loop ended at its stop file"
+         else "a collector of phase(s) \($v | map(select(.collectors == null or .collectors.hoard != 0 or .collectors.probes != 0) | .phase) | join(", ")) exited non-zero or was not recorded: its series may stop early" end)),
     ([$m.phases // [] | .[]? | select(type == "object")
       | {phase: .name, byStatus: (.status.byStatus | type), outputs: (.status.outputs | type),
          timedOut: (.drain.timedOut | type), probeStatus: (.probes.status.byStatus | type)}] as $v

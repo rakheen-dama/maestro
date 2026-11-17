@@ -13,7 +13,14 @@
 #                            PASS would be vacuous
 #   validity.storeReachable  the sampler (role postgres, its own session) saw
 #                            no gap > 1 s over every phase: the database
-#                            itself stayed reachable
+#                            itself stayed reachable. Each phase's samples
+#                            must COVER it: first within 1 s of the phase's
+#                            from, last within 1 s of its to, no gap > 1 s
+#                            between (a sampler that stopped early or began
+#                            late leaves the phase unobserved, and its busy
+#                            fraction would rest on part of the window;
+#                            PR #65 review). The sampler takes 10 samples a
+#                            second, so 1 s is ten periods
 #   validity.noPoolTimeouts  Hikari's timeout counter did not move: the pool
 #                            was busy, not failing
 #   validity.healthSamples   every phase answered or timed out >= 80 % of its
@@ -63,10 +70,18 @@ $identity[0] as $id
         if $ok then "the pool was exhausted: \($f * 100 | round) % of the exhausted window's samples show >= \($minBusy) engine backends in pg_sleep; Hikari pending reached \($pend)"
         else "the pool was not demonstrably exhausted in the probe window (busy fraction \($f | round4 | tojson), pending max \($pend | tojson)): a healthy answer would prove nothing" end),
     ((try $m.sampler.maxGapSecs catch null) as $g
-     | check("validity.storeReachable"; "validity"; if ($g | isnum) and $g <= s5_max_gap_secs then "PASS" else "INVALID" end;
-         {maxGapSecs: $g, samples: $m.sampler.samples}; {maxGapSecs: "<= \(s5_max_gap_secs)"};
-         if ($g | isnum) and $g <= s5_max_gap_secs then "the database answered the sampler every \($g) s or better over every phase"
-         else "the sampler stalled \($g | tojson) s: the database itself may have been unreachable" end)),
+     | [$ps[] | (.sampler // {}) as $s
+        | {phase: .name, maxGapSecs: $s.maxGapSecs,
+           leadSecs: (try (($s.firstAt | ts_secs) - (.from | ts_secs) | round4) catch null),
+           tailSecs: (try ((.to | ts_secs) - ($s.lastAt | ts_secs) | round4) catch null)}] as $v
+     | ($v | map(select([.maxGapSecs, .leadSecs, .tailSecs] | any((isnum | not) or . > s5_max_gap_secs)))) as $bad
+     | (($g | isnum) and $g <= s5_max_gap_secs and ($v | length) == 3 and ($bad | length) == 0) as $ok
+     | check("validity.storeReachable"; "validity"; if $ok then "PASS" else "INVALID" end;
+         {maxGapSecs: $g, samples: $m.sampler.samples, phases: $v};
+         {maxGapSecs: "<= \(s5_max_gap_secs)", phases: "lead, tail and gap each <= \(s5_max_gap_secs) s"};
+         if $ok then "the database answered the sampler every \($g) s or better, and the samples cover every phase from its start to its end"
+         elif ($g | isnum) and $g > s5_max_gap_secs then "the sampler stalled \($g) s: the database itself may have been unreachable"
+         else "phase(s) \($bad | map(.phase) | join(", ")) not covered by the sampler (it began late, stopped early or stalled): the phase is unobserved" end)),
     ((try $m.hikari.start.timeouts catch null) as $t0 | (try $m.hikari.end.timeouts catch null) as $t1
      | (($t0 | isnum) and ($t1 | isnum) and $t1 - $t0 == 0) as $ok
      | check("validity.noPoolTimeouts"; "validity"; if $ok then "PASS" else "INVALID" end;

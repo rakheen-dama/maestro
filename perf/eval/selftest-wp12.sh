@@ -230,6 +230,35 @@ out=$(s2 s2-host-clock-x12 "${base} | ${host_shift} | .phases[1].components.comp
 expect "s2: harness clock 3,000 s behind, phase B reads x12: gate.recoveryPassRate" FAIL "$(st "$out" gate.recoveryPassRate)"
 out=$(s2 s2-no-db-start "${base} | del(.phases[1].starts[1].dbStartIssuedAt)")
 expect "s2: a start without its database-clock time: gate.recoveryPassRate" INVALID "$(st "$out" gate.recoveryPassRate)"
+expect "s2: a start without its database-clock time: validity.hoardSeries" INVALID "$(st "$out" validity.hoardSeries)"
+# The hoard series must cover each node's drain, from the moment the harness
+# could first sample it (infoAt) to the drain's end, with no stretch longer
+# than two sampling periods (10 s) unobserved; and the collector must have
+# ended normally.
+# hoard_cut <phase> <node suffix> <jq condition on .at, with $e the drain end (harness clock)>
+hoard_cut() {
+  printf '.phases[%s] |= ((.starts[0] | .startIssuedAt - ((.dbStartIssuedAt | sub("\\\\.[0-9]+"; "") | sub("\\\\+00:00$"; "Z") | fromdate))) as $off
+    | ((.status.lastCompletedAt | sub("\\\\.[0-9]+"; "") | sub("\\\\+00:00$"; "Z") | fromdate) + $off) as $e
+    | .hoardSamples |= map(select((type == "object" and (.container | endswith("-%s")) and (%s)) | not)))' "$1" "$2" "$3"
+}
+out=$(s2 s2-hoard-half "${base} | $(hoard_cut 0 1 '.at > ($e - 240)')")
+expect "s2: node 1's hoard series ends 240 s before phase A's drain: validity.hoardSeries" INVALID "$(st "$out" validity.hoardSeries)"
+expect "s2: node 1's hoard series ends 240 s before phase A's drain: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+out=$(s2 s2-hoard-hole "${base} | $(hoard_cut 1 2 '.at > ($e - 200) and .at < ($e - 185)')")
+expect "s2: node 2's hoard series misses 15 s mid-drain: validity.hoardSeries" INVALID "$(st "$out" validity.hoardSeries)"
+out=$(s2 s2-hoard-late "${base} | .phases[1] |= (.starts[1].infoAt as \$i | .hoardSamples |= map(select((.container | endswith(\"-2\")) and .at < \$i + 11 | not)))")
+expect "s2: node 2 first sampled 11 s after it answered: validity.hoardSeries" INVALID "$(st "$out" validity.hoardSeries)"
+out=$(s2 s2-hoard-null "${base} | .phases[0].hoardSamples |= (length as \$n | to_entries | map(if .key > (\$n / 2) then .value.running = null else . end | .value))")
+expect "s2: half of node 1's scrapes answered nothing: validity.hoardSeries" INVALID "$(st "$out" validity.hoardSeries)"
+out=$(s2 s2-collector-died "${base} | .phases[0].collectors = {hoard: 1, probes: 0}")
+expect "s2: the hoard collector exited 1: validity.collectors" INVALID "$(st "$out" validity.collectors)"
+expect "s2: the hoard collector exited 1: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+out=$(s2 s2-probes-died "${base} | .phases[1].collectors = {hoard: 0, probes: 2}")
+expect "s2: the probe loop exited 2: validity.collectors" INVALID "$(st "$out" validity.collectors)"
+out=$(s2 s2-collectors-ok "${base} | .phases |= map(.collectors = {hoard: 0, probes: 0})")
+expect "s2: both collectors exited 0: validity.collectors" PASS "$(st "$out" validity.collectors)"
+out=$(s2 s2-collectors-half "${base} | .phases[0].collectors = {hoard: 0, probes: 0}")
+expect "s2: one phase recorded its collectors, the other not: validity.collectors" INVALID "$(st "$out" validity.collectors)"
 
 # Review r9 and r12.
 out=$(s2 s2-node2-unready "${base} | .phases[1].starts[1].readyAt = null")
@@ -291,6 +320,16 @@ if [[ -n "$s5after" ]]; then
   expect "s5: one Hikari timeout: validity.noPoolTimeouts" INVALID "$(st "$out" validity.noPoolTimeouts)"
   out=$(s5 s5-gap '.sampler.maxGapSecs = 2.5')
   expect "s5: sampler gap 2.5 s: validity.storeReachable" INVALID "$(st "$out" validity.storeReachable)"
+  # PR #65 review, round 2: the sampler must cover every phase, edges
+  # included (first sample within 1 s of the phase's start, last within 1 s
+  # of its end, no gap above 1 s inside it), not only somewhere in the run.
+  ts='(sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdate)'
+  out=$(s5 s5-sampler-stopped ".phases[1].sampler.lastAt = ((.phases[1].to | ${ts}) - 10 | todate)")
+  expect "s5: the sampler stopped 10 s before the exhausted phase ended: validity.storeReachable" INVALID "$(st "$out" validity.storeReachable)"
+  out=$(s5 s5-sampler-late ".phases[0].sampler.firstAt = ((.phases[0].from | ${ts}) + 5 | todate)")
+  expect "s5: the sampler began 5 s into the idle phase: validity.storeReachable" INVALID "$(st "$out" validity.storeReachable)"
+  out=$(s5 s5-phase-gap '.phases[2].sampler.maxGapSecs = 2.5')
+  expect "s5: a 2.5 s gap inside the recovered phase: validity.storeReachable" INVALID "$(st "$out" validity.storeReachable)"
   out=$(s5 s5-few '.phases[1].counters.maestro_unknown = 0 | .phases[1].counters.maestro_up = 1')
   expect "s5: exhausted phase with too few health samples: validity.healthSamples" INVALID "$(st "$out" validity.healthSamples)"
   out=$(s5 s5-idle-unknown '.phases[0].counters.maestro_up -= 1 | .phases[0].counters.maestro_unknown += 1')
