@@ -186,19 +186,42 @@ its timer row, of any status; the deletes and the `FAILED → RUNNING`
 compare-and-set are one transaction, and the relaunch bumps the lease epoch
 through the normal adoption. If the deleted region holds a consumed signal
 (`SIGNAL_RECEIVED`) — the failure's handling awaited one — Retry writes
-nothing, logs a `WARN` naming its sequence, and returns
-`SIGNAL_CONSUMED_AFTER_FAILURE`: the signal cannot be given back exactly, so
-terminate the workflow or finish its business outcome by hand. The admin
-command is acknowledged like every other no-op outcome, not redelivered.
-Tests: `AdminRetryTest`, `RetryPlannerTest`, `AdminCommandDispatcherRefusalTest`.
+nothing and returns `SIGNAL_CONSUMED_AFTER_FAILURE`, and the engine logs a
+`WARN` naming the workflow, the signal, its sequence and the remedy
+(`AdminCommandDispatcherRefusalTest` asserts the line): the signal cannot be
+given back exactly and is not redelivered, so terminate the workflow or
+finish its business outcome by hand. Over Kafka the admin command is then
+acknowledged like every other no-op outcome — its offset is committed and
+nothing reaches the `.DLT` — and the instance row, its events, its signal
+row and its timer rows are unchanged
+(`AdminCommandKafkaIT.retry_refusedForAConsumedSignal_isAcknowledgedAndWritesNothing`).
+The dashboard still reports "Retry command sent" and the row stays `FAILED`;
+no refusal reaches the operator there (Issue 63). A `$maestro:retry`
+redelivered after its reopen committed does nothing
+(`AdminCommandKafkaIT.retry_redeliveredAfterACommittedReopen_doesNothing`).
+Tests: `AdminRetryTest`, `RetryPlannerTest`, `AdminCommandDispatcherRefusalTest`,
+`AdminCommandKafkaIT`, `SeededHistoryUpgradeIT.theFailedRunsCbf5a2aRecordedAreRetriedByThisBuild`.
 
-Two cases are traced, not tested. A saga whose `compensate()` met
+The rest of this paragraph is traced, not tested. A saga whose `compensate()` met
 `SequenceSpaceExhaustedException` is `FAILED` with no
 `COMPENSATION_STARTED`, so Retry relaunches it, exactly as before this
 change. With a host connection pool at `REPEATABLE READ` or `SERIALIZABLE`, a
 Retry that loses to a concurrent one surfaces as `StoreUnavailableException`
 (SQLSTATE `40001`) instead of `OptimisticLockException`; nothing is deleted
-either way, and the command is redelivered.
+either way, and the command is redelivered. On every engine path nothing of
+the failed run can still write once `FAILED` is committed: it wrote
+`FAILED` through the fenced terminal write, after every `parallel()` branch
+had joined. Two cases outside the engine's own paths can append until the
+relaunch's adoption fences them — a foreign `Thread.interrupt()` of a
+`parallel()` join, and an abandoned activity attempt that calls through its
+workflow context; the retried run then replays that event or stands down,
+and never records a failure for it. If a reopen commits but the command
+handler then throws (so Kafka redelivers the command) and the retried run
+fails again before the redelivery arrives, the redelivery retries it again:
+an admin command is not deduplicated by its message id, only by the row's
+status. A retry whose relaunch finds the row already terminated, or loses
+the adoption compare-and-set to another node, also returns
+`LOCK_HELD_ELSEWHERE`.
 
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only
