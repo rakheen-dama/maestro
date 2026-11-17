@@ -144,7 +144,7 @@ WAIT_RECOVERY_SECS=150     # crash-recovery scenario end-to-end after restart
 WAIT_ADOPTION_SECS="${WAIT_ADOPTION_SECS:-150}"
 
 # Scenario 8 (rolling restart): dedicated SIGTERM grace period for
-# stop_service_graceful — default maestro.shutdown.timeout=30s (drains
+# stop_service_graceful — default maestro.shutdown.timeout=20s (drains
 # in-flight workflows) + slack for JVM/Spring-context-close overhead
 # (Kafka listener containers, DataSource pool, etc.). Deliberately NOT the
 # shared stop_service()'s 15s teardown wait: 15s is fine for teardown (which

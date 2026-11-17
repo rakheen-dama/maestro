@@ -737,7 +737,7 @@ no longer reference it.
 
 > **Resolved.** Both threaded through `MaestroProperties` and the
 > `WorkflowExecutor`/`SignalManager` constructors exactly as proposed:
-> `maestro.shutdown.timeout` (default 30s, unchanged) and
+> `maestro.shutdown.timeout` (default 30s, unchanged; 20 s since WP5) and
 > `maestro.signal.wake-recheck-interval` (default 30s, unchanged). Commits
 > `ea9eb34` (core), `dd7c4f8` (starter wiring). Pinned by
 > `MaestroAutoConfigurationConfigSeamsTest` (context-runner tests proving the
