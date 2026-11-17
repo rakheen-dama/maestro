@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Evaluator self-test for the WP12 finding-linked scenarios:
-#   perf/eval/selftest-wp12.sh <a real s2-recovery-drain result dir>
-# (perf/eval/selftest-evidence.sh rebuilds it from perf/.evidence/wp12/.)
+#   perf/eval/selftest-wp12.sh <s2-recovery-drain dir>
+#       [<s5-pool-health after dir> <s5-pool-health before dir>]
+#       [<s4-signals after dir> <s4-signals before dir>] [<s6-retention before dir>]
+# Each source is a real result directory (identity.json, measurements.json);
+# pass "" to skip a scenario. perf/eval/selftest-evidence.sh rebuilds them
+# from perf/.evidence/wp12/.
 #
 # Each source is a real run; the cases doctor its measurements.json (and
 # identity.json) one fault at a time, re-run perf/lib/evaluate.sh and assert
@@ -15,7 +19,12 @@
 set -Eeuo pipefail
 
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-s2src=${1:?usage: perf/eval/selftest-wp12.sh <s2-recovery-drain result dir>}
+s2src=${1:-}
+s5after=${2:-}
+s5before=${3:-}
+s4after=${4:-}
+s4before=${5:-}
+s6before=${6:-}
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest-wp12.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 failures=0
@@ -48,9 +57,13 @@ field() { # <case> <check id> <jq path under the check>
   jq -c --arg id "$2" ".checks[] | select(.id == \$id) | $3" "${work}/$1/result.json" 2>/dev/null || echo CRASH
 }
 
+source_is() { # <dir> <scenario>
+  [[ "$(jq -r .scenario "$1/identity.json")" == "$2" ]] || { echo "selftest-wp12: $1 is not an $2 run"; exit 1; }
+}
+
 # ── Scenario 2 (s2-recovery-drain) ──────────────────────────────────────────
-[[ "$(jq -r .scenario "${s2src}/identity.json")" == s2-recovery-drain ]] \
-  || { echo "selftest-wp12: ${s2src} is not an s2-recovery-drain run"; exit 1; }
+if [[ -n "$s2src" ]]; then
+source_is "$s2src" s2-recovery-drain
 s2() { eval_case "$s2src" s2-recovery-drain "$@"; }
 # Phase helpers over the source's own figures: A = .phases[0], B = .phases[1].
 # Drain is measured on the database clock: status.lastCompletedAt - t0.
@@ -157,6 +170,148 @@ expect "s2: full, phase C with a minute of 0 recovered completions: advisory.c2S
 out=$(s2 s2-adv-garbage '.emptyStarts = "x" | .phases[0].components = "x"')
 expect "s2: malformed advisory inputs: no evaluator ERROR (advisories WARN)" yes \
   "$(jq -r '.verdict' <<<"$out" | grep -qv -e ERROR -e CRASH && echo yes || echo no)"
+fi
+
+# ── Scenario 5 (s5-pool-health) ─────────────────────────────────────────────
+# Sources: the WP4 after (this branch's engine) and the WP4 before (bdcc074d).
+# Phases: .phases[0] idle, [1] exhausted, [2] recovered.
+if [[ -n "$s5after" ]]; then
+  source_is "$s5after" s5-pool-health
+  source_is "$s5before" s5-pool-health
+  s5() { eval_case "$s5after" s5-pool-health "$@"; }
+  out=$(s5 s5-after '.')
+  expect "s5: the real after run: verdict" PASS "$(jq -r .verdict <<<"$out")"
+  for v in validity.poolExhausted validity.storeReachable validity.noPoolTimeouts validity.healthSamples \
+    correctness.upWhenIdle correctness.holdsCompleted correctness.noLoopFault gate.notDownWhenBusy; do
+    expect "s5: the real after run: ${v}" PASS "$(st "$out" "$v")"
+  done
+  out=$(eval_case "$s5before" s5-pool-health s5-before '.')
+  expect "s5: the real before run: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  expect "s5: the real before run: gate.notDownWhenBusy" FAIL "$(st "$out" gate.notDownWhenBusy)"
+  expect "s5: the real before run: validity.poolExhausted" PASS "$(st "$out" validity.poolExhausted)"
+  out=$(s5 s5-half '.phases[1].sampler.matchingSamples = (.phases[1].sampler.samples * 0.5 | floor)')
+  expect "s5: exhausted busy samples at 50 %: validity.poolExhausted" INVALID "$(st "$out" validity.poolExhausted)"
+  out=$(s5 s5-no-pending '.pendingMax.value = 0')
+  expect "s5: Hikari pending never above 0: validity.poolExhausted" INVALID "$(st "$out" validity.poolExhausted)"
+  out=$(s5 s5-timeout '.hikari.end.timeouts = (.hikari.start.timeouts + 1)')
+  expect "s5: one Hikari timeout: validity.noPoolTimeouts" INVALID "$(st "$out" validity.noPoolTimeouts)"
+  out=$(s5 s5-gap '.sampler.maxGapSecs = 2.5')
+  expect "s5: sampler gap 2.5 s: validity.storeReachable" INVALID "$(st "$out" validity.storeReachable)"
+  out=$(s5 s5-few '.phases[1].counters.maestro_unknown = 0 | .phases[1].counters.maestro_up = 1')
+  expect "s5: exhausted phase with too few health samples: validity.healthSamples" INVALID "$(st "$out" validity.healthSamples)"
+  out=$(s5 s5-idle-unknown '.phases[0].counters.maestro_up -= 1 | .phases[0].counters.maestro_unknown += 1')
+  expect "s5: one idle UNKNOWN: correctness.upWhenIdle" FAIL "$(st "$out" correctness.upWhenIdle)"
+  out=$(s5 s5-down-other '.phases[2].counters.maestro_up -= 1 | .phases[2].counters.maestro_down_other += 1')
+  expect "s5: one maestro_down_other: correctness.noLoopFault" FAIL "$(st "$out" correctness.noLoopFault)"
+  out=$(s5 s5-hold-failed '.holds.runStatus.byStatus = {COMPLETED: (.plan.holdRuns - 1), FAILED: 1}')
+  expect "s5: one hold run FAILED: correctness.holdsCompleted" FAIL "$(st "$out" correctness.holdsCompleted)"
+  out=$(s5 s5-no-answer '.phases[1].counters.maestro_unknown -= 1 | .phases[1].counters.maestro_no_answer += 1')
+  expect "s5: one exhausted-phase no answer: gate.notDownWhenBusy" FAIL "$(st "$out" gate.notDownWhenBusy)"
+  out=$(s5 s5-one-down '.phases[1].counters.maestro_unknown -= 1 | .phases[1].counters.maestro_down_store_timed_out += 1')
+  expect "s5: one exhausted-phase DOWN (store timed out): gate.notDownWhenBusy" FAIL "$(st "$out" gate.notDownWhenBusy)"
+  out=$(s5 s5-no-root 'del(.phases[1].counters.root_up)')
+  expect "s5: a root counter missing: advisory.rootHealth" WARN "$(st "$out" advisory.rootHealth)"
+  expect "s5: a root counter missing: verdict not ERROR" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s5 s5-garbage '.hikari = "x" | .phases[1].counters.rootAnswerMs = "x"')
+  expect "s5: malformed advisory inputs: no evaluator ERROR" yes \
+    "$(jq -r '.verdict' <<<"$out" | grep -qv -e ERROR -e CRASH && echo yes || echo no)"
+fi
+
+# ── Scenario 4 (s4-signals) ─────────────────────────────────────────────────
+# Sources: the WP2 after (this branch's engine) and the WP2 before (0c710a1e).
+# Phases: .phases[0] local, [1] cross.
+if [[ -n "$s4after" ]]; then
+  source_is "$s4after" s4-signals
+  source_is "$s4before" s4-signals
+  s4() { eval_case "$s4after" s4-signals "$@"; }
+  out=$(s4 s4-after '.')
+  expect "s4: the real after run: verdict" PASS "$(jq -r .verdict <<<"$out")"
+  for v in validity.replicas validity.permitGauge correctness.allSignalsConsumed gate.noStrayPermits gate.crossNodeStatementParity; do
+    expect "s4: the real after run: ${v}" PASS "$(st "$out" "$v")"
+  done
+  out=$(eval_case "$s4before" s4-signals s4-before '.')
+  expect "s4: the real before run: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  expect "s4: the real before run: gate.noStrayPermits" FAIL "$(st "$out" gate.noStrayPermits)"
+  expect "s4: the real before run: correctness.allSignalsConsumed" PASS "$(st "$out" correctness.allSignalsConsumed)"
+  expect "s4: the real before run: gate.crossNodeStatementParity" PASS "$(st "$out" gate.crossNodeStatementParity)"
+  out=$(s4 s4-no-gauge '.permits.P2.nodes[1].value = null')
+  expect "s4: one node's maestro_wake_permits absent at P2: validity.permitGauge" INVALID "$(st "$out" validity.permitGauge)"
+  expect "s4: one node's permit gauge absent: gate.noStrayPermits not PASS" INVALID "$(st "$out" gate.noStrayPermits)"
+  out=$(s4 s4-one-replica '.' '.config.replicas = 1 | .nodes |= .[0:1]')
+  expect "s4: one replica: validity.replicas" INVALID "$(st "$out" validity.replicas)"
+  out=$(s4 s4-unconsumed '.phases[1].status.signals.consumed -= 1 | .phases[1].status.signals.unconsumed = 1')
+  expect "s4: one signal row unconsumed: correctness.allSignalsConsumed" FAIL "$(st "$out" correctness.allSignalsConsumed)"
+  out=$(s4 s4-lost '.phases[0].status.signals.rows -= 1 | .phases[0].status.signals.consumed -= 1')
+  expect "s4: one accepted signal without a row: correctness.allSignalsConsumed" FAIL "$(st "$out" correctness.allSignalsConsumed)"
+  out=$(s4 s4-sleep '.timer.status.results.slept -= 1')
+  expect "s4: one sleep run not slept: correctness.allSignalsConsumed" FAIL "$(st "$out" correctness.allSignalsConsumed)"
+  out=$(s4 s4-stray '.permits.P3.nodes[0].value += 1')
+  expect "s4: one stray permit after the timer phase: gate.noStrayPermits" FAIL "$(st "$out" gate.noStrayPermits)"
+  # Parity: the cross window made a copy of the local one, plus extra calls
+  # worth <x> x local net + tolerance + <eps> per consumed signal.
+  parity() { # <fraction of local net> <epsilon per signal>
+    printf '(.background.window) as $b
+      | ((($b.maestroCalls - ($b.sweepCalls.lockCleaner // 0)) / $b.windowSecs)) as $rate
+      | .phases[0] as $l | ($l.status.signals.consumed) as $n
+      | ((($l.window.maestroCalls - ($l.window.sweepCalls.lockCleaner // 0) - $rate * $l.window.windowSecs) / $n)) as $net
+      | ((($b.maestroStatements - ($b.sweepCalls.lockCleanerStatements // 0)) * 2 / $n)) as $tol
+      | .phases[1].window = ($l.window | .maestroCalls += (($n * (%s * $net + $tol + %s)) | ceil))
+      | .phases[1].status.signals.consumed = $n' "$1" "$2"
+  }
+  out=$(s4 s4-parity-fail "$(parity 0.10 0.02)")
+  expect "s4: cross net per signal = local x 1.10 + tolerance: gate.crossNodeStatementParity" FAIL "$(st "$out" gate.crossNodeStatementParity)"
+  out=$(s4 s4-parity-pass "$(parity 0.05 -0.03)")
+  expect "s4: cross net per signal just inside local x 1.05 + tolerance: gate.crossNodeStatementParity" PASS "$(st "$out" gate.crossNodeStatementParity)"
+  out=$(s4 s4-dropped '.k6 |= map(if .phase == "cross" then .droppedIterations = 1 else . end)')
+  expect "s4: a dropped iteration in the cross phase: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  out=$(s4 s4-slow-cross '.phases[1].status.latencyMs.p95 = (.phases[0].status.latencyMs.p95 * 2)')
+  expect "s4: cross p95 = 2 x local: advisory.consumeLatency" WARN "$(st "$out" advisory.consumeLatency)"
+  expect "s4: cross p95 = 2 x local: verdict unchanged" PASS "$(jq -r .verdict <<<"$out")"
+fi
+
+# ── Scenario 6 (s6-retention) ───────────────────────────────────────────────
+# Source: the WP8 before (this branch's engine, no WP8).
+if [[ -n "$s6before" ]]; then
+  source_is "$s6before" s6-retention
+  s6() { eval_case "$s6before" s6-retention "$@"; }
+  busy_at() { printf '.sampler.matchingInSpan = (.sampler.spanSamples * %s | floor)' "$1"; }
+  s6_after='.final.sets.jforeign.signalsUnconsumed = .seeded.sets.jforeign.signalsUnconsumed
+    | .sweep.components.janitor = {calls: 10, rows: .plan.sets.jown, totalMs: 100, entries: 1}'
+  out=$(s6 s6-before '.')
+  expect "s6: the real before run: verdict" FAIL "$(jq -r .verdict <<<"$out")"
+  for v in gate.retentionPaced gate.janitorServiceScoped gate.janitorBatched; do
+    expect "s6: the real before run: ${v}" FAIL "$(st "$out" "$v")"
+  done
+  for v in validity.seeded validity.sweepObserved validity.windows correctness.retentionExact correctness.janitorExact; do
+    expect "s6: the real before run: ${v}" PASS "$(st "$out" "$v")"
+  done
+  out=$(s6 s6-after "$(busy_at 0.5) | ${s6_after}")
+  expect "s6: doctored to the after shape (busy 0.5, foreign kept, 10 janitor calls): verdict" PASS "$(jq -r .verdict <<<"$out")"
+  out=$(s6 s6-no-sweep '.counters.node2.after.sweeps = 0')
+  expect "s6: node 2's sweeps +0: validity.sweepObserved" INVALID "$(st "$out" validity.sweepObserved)"
+  out=$(s6 s6-node1-swept '.counters.node1.after.sweeps = (.counters.node1.before.sweeps + 1)')
+  expect "s6: node 1 swept too: validity.sweepObserved" INVALID "$(st "$out" validity.sweepObserved)"
+  out=$(s6 s6-young '.final.sets.young.instances -= 1')
+  expect "s6: young set purged by 1: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-rc-short '.final.sets.rc.instances -= 1')
+  expect "s6: rc purged one past its budget: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-orphan '.final.orphans.events = 1')
+  expect "s6: one orphan event: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-jfailed '.final.sets.jfailed.signalsUnconsumed -= 1')
+  expect "s6: one jfailed unconsumed signal deleted: correctness.janitorExact" FAIL "$(st "$out" correctness.janitorExact)"
+  out=$(s6 s6-busy-066 "$(busy_at 0.66) | ${s6_after}")
+  expect "s6: busy 0.66: gate.retentionPaced" FAIL "$(st "$out" gate.retentionPaced)"
+  out=$(s6 s6-busy-065 "$(busy_at 0.65) | ${s6_after}")
+  expect "s6: busy 0.65 (the bound): gate.retentionPaced" PASS "$(st "$out" gate.retentionPaced)"
+  out=$(s6 s6-janitor-one-batch "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor.calls = 1")
+  expect "s6: one janitor call: gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-post-20 '.windows |= map(if .phase == "post" then .windowSecs = 20 else . end)')
+  expect "s6: post window 20 s: validity.windows" INVALID "$(st "$out" validity.windows)"
+  out=$(s6 s6-no-xforeign 'del(.plan.sets.xforeign)')
+  expect "s6: xforeign read missing: advisory.foreignRetention" WARN "$(st "$out" advisory.foreignRetention)"
+  expect "s6: xforeign read missing: no evaluator ERROR" yes \
+    "$(jq -r '.verdict' <<<"$out" | grep -qv -e ERROR -e CRASH && echo yes || echo no)"
+fi
 
 if ((failures > 0)); then
   echo "selftest-wp12: ${failures} case(s) failed"
