@@ -13,7 +13,8 @@ name: Perf (k6)
 # `selftest` job: the harness's no-Docker self-tests on committed files
 # (evidence privacy guard, evaluator self-test rebuilt from
 # perf/.evidence/wp11/ and, for the WP12 finding-linked scenarios,
-# perf/.evidence/wp12/, the baseline-record self-test), a few minutes, with
+# perf/.evidence/wp12/, the baseline-record self-test, the background-loop
+# self-test), a few minutes, with
 # contents: read. The run-lock race test (perf/lib/lock-selftest.sh) is not
 # in it: it is timing-based and meant for a local shell.
 #
@@ -121,6 +122,9 @@ jobs:
 
       - name: Baseline-record self-test
         run: perf/lib/baseline-selftest.sh
+
+      - name: Background loops never outlive the harness
+        run: perf/lib/bgloop-selftest.sh
 
   perf:
     name: k6 ${{ matrix.scenario }}
