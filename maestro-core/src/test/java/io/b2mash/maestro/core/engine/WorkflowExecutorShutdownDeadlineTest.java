@@ -36,6 +36,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.LockSupport;
 import java.util.function.Consumer;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -204,6 +205,34 @@ class WorkflowExecutorShutdownDeadlineTest {
             assertEquals(1, finish.size(), logs.records().toString());
             assertTrue(finish.getFirst().message().contains("0 still running"), finish.getFirst().message());
             assertTrue(finish.getFirst().message().contains("(drain "), finish.getFirst().message());
+        }
+    }
+
+    /**
+     * Step 6 joins the loops for what is left of the deadline: each loop here
+     * needs about 100 ms after its interrupt to leave its store call, well
+     * inside the deadline, so every loop has ended when {@code shutdown()}
+     * returns and none is reported as not stopped.
+     */
+    @Test
+    void everyLoopHasEndedWhenShutdownReturns() throws Exception {
+        var slow = new SlowToStopStore();
+        executor = WorkflowExecutor.builder(slow, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .build();
+        executor.startTimerPoller(LOOP_INTERVAL, 10);
+        executor.startRecoveryPoller(Map.of(), LOOP_INTERVAL);
+        executor.startSignalJanitor(LOOP_INTERVAL, Duration.ofDays(1));
+        executor.startRetentionSweeper(new WorkflowExecutor.RetentionSettings(
+                LOOP_INTERVAL, Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1));
+        assertTrue(slow.entered.await(10, SECONDS), "every loop is inside its store call");
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            executor.shutdown();
+
+            assertEquals(4, slow.returned.get(), "every loop's store call had returned when shutdown() returned");
+            assertTrue(logs.records().stream().noneMatch(r -> r.message().contains("did not stop within the shutdown deadline")),
+                    logs.records().toString());
         }
     }
 
@@ -382,6 +411,54 @@ class WorkflowExecutorShutdownDeadlineTest {
         public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
             blockUninterruptibly(entered, release);
             return PurgeResult.EMPTY;
+        }
+    }
+
+    /**
+     * Each background loop's store call waits until it is interrupted, then
+     * takes about 100 ms more to return — a driver that cleans up after the
+     * interrupt — and counts its return.
+     */
+    static final class SlowToStopStore extends VersionedInMemoryStore {
+        final CountDownLatch entered = new CountDownLatch(4);
+        final AtomicInteger returned = new AtomicInteger();
+
+        @Override
+        public List<WorkflowTimer> getDueTimers(int batchSize) {
+            slowToStop();
+            return List.of();
+        }
+
+        @Override
+        public List<WorkflowInstance> getRecoverableInstances(
+                String serviceName, @Nullable RecoveryCursor after, int limit) {
+            slowToStop();
+            return List.of();
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            slowToStop();
+            return 0;
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            slowToStop();
+            return PurgeResult.EMPTY;
+        }
+
+        private void slowToStop() {
+            entered.countDown();
+            try {
+                new CountDownLatch(1).await();
+            } catch (InterruptedException e) {
+                var until = System.nanoTime() + Duration.ofMillis(100).toNanos();
+                for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {
+                    LockSupport.parkNanos(left); // the flag is clear, so this parks
+                }
+                returned.incrementAndGet();
+            }
         }
     }
 
