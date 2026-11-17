@@ -6,7 +6,11 @@ import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SharedLock;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.WorkWorkflow;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.observe.WorkflowInfo;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +33,7 @@ import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.workMethod;
 import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
@@ -251,6 +256,85 @@ class RecoveryCapacityTest {
         Map<String, WorkflowRegistration> registrations(RecoveryCapacityTest t, WorkflowExecutor a) {
             return t.registrations(a);
         }
+    }
+
+    // ── capacity passes (D-4) ─────────────────────────────────────────
+
+    @Test
+    void aCapacityPassWithNoHeadroomMakesNoStatement() {
+        for (var i = 0; i < 4; i++) {
+            seedRecoverable(store, "wf-" + i, "orders");
+        }
+        var a = node(1);
+        var full = a.recoveryPass(registrations(a)); // admits 2 (RESERVED + QUEUED), defers 2
+        assertEquals(2, full.deferred());
+        var pages = store.pageReads();
+        var pass = a.capacityPass(registrations(a), full.resumeAfter(), full.deferredByQueue().keySet());
+        assertAll(
+                () -> assertEquals(0, pass.scanned()),
+                () -> assertEquals(pages, store.pageReads(), "no page read, no lock read"));
+    }
+
+    @Test
+    void aCapacityPassResumesAtTheFirstDeferredRowWithAPageSizedToTheHeadroom() {
+        var seeded = new ArrayList<WorkflowInstance>();
+        for (var i = 0; i < 30; i++) {
+            seeded.add(seedRecoverable(store, "wf-%02d".formatted(i), "orders"));
+        }
+        var observer = new RecordingEngineObserver();
+        var a = node(1, observer);
+        var full = a.recoveryPass(registrations(a)); // adopts wf-00 (slot) and wf-01 (queued), defers 28
+        assertEquals(28, full.deferred());
+        assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)));
+        work.release(1); // wf-00 completes; wf-01 takes the slot; its ticket returns
+        assertEquals(1, valueWithin(() -> a.taskQueueGovernor().recoveryHeadroom("orders"), 1,
+                Duration.ofSeconds(5)));
+        var resumedBefore = observer.resumed().size();
+        var pass = a.capacityPass(registrations(a), full.resumeAfter(), Set.of("orders"));
+        var read = store.lastPageRead();
+        var adoptedIds = observer.resumed().subList(resumedBefore, observer.resumed().size()).stream()
+                .map(WorkflowInfo::workflowId).toList();
+        assertAll(
+                () -> assertEquals(RecoveryCursor.of(seeded.get(1)), read.after(),
+                        "resumes after the last admitted row"),
+                () -> assertEquals(20, read.limit(), "max(20, 2 * headroom 1)"),
+                () -> assertEquals(1, pass.adopted()),
+                () -> assertEquals(List.of("wf-02"), adoptedIds, "the oldest deferred"));
+    }
+
+    /**
+     * A capacity pass whose headroom runs out at the end of a full page,
+     * before it deferred anything, says so and where it stopped, so the
+     * poller keeps draining instead of waiting for the next full pass.
+     */
+    @Test
+    void aCapacityPassThatRunsOutOfHeadroomBeforeDeferringReportsWhereItStopped() throws Exception {
+        var seeded = new ArrayList<WorkflowInstance>();
+        for (var i = 0; i < 25; i++) {
+            seeded.add(seedRecoverable(store, "wf-%02d".formatted(i), "orders"));
+        }
+        for (var i = 0; i < 19; i++) { // a peer holds wf-00..wf-18
+            assertTrue(lock.tryAcquire("maestro:lock:workflow:" + seeded.get(i).workflowId(), Duration.ofMinutes(1))
+                    .isPresent());
+        }
+        var a = node(1);
+        var reg = registrations(a).get("WorkWorkflow");
+        a.startWorkflow("busy", "WorkWorkflow", "orders", null, reg.workflowFactory(), workMethod());
+        assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5))); // the slot is taken; one ticket left
+        var pass = a.capacityPass(registrations(a), null, Set.of("orders"));
+        assertAll(
+                () -> assertEquals(1, pass.adopted(), "wf-19 queued on the one ticket"),
+                () -> assertEquals(0, pass.deferred()),
+                () -> assertTrue(pass.outOfCapacity()),
+                () -> assertEquals(RecoveryCursor.of(seeded.get(19)), pass.resumeAfter(), "where it stopped"),
+                () -> assertEquals(1, store.pageReads(), "no read without headroom"));
+    }
+
+    @Test
+    void capacityPageSizeIsBounded() {
+        assertEquals(20, WorkflowExecutor.capacityPageSize(1));
+        assertEquals(60, WorkflowExecutor.capacityPageSize(30));
+        assertEquals(200, WorkflowExecutor.capacityPageSize(Integer.MAX_VALUE));
     }
 
     // ── fixtures ──────────────────────────────────────────────────────

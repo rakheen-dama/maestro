@@ -59,6 +59,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -846,10 +847,17 @@ public final class WorkflowExecutor {
      *                        counted per task queue (in first-deferral order)
      * @param resumeAfter     the keyset position just before the first deferred
      *                        instance — where a capacity pass resumes;
-     *                        {@code null} means the first row (or nothing deferred)
+     *                        {@code null} means the first row (or nothing deferred).
+     *                        When a capacity pass ran out of headroom before
+     *                        deferring anything, the position after the last row
+     *                        it read
+     * @param outOfCapacity   a capacity pass stopped because its queues had no
+     *                        headroom left while rows after {@code resumeAfter}
+     *                        may remain unread; always {@code false} for a full pass
      */
     record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType,
-                        Map<String, Integer> deferredByQueue, @Nullable RecoveryCursor resumeAfter) {
+                        Map<String, Integer> deferredByQueue, @Nullable RecoveryCursor resumeAfter,
+                        boolean outOfCapacity) {
         /** @return instances skipped because their factory threw, across all types */
         int skipped() {
             return skippedByType.values().stream().mapToInt(Integer::intValue).sum();
@@ -871,10 +879,12 @@ public final class WorkflowExecutor {
         @Nullable RecoveryCursor resumeAfter;
         /** Set when the pass must end now: the executor is shutting down or the thread was interrupted. */
         boolean stopped;
+        /** Set when a capacity pass stops for lack of headroom; see {@link RecoveryPass#outOfCapacity()}. */
+        boolean outOfCapacity;
 
         RecoveryPass toPass() {
             return new RecoveryPass(scanned, adopted, Collections.unmodifiableMap(skippedByType),
-                    Collections.unmodifiableMap(deferredByQueue), resumeAfter);
+                    Collections.unmodifiableMap(deferredByQueue), resumeAfter, outOfCapacity);
         }
     }
 
@@ -928,6 +938,82 @@ public final class WorkflowExecutor {
         logPass(pass, true);
         emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
         return pass;
+    }
+
+    /** The smallest page a capacity pass reads: one small statement even for one free place. */
+    static final int MIN_CAPACITY_PAGE = 20;
+
+    /**
+     * A capacity pass's page size for {@code headroom} free places on its
+     * queues: twice the headroom (two nodes interleaving one backlog find
+     * about half of it held elsewhere), at least {@value #MIN_CAPACITY_PAGE},
+     * at most {@value #RECOVERY_PAGE_SIZE}.
+     *
+     * @param headroom the summed {@link TaskQueueGovernor#recoveryHeadroom} of the deferred queues
+     * @return the page size
+     */
+    static int capacityPageSize(long headroom) {
+        return (int) Math.min(RECOVERY_PAGE_SIZE, Math.max(MIN_CAPACITY_PAGE, 2L * headroom));
+    }
+
+    /**
+     * A <b>capacity pass</b>: the gated pass the recovery poller runs as soon
+     * as capacity frees after a pass that deferred. It resumes strictly after
+     * {@code resumeAfter} — the rows before it were adopted, are running here,
+     * held elsewhere, unregistered, factory-failing or terminal, and the next
+     * full pass re-checks them — and reads pages sized to the free capacity of
+     * {@code deferredQueues} ({@link #capacityPageSize}). Before each page it
+     * re-reads that headroom and stops when it is 0, so a pass with nothing
+     * free makes no statement at all. A full page continues to the next while
+     * headroom remains; a short page ends the pass. It never sets
+     * {@link #recoveryDeferredCount()}, which is a full pass's count.
+     *
+     * @param registrations  workflow type → registration
+     * @param resumeAfter    where to resume; {@code null} for the first row
+     * @param deferredQueues the queues the previous pass deferred on
+     * @return what the pass did
+     */
+    RecoveryPass capacityPass(Map<String, WorkflowRegistration> registrations,
+                              @Nullable RecoveryCursor resumeAfter,
+                              Set<String> deferredQueues) {
+        var tally = new PassTally();
+        var after = resumeAfter;
+        while (!shuttingDown.get() && !tally.stopped) {
+            var headroom = recoveryHeadroom(deferredQueues);
+            if (headroom <= 0) {
+                tally.outOfCapacity = true;
+                if (!tally.deferredAny) {
+                    tally.resumeAfter = after;
+                }
+                break;
+            }
+            var size = capacityPageSize(headroom);
+            var page = store.getRecoverableInstances(serviceName, after, size);
+            tally.scanned += page.size();
+            if (page.isEmpty()) {
+                break;
+            }
+            recoverPage(page, after, registrations, RecoveryGate.GATED, tally);
+            after = RecoveryCursor.of(page.getLast());
+            if (page.size() < size) {
+                break;
+            }
+        }
+        var pass = tally.toPass();
+        if (pass.scanned() > 0) {
+            logPass(pass, false);
+            emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        }
+        return pass;
+    }
+
+    /** The summed recovery headroom of {@code queues}; never overflows. */
+    long recoveryHeadroom(Set<String> queues) {
+        var sum = 0L;
+        for (var queue : queues) {
+            sum += taskQueueGovernor.recoveryHeadroom(queue);
+        }
+        return sum;
     }
 
     /** The pass's summary lines; a capacity pass ({@code full == false}) logs its deferral at {@code DEBUG}. */
