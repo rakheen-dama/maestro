@@ -479,10 +479,16 @@ final class WorkflowInstanceLockManager {
         // reported as a transient renew failure, and contained so it cannot
         // escape renewLoop() and kill the single renewer thread — that would
         // silently stop renewing EVERY held lock.
-        emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
-        // Proactive stand-down: tell the executor now, so the run stops at
-        // its next stop point rather than after a write the store fences.
-        emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
+        try {
+            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+        } finally {
+            // Proactive stand-down: tell the executor now, so the run stops at
+            // its next stop point rather than after a write the store fences.
+            // In a finally: the handle is already dropped, so no later pass
+            // reports this loss again — an observer Error (which emit lets
+            // through, to the renewer's guard) must not skip the stand-down.
+            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
+        }
     }
 
     /**

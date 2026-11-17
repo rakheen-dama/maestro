@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
@@ -401,6 +402,35 @@ class BackgroundLoopErrorTest {
         manager.tryAcquire("wf-1");
         assertTrue(lost.await(5, TimeUnit.SECONDS), "no pass after the Error reported the loss");
         assertFalse(manager.isHeld("wf-1"), "the lost handle is dropped");
+    }
+
+    /**
+     * Review d2: the lost-lock path drops the handle, then tells the observer,
+     * then stands the run down. An observer that throws an {@code Error} must
+     * not skip the stand-down: the handle is already gone, so no later pass
+     * would ever report the loss again.
+     */
+    @Test
+    void renewer_anObserverErrorOnALostLockStillStandsTheRunDown() throws Exception {
+        var throwing = new EngineObserver() {
+            @Override
+            public void instanceLockLost(String workflowId) {
+                throw new AssertionError("observer bug");
+            }
+        };
+        var lossManager = new WorkflowInstanceLockManager(
+                lock, "svc", "maestro:lock:", Duration.ofSeconds(30), Duration.ofMillis(50), throwing);
+        try {
+            var lost = new CountDownLatch(1);
+            lossManager.onLockLost(workflowId -> lost.countDown());
+            lock.alwaysFail = true;
+            lock.answer = () -> Set.copyOf(lock.acquired);             // every pass: every handle lost
+            lossManager.tryAcquire("wf-1");
+            assertTrue(lost.await(5, TimeUnit.SECONDS), "the run was not stood down after the observer's Error");
+            assertFalse(lossManager.isHeld("wf-1"), "the lost handle is dropped");
+        } finally {
+            lossManager.close();
+        }
     }
 
     @Test
