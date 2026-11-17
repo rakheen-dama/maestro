@@ -1,5 +1,7 @@
 -- Summary of one activity-sampler label (perf/sql/activity-sampler.sql):
 --   psql -v label=<label> [-v min=<n>, default 1]
+--        [-v from=<timestamptz> -v to=<timestamptz>: only the samples taken
+--         in [from, to], default every sample of the label]
 -- A sample "matches" when at least :min engine backends were active in a
 -- query matching the sampler's pattern. Returns
 --   {samples, firstAt, lastAt, maxGapSecs (largest gap between consecutive
@@ -11,11 +13,19 @@
 \else
 \set min 1
 \endif
+\if :{?from}
+\else
+\set from '-infinity'
+\endif
+\if :{?to}
+\else
+\set to 'infinity'
+\endif
 WITH s AS (
     SELECT at, matching, maestro_active,
            extract(epoch FROM at - lag(at) OVER (ORDER BY at)) AS gap
     FROM perf_harness.activity_sample
-    WHERE label = :'label'
+    WHERE label = :'label' AND at BETWEEN :'from'::timestamptz AND :'to'::timestamptz
 ), m AS (
     SELECT min(at) AS first_match, max(at) AS last_match, count(*) AS n
     FROM s WHERE matching >= :min
