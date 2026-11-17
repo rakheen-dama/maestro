@@ -2,6 +2,12 @@
 
 ## Unreleased — Postgres + Kafka only
 
+### Fixed — no pool WARN when the Postgres wake listener closes (Issue 38)
+
+- **What was wrong:** closing `PostgresWakeListener` interrupted its poll thread, and an interrupt of a virtual thread blocked in pgjdbc's `getNotifications` socket read closes the connection under the pool. `close()` then ran `UNLISTEN *` on that closed connection, so every clean shutdown on a Hikari pool logged `WARN com.zaxxer.hikari.pool.ProxyConnection - … Connection org.postgresql.jdbc.PgConnection@… marked as broken because of SQLSTATE(08003), ErrorCode(0)` with a stack trace, and the pool evicted the connection.
+- **What changes:** `close()` no longer interrupts; it stops the loop, ends any reconnect back-off at once and waits for the poll thread for at most 2 s. The poll thread leaves within one poll, puts a 1 s network timeout on its connection, issues `UNLISTEN *`, restores the earlier timeout and returns the connection itself, so no other thread ever touches it; if the wait times out, `close()` logs one `INFO` and the thread releases the connection when its call returns. Shutdown waits up to one poll (≤ 500 ms; bounded at 2 s) longer. The pool keeps its connection: the same backend is reused, listening on nothing. Pinned by `PostgresWakeListenerShutdownTest`, `PostgresWakeListenerCloseOrderTest` and `PostgresSignalWakeAutoConfigurationTest.closingTheContextLogsNoPoolWarnAndClosesTheListenerBeforeThePool`.
+- **Nothing to configure.** `maestro.signal.wake-notify.enabled=false` deployments are unaffected: they have no listener.
+
 ### Changed — Spring Boot's Kafka beans now coexist with Maestro's (3.4, D5)
 
 **What was wrong.** Maestro's `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` were ordinary by-type candidates, registered ahead of Spring Boot's `KafkaAutoConfiguration`, so Boot's type-conditioned Kafka beans backed off:
