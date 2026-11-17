@@ -47,8 +47,9 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
  * </table>
  *
- * <p>{@code maestro.workflows.running} and {@code maestro.workflows.parked}
- * (Gauges) are <b>not</b> registered by this class — they need the
+ * <p>The gauges ({@code maestro.workflows.running}, {@code maestro.workflows.parked},
+ * {@code maestro.wake.permits} and {@code maestro.recovery.deferred}) are
+ * <b>not</b> registered by this class — they need the
  * {@code WorkflowExecutor} bean, which this observer never sees; they are
  * registered by {@link MaestroEngineGauges} instead.
  *

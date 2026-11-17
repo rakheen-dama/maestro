@@ -72,8 +72,8 @@ site.
 
 ## Meter catalog
 
-Twenty meters: **16 counters and 1 timer**, registered by
-`MicrometerEngineObserver`, plus **3 gauges**, registered by
+Twenty-one meters: **16 counters and 1 timer**, registered by
+`MicrometerEngineObserver`, plus **4 gauges**, registered by
 `MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
 of `maestro-spring-boot-starter`.
 
@@ -166,8 +166,9 @@ timer measures real executions only.
 | `maestro.workflows.running` | *(none)* | `WorkflowExecutor.runningCount()` |
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
 | `maestro.wake.permits` | *(none)* | `WorkflowExecutor.wakePermitCount()` |
+| `maestro.recovery.deferred` | *(none)* | `WorkflowExecutor.recoveryDeferredCount()` |
 
-All three are registered by `MaestroEngineGauges` with `.strongReference(true)` —
+All four are registered by `MaestroEngineGauges` with `.strongReference(true)` —
 Micrometer's `Gauge.Builder` holds its state object behind a `WeakReference` by
 default, which would report `NaN` once the builder went out of scope.
 
@@ -190,6 +191,21 @@ default, which would report `NaN` once the builder went out of scope.
   so the value stays near zero; one that grows with signal or timer throughput
   is a regression. Tests show this: `WakePermitLocalityTest`,
   `ParkingLotWakeGateTest`.
+- `maestro.recovery.deferred` (Prometheus `maestro_recovery_deferred`) is how
+  many recoverable workflows this node's latest **full** recovery pass left
+  unadopted because their task queue had no free slot and no room in its line
+  of queued recovered runs on this node; `0` before the first full pass. A
+  full pass runs when the recovery poller starts and then every
+  `maestro.recovery.poll-interval`; the capacity passes in between do not
+  update it. It reads `0` on a healthy fleet. During a recovery drain it is the
+  backlog this node could see but not yet run, recounted by each full pass, so
+  it falls as the drain proceeds (traced, not tested). A value that stays high
+  over several full passes means this node's queues cannot keep up with
+  recovery. Like the other gauges it is node-local,
+  but do **not** sum it across pods: every node of a service sees the same
+  unadopted rows, so a sum counts each one once per node. Pinned by
+  `MaestroEngineGaugesTest.recoveryDeferredGaugeReadsTheLatestFullPass`
+  (4 instances at limits (1, 1): the gauge reads 2).
 
 **These are node-local, in-JVM values.** They are not store-derived, they do not
 survive a restart, and they say nothing about workflows owned by other nodes.

@@ -5,9 +5,9 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
 /**
- * Registers the three node-local gauges: {@code maestro.workflows.running}
+ * Registers the four node-local gauges: {@code maestro.workflows.running}
  * and {@code maestro.workflows.parked} from the observability design doc
- * §2.2 / §2.3, and {@code maestro.wake.permits}.
+ * §2.2 / §2.3, {@code maestro.wake.permits} and {@code maestro.recovery.deferred}.
  *
  * <p>Kept as a separate holder bean from {@link MicrometerEngineObserver}
  * because gauges need the {@code WorkflowExecutor} bean, while the counters
@@ -50,14 +50,15 @@ public final class MaestroEngineGauges {
     private final WorkflowExecutor executor;
 
     /**
-     * Registers the three gauges {@code maestro.workflows.running}, {@code
-     * maestro.workflows.parked} and {@code maestro.wake.permits} against
-     * {@code executor}.
+     * Registers the four gauges {@code maestro.workflows.running}, {@code
+     * maestro.workflows.parked}, {@code maestro.wake.permits} and {@code
+     * maestro.recovery.deferred} against {@code executor}.
      *
      * @param registry the Micrometer registry the gauges are registered against
      * @param executor the executor whose {@link WorkflowExecutor#runningCount()},
-     *                 {@link WorkflowExecutor#parkedCount()} and
-     *                 {@link WorkflowExecutor#wakePermitCount()} back the gauges
+     *                 {@link WorkflowExecutor#parkedCount()},
+     *                 {@link WorkflowExecutor#wakePermitCount()} and
+     *                 {@link WorkflowExecutor#recoveryDeferredCount()} back the gauges
      */
     public MaestroEngineGauges(MeterRegistry registry, WorkflowExecutor executor) {
         this.executor = executor;
@@ -69,6 +70,11 @@ public final class MaestroEngineGauges {
                 .register(registry);
         Gauge.builder("maestro.wake.permits", this.executor, WorkflowExecutor::wakePermitCount)
                 .description("Wake permits held on this node for workflows that have not parked yet")
+                .strongReference(true)
+                .register(registry);
+        Gauge.builder("maestro.recovery.deferred", this.executor, WorkflowExecutor::recoveryDeferredCount)
+                .description("Recoverable workflows this node's latest full recovery pass left unadopted "
+                        + "for lack of task-queue capacity")
                 .strongReference(true)
                 .register(registry);
     }
