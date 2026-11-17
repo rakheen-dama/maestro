@@ -632,6 +632,43 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Evaluated under the signal lock against the current instance map,
+     * with the one-argument form's predicate plus the instance's service name;
+     * removes the first {@code limit} qualifying signals in storage order.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        synchronized (signalLock) {
+            var purgeable = new HashSet<UUID>();
+            for (var instance : instances.values()) {
+                var status = instance.status();
+                var completedAt = instance.completedAt();
+                if ((status == WorkflowStatus.COMPLETED || status == WorkflowStatus.TERMINATED)
+                        && completedAt != null && completedAt.isBefore(cutoff)
+                        && serviceName.equals(instance.serviceName())) {
+                    purgeable.add(instance.id());
+                }
+            }
+            int deleted = 0;
+            for (var it = signals.iterator(); it.hasNext() && deleted < limit; ) {
+                var s = it.next();
+                if (!s.consumed() && s.workflowInstanceId() != null && purgeable.contains(s.workflowInstanceId())) {
+                    it.remove();
+                    deleted++;
+                }
+            }
+            return deleted;
+        }
+    }
+
     // ── Retention ────────────────────────────────────────────────────────
 
     /**

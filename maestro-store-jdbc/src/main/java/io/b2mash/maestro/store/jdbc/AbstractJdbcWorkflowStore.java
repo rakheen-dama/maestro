@@ -1659,6 +1659,39 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return update(sql, ps -> ps.setTimestamp(1, Timestamp.from(cutoff)));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One dialect-neutral statement in autocommit: a {@code DELETE} whose
+     * {@code id IN (SELECT ...)} subquery joins the instance, filters on its
+     * status, {@code completed_at} and {@code service_name}, and takes the
+     * first {@code limit} rows with the portable {@code FETCH FIRST ? ROWS
+     * ONLY} (Postgres accepts it with a bind parameter). The join leaves
+     * orphans out, and the outer {@code consumed = FALSE} re-checks a row
+     * consumed after the subquery read it.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+
+        String sql = "DELETE FROM " + tableName("workflow_signal")
+                + " WHERE consumed = FALSE AND id IN (SELECT s.id FROM " + tableName("workflow_signal") + " s"
+                + " JOIN " + tableName("workflow_instance") + " i ON i.id = s.workflow_instance_id"
+                + " WHERE s.consumed = FALSE AND i.status IN ('" + WorkflowStatus.COMPLETED.name() + "', '"
+                + WorkflowStatus.TERMINATED.name() + "') AND i.completed_at < ? AND i.service_name = ?"
+                + " FETCH FIRST ? ROWS ONLY)";
+
+        return update(sql, ps -> {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            ps.setString(2, serviceName);
+            ps.setInt(3, limit);
+        });
+    }
+
     // ── Timer operations ──────────────────────────────────────────────────
 
     @Override

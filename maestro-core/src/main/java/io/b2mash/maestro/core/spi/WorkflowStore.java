@@ -789,17 +789,71 @@ public interface WorkflowStore {
      *       after {@code cutoff}, keep their signals.</li>
      * </ul>
      *
-     * <p><b>Idempotent and safe to run concurrently.</b> The engine's signal
-     * janitor calls this periodically on every node without leader election;
-     * a second call with the same cutoff deletes nothing and returns
-     * {@code 0}. Shared-database implementations should compare against the
-     * stored {@code completed_at} in a single statement.
+     * <p><b>Idempotent and safe to run concurrently.</b> A second call with
+     * the same cutoff deletes nothing and returns {@code 0}. Shared-database
+     * implementations should compare against the stored {@code completed_at}
+     * in a single statement.
+     *
+     * <p><b>The engine no longer calls this</b>; its signal janitor uses the
+     * service-scoped, bounded
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)},
+     * whose default is built on this method — so every store must still
+     * implement it.
      *
      * @param cutoff signals of instances completed strictly before this instant
      *               are purged
      * @return the number of signal rows deleted
      */
     int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff);
+
+    /**
+     * Deletes at most {@code limit} of one service's unconsumed signals
+     * addressed to workflows that finished long ago: those
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}
+     * would delete whose instance's {@link WorkflowInstance#serviceName()}
+     * equals {@code serviceName}.
+     *
+     * <p>The survivors are the one-argument form's — {@code FAILED}
+     * instances' signals, orphans, consumed rows, and signals of instances
+     * with a {@code null} {@code completedAt} or one at or after
+     * {@code cutoff} — plus every signal of another service's instances.
+     * Several services may share the tables, each with its own
+     * {@code terminalRetention}; each deletes only its own rows.
+     *
+     * <p><b>At most {@code limit} rows per call.</b> The engine's signal
+     * janitor calls this in a loop, on every node and without leader
+     * election, until a call returns fewer than {@code limit}, so one call is
+     * one short statement rather than a sweep of the whole backlog. Which
+     * qualifying rows a call takes is up to the store. Safe to run
+     * concurrently: two callers may select the same rows, and the later one
+     * deletes fewer.
+     *
+     * <p><b>The default</b> ignores {@code serviceName} and {@code limit} and
+     * delegates to the unscoped, unbounded
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}, so a
+     * janitor over a store that does not override this behaves as before: it
+     * deletes every service's qualifying signals in one call. When that call
+     * removes {@code limit} rows or more, the janitor calls once more, and
+     * that call deletes nothing and ends the sweep. The shipped JDBC store and
+     * the in-memory test store override it.
+     *
+     * @param serviceName the service whose instances' signals are purged
+     * @param cutoff      signals of instances completed strictly before this
+     *                    instant are purged
+     * @param limit       the most rows to delete in this call; positive
+     * @return the number of signal rows deleted
+     * @throws NullPointerException     if {@code serviceName} or {@code cutoff}
+     *                                  is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+    }
 
     // ── Retention ────────────────────────────────────────────────────────
 
