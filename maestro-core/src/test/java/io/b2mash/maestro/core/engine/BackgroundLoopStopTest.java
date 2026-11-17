@@ -58,7 +58,7 @@ class BackgroundLoopStopTest {
         SIGNAL_JANITOR {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new SignalJanitor(store, INTERVAL, Duration.ofDays(1));
+                var loop = new SignalJanitor(store, "svc", INTERVAL, Duration.ofDays(1));
                 loop.start();
                 return loop;
             }

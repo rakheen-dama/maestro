@@ -31,8 +31,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * anything at or after the cutoff).
  *
  * <h2>Leader election</h2>
- * <p>Unlike {@link SignalJanitor}, which is one idempotent statement, a purge
- * sweep is many multi-row transactions, so only one node per service runs it:
+ * <p>Unlike {@link SignalJanitor}, whose batches are single idempotent
+ * statements, a purge sweep is many multi-row transactions, so only one node
+ * per service runs it:
  * before <em>every batch</em> the sweeper calls
  * {@link DistributedLock#trySetLeader} on
  * {@code maestro:leader:retention:<serviceName>} with a 15-second TTL — the

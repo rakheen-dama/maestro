@@ -1988,11 +1988,12 @@ public final class WorkflowExecutor {
      * <p>Every {@code interval} the janitor purges the unconsumed signals of
      * workflows that reached {@code COMPLETED} or {@code TERMINATED} more than
      * {@code retention} ago, via
-     * {@link WorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}
+     * {@link WorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)}
      * (see its Javadoc for what survives — notably {@code FAILED} workflows,
-     * which may still be retried). Every node runs one; the delete is
-     * idempotent, so no leader election is involved. A store failure is
-     * logged and retried on the next interval. {@link #shutdown()} stops it.
+     * which may still be retried). Every node runs one, without leader
+     * election; it deletes this service's signals only, in batches of 1,000.
+     * A store failure is logged and retried on the next interval.
+     * {@link #shutdown()} stops it.
      *
      * <p>If this method is never called, nothing is purged. The Spring Boot
      * starter calls it automatically ({@code maestro.signal.janitor-interval},
@@ -2011,7 +2012,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, interval, retention, observer);
+        var janitor = new SignalJanitor(store, serviceName, interval, retention, observer);
         installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
     }

@@ -240,7 +240,7 @@ class BackgroundLoopErrorTest {
                 throw new AssertionError("every sweep fails");
             }
         };
-        var janitor = new SignalJanitor(failing, Duration.ofMinutes(10), Duration.ofDays(1), observer);
+        var janitor = new SignalJanitor(failing, "svc", Duration.ofMinutes(10), Duration.ofDays(1), observer);
         janitor.start();
         await("the first failed sweep").atMost(Duration.ofSeconds(5))
                 .until(() -> janitor.consecutiveFailures() >= 1);
@@ -280,7 +280,7 @@ class BackgroundLoopErrorTest {
                 return 0;
             }
         };
-        var janitor = new SignalJanitor(flaky, Duration.ofMillis(50), Duration.ofDays(1), observer);
+        var janitor = new SignalJanitor(flaky, "svc", Duration.ofMillis(50), Duration.ofDays(1), observer);
         janitorRef.set(janitor);
         janitor.start();
         try {
