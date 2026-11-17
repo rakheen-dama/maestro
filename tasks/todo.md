@@ -19,7 +19,7 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [x] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B — PR #63 merged 2026-11-17 (40aa3c21): retention and janitor scoped to the node's service (maintainer decision taken as recommended), manual purge statement, uncached build green; soak not required
 - [x] WP11 k6 load-test foundation — Lane C — PR #58 merged 2026-11-17 (5b170009): scenarios 1 and 3, 26 statements per workflow
 - [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C — Tasks 1-6 done (S2, S4, S5, S6 before FAIL / after PASS per its ledger); Tasks 7-9 in progress
-- [ ] WP13 Docs and housekeeping — Lane D — done on branch `docs/housekeeping`, not yet merged (see Review below; report in `.superpowers/sdd/wp13-docs-housekeeping/report.md`)
+- [ ] WP13 Docs and housekeeping — Lane D — done on branch `docs/housekeeping`, not yet merged (see Review below)
 - [ ] Gates on this cycle's merges: the scheduled nightly on `main` ran E2E 1–10 and chaos PR-gate ×3 green on `834a9da8` (2026-11-13 to 11-16: WP0, WP9, WP1) and on `17811ab0` (2026-11-17: adds WP2, WP7, WP10), and the weekly 2 h soak green on `834a9da8` (2026-11-15, run 43661077480). Nothing yet on the merges after 2026-11-17 02:32 UTC (WP3, WP4, WP11, WP5 + #61, WP6, WP8; `main` @ `40aa3c21`). WP2 has had no 2 h soak.
 - [x] Review section added (below), before WP12 and WP13 merge
 
