@@ -135,18 +135,22 @@ final class BackgroundLoopGuard {
      * failure extends the streak and is logged by the cadence in the class
      * Javadoc, and an {@link Error} is reported to the observer.
      *
+     * <p>Logging is contained too: a logger that throws, or a failure whose
+     * {@code toString()} throws, cannot escape — the failure is still counted
+     * and the observer still told.
+     *
      * @param failure what the iteration threw
      * @return what was logged
      * @throws MaestroControlFlowError when {@code failure} is one; otherwise
-     *         this never throws, short of an {@code Error} raised by logging
-     *         itself
+     *         this never throws
      */
     Logged failed(Throwable failure) {
         if (failure instanceof MaestroControlFlowError controlFlow) {
             throw controlFlow;
         }
         if (stopping.getAsBoolean()) {
-            logger.debug("Background loop '{}' failed while stopping (ignored): {}", loop, failure.toString());
+            log(failure, () -> logger.debug("Background loop '{}' failed while stopping (ignored): {}",
+                    loop, describe(failure)));
             return Logged.STOPPING;
         }
         var now = nanoTime.getAsLong();
@@ -157,22 +161,66 @@ final class BackgroundLoopGuard {
             streakStartNanos = now;
             lastLoudNanos = now;
             logged = Logged.FIRST;
-            logger.error("Background loop '{}' failed ({}); it keeps running and retries every {} — further "
-                            + "failures are logged at DEBUG, with a reminder every 5 minutes while they continue",
-                    loop, failure.toString(), retryInterval, failure);
+            log(failure, () -> logger.error("Background loop '{}' failed ({}); it keeps running and retries every "
+                            + "{} — further failures are logged at DEBUG, with a reminder every 5 minutes while "
+                            + "they continue",
+                    loop, describe(failure), retryInterval, failure));
         } else if (now - lastLoudNanos >= REMINDER_INTERVAL.toNanos()) {
             lastLoudNanos = now;
             logged = Logged.REMINDER;
-            logger.error("Background loop '{}' is still failing: {} consecutive failure(s) over {} min; latest: {}",
-                    loop, n, TimeUnit.NANOSECONDS.toMinutes(now - streakStartNanos), failure.toString());
+            var minutes = TimeUnit.NANOSECONDS.toMinutes(now - streakStartNanos);
+            log(failure, () -> logger.error(
+                    "Background loop '{}' is still failing: {} consecutive failure(s) over {} min; latest: {}",
+                    loop, n, minutes, describe(failure)));
         } else {
             logged = Logged.REPEAT;
-            logger.debug("Background loop '{}' failed again ({} in a row)", loop, n, failure);
+            log(failure, () -> logger.debug("Background loop '{}' failed again ({} in a row)", loop, n, failure));
         }
         if (failure instanceof Error) {
             notifyObserver(failure);
         }
         return logged;
+    }
+
+    /**
+     * Runs one logging call for {@code failure}, containing anything it
+     * throws — a logger or appender that fails, or a throwable whose
+     * {@code toString()}/{@code getMessage()} throws while it is rendered —
+     * so the guard's catch arm cannot itself end the loop. Falls back to one
+     * line naming the failure's class; if that throws too, nothing is logged.
+     */
+    private void log(Throwable failure, Runnable call) {
+        try {
+            call.run();
+        } catch (Throwable t) {
+            if (t instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            try {
+                logger.error("Background loop '{}' failed with {}; logging it threw {}",
+                        loop, failure.getClass().getName(), t.getClass().getName());
+            } catch (Throwable ignored) {
+                if (ignored instanceof MaestroControlFlowError controlFlow) {
+                    throw controlFlow;
+                }
+                // Nothing left to log with; the failure is still counted.
+            }
+        }
+    }
+
+    /**
+     * {@code failure.toString()}, or its class name when {@code toString()}
+     * itself throws.
+     */
+    private static String describe(Throwable failure) {
+        try {
+            return failure.toString();
+        } catch (Throwable t) {
+            if (t instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            return failure.getClass().getName() + " (its toString() threw " + t.getClass().getName() + ")";
+        }
     }
 
     /**
@@ -212,10 +260,10 @@ final class BackgroundLoopGuard {
     Thread.UncaughtExceptionHandler uncaughtExceptionHandler() {
         return (thread, failure) -> {
             if (stopping.getAsBoolean()) {
-                logger.debug("Background loop '{}' exited while stopping: {}", loop, failure.toString());
+                logger.debug("Background loop '{}' exited while stopping: {}", loop, describe(failure));
             } else {
                 logger.error("Background loop '{}' stopped: {} escaped it — it will not run again on this "
-                        + "node until the node restarts", loop, failure.toString(), failure);
+                        + "node until the node restarts", loop, describe(failure), failure);
             }
         };
     }

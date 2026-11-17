@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
+import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import org.junit.jupiter.api.BeforeEach;
@@ -131,6 +132,50 @@ class BackgroundLoopGuardTest {
                 throwing, nanos::get);
         assertEquals(BackgroundLoopGuard.Logged.FIRST, g.failed(new AssertionError("x")));
         assertEquals(1, g.consecutiveFailures());
+    }
+
+    /** An Error whose toString() and getMessage() throw, as a buggy or hostile throwable might. */
+    static final class UnprintableError extends Error {
+        @Override
+        public String getMessage() {
+            throw new IllegalStateException("getMessage() bug");
+        }
+
+        @Override
+        public String toString() {
+            throw new IllegalStateException("toString() bug");
+        }
+    }
+
+    @Test
+    void aFailureThatCannotBePrintedIsStillContainedCountedAndReported() {
+        var unprintable = new UnprintableError();
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            assertEquals(BackgroundLoopGuard.Logged.FIRST, guard.failed(unprintable));
+            assertEquals(BackgroundLoopGuard.Logged.REPEAT, guard.failed(unprintable));
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().contains(UnprintableError.class.getName())),
+                    "the failure is still logged, by class name");
+        }
+        assertEquals(2, guard.consecutiveFailures());
+        assertEquals(List.of(
+                        new RecordingEngineObserver.LoopErrorCall("timer-poller", UnprintableError.class.getName()),
+                        new RecordingEngineObserver.LoopErrorCall("timer-poller", UnprintableError.class.getName())),
+                observer.loopErrors());
+    }
+
+    @Test
+    void aFailureThatCannotBePrintedWhileStoppingIsContained() {
+        stopping.set(true);
+        assertEquals(BackgroundLoopGuard.Logged.STOPPING, guard.failed(new UnprintableError()));
+    }
+
+    @Test
+    void theUncaughtHandlerStillLogsAFailureThatCannotBePrinted() {
+        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+            guard.uncaughtExceptionHandler().uncaughtException(Thread.currentThread(), new UnprintableError());
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().contains(UnprintableError.class.getName())),
+                    "the dead loop is still reported, by class name");
+        }
     }
 
     @Test
