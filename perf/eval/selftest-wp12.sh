@@ -199,6 +199,21 @@ out=$(s2 s2-adopt-mismatch "${base} | .phases[0].recovery.adoptCas.calls -= 1")
 expect "s2: adoptCas != the nodes' adoptions: validity.recoveryClassifier" INVALID "$(st "$out" validity.recoveryClassifier)"
 out=$(s2 s2-acquire-short "${base} | .phases[0].components.components.lockAcquire.calls = (.phases[0].rows - 1)")
 expect "s2: lockAcquire calls below N: validity.recoveryClassifier" INVALID "$(st "$out" validity.recoveryClassifier)"
+# PR #65 review: a missing status record is INVALID, never a FAIL.
+for f in 'del(.phases[0].status.byStatus)' 'del(.phases[1].status.outputs)' 'del(.phases[0].drain.timedOut)' 'del(.phases[1].probes.status.byStatus)'; do
+  out=$(s2 s2-norecord "${base} | ${f}")
+  expect "s2: ${f}: validity.statusRecorded" INVALID "$(st "$out" validity.statusRecorded)"
+  expect "s2: ${f}: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  rm -rf "${work}/s2-norecord"
+done
+# PR #65 review: the pass rate's reads and node-seconds cover one interval
+# (to the statement window's end). Phase B's window held open 600 s past the
+# last completion, with the reads the engine's designed rate makes in that
+# tail on both nodes (2 / s + 2 x 25 pages / 60 s each): still in bounds.
+out=$(s2 s2-tail "${base} | .phases[1] |= (.window.snapshotAt = ((.status.lastCompletedAt | fromdate) + 600 | todate)
+   | .components.components.recoveryPage.calls += 1700 | .components.components.heldKeys.calls += 1700)")
+expect "s2: a 600 s tail after the drain, read at the designed rate: gate.recoveryPassRate" PASS "$(st "$out" gate.recoveryPassRate)"
+
 # Review r9 and r12.
 out=$(s2 s2-node2-unready "${base} | .phases[1].starts[1].readyAt = null")
 expect "s2: node 2 never read ready in phase B: validity.rollingStart" INVALID "$(st "$out" validity.rollingStart)"
@@ -417,6 +432,24 @@ if [[ -n "$s6before" ]]; then
   expect "s6: janitor 2 calls of 5,000 rows (batched, but not by 1,000): gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
   out=$(s6 s6-not-ended '.sweep.ended = false')
   expect "s6: the sweep did not end within its allowance: validity.windows" INVALID "$(st "$out" validity.windows)"
+
+  # PR #65 review: the template must carry every child kind, the sweep must
+  # leave every retained instance's children, and the foreground must have
+  # completed during the sweep.
+  out=$(s6 s6-tmpl-no-timer '.template.timers = 0 | (.seeded.sets, .final.sets) |= map_values(.timers = 0)')
+  expect "s6: a template without its timer (and seeded without timers): validity.seeded" INVALID "$(st "$out" validity.seeded)"
+  out=$(s6 s6-tmpl-unconsumed '.template.signalsConsumed = 0 | (.seeded.sets, .final.sets) |= map_values(.signalsConsumed = 0)')
+  expect "s6: a template without a consumed signal: validity.seeded" INVALID "$(st "$out" validity.seeded)"
+  out=$(s6 s6-young-events '.final.sets.young.events -= 1')
+  expect "s6: one event of a retained young instance deleted: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-jforeign-timers '.final.sets.jforeign.timers -= 1')
+  expect "s6: one timer of a retained foreign instance deleted: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-rc-children '.final.sets.rc.events -= 1')
+  expect "s6: one event of the rc remainder deleted: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-rc-signal '.final.sets.rc.signalsConsumed -= 1')
+  expect "s6: one consumed signal of the rc remainder deleted: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
+  out=$(s6 s6-no-during '.foreground.during = {n: 0, completed: 0, p50Ms: null, p95Ms: null}')
+  expect "s6: no foreground probe completed during the sweep: correctness.retentionExact" FAIL "$(st "$out" correctness.retentionExact)"
 
   out=$(s6 s6-no-xforeign 'del(.plan.sets.xforeign)')
   expect "s6: xforeign read missing: advisory.foreignRetention" WARN "$(st "$out" advisory.foreignRetention)"
