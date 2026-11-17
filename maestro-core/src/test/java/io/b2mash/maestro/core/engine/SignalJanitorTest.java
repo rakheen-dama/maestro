@@ -35,7 +35,7 @@ class SignalJanitorTest {
     @DisplayName("sweepOnce() passes now − retention as the cutoff and returns the store's count")
     void sweepOnce_passesNowMinusRetentionAsCutoff() {
         var store = new RecordingStore();                   // records the cutoff, returns 3
-        var janitor = new SignalJanitor(store, Duration.ofHours(1), Duration.ofDays(7));
+        var janitor = new SignalJanitor(store, "svc", Duration.ofHours(1), Duration.ofDays(7));
         var before = Instant.now();
         assertEquals(3, janitor.sweepOnce());
         assertTrue(Duration.between(before.minus(Duration.ofDays(7)), store.lastCutoff()).abs()
@@ -47,7 +47,7 @@ class SignalJanitorTest {
     void stop_whileTheStoreSwallowsTheInterrupt_endsTheLoopPromptly() throws Exception {
         var store = new RecordingStore();
         store.swallowInterruptOnNextCall();
-        var janitor = new SignalJanitor(store, Duration.ofMinutes(10), Duration.ofDays(7));
+        var janitor = new SignalJanitor(store, "svc", Duration.ofMinutes(10), Duration.ofDays(7));
         janitor.start();
         assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
 
@@ -68,7 +68,7 @@ class SignalJanitorTest {
     void storeFailure_isSwallowedAndTheLoopKeepsRunning() throws Exception {
         var store = new RecordingStore();
         store.failNextWith(new IllegalStateException("db down"));
-        var janitor = new SignalJanitor(store, Duration.ofMillis(20), Duration.ofDays(7));
+        var janitor = new SignalJanitor(store, "svc", Duration.ofMillis(20), Duration.ofDays(7));
         janitor.start();
         await().atMost(Duration.ofSeconds(5)).until(() -> store.calls() >= 3);
         assertTrue(janitor.isRunning());
@@ -80,9 +80,9 @@ class SignalJanitorTest {
     @DisplayName("rejects a non-positive interval or retention")
     void rejectsNonPositiveSettings() {
         assertThrows(IllegalArgumentException.class,
-                () -> new SignalJanitor(new RecordingStore(), Duration.ZERO, Duration.ofDays(7)));
+                () -> new SignalJanitor(new RecordingStore(), "svc", Duration.ZERO, Duration.ofDays(7)));
         assertThrows(IllegalArgumentException.class,
-                () -> new SignalJanitor(new RecordingStore(), Duration.ofHours(1), Duration.ofSeconds(-1)));
+                () -> new SignalJanitor(new RecordingStore(), "svc", Duration.ofHours(1), Duration.ofSeconds(-1)));
     }
 
     /**

@@ -157,6 +157,20 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     }
 
     /**
+     * Returns the service-scoped retention purge's candidate select with
+     * Postgres {@code FOR UPDATE SKIP LOCKED}, for the same reasons as
+     * {@link #getPurgeCandidatesSql()}.
+     */
+    @Override
+    protected String getServicePurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ? AND service_name = ?"
+                + " ORDER BY completed_at ASC"
+                + " LIMIT ?"
+                + " FOR UPDATE SKIP LOCKED";
+    }
+
+    /**
      * Sets a JSON parameter using Postgres {@link PGobject} with type {@code jsonb}.
      *
      * <p>This ensures the PostgreSQL JDBC driver sends the correct wire-protocol

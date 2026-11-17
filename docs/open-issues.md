@@ -334,7 +334,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | **Resolved** (WP6) |
 | [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | **Resolved** |
-| [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
+| [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | **Resolved** (WP8) |
 | [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
 | [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
 | [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | Open |
@@ -369,6 +369,9 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
 | [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
 | [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
+| [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | Open |
+| [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | Open |
+| [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3509,7 +3512,16 @@ no WARN, and the connection returned to the pool has no active `LISTEN`.
 
 ### Issue 39 — Workflows recorded under another `service_name` are stranded silently {#issue-39}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> **Resolved** in WP8 (branch fix/store-hygiene): one advisory query per node
+> start, off the startup path; one WARN per other service_name holding active
+> instances of this node's workflow types. Pinned by
+> StartupForeignServiceCheckTest, ForeignServiceCheckTest,
+> PostgresStoreHygieneTest$ForeignServiceCounts. See
+> [Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name);
+> the false positive on a live co-tenant that registers the same type names
+> is Issue 79.
+>
+> Filed by the final whole-branch review of the bounded-host-load
 > cycle (2026-11-11). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — operability. **Severity:** Medium (no data loss, but
@@ -4585,7 +4597,11 @@ interrupted — `SignalJanitorTest.stop_whileTheStoreSwallowsTheInterrupt_endsTh
 and `PostgresLockCleanerSchedulerTest.closeWhileARunSwallowsTheInterruptAndThrowsEndsTheCleaner`
 — plus a Hikari-backed test for the cleaner. Since WP5 the executor joins
 the pollers against the shutdown deadline, so a fix that drops the interrupt
-waits for a store call in progress at most until the deadline.
+waits for a store call in progress at most until the deadline. The signal
+janitor and the retention sweeper now end a pause between batches on a stop
+latch, without the interrupt (WP8; `BatchPacerTest`,
+`RetentionSweeperPacingTest`, `SignalJanitorBatchingTest`); their
+`requestStop` still interrupts, for the store call in progress.
 
 **Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
 interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`);
@@ -5051,6 +5067,124 @@ now when no lock backend is configured.
 
 **Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
 the just-started row.
+
+### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
+
+> **Open.** Filed by WP8, store hygiene (2026-11-17, branch
+> `fix/store-hygiene`): the consequence of the maintainer's decision that a
+> retention sweep purges only its own service's workflows, so that each
+> service's retentions govern its own rows in shared tables. Recorded, not
+> fixed.
+
+**Kind:** Library gap — retention. **Severity:** Low.
+
+**What happens.** The retention sweep now purges only instances whose
+`service_name` equals the sweeping node's `maestro.service-name`, and the
+signal janitor deletes only that service's signals. A terminal workflow
+recorded under a name no node runs any more — after a rename, or after
+replicas once ran with per-replica names — is purged by no sweeper, so its
+row and history stay for good.
+
+**Where.** `RetentionSweeper.sweepOnce`
+(`maestro-core/src/main/java/io/b2mash/maestro/core/engine/RetentionSweeper.java`,
+the call to `purgeTerminalInstancesBefore(serviceName, …)`);
+`AbstractJdbcWorkflowStore.getServicePurgeCandidatesSql()` and the Postgres
+override.
+
+**Harm.** Table growth bounded by what the abandoned name left behind;
+nothing active is affected. Before this build the other services' sweeps
+purged those rows — with their own retentions.
+
+**How to tackle it.** An operator command (for example on the admin
+dashboard) that purges a named service's terminal rows with the documented
+safeguards, or extend the startup service-name check to report terminal rows
+under names no node has led for a while. Until then
+[Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name)
+gives a tested manual purge.
+
+**Why it is not WP8.** The scope change is WP8's; a purge command is new
+operator surface, and "no node runs this name" needs a liveness signal the
+store does not have (see Issue 79).
+
+**Done when.** An operator can purge an abandoned name's terminal history
+without hand-written SQL, pinned by a Testcontainers test.
+
+---
+
+### Issue 78 — In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps {#issue-78}
+
+> **Open.** Filed by WP8, store hygiene (2026-11-17, branch
+> `fix/store-hygiene`). Measured on the planning probe; recorded, not fixed.
+
+**Kind:** Library gap — shared-table cost. **Severity:** Low.
+
+**What happens.** The scoped candidate select (`… WHERE status = ? AND
+completed_at < ? AND service_name = ? ORDER BY completed_at …`) walks V8's
+`idx_wf_instance_terminal (status, completed_at)` and filters `service_name`
+on the heap. When a co-tenant service keeps a longer retention for the same
+status, its rows inside this service's window sit ahead in the index, and
+every batch reads past them: 86 ms per batch reading past 34,960 co-tenant
+rows on the planning probe (Postgres 16, 412,500 instances), against 0.57 ms
+on a single-service database.
+
+**Where.** `PostgresWorkflowStore.getServicePurgeCandidatesSql()`;
+`AbstractJdbcWorkflowStore.getServicePurgeCandidatesSql()`.
+
+**Harm.** Database time per retention batch in shared tables only, under the
+sweeper's pacing. No correctness effect.
+
+**How to tackle it.** Migration V102: `CREATE INDEX IF NOT EXISTS … ON
+maestro_workflow_instance (service_name, status, completed_at) WHERE
+completed_at IS NOT NULL`, numbered under the 101–199 rule, with V101's
+guidance to pre-create it `CONCURRENTLY` on a large table (and its
+`validate`-mode note).
+
+**Why it is not WP8.** WP8 ships no migration: under `validate` every
+deployment would have to record it before a node of the build starts, for a
+cost only shared-table deployments pay.
+
+**Done when.** The scoped candidate select uses the new index on a seeded
+shared table, pinned by an `EXPLAIN` test.
+
+---
+
+### Issue 79 — The service-name check warns about a live co-tenant service that registers the same workflow type names {#issue-79}
+
+> **Open.** Filed by WP8, store hygiene (2026-11-17, branch
+> `fix/store-hygiene`): the maintainer accepted this false positive, with a
+> conditional remedy in the warning and a type filter, rather than couple
+> the check to the lock SPI. Recorded, not fixed.
+
+**Kind:** Library gap — false positive. **Severity:** Low.
+
+**What happens.** The startup service-name check (Issue 39) warns about every
+other `service_name` holding active instances of a workflow type this node
+registers. Two live services sharing one set of `maestro_*` tables (Issue 31)
+that both register a type of the same name each warn about the other at
+every node start, although the other's workflows are not stranded.
+
+**Where.** `ForeignServiceCheck.run`
+(`maestro-core/src/main/java/io/b2mash/maestro/core/engine/ForeignServiceCheck.java`);
+`AbstractJdbcWorkflowStore.getActiveInstanceCountsUnderOtherServices`.
+
+**Harm.** One misleading `WARN` per such name per node start. Its remedy is
+conditional — "if no node runs that name any more, start one under it or
+correct the rows" — so it does not direct an operator at a live co-tenant's
+rows; an operator who skips that condition could still correct rows that
+are not stranded.
+
+**How to tackle it.** Suppress names that hold an unexpired
+`maestro:leader:timer-poller:<name>` row: a new `DistributedLock` default
+(for example `Set<String> liveLeaders(Collection<String> electionKeys)`),
+its Postgres override and tests. A rolling rename still warns until the old
+nodes stop.
+
+**Why it is not WP8.** It couples an advisory store check to the lock SPI;
+the maintainer accepted the conditional wording instead.
+
+**Done when.** A node beside a live co-tenant with a same-named type logs no
+warning for it, and still warns for a name with no live leader, pinned by a
+starter test.
 
 ---
 

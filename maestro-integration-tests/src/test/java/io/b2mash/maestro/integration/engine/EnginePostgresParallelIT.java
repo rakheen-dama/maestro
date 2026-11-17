@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -463,6 +464,23 @@ class EnginePostgresParallelIT extends PostgresIntegrationSupport {
         @Override
         public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
             return delegate.purgeTerminalInstancesBefore(status, cutoff, batchSize);
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(serviceName, cutoff, limit);
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                        int batchSize) {
+            return delegate.purgeTerminalInstancesBefore(serviceName, status, cutoff, batchSize);
+        }
+
+        @Override
+        public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+                String serviceName, Set<String> workflowTypes, int limit) {
+            return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, workflowTypes, limit);
         }
 
         @Override

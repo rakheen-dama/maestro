@@ -17,12 +17,14 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Background sweeper that purges long-finished workflows — instance, events,
- * signals and timers — so the store does not grow without bound.
+ * Background sweeper that purges this service's ({@code serviceName})
+ * long-finished workflows — instance, events, signals and timers — so the
+ * store does not grow without bound. Another service's workflows in the same
+ * tables are left to that service's own sweeper and its own retention.
  *
  * <p>Every {@code interval} the leader calls
- * {@link WorkflowStore#purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)}
- * once per terminal status, each with its own cutoff
+ * {@link WorkflowStore#purgeTerminalInstancesBefore(String, WorkflowStatus, Instant, int)}
+ * with its service name once per terminal status, each with its own cutoff
  * ({@code now - completedRetention}, {@code now - terminatedRetention},
  * {@code now - failedRetention}), in batches of {@code batchSize} until a
  * batch comes back short or {@code maxBatchesPerSweep} batches have run for
@@ -31,8 +33,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * anything at or after the cutoff).
  *
  * <h2>Leader election</h2>
- * <p>Unlike {@link SignalJanitor}, which is one idempotent statement, a purge
- * sweep is many multi-row transactions, so only one node per service runs it:
+ * <p>Unlike {@link SignalJanitor}, whose batches are single idempotent
+ * statements, a purge sweep is many multi-row transactions, so only one node
+ * per service runs it:
  * before <em>every batch</em> the sweeper calls
  * {@link DistributedLock#trySetLeader} on
  * {@code maestro:leader:retention:<serviceName>} with a 15-second TTL — the
@@ -42,6 +45,17 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * (single-node mode). Postgres's {@code FOR UPDATE SKIP LOCKED} on the
  * candidate select means two leaders overlapping briefly at a TTL boundary
  * take disjoint batches anyway.
+ *
+ * <h2>Pacing</h2>
+ * <p>Within one sweep, every batch but the first is preceded by a pause as
+ * long as the batch before it took (the store call only, on the monotonic
+ * clock), at most five seconds; the boundary between two statuses counts as
+ * between two batches, and nothing pauses after the last. The database is then
+ * busy with a sweep about half the time it runs, instead of taking every batch
+ * back to back. The cap is a third of {@link #LEADER_TTL}: leadership is
+ * renewed only before each batch, after the pause, so a pause never makes a
+ * sweep whose batches take under ten seconds lose its claim. A stop request
+ * ends a pause at once.
  *
  * <h2>Failure handling</h2>
  * <p>A {@link RuntimeException} from the store or the lock backend is logged
@@ -87,6 +101,7 @@ final class RetentionSweeper implements StoppableLoop {
     private final String serviceName;
     private final WorkflowExecutor.RetentionSettings settings;
     private final EngineObserver observer;
+    private final BatchPacer pacer;
     private final String candidateId;
     private final BackgroundLoopGuard guard;
 
@@ -126,9 +141,33 @@ final class RetentionSweeper implements StoppableLoop {
                      String serviceName,
                      WorkflowExecutor.RetentionSettings settings,
                      EngineObserver observer) {
+        this(store, distributedLock, serviceName, settings, observer, new BatchPacer());
+    }
+
+    /**
+     * Creates a new retention sweeper with the given pacer (a test seam).
+     *
+     * @param store           the store whose terminal workflows are purged
+     * @param distributedLock optional lock backend for leader election
+     *                        ({@code null} means this node is always the leader)
+     * @param serviceName     the owning service name (suffix of the election key)
+     * @param settings        interval, per-status retention and batching
+     * @param observer        receives one {@code retentionPass} per sweep run as leader
+     * @param pacer           times each batch and pauses between batches
+     * @throws NullPointerException     if {@code store}, {@code settings},
+     *                                  {@code observer} or {@code pacer} is {@code null}
+     * @throws IllegalArgumentException if {@code serviceName} is null or blank
+     */
+    RetentionSweeper(WorkflowStore store,
+                     @Nullable DistributedLock distributedLock,
+                     String serviceName,
+                     WorkflowExecutor.RetentionSettings settings,
+                     EngineObserver observer,
+                     BatchPacer pacer) {
         if (store == null) throw new NullPointerException("store must not be null");
         if (settings == null) throw new NullPointerException("settings must not be null");
         if (observer == null) throw new NullPointerException("observer must not be null");
+        if (pacer == null) throw new NullPointerException("pacer must not be null");
         if (serviceName == null || serviceName.isBlank()) {
             throw new IllegalArgumentException("serviceName must not be null or blank");
         }
@@ -137,6 +176,7 @@ final class RetentionSweeper implements StoppableLoop {
         this.serviceName = serviceName;
         this.settings = settings;
         this.observer = observer;
+        this.pacer = pacer;
         this.candidateId = UUID.randomUUID().toString();
         this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.RETENTION_SWEEPER, settings.interval(),
                 () -> !running, observer);
@@ -181,11 +221,13 @@ final class RetentionSweeper implements StoppableLoop {
 
     /**
      * Asks the sweep loop to stop and returns at once: no new iteration starts,
-     * and the thread is interrupted (Issue 64 tracks that interrupt, which
-     * can land inside a store call). Never joins. Idempotent.
+     * a pause between two batches ends at once (without the interrupt), and
+     * the thread is interrupted (Issue 64 tracks that interrupt, which can
+     * land inside a store call). Never joins. Idempotent.
      */
     @Override
     public synchronized void requestStop() {
+        pacer.requestStop();
         stopRequested.set(true);
         running = false;
         var thread = sweeperThread;
@@ -248,13 +290,14 @@ final class RetentionSweeper implements StoppableLoop {
     /**
      * Runs one sweep: for each terminal status, purges batches of instances
      * finished before {@code now - <that status's retention>} until a batch
-     * comes back short or the per-status batch budget is spent, re-checking
-     * leadership before every batch.
+     * comes back short or the per-status batch budget is spent, pausing
+     * between batches (see the class Javadoc) and re-checking leadership after
+     * each pause, right before the batch.
      *
      * <p>A {@link RuntimeException} from the store or the lock backend is
      * logged at {@code WARN} and swallowed; the sweep ends there and reports
-     * what it had purged so far. So does a {@link #stop()} request: it is
-     * checked before every batch, so a store call that swallowed the
+     * what it had purged so far. So does a {@link #stop()} request: it ends a
+     * pause at once and is checked before every batch, so a store call that swallowed the
      * interrupt cannot carry a sweep on past shutdown for up to
      * {@code maxBatchesPerSweep} more batches.
      *
@@ -267,12 +310,16 @@ final class RetentionSweeper implements StoppableLoop {
         var now = Instant.now();
         var total = PurgeResult.EMPTY;
         var leader = false;
+        var batches = 0;
+        long previous = -1;
         try {
             for (var target : targets(now)) {
                 for (int batch = 0; batch < settings.maxBatchesPerSweep(); batch++) {
-                    if (stopRequested.get()) {
+                    // The pause comes before the stop and leader checks, so
+                    // leadership is renewed right before the batch it guards.
+                    if ((previous >= 0 && !pacer.pauseAfter(previous)) || stopRequested.get()) {
                         logger.info("Retention sweeper stopping mid-sweep after {} instance(s)", total.instances());
-                        return leader ? finish(total) : Optional.empty();
+                        return leader ? finish(total, batches) : Optional.empty();
                     }
                     if (!isLeader()) {
                         if (!leader) {
@@ -282,23 +329,26 @@ final class RetentionSweeper implements StoppableLoop {
                         }
                         logger.info("Lost retention leadership for service '{}' mid-sweep — stopping after {} "
                                 + "instance(s)", serviceName, total.instances());
-                        return finish(total);
+                        return finish(total, batches);
                     }
                     leader = true;
-                    var result = store.purgeTerminalInstancesBefore(target.status(), target.cutoff(),
-                            settings.batchSize());
+                    var t0 = pacer.now();
+                    var result = store.purgeTerminalInstancesBefore(serviceName, target.status(),
+                            target.cutoff(), settings.batchSize());
+                    previous = pacer.now() - t0;
+                    batches++;
                     total = total.plus(result);
                     if (result.instances() < settings.batchSize()) {
                         break;
                     }
                 }
             }
-            return finish(total);
+            return finish(total, batches);
         } catch (RuntimeException e) {
             logger.warn("Retention sweep failed after purging {} instance(s) — will retry in {}",
                     total.instances(), settings.interval(), e);
             sweepSwallowedAFailure = true;
-            return leader ? finish(total) : Optional.empty();
+            return leader ? finish(total, batches) : Optional.empty();
         }
     }
 
@@ -316,10 +366,11 @@ final class RetentionSweeper implements StoppableLoop {
     }
 
     /** Logs and observes a sweep this node ran as leader. */
-    private Optional<PurgeResult> finish(PurgeResult total) {
+    private Optional<PurgeResult> finish(PurgeResult total, int batches) {
         if (total.instances() > 0) {
             logger.info("Retention sweep purged {} workflow instance(s) with {} event(s), {} signal(s) and "
-                    + "{} timer(s)", total.instances(), total.events(), total.signals(), total.timers());
+                            + "{} timer(s) in {} batch(es)", total.instances(), total.events(), total.signals(),
+                    total.timers(), batches);
         }
         try {
             observer.retentionPass(total);

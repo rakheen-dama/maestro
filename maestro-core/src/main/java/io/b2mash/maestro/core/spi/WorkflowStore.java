@@ -14,6 +14,7 @@ import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -185,6 +186,49 @@ public interface WorkflowStore {
                 .sorted(RecoveryCursor.ORDER)
                 .limit(limit)
                 .toList();
+    }
+
+    /**
+     * Counts, per other service name, the active instances of the given
+     * workflow types: for each {@link WorkflowInstance#serviceName()} other
+     * than {@code serviceName} that holds at least one instance whose status
+     * is {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isActive()
+     * active} and whose {@link WorkflowInstance#workflowType()} is in
+     * {@code workflowTypes}, that name's count of such instances.
+     *
+     * <p><b>Advisory, and it never writes.</b> Recovery adopts only the
+     * instances recorded under this node's own service name, so active
+     * instances of this node's types recorded under another name never
+     * resume unless a node runs under that name (Issue 39). The engine calls
+     * this once per node start, off the startup path, and logs a warning per
+     * name it returns; nothing else depends on the answer. Terminal instances
+     * are not counted, and neither are other workflow types: a co-tenant
+     * service with its own types is not reported.
+     *
+     * <p><b>Ordering and limit.</b> The entries iterate by count descending,
+     * then by name ascending; at most {@code limit} are returned. An empty
+     * {@code workflowTypes} returns an empty map without reading the store.
+     *
+     * <p><b>The default</b> returns an empty map — "nothing to report" — so
+     * the engine's check logs nothing over a store that does not override
+     * this. The shipped JDBC store and the in-memory test store override it.
+     *
+     * @param serviceName   this node's service name, whose instances are not counted
+     * @param workflowTypes the workflow types to count
+     * @param limit         the most service names to return; positive
+     * @return the counts, ordered as above; never {@code null}
+     * @throws NullPointerException     if {@code serviceName} or
+     *                                  {@code workflowTypes} is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return Map.of();
     }
 
     /**
@@ -789,17 +833,72 @@ public interface WorkflowStore {
      *       after {@code cutoff}, keep their signals.</li>
      * </ul>
      *
-     * <p><b>Idempotent and safe to run concurrently.</b> The engine's signal
-     * janitor calls this periodically on every node without leader election;
-     * a second call with the same cutoff deletes nothing and returns
-     * {@code 0}. Shared-database implementations should compare against the
-     * stored {@code completed_at} in a single statement.
+     * <p><b>Idempotent and safe to run concurrently.</b> A second call with
+     * the same cutoff deletes nothing and returns {@code 0}. Shared-database
+     * implementations should compare against the stored {@code completed_at}
+     * in a single statement.
+     *
+     * <p><b>The engine no longer calls this</b>; its signal janitor uses the
+     * service-scoped, bounded
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)},
+     * whose default is built on this method — so every store must still
+     * implement it.
      *
      * @param cutoff signals of instances completed strictly before this instant
      *               are purged
      * @return the number of signal rows deleted
      */
     int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff);
+
+    /**
+     * Deletes at most {@code limit} of one service's unconsumed signals
+     * addressed to workflows that finished long ago: those
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}
+     * would delete whose instance's {@link WorkflowInstance#serviceName()}
+     * equals {@code serviceName}.
+     *
+     * <p>The survivors are the one-argument form's — {@code FAILED}
+     * instances' signals, orphans, consumed rows, and signals of instances
+     * with a {@code null} {@code completedAt} or one at or after
+     * {@code cutoff} — plus every signal of another service's instances.
+     * Several services may share the tables, each with its own
+     * {@code terminalRetention}; each deletes only its own rows.
+     *
+     * <p><b>At most {@code limit} rows per call.</b> The engine's signal
+     * janitor calls this in a loop, on every node and without leader
+     * election, until a call returns fewer than {@code limit} (and at most
+     * 1,000 times per sweep), so one call is one short statement rather than
+     * a sweep of the whole backlog. Which
+     * qualifying rows a call takes is up to the store. Safe to run
+     * concurrently: two callers may select the same rows, and the later one
+     * deletes fewer.
+     *
+     * <p><b>The default</b> ignores {@code serviceName} and {@code limit} and
+     * delegates to the unscoped, unbounded
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}, so a
+     * janitor over a store that does not override this behaves as before: it
+     * deletes every service's qualifying signals in one call. When that call
+     * removes {@code limit} rows or more, the janitor calls once more, and
+     * that call deletes nothing and ends the sweep. The shipped JDBC store and
+     * the in-memory test store override it.
+     *
+     * @param serviceName the service whose instances' signals are purged
+     * @param cutoff      signals of instances completed strictly before this
+     *                    instant are purged
+     * @param limit       the most rows to delete in this call; positive
+     * @return the number of signal rows deleted
+     * @throws NullPointerException     if {@code serviceName} or {@code cutoff}
+     *                                  is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+    }
 
     // ── Retention ────────────────────────────────────────────────────────
 
@@ -861,6 +960,41 @@ public interface WorkflowStore {
      */
     PurgeResult purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus status,
                                              Instant cutoff, int batchSize);
+
+    /**
+     * {@link #purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)}
+     * restricted to the instances of {@code serviceName} only: the same
+     * contract — one all-or-nothing batch, children before parent, the same
+     * survivors — over the instances whose {@link WorkflowInstance#serviceName()}
+     * equals {@code serviceName}. Every other service's instances and history
+     * survive, so in tables several services share, each service's own
+     * retention governs its own rows.
+     *
+     * <p>The engine's retention sweeper calls this, with its own service
+     * name. A terminal instance recorded under a service name that no node
+     * runs any more is therefore purged by no sweeper.
+     *
+     * <p><b>The default</b> delegates to the unscoped form, so a store that
+     * does not override it purges every service's rows, as before. The
+     * shipped JDBC store and the in-memory test store override it.
+     *
+     * @param serviceName the service whose instances are purged
+     * @param status      the terminal status to purge; must satisfy
+     *                    {@link io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()}
+     * @param cutoff      instances with {@code completedAt} strictly before
+     *                    this instant are candidates
+     * @param batchSize   the most instances to delete in this call; must be positive
+     * @return how many rows of each table were deleted; never {@code null}
+     * @throws NullPointerException     if {@code serviceName} is {@code null}
+     * @throws IllegalArgumentException if {@code status} is not terminal or
+     *                                  {@code batchSize} is not positive
+     */
+    default PurgeResult purgeTerminalInstancesBefore(String serviceName,
+                                                     io.b2mash.maestro.core.model.WorkflowStatus status,
+                                                     Instant cutoff, int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purgeTerminalInstancesBefore(status, cutoff, batchSize);
+    }
 
     // ── Timer operations ─────────────────────────────────────────────────
 

@@ -86,6 +86,7 @@ public interface WorkflowStore {
     Optional<WorkflowInstance> getInstance(String workflowId);
     List<WorkflowInstance> getRecoverableInstances();     // unbounded, all services; the engine no longer calls it
     default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V101 index)
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, Set<String> workflowTypes, int limit); // startup advisory (Issue 39); default empty
     void updateInstance(WorkflowInstance instance);       // optimistic locking
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
     default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences, Set<String> deleteTimerIds); // manual Retry: exact deletes + FAILED→RUNNING CAS, one transaction in JDBC; the default is today's non-atomic two-step
@@ -99,8 +100,10 @@ public interface WorkflowStore {
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
     boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
-    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // janitor; COMPLETED/TERMINATED only
-    PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize); // retention sweeper; one batch = one transaction, children before parent
+    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // COMPLETED/TERMINATED only, every service; the engine no longer calls it
+    default int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit); // janitor batch, this service only; default = the unscoped, unbounded one
+    PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize); // one batch = one transaction, children before parent; every service
+    default PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff, int batchSize); // retention sweeper, this service only; default = unscoped
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
@@ -219,7 +222,7 @@ Due timers are polled on the database clock (`fire_at <= now()`); `fire_at` and 
 
 Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; at shutdown its poll thread `UNLISTEN`s and returns it to the pool (no interrupt, Issue 38); `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
 
-Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via one `heldKeys` read per page: every node of a service must share one service name, or its workflows are stranded. Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
+Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via one `heldKeys` read per page: every node of a service must share one service name, or its workflows are stranded. At startup each node runs one advisory read off the runner thread and WARNs once per other `service_name` holding active instances of its workflow types (`WorkflowExecutor.startForeignServiceCheck`). Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
@@ -247,11 +250,13 @@ the tracing flag gates the Kafka W3C header injection too — see
 `docs/observability.md`), `maestro.signal.janitor-interval` (default 1h) /
 `maestro.signal.terminal-retention` (default 7d) (the signal janitor purges
 unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
-retention; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` default
+retention, this service's only, in batches of 1,000, at most 1,000 batches per
+sweep; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` default
 `true`, `interval` 1h, `completed-retention` 30d, `terminated-retention` 30d,
 `failed-retention` 90d, `batch-size` 500, `max-batches-per-sweep` 100 — the
-leader-elected retention sweeper purges finished workflows with their whole
-history via `WorkflowStore.purgeTerminalInstancesBefore`; migration V8 adds its
+leader-elected retention sweeper purges finished workflows of this service only,
+with their whole history, via `WorkflowStore.purgeTerminalInstancesBefore`,
+pausing between batches as long as the last batch took (≤ 5 s); migration V8 adds its
 indexes), `maestro.replay.verify-arguments` (default `true`; every
 `ACTIVITY_COMPLETED`/`ACTIVITY_FAILED` event carries a SHA-256 fingerprint of
 the call's arguments — `maestro_workflow_event.args_hash`, migration V7 — and a
