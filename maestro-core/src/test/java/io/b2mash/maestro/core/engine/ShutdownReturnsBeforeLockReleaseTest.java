@@ -18,6 +18,7 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -33,6 +34,8 @@ import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SERVICE;
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -125,6 +128,41 @@ class ShutdownReturnsBeforeLockReleaseTest {
         }
         assertTrue(launcher.join(Duration.ofSeconds(10)));
         assertInstanceOf(IllegalStateException.class, launchFailure.get());
+    }
+
+    /**
+     * A failed launch whose cleanup step throws an {@code Error} still
+     * releases the lock, stops being tracked and lets a drain waiting for it
+     * go: a later shutdown sees nothing in flight and does not wait out its
+     * deadline. The caller still sees the launch's own failure.
+     */
+    @Test
+    void aFailedLaunchWhoseCleanupThrowsLeavesNoGhostRun() throws Exception {
+        var launchFailure = new IllegalStateException("launch fails before its thread starts");
+        a.beforeRunThreadStart = () -> {
+            throw launchFailure;
+        };
+        var cleanupFailure = new ReleaseFailedError();
+        a.duringFailedLaunchCleanup = () -> {
+            throw cleanupFailure;
+        };
+
+        var thrown = assertThrows(Throwable.class, () -> a.startWorkflow("wf-ghost", "ParkWorkflow", "default", null,
+                ParkWorkflow::new, parkMethod()));
+
+        assertSame(launchFailure, thrown, "the caller sees the launch's own failure");
+        assertTrue(List.of(thrown.getSuppressed()).contains(cleanupFailure), List.of(thrown.getSuppressed()).toString());
+        assertEquals(0, lock.heldCount(), "a throwing cleanup step must not skip the lock release");
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var start = System.nanoTime();
+            a.shutdown();
+            var tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            assertTrue(tookMs < 2_000, "the drain waited " + tookMs + " ms for a launch that already failed");
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Maestro shutdown finished in")
+                            && r.message().contains("0 run(s) in flight at start, 0 still running")),
+                    logs.records().toString());
+        }
     }
 
     /**

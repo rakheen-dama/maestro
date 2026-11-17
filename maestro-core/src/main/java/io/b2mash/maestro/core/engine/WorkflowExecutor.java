@@ -220,6 +220,14 @@ public final class WorkflowExecutor {
      * Package-private; production never assigns it.
      */
     volatile Runnable beforeRunThreadStart = () -> { };
+
+    /**
+     * Test seam: runs on the launching thread in a failed launch's cleanup,
+     * after the run is unregistered and before its wake permits are cleared.
+     * A test makes it throw to stand for a cleanup step that fails.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable duringFailedLaunchCleanup = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
@@ -2962,22 +2970,32 @@ public final class WorkflowExecutor {
             thread.start();
             running.launched().countDown();
         } catch (RuntimeException | Error e) {
-            if (running != null) {
-                runningWorkflows.remove(instance.workflowId(), running);
-                // A wake that saw this run registered may have stored a permit;
-                // no run will park on it now (3.2).
-                parkingLot.clearPending(instance.workflowId());
-            }
+            // The launch's own failure is what the caller must see: every
+            // cleanup failure is suppressed on it, and none skips a later step.
             try {
-                instanceLockManager.release(instance.workflowId());
-            } catch (RuntimeException | Error releaseFailure) {
-                // The launch's own failure is what the caller must see.
-                e.addSuppressed(releaseFailure);
+                if (running != null) {
+                    try {
+                        runningWorkflows.remove(instance.workflowId(), running);
+                        duringFailedLaunchCleanup.run();
+                        // A wake that saw this run registered may have stored a
+                        // permit; no run will park on it now (3.2).
+                        parkingLot.clearPending(instance.workflowId());
+                    } catch (RuntimeException | Error cleanupFailure) {
+                        e.addSuppressed(cleanupFailure);
+                    }
+                }
+                try {
+                    instanceLockManager.release(instance.workflowId());
+                } catch (RuntimeException | Error releaseFailure) {
+                    e.addSuppressed(releaseFailure);
+                }
             } finally {
                 if (running != null) {
-                    // Never started. Untracked and released only after the lock is
-                    // given back, so a drain waiting for this launch does not let
-                    // shutdown finish (and the store be torn down) under the release.
+                    // Never started. Untracked and released only after the lock's
+                    // release, so a drain waiting for this launch does not let
+                    // shutdown finish (and the store be torn down) under it; in a
+                    // finally, so no failure above leaves a ghost run every later
+                    // drain would wait its whole deadline for.
                     unreleasedRuns.remove(running.thread());
                     running.launched().countDown();
                 }
