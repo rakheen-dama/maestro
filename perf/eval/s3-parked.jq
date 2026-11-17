@@ -374,10 +374,15 @@ $identity[0] as $id
     | (if $s.Pprev == 0 then 0
        elif $prevWin != null and ($cps0 | isnum) and ($prevWin.cpsExact | isnum) then ($prevWin.cpsExact - $cps0) / $prevWin.P
        else null end) as $kPrev
-    | (if ($s.P | isnum) and ($s.Pprev | isnum) then $s.P - $s.Pprev else null end) as $n
+    | (if ($s.P | isnum) and ($s.Pprev | isnum) then $s.P - $s.Pprev else null end) as $requested
+    # The runs that started are the starts k6 got accepted (its seed phase's
+    # passed checks), not the requested P - Pprev: a seed that stalled
+    # (dropped iterations, a plateau not reached) started fewer.
+    | ([$k6[] | select(.phase == "seed-p\($s.P)")] | last // {}) as $sk
+    | (if ($sk.checksPassed | isnum) then $sk.checksPassed else $requested end) as $n
     | (($n | posnum) and (window_cps($s) | isnum)) as $sOk
     | ([($m.plateaus | objs)[] | select(.P == $s.P)] | first // {}) as $pl
-    | {P: $s.P, Pprev: $s.Pprev, started: $n, windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
+    | {P: $s.P, Pprev: $s.Pprev, started: $n, requested: $requested, reached: ($pl.reached // null), windowSecs: $s.windowSecs, maestroCalls: $s.maestroCalls,
        timeToParkSecs: ($pl.seed.timeToParkSecs // $pl.seed.waitedSecs // null), k6Secs: ($pl.seed.k6Secs // null),
        lagSecs: ($pl.seed.lagSecs // null),
        netPerStartedRun: (if $sOk and ($cps0 | isnum) and ($kPrev | isnum) then ($s.maestroCalls - lock_cleaner_calls($s) - ($cps0 + $kPrev * $s.Pprev) * $s.windowSecs) / $n | round2 else null end),
@@ -740,7 +745,10 @@ $identity[0] as $id
       check("advisory.seedCost"; "advisory"; if ($seeds | length) > 0 and ($seeds | all(.netPerStartedRun | isnum)) then "PASS" else "WARN" end;
             $seeds; null;
             if ($seeds | length) == 0 then "no seed window"
-            else ([$seeds[] | "P=\(.P): \(.started) runs started paced over \(.k6Secs) s (k6, container start included), all parked \(.lagSecs) s after k6 ended (2 s poll), \(.netPerStartedRun) statements per started-and-parked run net of the idle rate and the already-parked population (its own first re-checks included)"] | join("; ")) end)),
+            else ([$seeds[] | "P=\(.P): \(if .started != .requested then "\(.started) of \(.requested) requested" else "\(.started)" end) runs started paced over \(.k6Secs) s (k6, container start included), "
+                    + (if .reached == true then "all parked \(.lagSecs) s after k6 ended (2 s poll), \(.netPerStartedRun) statements per started-and-parked run"
+                       else "plateau not reached, \(.netPerStartedRun) statements per started run" end)
+                    + " net of the idle rate and the already-parked population (its own first re-checks included)"] | join("; ")) end)),
     advisory_guarded("advisory.contention";
       ((($loadPerCpu | length) > 0) or any($promPlateaus[]; .nodeCpu.processAvg | isnum)) as $have
       | check("advisory.contention"; "advisory"; if $have and ($loadHot | not) and ($cpuHot | length) == 0 then "PASS" else "WARN" end;

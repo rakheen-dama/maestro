@@ -840,6 +840,20 @@ if [[ -n "$s3src" ]]; then
   out=$(s3_eval s3-parked-missing "${first_plateau} as \$i | .windows[\$i] |= del(.parkedBefore)")
   expect "s3: no parked snapshot before the window: validity.parked" INVALID "$(s3st "$out" validity.parked)"
 
+  # advisory.seedCost divides by the starts k6 got accepted, not the
+  # requested P - Pprev (a seed that stalled started fewer runs).
+  seed_fig() { s3_field "$1" ".checks[] | select(.id == \"advisory.seedCost\") | .value[] | select(.P == ${pmax}) | $2"; }
+  out=$(s3_eval s3-seed-short "(.k6[] | select(.phase == \"seed-p${pmax}\") | .checksPassed) -= 200
+    | (.plateaus[] | select(.P == ${pmax}) | .reached) = false")
+  req=$((pmax - pmin))
+  expect "s3: Pmax seed accepted 200 fewer starts: advisory.seedCost started" "$((req - 200))" "$(seed_fig s3-seed-short .started)"
+  expect "s3: Pmax seed accepted 200 fewer starts: requested kept" "$req" "$(seed_fig s3-seed-short .requested)"
+  expect "s3: Pmax seed short: gross per started run uses the accepted count" yes \
+    "$(jq -n --argjson a "$(seed_fig s3-seed-short .grossPerStartedRun)" --argjson b "$(seed_fig s3-pass .grossPerStartedRun)" \
+        --argjson r "$req" --argjson s "$((req - 200))" '(($a - $b * $r / $s) | fabs) < 0.02' | sed 's/true/yes/; s/false/no/')"
+  expect "s3: Pmax seed short and not reached: the detail says so" yes \
+    "$(s3_field s3-seed-short '.checks[] | select(.id == "advisory.seedCost") | .detail' | grep -qF "P=${pmax}: $((req - 200)) of ${req} requested runs started" && grep -qF 'plateau not reached' <<<"$(s3_field s3-seed-short '.checks[] | select(.id == "advisory.seedCost") | .detail')" && echo yes || echo no)"
+
   # validity.windows: exactly one well-formed measured window per reached
   # plateau, in order (a null, missing, duplicated or unplanned plateau
   # window must not leave the remaining windows to pass the gates).
