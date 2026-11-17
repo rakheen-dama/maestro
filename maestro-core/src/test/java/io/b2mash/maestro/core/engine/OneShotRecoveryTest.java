@@ -85,7 +85,9 @@ class OneShotRecoveryTest {
     @Test
     void shutdownStopsARetryingPass() {
         var store = new FailingStore(Integer.MAX_VALUE);
-        var a = node(store, 1);
+        // A 5 s deadline, a 2 s bound: a pass that ignored its stop would hold
+        // shutdown to the deadline, 3 s past the bound.
+        var a = node(store, 1, Duration.ofSeconds(5));
         a.startOneShotRecovery(registrations(a, store), Duration.ofHours(1));
         assertEquals(1, valueWithin(store.reads::get, 1, Duration.ofSeconds(5)), "the first pass failed");
         assertTrue(a.isOneShotRecoveryRunning(), "waiting to retry");
@@ -248,12 +250,16 @@ class OneShotRecoveryTest {
     }
 
     private WorkflowExecutor node(CountingStore store, int c) {
+        return node(store, c, Duration.ofSeconds(2));
+    }
+
+    private WorkflowExecutor node(CountingStore store, int c, Duration shutdownTimeout) {
         var executor = WorkflowExecutor.builder(store, serializer, SERVICE)
                 .distributedLock(lock)
                 .lifecycleEventsEnabled(false)
                 .observer(EngineObserver.NOOP)
                 .defaultTaskQueueLimits(c > 0 ? new TaskQueueLimits(c, c) : null)
-                .shutdownTimeout(Duration.ofSeconds(2))
+                .shutdownTimeout(shutdownTimeout)
                 .build();
         nodes.add(executor);
         return executor;
