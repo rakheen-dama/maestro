@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.postgres;
 
+import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -153,21 +154,35 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
 
         /**
          * The manual purge {@code docs/operations.md} §11.5 gives for the
-         * history of a service name no node runs any more: one transaction
-         * per batch of at most 500 terminal instances finished over 30 days
-         * ago, children before the instances. Repeat until the last
-         * statement deletes no row. The one parameter is the service name.
+         * history of a service name no node runs any more: one batch of at
+         * most 500 terminal instances finished over 30 days ago, children
+         * before the instances. Repeat until the last statement deletes no
+         * row. Every parameter is the service name.
+         *
+         * <p><b>All five statements run in one transaction</b>, because that
+         * is what makes the script safe beside a live service. The first
+         * statement locks its candidates ({@code FOR UPDATE SKIP LOCKED}) until
+         * the commit: an operator Retry of a {@code FAILED} candidate waits for
+         * the batch and then finds no row, and a candidate some other
+         * transaction holds is skipped, not waited on. Each delete also
+         * re-checks service, status and age, so a candidate that no longer
+         * qualifies keeps its row and its whole history.
          */
+        static final String MANUAL_PURGE_ELIGIBLE = "SELECT p.id FROM maestro_purge_ids p"
+                + " JOIN maestro_workflow_instance i ON i.id = p.id"
+                + " WHERE i.service_name = ? AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
+                + " AND i.completed_at < now() - interval '30 days'";
+
         static final List<String> MANUAL_PURGE_SQL = List.of(
                 "CREATE TEMPORARY TABLE maestro_purge_ids ON COMMIT DROP AS"
                         + " SELECT id FROM maestro_workflow_instance"
                         + " WHERE service_name = ? AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
                         + " AND completed_at < now() - interval '30 days'"
-                        + " ORDER BY completed_at LIMIT 500",
-                "DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN (SELECT id FROM maestro_purge_ids)",
-                "DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN (SELECT id FROM maestro_purge_ids)",
-                "DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN (SELECT id FROM maestro_purge_ids)",
-                "DELETE FROM maestro_workflow_instance WHERE id IN (SELECT id FROM maestro_purge_ids)");
+                        + " ORDER BY completed_at LIMIT 500 FOR UPDATE SKIP LOCKED",
+                "DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN (" + MANUAL_PURGE_ELIGIBLE + ")",
+                "DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN (" + MANUAL_PURGE_ELIGIBLE + ")",
+                "DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN (" + MANUAL_PURGE_ELIGIBLE + ")",
+                "DELETE FROM maestro_workflow_instance WHERE id IN (" + MANUAL_PURGE_ELIGIBLE + ")");
 
         @BeforeEach
         void fixture() {
@@ -237,22 +252,139 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
             assertEquals(2, instancesOf("billing"), "another service's rows are untouched");
         }
 
-        /** Runs {@link #MANUAL_PURGE_SQL} as one transaction; returns the instance rows it deleted. */
+        /**
+         * An operator Retry of a FAILED candidate, started after the manual
+         * purge selected it: it either waits for the purge and then finds no
+         * row, or the retried workflow keeps its row and history. Never a
+         * retried workflow whose row or history the purge deleted.
+         */
+        @Test
+        void aRetryStartedAfterTheManualPurgesSelectNeverLosesTheRetriedWorkflow() throws Exception {
+            var failed = finished("orders-old-f", "orders-old", WorkflowStatus.FAILED, 40);
+            attachHistory(failed);
+            CompletableFuture<Boolean> retry;
+            Boolean retriedBeforeThePurgeEnded;
+            try (Connection conn = dataSource.getConnection()) {
+                conn.setAutoCommit(false);
+                runManualPurge(conn, 0, 1, "orders-old");
+                retry = CompletableFuture.supplyAsync(() -> retry(failed));
+                retriedBeforeThePurgeEnded = retry.copy().completeOnTimeout(null, 1, SECONDS).get();
+                runManualPurge(conn, 1, MANUAL_PURGE_SQL.size(), "orders-old");
+                conn.commit();
+            }
+            boolean retried = retry.get(10, SECONDS);
+            assertEquals(List.of("retried=false", "row=0", "events=0", "orphans=0"),
+                    List.of("retried=" + retried, "row=" + rowsOfWorkflow("orders-old-f"),
+                            "events=" + childRowsOfWorkflow("maestro_workflow_event", "orders-old-f"),
+                            "orphans=" + orphanedChildRows()),
+                    "the retry waited for the purge's lock (retried before the purge ended: "
+                            + retriedBeforeThePurgeEnded + ")");
+        }
+
+        /**
+         * The script's second safeguard: a candidate that stopped qualifying
+         * after the select (here reopened inside the script's own transaction,
+         * which holds its lock) keeps its row and its whole history.
+         */
+        @Test
+        void aCandidateThatNoLongerQualifiesAtDeleteTimeKeepsItsRowAndHistory() throws Exception {
+            attachHistory(finished("orders-old-f", "orders-old", WorkflowStatus.FAILED, 40));
+            attachHistory(finished("orders-old-c", "orders-old", WorkflowStatus.COMPLETED, 40));
+            try (Connection conn = dataSource.getConnection()) {
+                conn.setAutoCommit(false);
+                runManualPurge(conn, 0, 1, "orders-old");
+                try (var ps = conn.prepareStatement("UPDATE maestro_workflow_instance SET status = 'RUNNING',"
+                        + " completed_at = NULL, version = version + 1 WHERE workflow_id = 'orders-old-f'")) {
+                    assertEquals(1, ps.executeUpdate());
+                }
+                runManualPurge(conn, 1, MANUAL_PURGE_SQL.size(), "orders-old");
+                conn.commit();
+            }
+            assertEquals(List.of(1L, 2L, 2L, 2L, 0L), List.of(rowsOfWorkflow("orders-old-f"),
+                    childRowsOfWorkflow("maestro_workflow_event", "orders-old-f"),
+                    childRowsOfWorkflow("maestro_workflow_signal", "orders-old-f"),
+                    childRowsOfWorkflow("maestro_workflow_timer", "orders-old-f"),
+                    rowsOfWorkflow("orders-old-c")));
+        }
+
+        @Test
+        void theManualPurgeSkipsACandidateLockedElsewhereAndLeavesItsHistory() throws Exception {
+            attachHistory(finished("orders-old-0", "orders-old", WorkflowStatus.COMPLETED, 40));
+            attachHistory(finished("orders-old-1", "orders-old", WorkflowStatus.COMPLETED, 40));
+            try (Connection conn2 = dataSource.getConnection()) {
+                conn2.setAutoCommit(false);
+                try (var ps = conn2.prepareStatement(
+                        "SELECT id FROM maestro_workflow_instance WHERE workflow_id = 'orders-old-0' FOR UPDATE");
+                     var rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                }
+                var purge = CompletableFuture.supplyAsync(() -> {
+                    try {
+                        return runManualPurge("orders-old");
+                    } catch (Exception e) {
+                        throw new IllegalStateException(e);
+                    }
+                });
+                var deleted = purge.copy().completeOnTimeout(-1, 5, SECONDS).get();
+                conn2.rollback();
+                purge.get(10, SECONDS);
+                assertEquals(1, deleted, "the manual purge waited on a locked candidate (-1) instead of skipping it");
+            }
+            assertEquals(List.of(1L, 2L, 2L, 2L, 0L), List.of(rowsOfWorkflow("orders-old-0"),
+                    childRowsOfWorkflow("maestro_workflow_event", "orders-old-0"),
+                    childRowsOfWorkflow("maestro_workflow_signal", "orders-old-0"),
+                    childRowsOfWorkflow("maestro_workflow_timer", "orders-old-0"),
+                    rowsOfWorkflow("orders-old-1")));
+        }
+
+        /** Runs all of {@link #MANUAL_PURGE_SQL} as one transaction; returns the instance rows it deleted. */
         private int runManualPurge(String serviceName) throws Exception {
             try (Connection conn = dataSource.getConnection()) {
                 conn.setAutoCommit(false);
-                int last = 0;
-                for (int i = 0; i < MANUAL_PURGE_SQL.size(); i++) {
-                    try (var ps = conn.prepareStatement(MANUAL_PURGE_SQL.get(i))) {
-                        if (i == 0) {
-                            ps.setString(1, serviceName);
-                        }
-                        last = ps.executeUpdate();
-                    }
-                }
+                int last = runManualPurge(conn, 0, MANUAL_PURGE_SQL.size(), serviceName);
                 conn.commit();
                 return last;
             }
+        }
+
+        /**
+         * Runs statements {@code from} (inclusive) to {@code to} (exclusive)
+         * of {@link #MANUAL_PURGE_SQL} on {@code conn}'s transaction, binding
+         * the service name to every parameter; returns the last update count.
+         */
+        private int runManualPurge(Connection conn, int from, int to, String serviceName) throws Exception {
+            int last = 0;
+            for (int i = from; i < to; i++) {
+                var sql = MANUAL_PURGE_SQL.get(i);
+                try (var ps = conn.prepareStatement(sql)) {
+                    int params = (int) sql.chars().filter(c -> c == '?').count();
+                    for (int p = 1; p <= params; p++) {
+                        ps.setString(p, serviceName);
+                    }
+                    last = ps.executeUpdate();
+                }
+            }
+            return last;
+        }
+
+        /** The engine's Retry write; {@code false} when the row is gone. */
+        private boolean retry(WorkflowInstance failed) {
+            try {
+                store.reopenFailedInstance(failed.toBuilder().status(WorkflowStatus.RUNNING).completedAt(null)
+                        .version(failed.version() + 1).build(), Set.of(), Set.of());
+                return true;
+            } catch (WorkflowNotFoundException e) {
+                return false;
+            }
+        }
+
+        private long rowsOfWorkflow(String workflowId) throws Exception {
+            return count("SELECT count(*) FROM maestro_workflow_instance WHERE workflow_id = ?", workflowId);
+        }
+
+        private long childRowsOfWorkflow(String table, String workflowId) throws Exception {
+            return count("SELECT count(*) FROM " + table + " c JOIN maestro_workflow_instance i"
+                    + " ON i.id = c.workflow_instance_id WHERE i.workflow_id = ?", workflowId);
         }
 
         /** Two events, a PENDING and a FIRED timer, an unconsumed and a consumed signal. */
