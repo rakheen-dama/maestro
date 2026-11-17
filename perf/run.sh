@@ -249,18 +249,21 @@ DOCKER_COMPOSE=$(docker compose version --short 2>/dev/null || echo unavailable)
 DOCKER_MEM_MB=$(($(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0) / 1048576))
 IMAGES=$(awk '$1 == "image:" {print $2}' "${PERF_DIR}/compose.yml" | sort -u | jq -R . | jq -sc .)
 
+# identity.json is committed as run evidence (perf/.evidence/), so it holds no
+# absolute path and no host name: host.uname is `uname -srm` (system, release,
+# machine), never `uname -a` (which carries the node name).
 jq -n \
   --arg runId "$RUN_ID" --arg scenario "$SCENARIO" --arg profile "$PROFILE" \
-  --arg startedAtUtc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg pwd "$PWD" \
+  --arg startedAtUtc "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg head "$HEAD" --argjson dirty "$DIRTY" --argjson shallow "$SHALLOW" \
   --arg engineCommit "$ENGINE_COMMIT" --arg harnessCommit "$HARNESS_COMMIT" \
   --arg engineRefLabel "${PERF_ENGINE_REF:-}" \
-  --arg uname "$(uname -a)" --argjson cpus "$(getconf _NPROCESSORS_ONLN)" --argjson memoryMb "$HOST_MEM_MB" \
+  --arg uname "$(uname -srm)" --argjson cpus "$(getconf _NPROCESSORS_ONLN)" --argjson memoryMb "$HOST_MEM_MB" \
   --arg dockerServer "$DOCKER_SERVER" --arg dockerCompose "$DOCKER_COMPOSE" --argjson dockerMemoryMb "$DOCKER_MEM_MB" \
   --argjson images "$IMAGES" \
   --argjson replicas "$REPLICAS" --argjson adminEventsRequested "$PERF_ADMIN_EVENTS" \
   --arg nodeHeap "${PERF_NODE_HEAP:-1g}" --arg nodeCpus "${PERF_NODE_CPUS:-2}" --arg nodeMem "${PERF_NODE_MEM:-1536m}" \
-  '{runId: $runId, scenario: $scenario, profile: $profile, startedAtUtc: $startedAtUtc, pwd: $pwd,
+  '{runId: $runId, scenario: $scenario, profile: $profile, startedAtUtc: $startedAtUtc,
     repo: {head: $head, dirty: $dirty, shallow: $shallow, engineCommit: $engineCommit,
            harnessCommit: $harnessCommit, engineRefLabel: $engineRefLabel},
     host: {uname: $uname, cpus: $cpus, memoryMb: $memoryMb, dockerServer: $dockerServer,
@@ -271,11 +274,11 @@ jq -n \
     notes: []}' >"${RESULTS}/identity.json"
 {
   printf '# perf/run.sh %s\n' "$RUN_ID"
-  printf '# pwd=%s head=%s dirty=%s started=%s\n' "$PWD" "$HEAD" "$DIRTY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '# head=%s dirty=%s started=%s\n' "$HEAD" "$DIRTY" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf '# args: %s --profile %s --replicas %s record-baseline=%s admin-events=%s\n' \
     "$SCENARIO" "$PROFILE" "$REPLICAS" "$RECORD_BASELINE" "$PERF_ADMIN_EVENTS"
 } >"${RESULTS}/harness.log"
-log "run ${RUN_ID}: ${SCENARIO} profile=${PROFILE} replicas=${REPLICAS} admin-events=${PERF_ADMIN_EVENTS} → ${RESULTS}"
+log "run ${RUN_ID}: ${SCENARIO} profile=${PROFILE} replicas=${REPLICAS} admin-events=${PERF_ADMIN_EVENTS} → perf/results/${RUN_ID}"
 
 # ── 2. Preflight ───────────────────────────────────────────────────────────
 command -v docker >/dev/null 2>&1 || die "docker is required"
