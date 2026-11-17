@@ -30,7 +30,18 @@
 #   advisory.permitArithmetic  the deltas next to WP2's prediction (cross =
 #                            accepted cross signals, timer = W_s x (N-1)/N)
 #   advisory.consumeLatency  p95 of SIGNAL_RECEIVED created_at - signal
-#                            received_at, cross / local <= 1.5
+#                            received_at, cross / local <= 1.5; per phase and
+#                            per level (s4-status.sql latencyByLevel) in its
+#                            value. A measured characteristic, not a defect:
+#                            a local signal wakes its parked run in memory
+#                            on the same node; a cross-node signal wakes it
+#                            through the post-commit NOTIFY (a virtual
+#                            thread taking a second connection from the
+#                            receiving node's pool, then Postgres's delivery
+#                            to the owner's one LISTEN connection, and one
+#                            listener thread dispatching in turn). Both
+#                            phases issue the NOTIFY (4,500 pg_notify calls
+#                            each); only the cross phase waits for it
 #   advisory.throughput      consumed signals per second of the signal phase
 #                            window, next to the offered rate
 include "common";
@@ -130,7 +141,10 @@ $identity[0] as $id
       | (if ($a | isnum) and $a > 0 and ($b | isnum) then $b / $a else null end) as $q
       | check("advisory.consumeLatency"; "advisory"; if $q != null and $q <= s4_latency_ratio then "PASS" else "WARN" end;
           {localP95Ms: $a, crossP95Ms: $b, localP50Ms: $loc.status.latencyMs.p50, crossP50Ms: $cr.status.latencyMs.p50,
-           ratio: ($q | round4)};
+           ratio: ($q | round4),
+           byLevel: ([($loc.status.latencyByLevel // [])[] | .level] | unique | map(. as $l
+             | {level: $l, local: ($loc.status.latencyByLevel | map(select(.level == $l)) | first),
+                cross: ($cr.status.latencyByLevel // [] | map(select(.level == $l)) | first)}))};
           {ratio: "<= \(s4_latency_ratio)"};
           if $q == null then "a phase's consume latency was not recorded"
           else "signal received -> consumed p95: local \($a) ms, cross \($b) ms" end)),

@@ -85,7 +85,7 @@ s4_signal_phase() { # <name> <route own|next> <W> <levels>
     "PERF_LEVELS=${levels}" "PERF_HOLD_SECS=${S4_HOLD_SECS}" "PERF_ROUTE=${route}"
   drain=$(wait_terminal "$prefix" "$w" 300 2)
   window=$(psql_json pgss-window)
-  status=$(psql_json s4-status -v "prefix=${prefix}" -v "m=${S4_M}")
+  status=$(psql_json s4-status -v "prefix=${prefix}" -v "m=${S4_M}" -v "levels=${levels}" -v "hold=${S4_HOLD_SECS}")
   plan=$(cat "${RESULTS}/k6-${name}-plan.json" 2>/dev/null || echo null)
   log "s4 ${name}: $(jq -c '{byStatus, signals, latencyMs}' <<<"$status")"
   jq -nc --arg n "$name" --arg p "$prefix" --arg route "$route" --argjson w "$w" \
