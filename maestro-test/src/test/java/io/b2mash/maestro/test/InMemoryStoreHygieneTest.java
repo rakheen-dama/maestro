@@ -20,8 +20,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.IntStream;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -124,6 +126,52 @@ class InMemoryStoreHygieneTest {
             assertEquals(4, billing.stream().mapToInt(id -> store.getEvents(id).size()).sum());
             assertEquals(4, store.getAllSignals().stream().filter(s -> billing.contains(s.workflowInstanceId())).count());
             assertEquals(4, store.getAllTimers().stream().filter(t -> billing.contains(t.workflowInstanceId())).count());
+        }
+
+        /**
+         * A candidate whose row is replaced, after the candidate select and
+         * before the purge takes its lock, by a same-status row of another
+         * service is that service's now: the scoped purge re-checks the scope
+         * under the lock and leaves it, with its history.
+         */
+        @Test
+        void aCandidateMovedToAnotherServiceBeforeItsLockIsTakenIsNotPurged() throws Exception {
+            var moved = finished("orders-m", "orders", WorkflowStatus.COMPLETED, 10);
+            attachHistory(moved);
+            var lock = instanceLock("orders-m");
+            var result = new CompletableFuture<PurgeResult>();
+            var purger = new Thread(() -> result.complete(
+                    store.purgeTerminalInstancesBefore("orders", WorkflowStatus.COMPLETED, cutoff, 500)));
+            synchronized (lock) {
+                purger.start();
+                assertEquals(Thread.State.BLOCKED, stateWithin(purger, Thread.State.BLOCKED, Duration.ofSeconds(5)),
+                        "the purge selected its candidates and waits for the moved row's lock");
+                store.updateInstance(moved.toBuilder().serviceName("billing").version(moved.version() + 1).build());
+            }
+            var purged = result.get(5, SECONDS);
+            var id = moved.id();
+            assertEquals(List.of(3, 1L, 2, 2L, 2L), List.of(purged.instances(),
+                    store.getInstance("orders-m").stream().count(), store.getEvents(id).size(),
+                    store.getAllSignals().stream().filter(s -> id.equals(s.workflowInstanceId())).count(),
+                    store.getAllTimers().stream().filter(t -> id.equals(t.workflowInstanceId())).count()));
+        }
+
+        /** The store's per-workflow lock object, which its instance writes synchronise on. */
+        private Object instanceLock(String workflowId) throws Exception {
+            var field = InMemoryWorkflowStore.class.getDeclaredField("instanceLocks");
+            field.setAccessible(true);
+            return ((Map<?, ?>) field.get(store)).get(workflowId);
+        }
+
+        /** Polls {@code thread}'s state until it is {@code wanted} or {@code within} elapses; returns the last read. */
+        private static Thread.State stateWithin(Thread thread, Thread.State wanted, Duration within) {
+            var deadline = System.nanoTime() + within.toNanos();
+            var state = thread.getState();
+            while (state != wanted && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+                state = thread.getState();
+            }
+            return state;
         }
 
         /** Two events, a PENDING and a FIRED timer, an unconsumed and a consumed signal. */

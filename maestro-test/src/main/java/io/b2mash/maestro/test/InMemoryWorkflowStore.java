@@ -728,7 +728,9 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * {@inheritDoc}
      *
      * <p>The unscoped form's body, with candidates restricted to
-     * {@code serviceName}'s instances.
+     * {@code serviceName}'s instances. The service name is re-checked with
+     * status and {@code completedAt} under each candidate's lock, so a row
+     * rewritten to another service after the candidate select is left alone.
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
@@ -764,8 +766,8 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                     }
                     synchronized (lock) {
                         var current = instances.get(candidate.workflowId());
-                        if (current == null || !qualifies(current, status, cutoff)) {
-                            continue; // retried (or purged) since the candidate select
+                        if (current == null || !qualifies(current, status, cutoff) || !scope.test(current)) {
+                            continue; // retried, moved to another service, or purged since the candidate select
                         }
                         var id = current.id();
                         var instanceEvents = events.remove(id);
