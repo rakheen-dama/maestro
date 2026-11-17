@@ -137,7 +137,7 @@ Sibling branches of any lane on the path, and the subtrees of forks *before* the
    - `after(F)`;
    - every `WORKFLOW_FAILED`.
    Nothing else is deleted. In particular, another branch's uncaught failure stays (D-5, MD-2).
-4. **`A` empty: last-in-lane** (basis `LAST_IN_LANE`). Delete every `WORKFLOW_FAILED`, and `opSlots(F′)` for every placed `ACTIVITY_FAILED`/`SIGNAL_TIMEOUT` `F′` whose `after(F′)` holds nothing but `WORKFLOW_FAILED`. This is one pass, not iterated to a fixpoint.
+4. **`A` empty: last-in-lane** (basis `LAST_IN_LANE`). Delete every `WORKFLOW_FAILED`, and `opSlots(F′)` for every placed `ACTIVITY_FAILED`/`SIGNAL_TIMEOUT` `F′` whose `after(F′)` holds nothing but `WORKFLOW_FAILED`. This is one pass, not iterated to a fixpoint. **Amended in execution (commit 4e36470f):** a `SIGNAL_TIMEOUT` `F′` is deleted under this basis only when the terminal payload's `exceptionType` is `SignalTimeoutException` — the same check today's retry uses — so a caught gate timeout followed by a throw from workflow code is kept (Issue 19, pinned by `SignalTimeoutReplayDeterminismTest.retryAfterActivityFailure_preservesCaughtGateTimeoutMemo`).
 5. **Refusal.** If the delete set holds a `SIGNAL_RECEIVED`, return the plan with `consumedSignalAt` set to the lowest such sequence (D-6). Only basis 3 can produce this.
 6. **Timer ids.** Delete:
    - the `timerId` string of every `TIMER_SCHEDULED` in the delete set;
