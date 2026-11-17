@@ -1,6 +1,7 @@
 package io.b2mash.maestro.spring.health;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.health.contributor.Health;
@@ -8,11 +9,11 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.boot.health.contributor.Status;
 
 import java.time.Duration;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Reports Maestro's health for Spring Boot Actuator's {@code /actuator/health}
@@ -33,7 +34,10 @@ import java.util.concurrent.TimeoutException;
  *       {@code UNKNOWN}: a busy pool is not a broken store. The probe runs on
  *       a separate virtual thread and is abandoned (best-effort interrupted)
  *       on timeout, so a store that is merely slow cannot hang this method or,
- *       by extension, the {@code /actuator/health} endpoint;</li>
+ *       by extension, the {@code /actuator/health} endpoint. At most one probe
+ *       is in flight per indicator: a call that finds one still running joins
+ *       it, so a store call that ignores the interrupt holds one thread, not
+ *       one per health call;</li>
  *   <li>{@code UP} otherwise.</li>
  * </ul>
  * A loop that has never been started yet is <b>not</b> treated as a fault:
@@ -79,9 +83,11 @@ import java.util.concurrent.TimeoutException;
  *   <li>{@code runningWorkflowCount} — workflows currently executing on this node</li>
  * </ul>
  *
- * <p><b>Thread safety:</b> stateless and safe for concurrent use. Every
- * {@link #health()} call re-probes the store and re-reads the executor's
- * current poller and running-workflow state.
+ * <p><b>Thread safety:</b> safe for concurrent use. The only state is the
+ * reference to the probe in flight, swapped atomically. Every
+ * {@link #health()} call re-reads the executor's current loop and
+ * running-workflow state, and re-probes the store unless a probe is still in
+ * flight, which it joins.
  *
  * @see MaestroHealthAutoConfiguration
  */
@@ -129,19 +135,23 @@ public class MaestroHealthIndicator implements HealthIndicator {
      */
     static final Duration STORE_PROBE_TIMEOUT = Duration.ofSeconds(2);
 
-    /**
-     * Runs store probes on their own virtual thread so a stuck call can be
-     * abandoned without blocking the caller. Shared across all instances:
-     * dispatching a virtual thread per submitted task has no pooled
-     * resources to leak, so the executor is never explicitly shut down —
-     * it lives for the process lifetime, same as any other static utility.
-     */
-    private static final ExecutorService PROBE_EXECUTOR = Executors.newVirtualThreadPerTaskExecutor();
+    /** Name of the virtual thread a store probe runs on. */
+    static final String PROBE_THREAD_NAME = "maestro-health-probe";
 
     private final WorkflowStore store;
     private final WorkflowExecutor executor;
     private final boolean recoveryPollerEnabled;
     private final boolean retentionSweeperEnabled;
+
+    /**
+     * The probe whose store call has not returned yet, if any. At most one
+     * probe thread per indicator exists at a time: a call that finds one in
+     * flight waits on it (within the same bound) instead of starting another,
+     * so a store call that ignores the interrupt cannot pile up one stuck
+     * thread per health call. Cleared by the probe thread when its store call
+     * returns or throws.
+     */
+    private final AtomicReference<@Nullable Probe> inFlight = new AtomicReference<>();
 
     /**
      * Creates a health indicator backed by the given store and executor.
@@ -212,22 +222,83 @@ public class MaestroHealthIndicator implements HealthIndicator {
 
     /**
      * Probes the store with a bounded timeout, never letting the probe
-     * itself hang this method.
+     * itself hang this method. Joins the probe already in flight, if any; on
+     * timeout the probe is abandoned and its thread interrupted (best effort),
+     * and the next call joins it again until its store call returns.
      */
     private StoreProbe probeStore() {
-        var future = PROBE_EXECUTOR.submit(() -> store.getInstance(HEALTH_CHECK_WORKFLOW_ID));
+        var probe = inFlightOrNewProbe();
         try {
-            future.get(STORE_PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            probe.result.get(STORE_PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
             return new StoreProbe(REACHABLE, null);
         } catch (TimeoutException e) {
-            future.cancel(true);
+            probe.abandon();
             return new StoreProbe(TIMED_OUT, null);
         } catch (ExecutionException e) {
+            if (probe.abandoned) {
+                // Another call already timed this probe out and interrupted it, so its
+                // failure is most likely that interrupt, not a store that refused.
+                return new StoreProbe(TIMED_OUT, null);
+            }
             var cause = e.getCause();
             return new StoreProbe(UNREACHABLE, cause != null ? cause : e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return new StoreProbe(UNREACHABLE, e);
+        }
+    }
+
+    private Probe inFlightOrNewProbe() {
+        while (true) {
+            var current = inFlight.get();
+            if (current != null) {
+                return current;
+            }
+            var fresh = new Probe();
+            if (inFlight.compareAndSet(null, fresh)) {
+                fresh.thread.start();
+                return fresh;
+            }
+        }
+    }
+
+    /**
+     * One store call on its own virtual thread. Thread-safe: {@code result}
+     * and {@code abandoned} are read by every caller that joined it.
+     */
+    private final class Probe {
+
+        final CompletableFuture<@Nullable Void> result = new CompletableFuture<>();
+        final Thread thread = Thread.ofVirtual().name(PROBE_THREAD_NAME).unstarted(this::run);
+        volatile boolean abandoned;
+
+        private void run() {
+            try {
+                store.getInstance(HEALTH_CHECK_WORKFLOW_ID);
+                finish(null);
+            } catch (Throwable t) {
+                if (t instanceof MaestroControlFlowError controlFlow) {
+                    inFlight.compareAndSet(this, null);
+                    throw controlFlow;
+                }
+                finish(t);
+            }
+        }
+
+        /** Clears {@link #inFlight} first, so a call after the result is known starts a fresh probe. */
+        private void finish(@Nullable Throwable failure) {
+            inFlight.compareAndSet(this, null);
+            if (failure == null) {
+                result.complete(null);
+            } else {
+                result.completeExceptionally(failure);
+            }
+        }
+
+        /** Marks the probe timed out, then interrupts it; the order lets a joined caller see the mark. */
+        void abandon() {
+            abandoned = true;
+            thread.interrupt();
         }
     }
 

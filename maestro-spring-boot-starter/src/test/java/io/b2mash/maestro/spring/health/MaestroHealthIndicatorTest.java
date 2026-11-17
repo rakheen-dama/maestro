@@ -20,9 +20,14 @@ import java.time.Instant;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Direct (non-Spring-context) unit tests for {@link MaestroHealthIndicator},
@@ -111,6 +116,123 @@ class MaestroHealthIndicatorTest {
         assertThat(new SimpleStatusAggregator("DOWN", "OUT_OF_SERVICE", "UNKNOWN", "UP")
                 .getAggregateStatus(Set.of(Status.UP, Status.UNKNOWN)))
                 .isEqualTo(Status.UNKNOWN);
+    }
+
+    /**
+     * A probe stuck in a store call that ignores the interrupt must not be
+     * joined by a second stuck probe on every later health call: repeated calls
+     * share the one in flight, each still bounded, and once it returns the next
+     * call probes afresh.
+     */
+    @Test
+    void aStuckProbeIsSharedByLaterCallsNotStartedAgain() throws Exception {
+        var store = new UninterruptibleBlockingStore();
+        var indicator = new MaestroHealthIndicator(store, executor, false, false);
+        try {
+            for (int call = 1; call <= 3; call++) {
+                var start = Instant.now();
+                var health = indicator.health();
+                assertThat(Duration.between(start, Instant.now()))
+                        .as("call %d is bounded by the probe timeout", call)
+                        .isLessThan(MaestroHealthIndicator.STORE_PROBE_TIMEOUT.plusSeconds(5));
+                assertThat(health.getStatus()).as("call %d", call).isEqualTo(Status.UNKNOWN);
+                assertThat(health.getDetails()).containsEntry("store", "timed out");
+            }
+            assertThat(store.inside.get())
+                    .as("store calls still blocked after three health calls (one probe thread each)")
+                    .isEqualTo(1);
+        } finally {
+            store.release.countDown();
+        }
+        await().atMost(Duration.ofSeconds(10)).until(() -> store.inside.get() == 0);
+        var health = indicator.health();
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+        assertThat(health.getDetails()).containsEntry("store", "reachable");
+        assertThat(store.entered.get()).as("a fresh probe once the stuck one returned").isEqualTo(2);
+    }
+
+    /**
+     * A probe that timed out is still interrupted (best effort), so a store
+     * call that honours the interrupt frees its thread. Issue 66 records the
+     * cost of that interrupt mid-query.
+     */
+    @Test
+    void aTimedOutProbeIsInterrupted() throws Exception {
+        var interrupted = new CountDownLatch(1);
+        var store = new DelegatingWorkflowStore() {
+            @Override
+            public Optional<WorkflowInstance> getInstance(String workflowId) {
+                try {
+                    new CountDownLatch(1).await();
+                } catch (InterruptedException e) {
+                    interrupted.countDown();
+                }
+                return Optional.empty();
+            }
+        };
+        var health = new MaestroHealthIndicator(store, executor, false, false).health();
+        assertThat(health.getStatus()).isEqualTo(Status.UNKNOWN);
+        assertThat(interrupted.await(5, TimeUnit.SECONDS)).as("the timed-out probe was interrupted").isTrue();
+    }
+
+    /**
+     * A caller that joined a probe another caller has already abandoned — and
+     * interrupted — must not report the store as unreachable because the
+     * store call then failed on that interrupt.
+     */
+    @Test
+    void aCallerSharingAnAbandonedProbeReportsTimedOutNotUnreachable() throws Exception {
+        var entered = new CountDownLatch(1);
+        var store = new DelegatingWorkflowStore() {
+            @Override
+            public Optional<WorkflowInstance> getInstance(String workflowId) {
+                entered.countDown();
+                try {
+                    new CountDownLatch(1).await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("store call interrupted", e);
+                }
+                return Optional.empty();
+            }
+        };
+        var indicator = new MaestroHealthIndicator(store, executor, false, false);
+        var first = CompletableFuture.supplyAsync(indicator::health, Executors.newVirtualThreadPerTaskExecutor());
+        assertThat(entered.await(5, TimeUnit.SECONDS)).as("the first call's probe reached the store").isTrue();
+        var second = indicator.health();
+        assertThat(first.get(10, TimeUnit.SECONDS).getDetails()).containsEntry("store", "timed out");
+        assertThat(second.getDetails()).containsEntry("store", "timed out");
+        assertThat(second.getStatus()).isEqualTo(Status.UNKNOWN);
+    }
+
+    /**
+     * Blocks in {@link #getInstance(String)} until {@link #release} opens,
+     * swallowing every interrupt — a store call that a timed-out probe's
+     * interrupt cannot free.
+     */
+    private static final class UninterruptibleBlockingStore extends DelegatingWorkflowStore {
+
+        final CountDownLatch release = new CountDownLatch(1);
+        final AtomicInteger inside = new AtomicInteger();
+        final AtomicInteger entered = new AtomicInteger();
+
+        @Override
+        public Optional<WorkflowInstance> getInstance(String workflowId) {
+            entered.incrementAndGet();
+            inside.incrementAndGet();
+            try {
+                while (true) {
+                    try {
+                        release.await();
+                        return Optional.empty();
+                    } catch (InterruptedException ignored) {
+                        // swallowed on purpose
+                    }
+                }
+            } finally {
+                inside.decrementAndGet();
+            }
+        }
     }
 
     /** Refuses the probe at once, as a store whose database rejects connections does. */
