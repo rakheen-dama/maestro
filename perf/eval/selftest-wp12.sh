@@ -3,6 +3,7 @@
 #   perf/eval/selftest-wp12.sh <s2-recovery-drain dir>
 #       [<s5-pool-health after dir> <s5-pool-health before dir>]
 #       [<s4-signals after dir> <s4-signals before dir>] [<s6-retention before dir>]
+#       [<s6-retention after dir>]
 # Each source is a real result directory (identity.json, measurements.json);
 # pass "" to skip a scenario. perf/eval/selftest-evidence.sh rebuilds them
 # from perf/.evidence/wp12/.
@@ -25,6 +26,7 @@ s5before=${3:-}
 s4after=${4:-}
 s4before=${5:-}
 s6before=${6:-}
+s6after=${7:-}
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest-wp12.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 failures=0
@@ -325,6 +327,17 @@ if [[ -n "$s6before" ]]; then
   expect "s6: xforeign read missing: advisory.foreignRetention" WARN "$(st "$out" advisory.foreignRetention)"
   expect "s6: xforeign read missing: no evaluator ERROR" yes \
     "$(jq -r '.verdict' <<<"$out" | grep -qv -e ERROR -e CRASH && echo yes || echo no)"
+fi
+# The WP8 after of record (main 40aa3c21): a regression pin, unchanged -> PASS.
+if [[ -n "$s6after" ]]; then
+  source_is "$s6after" s6-retention
+  out=$(eval_case "$s6after" s6-retention s6-after-real '.')
+  expect "s6: the real after run: verdict" PASS "$(jq -r .verdict <<<"$out")"
+  for v in gate.retentionPaced gate.janitorServiceScoped gate.janitorBatched correctness.retentionExact correctness.janitorExact; do
+    expect "s6: the real after run: ${v}" PASS "$(st "$out" "$v")"
+  done
+  expect "s6: the real after run: the foreign retention set kept" '{"seeded":1000,"purged":0,"kept":1000}' \
+    "$(field s6-after-real advisory.foreignRetention '.value')"
 fi
 
 if ((failures > 0)); then
