@@ -19,10 +19,11 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [x] WP10 Wake-listener shutdown (Issue 38) — Lane B — PR #56 merged 2026-11-16 (17811ab0)
 - [x] WP8 Store hygiene (3.11a, 3.11b, Issue 39) — Lane B — PR #63 merged 2026-11-17 (40aa3c21): retention and janitor scoped to the node's service (maintainer decision taken as recommended), manual purge statement, uncached build green; soak not required
 - [x] WP11 k6 load-test foundation — Lane C — PR #58 merged 2026-11-17 (5b170009): scenarios 1 and 3, 26 statements per workflow
-- [ ] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C — Tasks 1-6 done (S2, S4, S5, S6 before FAIL / after PASS per its ledger); Tasks 7-9 in progress
-- [ ] WP13 Docs and housekeeping — Lane D — done on branch `docs/housekeeping`, not yet merged (see Review below)
+- [x] WP12 k6 finding-linked scenarios 2, 4, 5, 6 with before/after — Lane C — PR #65 merged 2026-11-17 (2bf24ab4): each scenario FAILs before its fix and PASSes after; Issues 75 (open) and 76 (resolved by #63) filed; weekly schedule S1, S3, S5, S2, S6
+- [x] WP13 Docs and housekeeping — Lane D — PR #64 merged 2026-11-17 (a8ac986d): Issues 80–88 filed
 - [ ] Gates on this cycle's merges: the scheduled nightly on `main` ran E2E 1–10 and chaos PR-gate ×3 green on `834a9da8` (2026-11-13 to 11-16: WP0, WP9, WP1) and on `17811ab0` (2026-11-17: adds WP2, WP7, WP10), and the weekly 2 h soak green on `834a9da8` (2026-11-15, run 43661077480). Nothing yet on the merges after 2026-11-17 02:32 UTC (WP3, WP4, WP11, WP5 + #61, WP6, WP8; `main` @ `40aa3c21`). WP2 has had no 2 h soak.
-- [x] Review section added (below), before WP12 and WP13 merge
+- [x] Issue 87 (found by a CI failure on #64): shutdown returned before a finishing run released its lock — PR #66 merged 2026-11-17 (bf6f50bd), 2 h soak passed on its head
+- [x] Review section added (below)
 
 ## Review (2026-11-17, engine-hardening cycle)
 
@@ -43,7 +44,7 @@ Merged to `main` (`git log --merges --first-parent origin/main`):
 | WP6 | #62 | `d1600bf1` | recovery gated by task-queue capacity, off the runner thread (Issue 30); kit limits (Issue 36); Issues 72–73 |
 | WP8 | #63 | `40aa3c21` | retention and janitor paced and scoped to the node's service; startup WARN for other service names (Issue 39); manual purge; Issues 74, 77–79 |
 
-Not merged: WP12 (k6 scenarios 2, 4, 5, 6; in progress on `test/k6-finding-scenarios`, holds Issues 75–76) and WP13 (this branch, Issues 80–86).
+Merged after this section was first written: WP13 (#64, `a8ac986d`, Issues 80–88), the Issue 87 fix (#66, `bf6f50bd`) and WP12 (#65, `2bf24ab4`, Issues 75–76).
 
 WP13 changes outside documentation (branch `docs/housekeeping`):
 - Tests: `CrashRecoveryTest` made deterministic (`9a321182`); four test store wrappers forward the paged recovery read (`79526f9c`).
@@ -66,7 +67,14 @@ Decisions taken as recommended, waiting for the maintainer's word (from the pack
 - WP11: PR #58 merged as a merge commit so WP12 could cherry-pick.
 - WP12 MD-1–MD-11: harness overlay for old engines instead of C4's cherry-pick, and the rest as the planner recommended.
 
-What remains: WP12, then the gates above on `main`. Maven Central (handover §5) is out of this cycle's scope.
+What remains (2026-11-17, after the last merge `2bf24ab4`):
+- The nightly E2E and chaos PR-gate ×3 have not yet run on anything merged on 2026-11-17 (WP3, WP4, WP5 + #61, WP6, WP8, WP11, WP12, WP13, #66); the next scheduled run on `main` is the first. WP2 has never had a 2 h soak.
+- The weekly load-suite schedule (`perf.yml`) and the Javadoc/Pages workflow have not run on a GitHub runner since their action pins and jobs changed.
+- Load-suite decisions taken for the maintainer: S2 and S6 on the weekly schedule; S2's lost-lock-races limit 0.5 (measured 0.12–0.19 on one host); S2's full-profile phase C has never been run.
+- `gradle/actions/setup-gradle` stays on v5 (v6 brings new terms of use for its caching component).
+- Open issues filed this cycle: 40–41, 50–63, 65–70, 72–75, 77–86, 88 (see `docs/open-issues.md`).
+- Remote branches and worktrees of this and the last cycle are not deleted (maintainer's word needed).
+- Maven Central (handover §5) is out of this cycle's scope.
 
 # Milestone: Host-safety cycle (planned 2026-11-11)
 
