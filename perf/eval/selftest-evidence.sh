@@ -22,6 +22,7 @@ S5_AFTER_RUN=r20261117t153355z  # S5 local, the WP4 after (main bd583f06), PASS
 S5_BEFORE_RUN=r20261117t155013z # S5 local, the WP4 before (bdcc074d), FAIL
 S4_AFTER_RUN=r20261117t155519z  # S4 local, 2 replicas, the WP2 after (main d1600bf1)
 S4_BEFORE_RUN=r20261117t160028z # S4 local, 2 replicas, the WP2 before (0c710a1e)
+S6_BEFORE_RUN=r20261117t161125z # S6 local, the WP8 before (main d1600bf1, without WP8)
 work=$(mktemp -d "${TMPDIR:-/tmp}/perf-selftest-evidence.XXXXXX")
 trap 'rm -rf "$work"' EXIT
 for run in "$SMOKE_RUN" "$S1_RUN" "$S3_RUN"; do
@@ -34,11 +35,11 @@ for run in "$SMOKE_RUN" "$S1_RUN" "$S3_RUN"; do
 done
 rc=0
 bash "${PERF_DIR}/eval/selftest.sh" "${work}/${SMOKE_RUN}" "${work}/${S1_RUN}" "${work}/${S3_RUN}" || rc=1
-for run in "$S2_RUN" "$S5_AFTER_RUN" "$S5_BEFORE_RUN" "$S4_AFTER_RUN" "$S4_BEFORE_RUN"; do
+for run in "$S2_RUN" "$S5_AFTER_RUN" "$S5_BEFORE_RUN" "$S4_AFTER_RUN" "$S4_BEFORE_RUN" "$S6_BEFORE_RUN"; do
   mkdir "${work}/${run}"
   jq .identity "${EVIDENCE12}/${run}.result.json" >"${work}/${run}/identity.json"
   jq .measurements "${EVIDENCE12}/${run}.result.json" >"${work}/${run}/measurements.json"
 done
 bash "${PERF_DIR}/eval/selftest-wp12.sh" "${work}/${S2_RUN}" "${work}/${S5_AFTER_RUN}" "${work}/${S5_BEFORE_RUN}" \
-  "${work}/${S4_AFTER_RUN}" "${work}/${S4_BEFORE_RUN}" || rc=1
+  "${work}/${S4_AFTER_RUN}" "${work}/${S4_BEFORE_RUN}" "${work}/${S6_BEFORE_RUN}" || rc=1
 exit "$rc"

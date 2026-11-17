@@ -274,7 +274,7 @@ fi
 if [[ -n "$s6before" ]]; then
   source_is "$s6before" s6-retention
   s6() { eval_case "$s6before" s6-retention "$@"; }
-  busy_at() { printf '.sampler.matchingInSpan = (.sampler.spanSamples * %s | floor)' "$1"; }
+  busy_at() { printf '.sampler.matchingInSpan = (.sampler.spanSamples * %s | ceil)' "$1"; }
   s6_after='.final.sets.jforeign.signalsUnconsumed = .seeded.sets.jforeign.signalsUnconsumed
     | .sweep.components.janitor = {calls: 10, rows: .plan.sets.jown, totalMs: 100, entries: 1}'
   out=$(s6 s6-before '.')
