@@ -345,8 +345,10 @@ pass on jq 1.7.1 and 1.8.1.
 **CI:** a pull request that touches `perf/**`, `sample-perf` or the
 workflow runs `perf.yml`'s `selftest` job (contents: read): the evidence
 guard, the evaluator self-test from committed evidence and the
-baseline-record self-test (the evaluator self-test covers the WP12 scenarios
-from `perf/.evidence/wp12/` too); never a load run. The load job:
+baseline-record self-test and the background-loop self-test
+(`perf/lib/bgloop-selftest.sh`); the evaluator self-test covers the WP12
+scenarios from `perf/.evidence/wp12/` too, superseded runs included (their
+verdicts pinned); never a load run. The load job:
 `.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
 (scenario — any of the seven —, profile, replicas, admin_events; defaults
 `s1-throughput`, `local`, empty = the scenario's own replica count, `false`)
@@ -427,13 +429,18 @@ never PASS. Pass/fail rests on counts and ratios of two figures of one run.
   recovery pass row); `gate.freshStartsNotStarved` phase A probe p95 ≤ 0.25 ×
   drainA; and three statement gates — `gate.lockAcquisitionsPerAdoption`
   (successful lock acquisitions − probe starts + adoption CAS) / adoptions ≤
-  2.02, `gate.lostLockRaces` (lock calls − lock rows) / N ≤ 0.25 (attempts lost
-  to the peer between its heldKeys read and its lock call: inherent on two
-  nodes without a claim protocol in the store; measured 0 on one node, 0.124
-  and 0.185 on two after WP6), `gate.recoveryPassRate` (page + heldKeys reads)
-  ≤ 1.25 × the designed reads (capacity passes at most once per second per
-  node, one page + one heldKeys each, plus a full pass every recovery poll
-  interval and one at each node start). The old single figure, (lockAcquire −
+  2.02 (with the classifier's adoptCas = adoptions = N, that is one lock per
+  adoption and no run locked twice), `gate.lostLockRaces` (lock calls − lock
+  rows) / N ≤ 0.5 (attempts lost to the peer between its heldKeys read and its
+  lock call: inherent on two nodes without a claim protocol in the store, and
+  growing with statement latency; measured 0 on one node, 0.124 and 0.185 on
+  two after WP6; a peer chasing every row would lose ≥ 1 per run),
+  `gate.recoveryPassRate` (page + heldKeys reads) ≤ 1.25 × a designed floor
+  (capacity passes at most once per second per node counted at one page + one
+  heldKeys each — a pass whose page fills reads on, so the real figure can be
+  higher —, plus a full pass every recovery poll interval and one at each node
+  start); 1.25 rests on the measurements: 0.57–0.73 on one node, 0.86–0.90 on
+  two, worst 0.896. The old single figure, (lockAcquire −
   probes + adoptCas + pages + heldKeys) / N, is `advisory.recoveryStatements`:
   on two nodes after WP6 it reads 2.41–2.45, above the one-node 2.17–2.22,
   because it counts the lost races and the second node's passes — expected,
@@ -463,8 +470,9 @@ never PASS. Pass/fail rests on counts and ratios of two figures of one run.
   fraction ≤ 0.65: the time-weighted share of the sweep's own span (first to
   last sampler sample with a purge statement active) during which one was;
   `gate.janitorServiceScoped` — every unconsumed signal of the other service
-  kept; `gate.janitorBatched` — ≥ 2 janitor DELETE calls and rows per call ≤
-  half the janitor's own targets (WP8's batch: 1,000). Validity: exact
+  kept; `gate.janitorBatched` — janitor rows per DELETE call ≤ 1,000, the
+  engine's batch (calls ≥ ⌈rows / 1,000⌉; an average over the calls, as
+  `pg_stat_statements` keeps rows and calls, not each call's rows). Validity: exact
   seeding; node 2's sweep observed and node 1's not; the statement texts
   matched (purge DELETEs a whole 4 per batch, the janitor ≥ 1 call when its
   targets are gone); the sampler and `pg_stat_statements`' purge execution
@@ -502,25 +510,31 @@ WP4 while Maestro's component answered every time — Issue 75.
 **Finding-linked before/after** (local profile, MacBook Pro 10 CPUs, Docker
 7837 MiB; every result in `perf/.evidence/wp12/`; "as run" is the verdict
 stored in the file, written by the evaluator of its harness — a stub for the
-first runs of each scenario —, "now" the verdict of today's evaluator):
+first runs of each scenario —; "now" the verdict re-evaluated by the
+evaluator at the commit named, the commit where that scenario's evaluator
+last changed, with `common.jq` at 12a03f5a; `perf/eval/selftest-evidence.sh`
+re-checks every one):
 
-| Scenario | Role | runId | Engine | As run / now | Key figures |
+| Scenario | Role | runId | Engine | As run / now (evaluator) | Key figures |
 |---|---|---|---|---|---|
-| S2 | before | r20261117t115610z | `main` 5b170009 (no WP6) | ERROR (stub) / **FAIL** | B/A 0.9962; hoard 4,941; probe p95 / drainA 0.917; lost races 0 |
-| S2 | preview | r20261117t122039z | `fix/recovery-capacity` 25e84962 | ERROR (stub) / **PASS** | 0.5165; 21; 0.010; lost 0.124 / run; pass rate 0.90 × designed |
-| S2 | after | r20261117t162103z | `main` d1600bf1 | PASS / **PASS** | 0.5113; 21; 0.011; lost 0.185 / run; pass rate 0.86 × designed; adoptions 2,551 / 2,449 |
-| S4 | before | r20261117t171940z | 0c710a1e (`834a9da8` + the gauge, MD-2) | FAIL / **FAIL** | permits local 0, cross **4,500** (2,250 per node), timer **100**; 24.9 / 24.9 statements per signal |
-| S4 | after | r20261117t171420z | `main` 40aa3c21 | PASS / **PASS** | permits 0 / 0 / 0; 24.7 / 24.7 statements per signal |
-| S5 | before | r20261117t155013z | bdcc074d | FAIL / **FAIL** | exhausted: 28 `DOWN` (store "timed out"), 8 `UP`; root 14 `DOWN`, 14 unanswered |
-| S5 | after | r20261117t153355z | `main` bd583f06 | PASS / **PASS** | 0 `DOWN`, 32 `UNKNOWN`, 4 `UP`; root 24 `UP`, 12 unanswered (Issue 75) |
-| S6 | before | r20261117t165803z | `main` d1600bf1 (no WP8) | FAIL / **FAIL** | busy 0.8525; janitor 1 call × 20,000 rows; foreign signals kept 0 / 10,000; `perf-foreign` rows purged 1,000 / 1,000 (Issue 76) |
-| S6 | after | r20261117t170538z | `main` 40aa3c21 | PASS / **PASS** | busy 0.4692; 11 calls, 909 rows per call; all foreign signals and rows kept |
+| S2 | before | r20261117t115610z | `main` 5b170009 (no WP6) | ERROR (stub) / **FAIL** (d705ba4a) | B/A 0.9962; hoard 4,941; probe p95 / drainA 0.917; lost races 0 |
+| S2 | preview | r20261117t122039z | `fix/recovery-capacity` 25e84962 | ERROR (stub) / **PASS** (d705ba4a) | 0.5165; 21; 0.010; lost 0.124 / run; pass rate 0.90 × designed |
+| S2 | after | r20261117t162103z | `main` d1600bf1 | PASS / **PASS** (d705ba4a) | 0.5113; 21; 0.011; lost 0.185 / run; pass rate 0.86 × designed; adoptions 2,551 / 2,449 |
+| S4 | before | r20261117t171940z | 0c710a1e (`834a9da8` + the gauge, MD-2) | FAIL / **FAIL** (b94a938c) | permits local 0, cross **4,500** (2,250 per node), timer **100**; 24.9 / 24.9 statements per signal |
+| S4 | after | r20261117t171420z | `main` 40aa3c21 | PASS / **PASS** (b94a938c) | permits 0 / 0 / 0; 24.7 / 24.7 statements per signal |
+| S5 | before | r20261117t155013z | bdcc074d | FAIL / **FAIL** (f1a37627) | exhausted: 28 `DOWN` (store "timed out"), 8 `UP`; root 14 `DOWN`, 14 unanswered |
+| S5 | after | r20261117t153355z | `main` bd583f06 | PASS / **PASS** (f1a37627) | 0 `DOWN`, 32 `UNKNOWN`, 4 `UP`; root 24 `UP`, 12 unanswered (Issue 75) |
+| S6 | before | r20261117t165803z | `main` d1600bf1 (no WP8) | FAIL / **FAIL** (f3d03b30) | busy 0.8525; janitor 1 call × 20,000 rows; foreign signals kept 0 / 10,000; `perf-foreign` rows purged 1,000 / 1,000 (Issue 76) |
+| S6 | after | r20261117t170538z | `main` 40aa3c21 | PASS / **PASS** (f3d03b30) | busy 0.4692; 11 calls, 909 rows per call; all foreign signals and rows kept |
 
-Superseded runs, kept as run: S5 r20261117t130237z was replaced by
-r20261117t153355z (its probe counted a 503 as no answer); S4
-r20261117t155519z / r20261117t160028z by the per-level re-takes; S6
-r20261117t161125z / r20261117t163846z by re-takes on the sampler that
-measures its span gap (they predate it, so they read INVALID today).
+Superseded runs: S4 r20261117t155519z / r20261117t160028z (replaced by the
+per-level re-takes; now PASS / FAIL) and S6 r20261117t161125z /
+r20261117t163846z (replaced by re-takes on the sampler that measures its
+span gap; they predate it and now read INVALID) stay committed as run, their
+current verdicts pinned by the evidence self-test. S5 r20261117t130237z,
+taken with a probe that counted a 503 as no answer, was replaced by
+r20261117t153355z and removed from the evidence (`9ae34033`); its exhausted
+window had read 0 `DOWN` either way.
 
 **`sample-perf` additions (harness settings, not Maestro ones):** the
 management health group `perf` (`include: maestro`, `show-details: always`)
