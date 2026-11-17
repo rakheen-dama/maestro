@@ -53,7 +53,10 @@ name: Perf (k6)
 # FAIL and ERROR fail the job on every trigger. INVALID (the measurement could
 # not be trusted, typically the runner, see above) fails a dispatched job, but
 # on the schedule it is a warning annotation and the job succeeds: a weekly
-# run on a noisy neighbour must not read as a red build. A gate that had no
+# run on a noisy neighbour must not read as a red build. Except when the
+# INVALID comes from a statement classifier (S2's validity.recoveryClassifier,
+# S6's validity.statementsClassified: the engine's SQL text no longer matches
+# what the scenario counts): that fails the scheduled job too. A gate that had no
 # usable baseline (status NO_BASELINE; the verdict can still be PASS) is
 # reported as a warning annotation and in the step summary, never silently
 # counted as passed. Admin events default to false, the engine's default and the setting
@@ -110,7 +113,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # jq is preinstalled on ubuntu-latest (jq 1.7.1; the evaluator
       # self-test passes on 1.7.1 and 1.8.1).
@@ -141,20 +144,20 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # The run's identity stamp reads the last commit touching the engine
           # and harness paths (git log -- <paths>): it needs the history.
           fetch-depth: 0
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '25'
           distribution: 'temurin'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Run the scenario
         # Inputs reach the shell as environment variables, never spliced into
@@ -170,12 +173,26 @@ jobs:
         # every other non-zero exit fails it (header: Verdicts).
         run: |
           rc=0
+          # A scheduled INVALID is a warning (a slow or noisy runner), EXCEPT
+          # when a statement classifier could not match the engine's SQL: a
+          # changed statement text is exactly what must not go unnoticed.
+          classifier_checks='["validity.recoveryClassifier","validity.statementsClassified"]'
           # An empty replica count leaves the scenario's own default (run.sh:
           # 2 for s2-recovery-drain, s4-signals and s6-retention, else 1).
           replicas=()
           if [[ -n "$PERF_REPLICAS" ]]; then replicas=(--replicas "$PERF_REPLICAS"); fi
           perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" "${replicas[@]}" || rc=$?
           if [[ "$rc" == 2 && "$GITHUB_EVENT_NAME" == schedule ]]; then
+            shopt -s nullglob
+            unmatched=""
+            for r in perf/results/*/result.json; do
+              unmatched+=$(jq -r --argjson ids "$classifier_checks" \
+                '.checks[] | select(.id as $i | $ids | index([$i])) | select(.status != "PASS") | .id + " "' "$r")
+            done
+            if [[ -n "$unmatched" ]]; then
+              echo "::error title=Perf INVALID (${PERF_SCENARIO})::a statement classifier did not match the engine's SQL (${unmatched% }): a changed statement text; the job fails"
+              exit 2
+            fi
             echo "::warning title=Perf INVALID (${PERF_SCENARIO})::the measurement could not be trusted (see the validity checks in the step summary); a scheduled INVALID does not fail the job"
             exit 0
           fi
@@ -199,9 +216,9 @@ jobs:
           done
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: perf-${{ matrix.scenario }}-${{ github.run_id }}
+          name: perf-${{ matrix.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: perf/results/
           retention-days: 14
