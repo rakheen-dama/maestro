@@ -557,9 +557,10 @@ never held up by a backlog. Because every queue is now bounded by default,
 two consequences of that are on the default path (`docs/open-issues.md`
 Issues 29 and 30): a node that adopts more runs than its slots holds their
 instance locks while they queue, so other nodes cannot take that backlog over;
-and a run still queued for a slot when shutdown begins is not interrupted — it
-stands down, recoverable, once it gets a slot, or the shutdown drain times out
-around it. Nothing is written or lost either way.
+and a run still queued for a slot when shutdown begins leaves at once — it
+stands down, recoverable, and hands its instance lock back before shutdown
+returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). Nothing is written or
+lost either way.
 
 On a saturated queue, a parked run's periodic re-check (which picks up a
 terminate issued on another node and is the fallback for a missed wake) waits
@@ -720,15 +721,15 @@ it replays a workflow against its recorded history.
 
 | Property                              | Type       | Default | Description                                                                                                    |
 |----------------------------------------|------------|---------|------------------------------------------------------------------------------------------------------------------|
-| `maestro.shutdown.timeout`            | `Duration` | `30s`   | How long graceful shutdown waits for in-flight workflows to drain before forcing through. |
+| `maestro.shutdown.timeout`            | `Duration` | `20s`   | The deadline for the whole engine shutdown: the drain of in-flight runs, the background loops, the instance-lock renewer and the lifecycle-event flush all share it. Runs still executing at the deadline are left running, never interrupted. Keep it at least 2 s below `spring.lifecycle.timeout-per-shutdown-phase`. See [Operations §15](operations.md#15-shutdown-one-deadline-and-the-grace-period). |
 | `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a wake it may have missed — a signal ingested elsewhere, or a timer fired/cancelled by a remote timer-poller leader. |
 | `maestro.signal.wake-notify.enabled`  | `boolean`  | `true`  | Whether the Postgres `LISTEN/NOTIFY` cross-node signal wake is active. Set `false` behind PgBouncer in transaction-pooling mode (`LISTEN` needs a session); wake then falls back to `wake-recheck-interval`. |
 | `maestro.signal.janitor-interval`     | `Duration` | `1h`    | How often unconsumed signals addressed to finished workflows are purged. Every node runs the janitor (the purge is idempotent; no leader election). |
 | `maestro.signal.terminal-retention`   | `Duration` | `7d`    | How long after a workflow reaches `COMPLETED`/`TERMINATED` its unconsumed signals are kept; `FAILED` workflows keep theirs because they can be retried. Orphaned (pre-delivery) and consumed signals are never purged by the janitor. |
 
 The first two were previously hardcoded 30-second constants with no
-configuration seam; they now bind under `maestro.*` like every other property,
-with the same 30s defaults, so unset deployments are unaffected.
+configuration seam; they now bind under `maestro.*` like every other property.
+`maestro.shutdown.timeout` now defaults to 20 s (see the release notes).
 
 Since migration `V5`, a signal's `received_at` — the order in which same-name
 signals are consumed — is assigned by the database clock (`DEFAULT now()`), not

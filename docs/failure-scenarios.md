@@ -313,8 +313,7 @@ replace the Postgres it started with.
   sends SIGKILL at 30 s.
 - **Expected:** the shutdown path marks nothing FAILED (`ExecutorShutdownException`
   is a control-flow `Error`); the kill truncates the activity; recovery
-  re-runs it. Check that the slot waiters not interrupted on shutdown
-  (Issue 29) do not hold the JVM past the orchestrator's grace period and that
+  re-runs it. Slot waiters leave at shutdown since WP5 (Issue 29). Check that
   the health endpoint reports "stopping" so the load balancer stops routing
   starts.
 - **Measure:** startWorkflow calls accepted after shutdown began.

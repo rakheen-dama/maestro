@@ -373,7 +373,7 @@ This is the at-least-once window every activity must tolerate. See [Pitfalls §3
 - Its workflow threads stop at their next store write and record nothing. The crash is thrown as the engine's own `ExecutorShutdownException`, an `Error`, so a `catch (Exception e)` in workflow code cannot swallow it. The instance keeps its status (`RUNNING`, `WAITING_*` or `COMPENSATING`) and stays recoverable, and its instance lock is released.
 - The test thread can still write. `handle.signal(...)` and `env.advanceTime(...)` while the node is down model a signal or a timer that lands during an outage. The signal waits in the store, and the timer row fires. The dead node's parked thread may wake but cannot record anything. The recovered run consumes the signal, or finds the fired timer row and records the wake.
 - `env.startWorkflow(...)` throws `IllegalStateException` until you recover.
-- After `crashNow()`, a workflow that is mid-activity finishes the activity before it stops. `recover()` waits for it for up to the engine's 30-second shutdown timeout.
+- After `crashNow()`, a workflow that is mid-activity finishes the activity before it stops. `recover()` waits for it for up to the engine's 20-second shutdown timeout.
 
 ### Recovering
 

@@ -628,7 +628,7 @@ flowchart TD
 
 ### Graceful Shutdown
 
-SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s by default, configurable via `maestro.shutdown.timeout`) → release instance locks → shutdown.
+SIGTERM → the web server's graceful drain and Maestro's shutdown run side by side (Spring phase `MAX-1024`) → Maestro: stop taking work (loops, parks, retry backoffs, task-queue waiters) → drain in-flight activities until `maestro.shutdown.timeout` (20 s) → stop renewing locks → flush lifecycle events → bean destruction (Maestro's Kafka consumers, the wake listener, the `DataSource`)
 
 A workflow parked mid-drain (awaiting a signal or timer, or mid-compensation)
 is abandoned rather than failed: shutdown raises `ExecutorShutdownException`
