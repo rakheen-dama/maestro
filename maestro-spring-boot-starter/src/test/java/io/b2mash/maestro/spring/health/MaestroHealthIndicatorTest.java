@@ -125,13 +125,14 @@ class MaestroHealthIndicatorTest {
         executorWithFailingRenewals.startWorkflow("wf-failing-renew", "AwaitForever", "default", null,
                 AwaitForever::new, awaitForever);
         assertThat(renewLock.renewCalls.await(5, TimeUnit.SECONDS))
-                .as("two renewal passes ran (the first one's failure is fully handled by then)").isTrue();
+                .as("three renewal passes ran (the first two's failures are fully handled by then)").isTrue();
         var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executorWithFailingRenewals,
                 false, false);
 
         var failing = indicator.health();
         assertThat(failing.getDetails()).containsEntry("instanceLockRenewerRunning", true);
-        assertThat((Integer) failing.getDetails().get("instanceLockRenewerConsecutiveFailures")).isPositive();
+        assertThat((Integer) failing.getDetails().get("instanceLockRenewerConsecutiveFailures"))
+                .isGreaterThanOrEqualTo(2);
         assertThat(failing.getStatus()).isEqualTo(Status.DOWN);
 
         renewLock.failing = false;
@@ -140,6 +141,114 @@ class MaestroHealthIndicatorTest {
         var recovered = indicator.health();
         assertThat(recovered.getDetails()).containsEntry("instanceLockRenewerConsecutiveFailures", 0);
         assertThat(recovered.getStatus()).isEqualTo(Status.UP);
+    }
+
+    /**
+     * Fix wave e3: the renewer is {@code DOWN} at a failure streak of two or
+     * more, not one — the instance-lock TTL (three renew intervals) tolerates
+     * one missed pass with a pass to spare. Each renewal pass is let through
+     * one at a time, so the streak the indicator reads is exact.
+     */
+    @Test
+    void theRenewerIsUpAfterOneFailedPassAndDownAfterTwoInARow() throws Exception {
+        var steppedLock = new SteppedRenewLock();
+        var stepped = WorkflowExecutor.builder(new InMemoryWorkflowStore(), serializer, "svc")
+                .distributedLock(steppedLock)
+                .instanceLockTtl(Duration.ofMillis(300))              // renews every 100 ms
+                .lifecycleEventsEnabled(false)
+                .build();
+        try {
+            stepped.startWorkflow("wf-stepped", "AwaitForever", "default", null, AwaitForever::new, awaitForever);
+            var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), stepped, false, false);
+
+            steppedLock.letOnePassThrough(2);                    // pass 1 fails; pass 2 waits inside renewAll
+            assertThat(stepped.instanceLockRenewerFailureStreak()).isEqualTo(1);
+            var oneMissed = indicator.health();
+            assertThat(oneMissed.getDetails()).containsEntry("instanceLockRenewerRunning", true)
+                    .containsEntry("instanceLockRenewerConsecutiveFailures", 1);
+            assertThat(oneMissed.getStatus()).as("one failed pass: the TTL still covers the held locks")
+                    .isEqualTo(Status.UP);
+
+            steppedLock.letOnePassThrough(3);                    // pass 2 fails; pass 3 waits
+            assertThat(stepped.instanceLockRenewerFailureStreak()).isEqualTo(2);
+            var twoMissed = indicator.health();
+            assertThat(twoMissed.getDetails()).containsEntry("instanceLockRenewerConsecutiveFailures", 2);
+            assertThat(twoMissed.getStatus()).as("two failed passes in a row").isEqualTo(Status.DOWN);
+
+            // Pass 3 succeeds. The stepping held the 300 ms lease past its TTL, so the
+            // backend may report the lock lost and the renewer then has nothing left
+            // to renew: wait for the streak to reset, not for a fourth renewAll.
+            steppedLock.failing = false;
+            steppedLock.permits.release();
+            await("a pass that does not fail").atMost(Duration.ofSeconds(5))
+                    .until(() -> stepped.instanceLockRenewerFailureStreak() == 0);
+            var recovered = indicator.health();
+            assertThat(recovered.getDetails()).containsEntry("instanceLockRenewerConsecutiveFailures", 0);
+            assertThat(recovered.getStatus()).isEqualTo(Status.UP);
+        } finally {
+            stepped.shutdown();
+        }
+    }
+
+    /**
+     * A lock whose {@code renewAll} waits for {@link #letOnePassThrough} before
+     * each call goes on, then throws while {@link #failing}. Interruptible, so
+     * the executor's shutdown ends a waiting pass.
+     */
+    private static final class SteppedRenewLock implements DistributedLock {
+
+        private final InMemoryDistributedLock delegate = new InMemoryDistributedLock();
+        private final java.util.concurrent.Semaphore permits = new java.util.concurrent.Semaphore(0);
+        private final AtomicInteger entered = new AtomicInteger();
+        volatile boolean failing = true;
+
+        /**
+         * Lets the pass now waiting inside {@code renewAll} go on, and returns
+         * once pass {@code next} has entered it — so the earlier pass's outcome
+         * has been fully handled by the renewer.
+         */
+        void letOnePassThrough(int next) {
+            await("pass " + (next - 1) + " to enter renewAll").atMost(Duration.ofSeconds(5))
+                    .until(() -> entered.get() >= next - 1);
+            permits.release();
+            await("pass " + next + " to enter renewAll").atMost(Duration.ofSeconds(5))
+                    .until(() -> entered.get() >= next);
+        }
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            return delegate.tryAcquire(key, ttl);
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            delegate.release(handle);
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            return delegate.renew(handle, ttl);
+        }
+
+        @Override
+        public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+            entered.incrementAndGet();
+            try {
+                permits.acquire();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted while waiting for a permit", e);
+            }
+            if (failing) {
+                throw new IllegalStateException("db down");
+            }
+            return delegate.renewAll(handles, ttl);
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return delegate.trySetLeader(electionKey, candidateId, ttl);
+        }
     }
 
     private static Method awaitForeverMethod() {
@@ -166,7 +275,7 @@ class MaestroHealthIndicatorTest {
     private static final class RenewFailsLock implements DistributedLock {
 
         private final InMemoryDistributedLock delegate = new InMemoryDistributedLock();
-        final CountDownLatch renewCalls = new CountDownLatch(2);
+        final CountDownLatch renewCalls = new CountDownLatch(3);
         volatile boolean failing = true;
 
         @Override

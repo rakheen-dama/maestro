@@ -28,8 +28,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *       control-flow {@code Error} included ({@code store: "unreachable"}) —
  *       or when a loop that is <em>enabled by
  *       configuration</em> has been started at least once but is not
- *       currently running: a real fault, such as a dead loop thread. A dead
- *       loop is {@code DOWN} even when the probe also timed out;</li>
+ *       currently running: a real fault, such as a dead loop thread — or when
+ *       the instance-lock renewer, though running, has failed two passes in a
+ *       row. A loop fault is {@code DOWN} even when the probe also timed
+ *       out;</li>
  *   <li>{@code UNKNOWN} when, with no such fault, the probe did not finish
  *       within {@link #STORE_PROBE_TIMEOUT} ({@code store: "timed out"}).
  *       Since 3.5a a probe that does not finish within the bound reports
@@ -92,8 +94,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *       its first instance lock (a node without a {@code DistributedLock} stays {@code "idle"});
  *       not a fault</li>
  *   <li>{@code instanceLockRenewerConsecutiveFailures} — the renewer's consecutive failed passes
- *       since its last good one; while it is above {@code 0} the status is {@code DOWN}, even with
- *       the renewer running, because held locks are not being renewed</li>
+ *       since its last good one; at {@code 2} or more the status is {@code DOWN}, even with the
+ *       renewer running, because held locks are not being renewed. A single failed pass reads
+ *       {@code UP} with the streak shown: the TTL (three renew intervals) tolerates it</li>
  *   <li>{@code runningWorkflowCount} — workflows currently executing on this node</li>
  * </ul>
  *
@@ -155,6 +158,15 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * appropriate for every deployment.
      */
     static final Duration STORE_PROBE_TIMEOUT = Duration.ofSeconds(2);
+
+    /**
+     * The instance-lock renewer's failure streak at which a running renewer is
+     * a fault: two failed passes in a row. The TTL (30 s by default) is three
+     * renew intervals, so it covers roughly two missed passes: after one, a
+     * pass is still to spare; after two, held locks are at the edge of
+     * expiring.
+     */
+    static final int RENEWER_FAULT_STREAK = 2;
 
     /** Name of the virtual thread a store probe runs on. */
     static final String PROBE_THREAD_NAME = "maestro-health-probe";
@@ -260,8 +272,11 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * The instance-lock renewer's detail and fault. It starts lazily, with this
      * node's first instance lock, and may never start, so an unstarted renewer
      * is {@link #IDLE}, not {@link #STARTING}. A renewer that is running but
-     * whose last pass failed is a fault too (review d7): its thread is alive,
-     * but the locks it holds are not being renewed.
+     * whose last {@link #RENEWER_FAULT_STREAK} passes in a row failed is a
+     * fault too (review d7, fix wave e3): its thread is alive, but the locks
+     * it holds are not being renewed. One failed pass is not (see
+     * {@link #RENEWER_FAULT_STREAK}): a single refused {@code renewAll} must
+     * not take a node out of readiness.
      *
      * @param everStarted         whether the renewer has been started
      * @param running             whether its thread is alive
@@ -271,7 +286,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
         if (!everStarted) {
             return new PollerState(IDLE, false);
         }
-        return new PollerState(running, !running || consecutiveFailures > 0);
+        return new PollerState(running, !running || consecutiveFailures >= RENEWER_FAULT_STREAK);
     }
 
     /** {@code detail} is a {@link Boolean}, or one of {@link #STARTING}/{@link #DISABLED}/{@link #IDLE}. */
