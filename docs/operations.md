@@ -1377,7 +1377,7 @@ Tomcat itself was not run). The host's `@KafkaListener` containers (phase
 | 4 | Releases every run queued for a task-queue slot (Issue 29) | no | — |
 | 5 | Drains the runs still executing | yes | what is left |
 | 6 | Joins the four loops asked to stop at step 2 | yes | what is left |
-| 7 | Gives the task-queue slot counts back their exact values | no | — |
+| 7 | Takes back the permits lent at step 4, so the task-queue slot counts are exact again (a pool with a thread still queued keeps its loan) | no | — |
 | 8 | Stops the instance-lock renewer, without an interrupt | yes | 2 s of what is left |
 | 9 | Flushes queued lifecycle events; what is still queued is dropped and counted | yes | 5 s of what is left |
 | 10 | Logs the summary line | no | — |

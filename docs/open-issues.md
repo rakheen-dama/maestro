@@ -2857,7 +2857,8 @@ removed.
 > interrupted: the run stands down recoverable through the existing
 > `ExecutorShutdownException` arm, writes nothing, and its `finally` releases
 > its instance lock before `shutdown()` returns. After the drain the governor
-> takes its loans back, so its slot counts are exact again. A free activity
+> takes its loans back from every pool with no thread still queued, so its
+> slot counts are exact again. A free activity
 > slot is still taken during the drain, so a bounded pool can run one activity
 > over its limit until the drain ends (MD-3). Pinned by
 > `TaskQueueGovernorTest$Shutdown` (the mechanism, including that no permit is
@@ -4501,7 +4502,9 @@ page.
 > instance-lock renewer: it counts down a latch the renewer waits on between
 > passes, lets a pass in progress finish, and joins the thread for at most
 > `min(2 s, what is left of the shutdown deadline)`. A pass that fails once
-> the manager is closed counts no `instanceLockRenewFailed`. Pinned by
+> the manager is closed counts no `instanceLockRenewFailed`, and a loss it
+> reports after close is logged at INFO and not sent to `instanceLockLost`
+> (the run is still stood down). Pinned by
 > `WorkflowInstanceLockManagerCloseTest` and
 > `WorkflowExecutorShutdownDeadlineTest.aShutdownDuringARenewalPassCountsNoRenewalFailure`.
 > Still open: the lock cleaner (below) and the four core pollers.
