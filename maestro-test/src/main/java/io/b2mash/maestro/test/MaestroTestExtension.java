@@ -1,6 +1,5 @@
 package io.b2mash.maestro.test;
 
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.extension.AfterEachCallback;
 import org.junit.jupiter.api.extension.BeforeEachCallback;
 import org.junit.jupiter.api.extension.ExtensionContext;
@@ -32,27 +31,18 @@ public final class MaestroTestExtension implements BeforeEachCallback, AfterEach
     /**
      * Builds the test's environment, with the concurrency limits of the
      * nearest {@link MaestroTest} on the test class or, for a {@code @Nested}
-     * class without one, on its enclosing classes.
+     * class without one, on the classes enclosing it at run time — so a
+     * nested class inherited from an unannotated base takes the annotated
+     * subclass's limits.
      */
     @Override
     public void beforeEach(ExtensionContext context) {
-        var annotation = nearestMaestroTest(context.getRequiredTestClass());
+        var annotation = AnnotationSupport.findAnnotation(context.getRequiredTestClass(), MaestroTest.class,
+                context.getEnclosingTestClasses());
         var builder = TestWorkflowEnvironment.builder();
-        if (annotation != null
-                && (annotation.defaultConcurrency() != 0 || annotation.defaultActivityConcurrency() != 0)) {
-            builder.defaultConcurrency(annotation.defaultConcurrency(), annotation.defaultActivityConcurrency());
-        }
+        annotation.filter(a -> a.defaultConcurrency() != 0 || a.defaultActivityConcurrency() != 0)
+                .ifPresent(a -> builder.defaultConcurrency(a.defaultConcurrency(), a.defaultActivityConcurrency()));
         context.getStore(NAMESPACE).put(ENV_KEY, builder.build());
-    }
-
-    private static @Nullable MaestroTest nearestMaestroTest(Class<?> testClass) {
-        for (Class<?> c = testClass; c != null; c = c.getEnclosingClass()) {
-            var found = AnnotationSupport.findAnnotation(c, MaestroTest.class);
-            if (found.isPresent()) {
-                return found.get();
-            }
-        }
-        return null;
     }
 
     @Override

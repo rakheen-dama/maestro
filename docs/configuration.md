@@ -575,8 +575,11 @@ most about one run's length of extra wait (arithmetic). With both defaults
 
 A recovered run still queued for a slot when shutdown begins leaves at once: it
 stands down, recoverable, and normally hands its instance lock back before
-shutdown returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). There are at
-most `concurrency` such runs per queue. That is not a guarantee: the drain
+shutdown returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). Runs the
+recovery poller admitted are at most `concurrency` per queue; the ungated
+passes — the startup pass with `maestro.recovery.enabled=false`, and
+`WorkflowExecutor.recoverWorkflows(Map)` — can leave a whole backlog queued.
+That is not a guarantee: the drain
 waits for the run's unwind only for what is left of
 `maestro.shutdown.timeout`, so a run still unwinding when the deadline passes
 (for example behind a run that overran the drain) can release its lock after

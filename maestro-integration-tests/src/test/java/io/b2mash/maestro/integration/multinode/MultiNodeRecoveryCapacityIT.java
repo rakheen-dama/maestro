@@ -211,7 +211,10 @@ class MultiNodeRecoveryCapacityIT extends PostgresIntegrationSupport {
     @DurableWorkflow(name = "RecoveryCapacityOrders", taskQueue = QUEUE)
     public static class OrdersWorkflow {
 
-        @ActivityStub
+        // Above the test's pre-release wait budget (four observations of up to
+        // 10 s each), so an activity blocked from the first pass on cannot time
+        // out and retry while the lock counts are still being read.
+        @ActivityStub(startToCloseTimeout = "PT2M")
         ChainActivities activities;
 
         /** @return the activity's result */

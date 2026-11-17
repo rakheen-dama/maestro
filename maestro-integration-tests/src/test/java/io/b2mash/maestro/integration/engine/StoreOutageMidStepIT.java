@@ -95,8 +95,17 @@ class StoreOutageMidStepIT extends PostgresIntegrationSupport {
                 outageCleared.countDown();
             }, OUTAGE_SECONDS, TimeUnit.SECONDS);
         })) {
-            node.startRecoveryPoller(RECOVERY_POLL_INTERVAL);
+            // Start the run first, then the poller. This node has no lock
+            // backend, so the only thing that stops a recovery pass adopting a
+            // run this node is starting is the run's registration, which comes
+            // just after its RUNNING row is written. The poller's first pass
+            // runs as soon as it starts: started first, that pass could read
+            // the new row inside that window and launch a twin, and then
+            // reserve runs twice (Issue 74, NoLockStartRecoveryRaceTest). Once
+            // start() has returned the run is registered, and every pass skips
+            // it until it is abandoned.
             var handle = node.start(workflowId, TestWorkflows.SagaWorkflow.class, "book");
+            node.startRecoveryPoller(RECOVERY_POLL_INTERVAL);
 
             assertTrue(outageCleared.await(BOUND.toSeconds(), TimeUnit.SECONDS), "the outage never began");
             var clearedAt = System.nanoTime();
@@ -104,6 +113,8 @@ class StoreOutageMidStepIT extends PostgresIntegrationSupport {
             var finishedAfterOutage = Duration.ofNanos(System.nanoTime() - clearedAt);
 
             var charges = recorder.count("charge");
+            var seen = "charges=" + charges + ", abandoned=" + observer.abandoned()
+                    + ", standDowns=" + observer.standDowns() + ", callbacks=" + observer.callbackNames();
             // The blip test below is the one that covers the charges == 1 side.
             assertAll(
                     () -> assertTrue(finishedAfterOutage.compareTo(RECOVERY_POLL_INTERVAL.multipliedBy(3)) <= 0,
@@ -116,7 +127,7 @@ class StoreOutageMidStepIT extends PostgresIntegrationSupport {
                     () -> assertEquals(charges == 2,
                             observer.abandoned().contains(AbandonReason.STORE_UNAVAILABLE),
                             "a re-executed charge must be explained by a STORE_UNAVAILABLE abandon, and "
-                                    + "only then; charges=" + charges + ", abandoned=" + observer.abandoned()),
+                                    + "only then; " + seen),
                     () -> assertEquals(1, recorder.count("reserve"),
                             "reserve's outcome was recorded before the outage and must be replayed"),
                     () -> assertEquals(1, recorder.count("ship")));

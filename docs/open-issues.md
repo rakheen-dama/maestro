@@ -368,6 +368,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | Open |
 | [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
 | [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
+| [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
 | [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | Open |
 | [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | Open |
 | [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | Open |
@@ -2877,8 +2878,10 @@ removed.
 > and release their locks, within the tests' deadline). The interrupt fix proposed below was rejected: a
 > restored interrupt flag on the unwinding thread could fail the JDBC release
 > of its instance lock in the run's `finally` (Audit A, "Surprises" 5).
-> Since WP6 at most `concurrency` recovered runs per queue can be queued at
-> shutdown, not a whole backlog.
+> Since WP6 the recovery poller's passes leave at most `concurrency`
+> recovered runs per queue queued at shutdown, not a whole backlog; the
+> ungated passes (the startup pass with `maestro.recovery.enabled=false`, and
+> `WorkflowExecutor.recoverWorkflows(Map)`) still can.
 >
 > Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
@@ -5029,6 +5032,41 @@ the first pass is in progress and `"complete"` afterwards, pinned by a
 starter test.
 
 ---
+
+### Issue 74 — Without a lock backend, a recovery pass can adopt a run this node is starting {#issue-74}
+
+> **Open.** Filed while fixing a CI failure of `StoreOutageMidStepIT`
+> (2026-11-17, branch `fix/recovery-capacity`). Recorded, not fixed.
+> Pinned by `NoLockStartRecoveryRaceTest`.
+
+**Kind:** Library gap — at-least-once window. **Severity:** Low.
+
+**What happens.** `WorkflowExecutor.startWorkflow` writes the `RUNNING` row
+(`WorkflowExecutor.java:701`) and only later registers the run in this node's
+running set (`launchWorkflow`, `WorkflowExecutor.java:2873`). With a lock
+backend the start takes the instance lock before the row exists, so a recovery
+pass cannot adopt it. With **no** lock backend the running set is the only
+guard: a pass that reads the new row between the two adopts it (lease epoch
++1) and launches a second run of the same workflow on the same node. The
+lease fence and the terminal compare-and-set keep one persisted outcome — the
+fresh run's writes are fenced, or it converges on the twin's outcome — but
+the first activity can run twice: once in each run.
+
+**Harm.** One extra execution of an activity, which the at-least-once contract
+already allows (activities must be idempotent). Only on a node with no lock
+backend, and only when a pass coincides with a start. Since the recovery
+poller's first pass runs as soon as it starts, a start issued at the same
+moment as the poller starts can meet it; that is how `StoreOutageMidStepIT`
+(which started the poller just before its workflow) failed once in CI with
+`reserve` run twice. That test now starts the run before the poller.
+
+**How to tackle it.** On the no-lock path, register the run (a placeholder
+entry) in the running set before `createInstance`, and remove it if the write
+fails; or have a pass skip a row whose `started_at` is within a few seconds of
+now when no lock backend is configured.
+
+**Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
+the just-started row.
 
 ### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
 
