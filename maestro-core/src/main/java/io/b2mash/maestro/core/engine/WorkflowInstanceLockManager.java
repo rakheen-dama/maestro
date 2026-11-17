@@ -62,7 +62,7 @@ final class WorkflowInstanceLockManager {
     static final Duration DEFAULT_LOCK_TTL = Duration.ofSeconds(30);
     static final Duration DEFAULT_RENEW_INTERVAL = Duration.ofSeconds(10);
     static final String DEFAULT_KEY_PREFIX = "maestro:lock:";
-    /** How long {@link #close()} waits for the renewer to end; the wake listener's bound too (WP10). */
+    /** How long {@link #close()} waits for the renewer to end; matches the wake listener's bound (WP10). */
     static final Duration CLOSE_JOIN = Duration.ofSeconds(2);
     private static final String WORKFLOW_KEY_SEGMENT = "workflow:";
 
