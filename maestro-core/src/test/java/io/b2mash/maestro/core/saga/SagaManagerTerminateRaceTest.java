@@ -18,7 +18,9 @@ import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.PurgeResult;
+import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
@@ -410,6 +412,10 @@ class SagaManagerTerminateRaceTest {
         }
         @Override public List<WorkflowInstance> getRecoverableInstances() {
             return delegate.getRecoverableInstances();
+        }
+        @Override public List<WorkflowInstance> getRecoverableInstances(
+                String serviceName, @Nullable RecoveryCursor after, int limit) {
+            return delegate.getRecoverableInstances(serviceName, after, limit);
         }
         @Override public void appendEvent(WorkflowEvent event) { delegate.appendEvent(event); }
         @Override public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
