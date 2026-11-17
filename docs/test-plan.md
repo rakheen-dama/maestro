@@ -179,6 +179,228 @@ entire integration seams unverified. This plan makes those seams explicit.
 
 Every integration pin gates on the terminal **event** via `TerminalWait` (Review Focus 5), not on the instance row, so it cannot pass on the non-atomic-write window Issue 26 closed.
 
+### Load suite (k6, `perf/`)
+
+A k6 harness that drives `maestro-samples/sample-perf` (Maestro's true
+defaults, unpublished) on a cold Docker Compose stack (Postgres 16 with
+`pg_stat_statements`, Kafka 3.9 with every topic pre-created, Prometheus) and
+judges each run from what Postgres recorded. D4: numbers first — pass/fail
+rests only on statement counts and correctness; throughput, latency, memory
+and slots are reported, never gated.
+
+**Commands** (from the repository root; one run per host at a time — the
+host-wide lock `/tmp/maestro-perf.lock` refuses a second):
+
+| Scenario | Command | What it answers |
+|---|---|---|
+| smoke | `perf/run.sh smoke` | 20 chain runs (2 × 10 ms) complete; every measurement path works |
+| s1-throughput | `perf/run.sh s1-throughput` | one node's throughput ceiling at the defaults; statements per workflow (chain 5 × 50 ms) |
+| s3-parked | `perf/run.sh s3-parked` | the steady store load of 1k–10k parked runs, per parked run per minute; `PERF_PARK_MODE=sleep` parks on a durable `sleep()` instead of a signal |
+
+Options: `--profile local|full` (default `local`), `--replicas N` (default 1),
+`--record-baseline` (S1, S3; clean tree only: judges the run *without* the
+existing `perf/baselines/<scenario>.json`, and on PASS replaces it, printing
+old and new values side by side; see *Re-recording a baseline* below). Environment: `PERF_ADMIN_EVENTS=true|false`
+(default `false`, the engine's default since 3.11c; every result records it in
+`identity.config.adminEventsRequested`, `identity.effective.adminEventsEffective`,
+`validity.adminEvents` and `summary.md`), `PERF_PARK_MODE`, `PERF_KEEP_UP=1`,
+`PERF_ENGINE_REF`, `PERF_NODE_HEAP` / `PERF_NODE_CPUS` / `PERF_NODE_MEM`,
+`PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1` (with `--record-baseline`: allow a
+baseline of other settings to replace the old one).
+
+**Prerequisites:** Docker with ≥ 6 GiB of memory (a run below that records a
+WARN note), `docker compose` v2, `jq`, `unzip`, JDK 25 (the run builds and
+stamps the sample's jar with `./gradlew :maestro-samples:sample-perf:bootJar`).
+
+**Profiles:**
+
+| Scenario | local | full |
+|---|---|---|
+| s1-throughput | levels 5 / 20 / 40 / 80 starts/s, ramp 5 s, hold 40 s; about 6 min | levels 5 / 10 / 20 / 40 / 60 / 80 / 120, ramp 10 s, hold 120 s; about 20–25 min |
+| s3-parked | plateaus 1000 / 2000 parked, idle 60 s, hold 120 s; about 12 min | plateaus 1000 / 5000 / 10000, idle 120 s, hold 300 s; about 35 min |
+
+**Check classes and the verdict** (`perf/eval/common.jq`; allow-list, first
+match wins): **ERROR** (exit 3) — a check is ERROR or of an unknown class or
+status, an advisory reports anything but PASS/WARN, or there are no checks;
+**INVALID** (exit 2) — a *validity* check is not PASS (the measurement cannot
+be trusted: identity of the jar on every node, no restart, admin events as
+requested, no `pg_stat_statements` eviction, k6 exit and dropped iterations,
+warm-up drained, the background window, the load window's record (smoke, S1;
+S3: `validity.record`), periodic sweeps accounted for, the executed plan);
+**FAIL** (exit 1) — a *correctness* check is not PASS or
+NO_BASELINE, or a *gate* is FAIL or WARN; **INVALID** — a gate could not be
+judged; otherwise **PASS** (NO_BASELINE gates count as pass). *Advisory*
+checks (latency, ceiling, contention, heap, slots, decomposition, …) only
+PASS or WARN and never change the verdict.
+
+**Gate rules:**
+
+- Statement counts are reported gross and **net**: the background rate
+  measured on the idle stack (timer-poll ticks counted from the due-timer
+  query, never assumed) is subtracted; lock-cleaner passes are identified by
+  text and subtracted exactly; a signal-janitor or retention statement in a
+  window makes the run INVALID.
+- `gate.statementsPerWorkflow` (S1) and `gate.parkedCostBaseline` (S3):
+  `statements_gate`, **symmetric** — PASS when |net − expected| ≤ band,
+  band = tolerance (one tick per background poller) + relativeAllowance ×
+  expected, relativeAllowance 0.02 in both scenarios (justified in each
+  evaluator's header); a drop below the band FAILs too, and its detail says
+  how to re-record the baseline if the drop is intended. INVALID when the tolerance alone exceeds 25 % of
+  expected. NO_BASELINE when no baseline matches (S1: workflow shape, profile,
+  replicas, `adminEventsEnabled`; S3: park mode, wake-recheck and
+  recovery-poll intervals, lock TTL, plateaus and Pmax, profile, replicas,
+  `adminEventsEnabled`). A baseline file of another `schema`
+  or `scenario` makes the gate INVALID; an empty or unparseable one, or one
+  holding more than one JSON document or a non-object, makes it ERROR (never
+  "absent"). A key that appears twice in a baseline file takes its last
+  value (jq's parser). A gate that used a baseline names its `runId` and
+  `engineCommit` in the detail.
+- `gate.parkedCostLinear` (S3): every plateau's per-parked cost within ± 25 %
+  of the smallest plateau's.
+- `gate.parkedCostArithmetic` (S3, absolute, with or without a baseline):
+  every plateau within ± 5 % (+ tolerance) of the documented arithmetic
+  (`docs/operations.md` §13) at the run's park mode, replicas and bound
+  intervals — centre 6.017 per parked run per minute for `awaitSignal` at one
+  node, 6.032 at two, 4.017 for `sleep` at one node.
+- `gate.statementsMeasured` (smoke): net statements per workflow in [5, 500].
+
+**Results:** `perf/results/<runId>/` (git-ignored): `identity.json` (repo
+head, `engineCommit` and `harnessCommit` — the last commits touching the
+engine modules and the harness paths —, dirty flag, host, images and digests,
+container limits, every node's `/perf/info`, effective settings),
+`measurements.json`, `result.json`, `summary.md`, `prometheus.json`,
+`compose.log`, k6 summaries. `result.json` is schema 1:
+`{schema: 1, identity, scenario, profile, measurements, checks: [{id, class,
+status, value, limit, detail}], verdict}`. The last stdout line is always
+`VERDICT <PASS|FAIL|INVALID|ERROR> <dir>`. Baselines live in `perf/baselines/`
+(committed; each carries its source `runId`, `engineCommit`, `harnessCommit`,
+profile, replicas, `adminEventsEnabled` and the figure). Run evidence cited
+in docs and harness headers is committed as `perf/.evidence/wp11/<runId>.result.json`.
+
+**Re-recording a baseline** (after an intended change of a gated figure,
+e.g. an engine change that removes statements — the symmetric gate FAILs it
+against the old baseline, by design):
+
+1. Commit the change; the tree must be clean (`git status` shows nothing
+   outside `perf/results/`).
+2. `perf/run.sh <scenario> --profile <profile> --replicas <n> --record-baseline`
+   with the profile and replicas of the baseline you replace (both committed
+   baselines are `local`, 1 replica). The run is judged without the old
+   baseline: validity and correctness must PASS, and every absolute gate
+   (S3's linearity and arithmetic) still judges; a run that does not PASS
+   leaves the file untouched (exit 3, "--record-baseline refused"). So does
+   a run whose matched settings differ from the old baseline's (profile,
+   replicas, `adminEventsEnabled`, workflow shape; S3 also park mode, the
+   wake-recheck and recovery-poll intervals, lock TTL, plateaus, Pmax): the
+   weekly CI gates against that file. To change the settings on purpose, set
+   `PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1` (exactly `1`) for that run; the
+   change is printed.
+3. On PASS the file is rewritten and the old and new values are printed side
+   by side (also in `perf/results/<runId>/baseline-record.txt`). Review
+   `git diff perf/baselines/` and commit it on its own, with the reason.
+4. To record a second scenario, commit the first baseline before its run
+   (the new file makes the tree dirty).
+
+**Start retries and connection keep-alive.** A refused start fails S1's
+correctness with zero tolerance. A start that fails at the transport (status
+0: the connection failed or was closed under the request, k6's "Request
+Failed … EOF", or k6's request timeout) is retried **once** with the same
+body, so the same `workflowId` (`perf/k6/lib/common.js` `startWorkflow`,
+every start script). It is accepted when the first attempt got 202, or the
+retry got 202 or 409 (`PerfController`'s answer for an existing
+`workflowId`: the first attempt had created the row); any other status is
+never retried. k6 counts retries in `start_retries`; each k6 record carries
+`startRetries`, and S1 reports its phase's as `s1StartRetries` in
+`correctness.allCompleted` — a non-zero count is a note in the detail, never
+a failure. A retry that fails again is a failed check: FAIL. The node keeps
+an idle keep-alive connection for 5 min (`server.tomcat.keep-alive-timeout:
+5m` in `sample-perf`'s `application.yml`; unset, Tomcat uses its connection
+timeout), longer than any VU waits between two requests (about 120 s: 600
+VUs at 5 starts/s), so it does not close a connection a VU is about to
+reuse. This is the harness's connection setting, not a Maestro one.
+
+**Self-tests (no Docker):** `perf/eval/selftest.sh <smoke dir> <s1 dir> <s3 dir>`
+doctors recorded runs one fault at a time and asserts the verdict each fault
+must produce (`perf/eval/selftest-evidence.sh` runs it on the three source
+runs rebuilt from `perf/.evidence/wp11/`, including the S1 run's committed
+`prometheus.json`, so it needs no local results); `perf/lib/lock-selftest.sh`
+races the run lock; `perf/lib/baseline-selftest.sh` exercises the record
+path on committed evidence (an intended improvement recorded; an INVALID or
+FAIL run, a settings change without the override, or a failing write refused
+with the old file untouched); `perf/lib/evidence-selftest.sh` asserts that no
+committed evidence or baseline holds an absolute path, a `pwd` or a host
+name, and that `run.sh` still records `uname -srm`. All but the lock race
+pass on jq 1.7.1 and 1.8.1.
+
+**CI:** a pull request that touches `perf/**`, `sample-perf` or the
+workflow runs `perf.yml`'s `selftest` job (contents: read): the evidence
+guard, the evaluator self-test from committed evidence and the
+baseline-record self-test; never a load run. The load job:
+`.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
+(scenario, profile, replicas, admin_events; defaults `s1-throughput`,
+`local`, `1`, `false`) and Saturday 04:00 UTC (s1-throughput and s3-parked,
+**local** profile: the profile both committed baselines were recorded with,
+so the baseline gates judge; `full` is a manual choice, and its baseline gates
+read NO_BASELINE). Never on pull requests: a load run on a shared 4-vCPU
+runner is not a merge signal (pull requests run only the self-tests above). What is hardware-sensitive on such a runner
+(the statement figures are not): dropped iterations and the plan's iteration
+count (`validity.droppedIterations`, `validity.plan`; also the warm-up drain,
+`validity.warmup` — all INVALID), Scenario 3's 600 s plateau wait
+(`correctness.plateauReached`) and the drain timeouts (S1 300 s local /
+1200 s full, S3 probes 120 s, S3 release 120 s + Pmax / 10 s; `correctness.*`
+— all FAIL). FAIL and ERROR fail the job on every trigger; INVALID fails a
+dispatched job, but a **scheduled INVALID is a warning annotation and the job
+succeeds**; a NO_BASELINE gate is a warning annotation. Read a FAIL's detail
+before calling it an engine regression. Results are uploaded for 14 days.
+`gh workflow run perf.yml -f scenario=smoke -f profile=local`.
+
+**Adding a scenario (WP12):** a `perf/scenarios/<name>.sh` defining
+`scenario_run` (writes `measurements.json`), a `perf/eval/<name>.jq` (includes
+`common`, returns `result(...)`) and its k6 script under `perf/k6/` — nothing
+else; `run.sh` dispatches on the file names (add the name to its scenario
+`case` and to `perf.yml`'s choice list).
+
+**First numbers** (2026-11-16/17, engine 9eb7ca6 = `main` 525b287 merged
+into the harness branch; one node unless stated; admin events off unless
+stated; MacBook Pro, 10 CPUs, Docker 7837 MiB, a **shared** host: "contended"
+= `advisory.contention` WARN, host load above 2 per CPU). Every runId's
+`result.json` is committed under `perf/.evidence/wp11/`; the baselines are
+`perf/baselines/s1-throughput.json` (r20261116t231034z) and
+`perf/baselines/s3-parked.json` (r20261116t231822z).
+
+| Run | runId | Verdict | Figures |
+|---|---|---|---|
+| smoke, local | r20261116t230707z, r20261116t230851z | PASS, PASS | net statements per workflow 16.98, 16.97 (chain 2 × 10 ms); foreign rows 0 |
+| smoke, 2 replicas | r20261116t231624z | PASS | 17.06; two distinct hostnames |
+| S1 local, baseline record | r20261116t231034z | PASS | 26 net statements per workflow (6337 workflows); ceiling 71.60 completions/s; sustained level 40; contended |
+| S1 local, gate re-run | r20261116t232948z | PASS | gate 26 against 26 ± 0.52; ceiling 73.43/s, hold-window 75.36/s, engine overhead 16.96 ± 2.9 ms; quiet |
+| S1 local, admin events on ×2 | r20261116t222331z, r20261116t225610z | PASS, PASS | 26 and 26 net (164860, 164857 calls vs 164862, 164858 off: r20261116t221747z, r20261116t222856z); ceilings 73.16, 73.48 on vs 73.01, 70.61 off; all four contended |
+| S1 full | r20261116t234614z | PASS when run (gate NO_BASELINE: the baseline is local); **FAIL** under the evaluator of the first fix wave: 1 of 42973 starts was refused (k6 "Request Failed … EOF" with no HTTP status; no row), and a refused start is a correctness failure. Probable cause, not proven: the node closed an idle keep-alive connection just as a VU reused it. Since then the node keeps idle connections for 5 min and k6 retries such a start once (see *Start retries*) | 26.01 net over 42972 workflows; completions/s per level L5 4.99, L10 9.80, L20 19.57, L40 39.21, L60 59.19, L80 74.26, L120 75.61 (offered 79.24 / 118.43); p95 309.2 / 321.4 / 397.7 / 417.8 / 395.3 / 8379.0 / 82102.9 ms; contended (2.06 per CPU) |
+| S3 local, baseline record | r20261116t231822z | PASS | 6.0154 / 6.0137 statements per parked run per minute at P = 1000 / 2000 (3.0077 / 3.0068 per 30 s); linearity 0.9997; arithmetic centre 6.017 |
+| S3 local, gate re-run | r20261116t233507z | PASS | 6.0165 / 6.0161; baseline gate 6.0161 against 6.0137 ± 0.121; quiet |
+| S3 local, sleep mode | r20261116t224549z | PASS | 4.0173 / 4.0169 against the 4.017 arithmetic; re-check 2.0001 / 1.9999 reads per parked run per 30 s |
+| S3 full | r20261117t000526z | **INVALID** | k6's virtual users were exhausted seeding P = 5000 (723 dropped iterations; the start endpoint's p95 reached 4 s on a host at up to 14.48 load per CPU), so 4278 runs parked and the plateau was not reached. Whether the system under test was slow or the generator was starved is not established either way: the run measures neither. P = 1000 measured 6.0151 (arithmetic gate PASS). To be re-run on a quiet host |
+| cherry-pick onto cbf5a2a (pre-WP11 engine): smoke | r20261117t002705z | PASS | 21.07; `engineCommit` fe7e548 (the last engine commit at cbf5a2a, same engine tree), `harnessCommit` 64416c3; four empty queries (the three WP11 meters and `maestro_wake_permits`) |
+| cherry-pick onto cbf5a2a: S1 local | r20261117t002853z | **FAIL**, on the baseline gate only | 36 net statements per workflow (228232 calls) against the 26 baseline: the gate sees the per-activity lock's 10 statements; the WP11-meter advisories say "not available" |
+
+The pre-merge engine measured 36 net statements per workflow in S1 (four quiet
+local runs, e.g. r20261112t223114z) and the same S3 figures (6.0141–6.0172,
+r20261113t030358z and others): removing the per-activity lock (3.10) took
+exactly 10 statements (2 × 5 activities) off S1 and nothing off a parked run.
+
+**An older engine with this harness:**
+
+```bash
+git worktree add --detach ../k6-old <engine-commit>
+cd ../k6-old
+git cherry-pick $(git log --reverse --format=%H --grep='^test(perf)' origin/main)
+perf/run.sh smoke && perf/run.sh s1-throughput
+```
+
+Cite both commits from `identity.repo` (`engineCommit` is the old engine,
+`harnessCommit` the cherry-picked harness). On an engine that predates the
+WP11 meters the advisories that need them say "not available".
+
 ---
 
 ## 2. Ranked gaps (what has NOT been verified to work)
@@ -499,10 +721,12 @@ resurfaces, start there.
 ## 4. Explicitly out of scope (for now)
 
 Valkey beyond existing coverage (best-effort), RabbitMQ parity suite,
-admin dashboard UI tests, performance/load testing. **No longer out of
+admin dashboard UI tests. **No longer out of
 scope, closed 2026-08-01:** chaos testing of >TTL pauses — the multi-instance
 chaos harness's `PAUSE_RESUME` action freezes a real container past the 30s
 instance-lock TTL on every run (mandated ≥2 loan-node occurrences per run);
 split-brain is still accepted-by-design (fencing tokens have not landed —
 `docs/open-issues.md` Issue 11), but its measured consequences are no longer
 unmeasured — see `docs/operations.md` and Issue 11's evidence section.
+
+Performance/load testing moved into scope 2026-11-12 — see §1 *Load suite*.

@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.observe;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -149,6 +150,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.resumed().size(), "workflowResumed");
             assertEquals(1, recorder.completed().size(), "workflowCompleted");
             assertEquals(1, recorder.failed().size(), "workflowFailed");
+            assertEquals(1, recorder.finished().size(), "workflowFinished");
             assertEquals(1, recorder.compensating().size(), "workflowCompensating");
             assertEquals(1, recorder.terminated().size(), "workflowTerminated");
             assertEquals(1, recorder.parked().size(), "workflowParked");
@@ -270,6 +272,7 @@ class CompositeEngineObserverTest {
         o.workflowResumed(WF);
         o.workflowCompleted(WF);
         o.workflowFailed(WF, "java.lang.IllegalStateException");
+        o.workflowFinished(WF, WorkflowStatus.COMPLETED, Duration.ofMillis(42));
         o.workflowCompensating(WF);
         o.workflowTerminated(WF);
         o.workflowParked(WF, ParkKind.SIGNAL);

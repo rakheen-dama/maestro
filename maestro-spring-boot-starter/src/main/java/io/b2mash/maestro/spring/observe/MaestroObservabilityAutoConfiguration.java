@@ -2,6 +2,7 @@ package io.b2mash.maestro.spring.observe;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
+import io.b2mash.maestro.spring.config.WorkflowRegistrar;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.propagation.Propagator;
@@ -144,6 +145,25 @@ public class MaestroObservabilityAutoConfiguration {
         @ConditionalOnBean({MeterRegistry.class, WorkflowExecutor.class})
         MaestroEngineGauges maestroEngineGauges(MeterRegistry registry, WorkflowExecutor executor) {
             return new MaestroEngineGauges(registry, executor);
+        }
+
+        /**
+         * @param registry  the Micrometer registry the gauges are registered against
+         * @param executor  the executor whose task-queue governor the gauges read
+         * @param registrar the registered workflows, whose task queues get a gauge
+         * @return a {@link MaestroTaskQueueGauges} listener — it registers the
+         *         gauges on {@code ContextRefreshedEvent}, once every workflow
+         *         is registered. Requires the {@link WorkflowRegistrar} too:
+         *         an application that builds its own {@code WorkflowExecutor}
+         *         without a {@code WorkflowStore} bean skips {@link
+         *         MaestroAutoConfiguration}, so no registrar exists, and these
+         *         gauges step aside instead of failing startup
+         */
+        @Bean
+        @ConditionalOnBean({MeterRegistry.class, WorkflowExecutor.class, WorkflowRegistrar.class})
+        MaestroTaskQueueGauges maestroTaskQueueGauges(MeterRegistry registry, WorkflowExecutor executor,
+                                                      WorkflowRegistrar registrar) {
+            return new MaestroTaskQueueGauges(registry, executor, registrar);
         }
     }
 

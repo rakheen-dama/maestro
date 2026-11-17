@@ -646,6 +646,77 @@ class TaskQueueGovernorTest {
         }
     }
 
+    // ── in-use accessors (WP11: maestro.taskqueue.slots.used) ─────────
+
+    @Test
+    void inUseTracksAcquireParkAndRelease() throws Exception {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 3)));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+
+        g.acquireWorkflowSlot("q", "a");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"));
+
+        var seenWhileParked = g.parked("a", () -> g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), seenWhileParked, "a parked run gives its slot back");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the run holds its slot again after the park");
+
+        g.acquireActivitySlot("q");
+        g.acquireActivitySlot("q");
+        assertEquals(OptionalInt.of(2), g.activitySlotsInUse("q"), "2 of 3 activity slots held");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the two pools are independent");
+
+        g.releaseActivitySlot("q");
+        g.releaseActivitySlot("q");
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+
+        g.releaseWorkflowSlot("a");
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"));
+    }
+
+    @Test
+    void inUseIsEmptyForUnboundedQueues() {
+        assertEquals(OptionalInt.empty(), UNBOUNDED.workflowSlotsInUse("x"));
+        assertEquals(OptionalInt.empty(), UNBOUNDED.activitySlotsInUse("x"));
+    }
+
+    @Test
+    void inUseUsesDefaultLimitsForUnconfiguredQueue() {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(20, 20));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("default"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("default"));
+        g.acquireWorkflowSlot("default", "a");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("default"));
+        assertEquals(OptionalInt.of(19), g.availableWorkflowSlots("default"),
+                "the in-use read created the same pool the acquire then used");
+    }
+
+    /**
+     * The merge of WP5 and WP11: while {@link TaskQueueGovernor#shutdown}'s
+     * loan is out, a pool has one permit more than its limit, so the in-use
+     * reads one less than the slots held (-1 on an idle pool); the reclaim
+     * makes them exact again. A default pool first created by an in-use read
+     * before shutdown is one that gets a loan.
+     */
+    @Test
+    void inUseReadsOneLessWhileTheShutdownLoanIsOutAndIsExactAfterTheReclaim() {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)), new TaskQueueLimits(3, 3));
+        g.acquireWorkflowSlot("q", "a");
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("lazy"), "the read creates the default pool");
+
+        g.shutdown();
+
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"), "1 held, read as 0 while the loan is out");
+        assertEquals(OptionalInt.of(-1), g.activitySlotsInUse("q"), "an idle pool reads -1 while the loan is out");
+        assertEquals(OptionalInt.of(-1), g.workflowSlotsInUse("lazy"), "the lazily created pool got a loan too");
+
+        g.reclaimShutdownPermits();
+
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("lazy"));
+    }
+
     @Test
     void limitsMustBePositive() {
         assertThrows(IllegalArgumentException.class, () -> new TaskQueueLimits(0, 1));

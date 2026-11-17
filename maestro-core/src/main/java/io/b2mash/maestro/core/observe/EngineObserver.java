@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
@@ -57,6 +58,28 @@ public interface EngineObserver {
      *        (open-ended cardinality)
      */
     default void workflowFailed(WorkflowInfo w, String exceptionType) {}
+
+    /**
+     * This node won the terminal transition, and this is how long the workflow
+     * took from start to that outcome.
+     *
+     * <p>Fired only by the node that won the terminal transition, directly
+     * after {@link #workflowCompleted} or {@link #workflowFailed}, on the same
+     * thread. Never fired for a converged loser, a stand-down, an abandoned run
+     * ({@link #runAbandoned}) or a terminate ({@link #workflowTerminated}).
+     * It fires once per terminal transition, not once per workflow: a
+     * workflow that failed, was manually retried and then completed fires it
+     * once with each status.
+     *
+     * @param w       identity of the workflow that finished
+     * @param status  the outcome this node recorded:
+     *                {@link WorkflowStatus#COMPLETED} or {@link WorkflowStatus#FAILED}
+     * @param elapsed now minus the instance row's {@code startedAt}, clamped at
+     *                {@link Duration#ZERO}. It is end-to-end wall time, not
+     *                execution time: it includes park time (signals, timers)
+     *                and any downtime before a recovery adopted the workflow
+     */
+    default void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {}
 
     /** Saga compensation is starting for this workflow. */
     default void workflowCompensating(WorkflowInfo w) {}
@@ -276,9 +299,11 @@ public interface EngineObserver {
      * state. Without this callback a span opened on the workflow thread is
      * never closed and therefore never exported.
      *
-     * <p>Counting observers should <b>not</b> implement this: {@link
-     * #workflowTerminated} already fires exactly once for a terminate, so a
-     * second emission here would double-count.
+     * <p>A counting observer should count this under its <b>own</b> meter,
+     * never fold {@link AbandonReason#TERMINATED} into a terminate counter:
+     * {@link #workflowTerminated} already fires exactly once per terminate, on
+     * the operator's thread, so counting {@code TERMINATED} there as well
+     * would double-count the terminate.
      *
      * @param w      identity of the workflow whose local run ended
      * @param reason why the run was abandoned

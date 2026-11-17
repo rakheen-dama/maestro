@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "scenario": "s1-throughput",
+  "profile": "local",
+  "runId": "r20261116t231034z",
+  "recordedAtUtc": "2026-11-16T23:10:34Z",
+  "engineCommit": "9eb7ca6fc0a499a5ef26bfda9573995d0646c716",
+  "harnessCommit": "a1dca1abccf4934b7a183677dc87ded2bf3969d7",
+  "replicas": 1,
+  "adminEventsEnabled": false,
+  "workflowShape": {
+    "type": "chain",
+    "activities": 5,
+    "activityMillis": 50
+  },
+  "statementsPerWorkflowNet": 26,
+  "netTolerancePerWorkflow": 0
+}
