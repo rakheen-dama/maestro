@@ -380,6 +380,8 @@ the reproduction confirmed the reading was right.
 
 ## 5. The issues
 
+<a id="issue-1"></a>
+
 ### Issue 1 — Failed signal handlers lose signals permanently {#issue-1}
 
 > **Resolved.** Bounded, exponential-backoff redelivery plus dead-lettering,
@@ -465,6 +467,8 @@ green.
 
 ---
 
+<a id="issue-2"></a>
+
 ### Issue 2 — A timer can fire once and then stall the workflow forever {#issue-2}
 
 > **Resolved.** The reproduction below was written first and it failed exactly as
@@ -540,6 +544,8 @@ leaves a workflow that recovery can complete. — Done.
 
 ---
 
+<a id="issue-3"></a>
+
 ### Issue 3 — Lifecycle publishing can block workflow start for 60s {#issue-3}
 
 > **Resolved.** Lifecycle publishing moved off the workflow thread onto a
@@ -584,6 +590,8 @@ the producer at a non-existent topic and asserts `startWorkflow` returns
 promptly.
 
 ---
+
+<a id="issue-4"></a>
 
 ### Issue 4 — `ExecutorShutdownException` can be swallowed by user code {#issue-4}
 
@@ -635,6 +643,8 @@ proving it.
 
 ---
 
+<a id="issue-5"></a>
+
 ### Issue 5 — Shutdown during compensation leaves a workflow `COMPENSATING` {#issue-5}
 
 > **Resolved.** `SagaManager.executeParallel`'s branch outcome-collection now
@@ -679,6 +689,8 @@ replay them and continue from the right place.
 workflow is left recoverable with no compensation recorded as failed.
 
 ---
+
+<a id="issue-6"></a>
 
 ### Issue 6 — `maestro.admin.events.*` configuration does nothing {#issue-6}
 
@@ -739,6 +751,8 @@ no longer reference it.
 
 ---
 
+<a id="issue-7"></a>
+
 ### Issue 7 — Two hardcoded 30s timeouts with no configuration seam {#issue-7}
 
 > **Resolved.** Both threaded through `MaestroProperties` and the
@@ -780,6 +794,8 @@ tests pinning that the configured values reach the engine.
 
 ---
 
+<a id="issue-8"></a>
+
 ### Issue 8 — Health indicator is documented but does not exist {#issue-8}
 
 > **Resolved.** `io.b2mash.maestro.spring.health.MaestroHealthIndicator` now
@@ -811,6 +827,8 @@ running, and the count of locally running workflows — or delete the line from
 claim it does.
 
 ---
+
+<a id="issue-9"></a>
 
 ### Issue 9 — Activity lock prefix ignores configuration {#issue-9}
 
@@ -851,6 +869,8 @@ instance lock manager receives it, and use it here.
 keys, pinned by a test asserting the exact key.
 
 ---
+
+<a id="issue-10"></a>
 
 ### Issue 10 — Four modules have no tests at all {#issue-10}
 
@@ -913,6 +933,8 @@ Issue 11 sat in this section for the same reason until 2026-11-04, when the
 lease-epoch fence closed it; its entry is kept below, evidence and all,
 because the chaos measurements it carries are still the best data on how
 often the remaining side-effect window is hit.
+
+<a id="issue-11"></a>
 
 ### Issue 11 — Lost locks don't stop the workflow (no fencing) {#issue-11}
 
@@ -1133,6 +1155,8 @@ anyone re-reading the raw console, `evidence/task7/soak-console.log`):
 
 ---
 
+<a id="issue-12"></a>
+
 ### Issue 12 — Recovery polling doesn't scale {#issue-12}
 
 > **Partly addressed (2026-11-11, plan 02 "bounded host load").** Two of the
@@ -1303,6 +1327,8 @@ the end of the soak's own passing run.
 
 ---
 
+<a id="issue-13"></a>
+
 ### Issue 13 — `CANCELLED` timers can strand a replaying workflow {#issue-13}
 
 > **Resolved.** Cancelling a timer a workflow is parked on now unparks it
@@ -1370,6 +1396,8 @@ waiting on" decided and documented.
 
 ---
 
+<a id="issue-14"></a>
+
 ### Issue 14 — `SagaManager` re-appends `COMPENSATION_STARTED` on replay {#issue-14}
 
 > **Resolved.** `SagaManager.compensate()` now gives every compensation entry
@@ -1433,6 +1461,8 @@ compensation action whose result is already durable — mirroring how a
 regular activity is proven not to re-execute on replay.
 
 ---
+
+<a id="issue-15"></a>
 
 ### Issue 15 — Admin dashboard retry/terminate signals are unconsumed {#issue-15}
 
@@ -1530,6 +1560,8 @@ running service measurably changes the target workflow's state, proven by an
 end-to-end test, not just a controller-layer smoke test.
 
 ---
+
+<a id="issue-16"></a>
 
 ### Issue 16 — Retrying a compensated saga is guarded off, not supported {#issue-16}
 
@@ -1631,6 +1663,8 @@ correct outcome.
 
 ---
 
+<a id="issue-17"></a>
+
 ### Issue 17 — Cross-node timer fires never wake the sleeping workflow {#issue-17}
 
 > **Resolved.** `DefaultWorkflowOperations.sleep()` no longer parks
@@ -1693,6 +1727,8 @@ fires (or an operator on node B cancels) its timer, within a bounded
 interval, with the identical event log a single-node wake produces — proven
 at unit level against in-memory SPIs and end-to-end against real Postgres
 with two engine instances.
+
+<a id="issue-18"></a>
 
 ### Issue 18 — A stale run's duplicate append is recorded as workflow failure {#issue-18}
 
@@ -1778,6 +1814,8 @@ duplicate side effects — proven by the harness's PR-gate mode running green
 and pinned at unit level by `WorkflowExecutorDuplicateEventStandDownTest`.
 
 
+<a id="issue-19"></a>
+
 ### Issue 19 — Timed-out awaits replay nondeterministically {#issue-19}
 
 > **Resolved.** A timed-out `awaitSignal` now memoizes a `SIGNAL_TIMEOUT`
@@ -1848,6 +1886,8 @@ event-log contiguity (I3(d) bound zero), the loan E2E's re-derived empty
 missing-sets pass, and the four pinning tests hold — replay determinism,
 no saga leak, retry re-drive, caught-memo preservation.
 
+
+<a id="issue-20"></a>
 
 ### Issue 20 — A transient store outage during a parked wake-recheck fails a healthy workflow {#issue-20}
 
@@ -1932,6 +1972,8 @@ successful probe after recovery.
 
 ---
 
+<a id="issue-21"></a>
+
 ### Issue 21 — Two `parallel()` branches parking at once fail the workflow and run compensations {#issue-21}
 
 > **Resolved** (release-hardening cycle, 2026-08-02). `InstanceStatusWriter.write`
@@ -2007,6 +2049,8 @@ the terminate pin.
 that had **enshrined this defect as "an engine-level limitation"**.
 
 ---
+
+<a id="issue-22"></a>
 
 ### Issue 22 — Compensations can run on an operator-terminated workflow {#issue-22}
 
@@ -2127,6 +2171,8 @@ workflow ended up `TERMINATED`. **Met** — see `SagaManagerTerminateRaceTest`
 in the callout above.
 
 ---
+
+<a id="issue-23"></a>
 
 ### Issue 23 — Maestro's Kafka beans silently disable Spring Boot's `spring.kafka.*` configuration, and `@MaestroSignalListener` drops trace context {#issue-23}
 
@@ -2341,6 +2387,8 @@ in the callout above.
 
 ---
 
+<a id="issue-24"></a>
+
 ### Issue 24 — Redelivery always dead-letters, but nothing creates or documents the `.DLT` topics {#issue-24}
 
 > **Resolved**, all three ruled measures. **(1) Document:**
@@ -2441,6 +2489,8 @@ stall.
 
 ---
 
+<a id="issue-25"></a>
+
 ### Issue 25 — `maestro.worker.*` is documented but wholly unimplemented {#issue-25}
 
 > **Resolved.** Implemented as per-node `Semaphore`s in `TaskQueueGovernor` (maestro-core), bound from `maestro.worker.task-queues` by `MaestroAutoConfiguration`. Commit `4aaeaa0` ("feat(core): per-task-queue workflow and activity concurrency via TaskQueueGovernor (F8, Issue 25)"), fixed by `1374d88` (activity-slot waiters stand down on shutdown; corrected `parallel()` slot docs) and `85b6cc0` (two `parallel()` branches waking at once no longer wedge their run, R49). Pinned by `TaskQueueGovernorTest`, `WorkflowExecutorConcurrencyTest`, `MaestroAutoConfigurationConfigSeamsTest.workerConcurrencyReachesTheGovernor`, `TaskQueueConcurrencyIT`.
@@ -2505,6 +2555,8 @@ wait), or the property and its documentation section are gone. Until one of
 those lands, the section carries the warning added this cycle.
 
 ---
+
+<a id="issue-26"></a>
 
 ### Issue 26 — Terminal instance write and terminal event append are two non-transactional writes {#issue-26}
 
@@ -2648,6 +2700,8 @@ inherit the same proof obligation.
 
 ---
 
+<a id="issue-27"></a>
+
 ### Issue 27 — A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed {#issue-27}
 
 > **Resolved.** When the status write fails the database is the thing that is
@@ -2754,6 +2808,8 @@ identical and acceptable on all three, not just two of them.
 
 ---
 
+<a id="issue-28"></a>
+
 ### Issue 28 — ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth {#issue-28}
 
 > **Open by design (structural).** Filed by the 2026-10-24 bug-fix cycle
@@ -2853,6 +2909,8 @@ removed.
 
 ---
 
+<a id="issue-29"></a>
+
 ### Issue 29 — Shutdown never interrupts threads blocked waiting for a task-queue slot {#issue-29}
 
 > **Resolved** (WP5, PR pending). `WorkflowExecutor.shutdown()` now shuts
@@ -2924,6 +2982,8 @@ the old (unbounded, so never-waiting) behaviour.
 
 ---
 
+<a id="issue-30"></a>
+
 ### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
 
 > **Resolved** in WP6 (branch fix/recovery-capacity): the recovery poller
@@ -2977,6 +3037,8 @@ piece of work recommended for this area.
 
 ---
 
+<a id="issue-31"></a>
+
 ### Issue 31 — Services sharing one set of `maestro_*` tables fire each other's timers {#issue-31}
 
 > **Open.** Filed by the 2026-10-24 bug-fix cycle (plan 06 Task 3, ruling
@@ -3013,6 +3075,8 @@ Postgres store), or `docs/operations.md` states the one-schema-per-service
 requirement and the latency cost of breaking it.
 
 ---
+
+<a id="issue-32"></a>
 
 ### Issue 32 — A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals {#issue-32}
 
@@ -3122,6 +3186,8 @@ notification fix above remains what bounds the call itself.
 
 ---
 
+<a id="issue-33"></a>
+
 ### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
 
 > **Resolved** in WP3 (branch fix/admin-retry): the failing await is the one the WORKFLOW_FAILED payload attributes; pinned by AdminRetryTest.issue33_*.
@@ -3167,6 +3233,8 @@ the propagated timeout is retried and only the propagated await's outcome, memo
 and timer row are cleared — pinned by a core test for each shape above.
 
 ---
+
+<a id="issue-34"></a>
 
 ### Issue 34 — A store outage during a state write fails a healthy workflow and compensates work that succeeded {#issue-34}
 
@@ -3290,6 +3358,8 @@ into a workflow failure.
 
 ---
 
+<a id="issue-35"></a>
+
 ### Issue 35 — A new store migration fails startup on a database that already has the lock band {#issue-35}
 
 > **Resolved (2026-11-11, branch `feat/bounded-host-load`).** Found while
@@ -3389,6 +3459,8 @@ index itself can stay, because V101 finds it.
 
 ---
 
+<a id="issue-36"></a>
+
 ### Issue 36 — The test kit cannot apply production's default concurrency limits {#issue-36}
 
 > **Resolved** in WP6 (branch fix/recovery-capacity):
@@ -3431,6 +3503,8 @@ limits unset (or both `0`) completes.
 
 ---
 
+<a id="issue-37"></a>
+
 ### Issue 37 — `WorkflowExecutor` has ten public constructors {#issue-37}
 
 > **Resolved (2026-11-12, branch `refactor/executor-builder`).** Filed by the
@@ -3468,6 +3542,8 @@ builder, the constructors are deprecated (or removed, if no release has
 shipped them), and a builder test pins each default.
 
 ---
+
+<a id="issue-38"></a>
 
 ### Issue 38 — `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` {#issue-38}
 
@@ -3510,6 +3586,8 @@ no WARN, and the connection returned to the pool has no active `LISTEN`.
 
 ---
 
+<a id="issue-39"></a>
+
 ### Issue 39 — Workflows recorded under another `service_name` are stranded silently {#issue-39}
 
 > **Resolved** in WP8 (branch fix/store-hygiene): one advisory query per node
@@ -3546,6 +3624,8 @@ workflow types, recorded under another `service_name`, logs that WARN naming
 the name and the count, and a node with no such instance logs nothing.
 
 ---
+
+<a id="issue-40"></a>
 
 ### Issue 40 — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration {#issue-40}
 
@@ -3590,6 +3670,8 @@ pending-migration messages are unchanged.
 
 ---
 
+<a id="issue-41"></a>
+
 ### Issue 41 — An older node replaying history appended by a newer node is untested {#issue-41}
 
 > **Open.** Filed by the final review of WP9
@@ -3628,6 +3710,8 @@ fails or compensates any run, or rewrites any event the current node
 appended.
 
 ---
+
+<a id="issue-42"></a>
 
 ### Issue 42 — A replayed activity failure keeps only the exception's type and message {#issue-42}
 
@@ -3671,6 +3755,8 @@ and after `crashAfter(n)` + `recover()`.
 
 ---
 
+<a id="issue-43"></a>
+
 ### Issue 43 — Workflow input on Postgres differs between the first run and recovery {#issue-43}
 
 > **Open.** Filed by WP1, replay fidelity
@@ -3712,6 +3798,8 @@ number class.
 
 ---
 
+<a id="issue-44"></a>
+
 ### Issue 44 — Workflow input is read with the raw parameter class {#issue-44}
 
 > **Open.** Filed by WP1, replay fidelity
@@ -3746,6 +3834,8 @@ reads `Pair`s, live and after recovery.
 
 ---
 
+<a id="issue-45"></a>
+
 ### Issue 45 — `collectSignals` throws `NullPointerException` on a signal with a null payload {#issue-45}
 
 > **Open.** Filed by WP1, replay fidelity
@@ -3778,6 +3868,8 @@ that collects two, and the workflow receives `[null, value]` live and after
 recovery.
 
 ---
+
+<a id="issue-46"></a>
 
 ### Issue 46 — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay {#issue-46}
 
@@ -3821,6 +3913,8 @@ deserializer that throws `OutOfMemoryError` still ends the run as a node error.
 
 ---
 
+<a id="issue-47"></a>
+
 ### Issue 47 — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws {#issue-47}
 
 > **Open.** Filed by WP1, replay fidelity
@@ -3861,6 +3955,8 @@ recovers the run and observes an `unknown_event_payload` stand-down, not
 `FAILED`.
 
 ---
+
+<a id="issue-48"></a>
 
 ### Issue 48 — No startup check that the configured mapper reads back what it writes {#issue-48}
 
@@ -3909,6 +4005,8 @@ starts silently.
 
 ---
 
+<a id="issue-49"></a>
+
 ### Issue 49 — Future-typed activity results are not rejected at startup {#issue-49}
 
 > **Open.** Filed by WP1, replay fidelity
@@ -3950,6 +4048,8 @@ replaced by that test.
 
 ---
 
+<a id="issue-50"></a>
+
 ### Issue 50 — The activity proxy keeps two ignored lock parameters {#issue-50}
 
 > **Open.** Filed by WP2, wake permits, timer clock and activity lock
@@ -3990,6 +4090,8 @@ entry point takes a `DistributedLock` or a lock key prefix, and
 `DefaultWorkflowOperations` has no `distributedLock` field.
 
 ---
+
+<a id="issue-51"></a>
 
 ### Issue 51 — Timer deadlines are armed on the scheduling node's clock {#issue-51}
 
@@ -4037,6 +4139,8 @@ memoized deadlines.
 the database clock, and the kit's `advanceTime` tests pass unchanged.
 
 ---
+
+<a id="issue-52"></a>
 
 ### Issue 52 — `maestro-admin-client` has no wired component {#issue-52}
 
@@ -4096,6 +4200,8 @@ purpose is documented and pinned by a test.
 
 ---
 
+<a id="issue-53"></a>
+
 ### Issue 53 — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` {#issue-53}
 
 > **Open.** Filed by WP7, Kafka coexistence
@@ -4149,6 +4255,8 @@ in the engine's producer and consumer config, with the engine's serializers,
 
 ---
 
+<a id="issue-54"></a>
+
 ### Issue 54 — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists {#issue-54}
 
 > **Open.** Filed by WP7, Kafka coexistence
@@ -4190,6 +4298,8 @@ after refresh so that an unresolvable host behaves like a down broker.
 host, and the docs state it beside the down-broker case.
 
 ---
+
+<a id="issue-55"></a>
 
 ### Issue 55 — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis {#issue-55}
 
@@ -4239,6 +4349,8 @@ out, and the two existing assertions still hold or are replaced by a ruling.
 
 ---
 
+<a id="issue-56"></a>
+
 ### Issue 56 — An unqualified `byte[]` template point that several templates match is never failed at startup {#issue-56}
 
 > **Open.** Filed by WP7, Kafka coexistence
@@ -4278,6 +4390,8 @@ fallback) instead of the candidate set, after confirming it creates no bean.
 the two tests above still start.
 
 ---
+
+<a id="issue-57"></a>
 
 ### Issue 57 — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once {#issue-57}
 
@@ -4323,6 +4437,8 @@ no `configure(…)` call on a host serializer.
 
 ---
 
+<a id="issue-58"></a>
+
 ### Issue 58 — The `byte[]` template check runs before Maestro's consumers only by bean-registration order {#issue-58}
 
 > **Open.** Filed by WP7's final fix wave, Kafka coexistence
@@ -4355,6 +4471,8 @@ holds whichever bean is registered first.
 misinjected point fails startup without starting a consumer.
 
 ---
+
+<a id="issue-59"></a>
 
 ### Issue 59 — Retry refuses when the failure's handling consumed a signal {#issue-59}
 
@@ -4398,6 +4516,8 @@ the same signal again, and no signal row is deleted.
 
 ---
 
+<a id="issue-60"></a>
+
 ### Issue 60 — Two independently failed `parallel()` branches need two Retries {#issue-60}
 
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
@@ -4432,6 +4552,8 @@ also clear a caught gate (MD-2); doing it right needs a new recorded fact.
 sibling's caught gate timeout is still kept.
 
 ---
+
+<a id="issue-61"></a>
 
 ### Issue 61 — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry {#issue-61}
 
@@ -4474,6 +4596,8 @@ replays.
 
 ---
 
+<a id="issue-62"></a>
+
 ### Issue 62 — A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry {#issue-62}
 
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
@@ -4504,6 +4628,8 @@ default (MD-4).
 **Done when.** A store cannot reach the old Retry without its author knowing.
 
 ---
+
+<a id="issue-63"></a>
 
 ### Issue 63 — The dashboard reports "Retry command sent" for a Retry the engine refused {#issue-63}
 
@@ -4537,6 +4663,8 @@ WP3 changes no lifecycle event or `maestro-admin` code.
 page.
 
 ---
+
+<a id="issue-64"></a>
 
 ### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
 
@@ -4634,6 +4762,8 @@ renewal failure.
 
 ---
 
+<a id="issue-65"></a>
+
 ### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
 
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
@@ -4688,6 +4818,8 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 
 ---
 
+<a id="issue-66"></a>
+
 ### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
 
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
@@ -4737,6 +4869,8 @@ after the store answers again.
 
 ---
 
+<a id="issue-67"></a>
+
 ### Issue 67 — Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass {#issue-67}
 
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
@@ -4782,6 +4916,8 @@ reads `DOWN`, with its streak in the details, and one that recovers reads
 `UP`.
 
 ---
+
+<a id="issue-68"></a>
 
 ### Issue 68 — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass {#issue-68}
 
@@ -4839,6 +4975,8 @@ tasks were done; each needs a red test of its own.
 an observer `Error` on one lost lock does not delay the others.
 
 ---
+
+<a id="issue-69"></a>
 
 ### Issue 69 — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` {#issue-69}
 
@@ -4902,6 +5040,8 @@ shutdown phase begins, and none consumes after the `DataSource` is closed.
 
 ---
 
+<a id="issue-70"></a>
+
 ### Issue 70 — A run still executing at the shutdown deadline can record a failure caused by bean teardown {#issue-70}
 
 > **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
@@ -4947,6 +5087,8 @@ nothing and is recovered by a peer, pinned on the in-memory executor.
 
 ---
 
+<a id="issue-72"></a>
+
 ### Issue 72 — The test kit is unbounded by default and its `recover()` is ungated {#issue-72}
 
 > **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
@@ -4985,6 +5127,8 @@ limits opt-in for this cycle.
 pinned by kit tests.
 
 ---
+
+<a id="issue-73"></a>
 
 ### Issue 73 — No health or readiness detail says the startup recovery pass is still running {#issue-73}
 
@@ -5033,6 +5177,8 @@ starter test.
 
 ---
 
+<a id="issue-74"></a>
+
 ### Issue 74 — Without a lock backend, a recovery pass can adopt a run this node is starting {#issue-74}
 
 > **Open.** Filed while fixing a CI failure of `StoreOutageMidStepIT`
@@ -5067,6 +5213,8 @@ now when no lock backend is configured.
 
 **Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
 the just-started row.
+
+<a id="issue-77"></a>
 
 ### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
 
@@ -5111,6 +5259,8 @@ without hand-written SQL, pinned by a Testcontainers test.
 
 ---
 
+<a id="issue-78"></a>
+
 ### Issue 78 — In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps {#issue-78}
 
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
@@ -5147,6 +5297,8 @@ cost only shared-table deployments pay.
 shared table, pinned by an `EXPLAIN` test.
 
 ---
+
+<a id="issue-79"></a>
 
 ### Issue 79 — The service-name check warns about a live co-tenant service that registers the same workflow type names {#issue-79}
 
