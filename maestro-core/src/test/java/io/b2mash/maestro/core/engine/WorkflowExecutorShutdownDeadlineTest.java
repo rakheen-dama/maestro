@@ -136,7 +136,6 @@ class WorkflowExecutorShutdownDeadlineTest {
         var t0 = System.nanoTime();
         executor.shutdown();
         var took = (System.nanoTime() - t0) / 1_000_000;
-        System.out.println("every-step-stuck shutdown took " + took + " ms of its 1000 ms deadline");
 
         // timeout + 1 s: about 1 s of margin on a loaded machine, while a step
         // that owns a timeout of its own still lands past it (the renewer's

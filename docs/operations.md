@@ -1486,7 +1486,8 @@ and Kubernetes sources and documentation, not run.
   has drained, so nothing durable is lost (traced), but consumers may not
   leave their group cleanly. If your consumers stop slowly, set
   `terminationGracePeriodSeconds` to at least 27 + 10·N seconds plus your
-  preStop (traced; Issue 69 would take these containers out of the sum).
+  preStop, plus whatever your own `@KafkaListener` containers and other
+  lifecycle beans take to stop (traced; Issue 69 would take these containers out of the sum).
 - **With a 5 s preStop:** ≈ 33 s typical. Set `terminationGracePeriodSeconds: 45`.
 - **Keeping 30 s of drain:** `maestro.shutdown.timeout: 30s`,
   `spring.lifecycle.timeout-per-shutdown-phase: 35s`, grace ≥ 45 s + preStop.
