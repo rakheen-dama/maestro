@@ -823,36 +823,44 @@ The `type` error becomes `type must be chain, park, hold or signals`.
 
 | Role | Engine commit (what it is) | runId | Verdict | drainA s | drainB s | B/A | max hoard (n1/n2) | probe p95 / drainA | recovery stmts / run (A/B) | readiness Δ s | Prediction met? |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| before | | | | | | | | | | | before: ≈1.0, ≈4,980, ≈0.9, ≈2.05 |
-| after preview (WP6 branch) | | | | | | | | | | | after: ≈0.55, ≤20, ≈0.01, ≈2.2 |
-| after of record (main) | | | | | | | | | | | |
+| before | `5b170009` (`main` before WP6; engine e4cf45c3), H 24763185 | r20261117t115610z | **FAIL** (twoNodeDrain, noHoard, freshStartsNotStarved) | 511.70 | 509.77 | 0.9962 | 4,883 / 4,941 + 0 | 0.917 | 2.03 / 2.08 | +7.0 (A); +5.9 / +1.2 (B) | yes: 1.0, ~4,900, 0.92, 2.05; adoption 5,000 / 0 |
+| after preview (WP6 branch) | `25e84962` (`fix/recovery-capacity`), overlay of H 24763185 | r20261117t122039z | **PASS** | 520.91 | 269.05 | 0.5165 | 21 / 21 | 0.010 | 2.22 / 2.41 | +0.6; +1.4 / +1.9 | yes: 0.52, ≤ 2C, 0.01; two-node figure above the predicted 2.2 (lost lock races 0.124 / run) |
+| after of record (main) | `d1600bf1` (PR #62; engine ec0458ca), H 1192fabd (S2 files = 24763185) | r20261117t162103z | **PASS** | 517.09 | 264.39 | 0.5113 | 21 / 21 | 0.011 | 2.17 / 2.45 | −0.7; +0.1 / +0.3 | yes, within ±10 % of the preview except phase B's combined statements (lost races 0.185 / run; gate ≤ 0.5) |
+
+S2's statement gates since the final review: `gate.lockAcquisitionsPerAdoption` ≤ 2.02 (2.000 in every run), `gate.lostLockRaces` ≤ 0.5 (0 / 0.124 / 0.185), `gate.recoveryPassRate` ≤ 1.25 × designed floor (0.13 / 0.90 / 0.86); "recovery stmts / run" above is the former combined figure, now `advisory.recoveryStatements`. Re-evaluated with the S2 evaluator at d705ba4a.
 
 ### S4 `s4-signals` (3.2, WP2)
 
 | Role | Engine commit | runId | Replicas | Verdict | P1−P0 | P2−P1 | P3−P2 | stmts/signal local / cross | consume p95 local / cross ms | Prediction met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| before | `0c710a1e` (merge base `834a9da8` + gauge) | | 2 | | | | | | | 0 / 4,500 / 100 |
-| after | | | 2 | | | | | | | 0 / 0 / 0 |
+| before | `0c710a1e` (merge base `834a9da8` + gauge), overlay of H 455bee11 | r20261117t171940z | 2 | **FAIL** (noStrayPermits) | 0 | 4,500 (2,250 + 2,250) | 100 (0 + 100) | 24.90 / 24.91 | 4.9 / 5.1 | yes, exactly |
+| after | `40aa3c21` (`main`; engine 3e75ad8f), H 455bee11 | r20261117t171420z | 2 | **PASS** | 0 | 0 | 0 | 24.71 / 24.71 | 39.4 / 5.1 (p50 1.1 / 3.5) | yes |
+
+Consume latency is advisory: per level the cross-node p50 is a steady +2.4 ms (the post-commit NOTIFY hop), while p95 follows rare tens-of-ms stalls on either phase. The first pair (r20261117t155519z PASS, r20261117t160028z FAIL; harness ee92033b) is superseded and pinned. Evaluator b94a938c.
 
 ### S5 `s5-pool-health` (3.5a, WP4)
 
 | Role | Engine commit | runId | Verdict | exhausted samples | maestro DOWN / UNKNOWN / UP / no answer | root outcomes (exhausted) | pool sleepers ≥ max−1 % | Hikari timeouts | Prediction met? |
 |---|---|---|---|---|---|---|---|---|---|
-| before | `bdcc074d` | | | | | | | | ≈100 % DOWN |
-| after | | | | | | | | | 0 DOWN, ≈100 % UNKNOWN |
+| before | `bdcc074d` (engine 15290b00), overlay of H 634dbc3f | r20261117t155013z | **FAIL** (notDownWhenBusy) | 36 answers; 378 sampler samples | 28 / 0 / 8 / 0 | 8 UP, 14 DOWN, 14 unanswered | 97 % | 0 | yes: 78 % DOWN (store "timed out"), 8 found a free connection |
+| after | `bd583f06` (`main`; engine aa43db6f), H 634dbc3f | r20261117t153355z | **PASS** | 36; 367 | 0 / 32 / 4 / 0 | 24 UP, 0 DOWN, 12 unanswered (Issue 75) | 97 % | 0 | yes: 0 DOWN, 89 % UNKNOWN |
+
+Evaluator f1a37627.
 
 ### S6 `s6-retention` (3.11a, 3.11b, WP8)
 
 | Role | Engine commit | runId | Verdict | batches | busy fraction | janitor calls / rows per call | J-foreign kept | X-foreign purged | foreground p95 during/pre | Prediction met? |
 |---|---|---|---|---|---|---|---|---|---|---|
-| before | | | | | | | | | | ≈0.9, 1 / 20,000, 0 kept |
-| after preview (WP8 branch) | | | | | | | | | | ≈0.5, ≥2 / ≤5,000, all kept |
-| after of record (main) | | | | | | | | | | |
+| before | `d1600bf1` (`main` before WP8; engine ec0458ca), overlay of H 7437c93e | r20261117t165803z | **FAIL** (retentionPaced, janitorServiceScoped, janitorBatched) | 122 | 0.8525 (span 5.55 s, 55 samples) | 1 / 20,000 | 0 of 10,000 | 1,000 of 1,000 | 0.87 | yes |
+| after preview (WP8 branch) | not run: WP8 merged before the preview could be taken | | | | | | | | | |
+| after of record (main) | `40aa3c21` (PR #63; engine 3e75ad8f), H c7bcdcc6 | r20261117t170538z | **PASS** | 120 | 0.4692 (span 10.29 s, 101 samples) | 11 / 909 | 10,000 of 10,000 | 0 of 1,000 | 0.84 | yes: ≈0.5, ≥ 2 / ≤ 1,000, all kept |
+
+The first pair (r20261117t161125z, r20261117t163846z) predates the sampler's span-gap measurement and now reads INVALID (pinned). Evaluator f3d03b30.
 
 **MD rulings:** MD-1 … MD-11.
 
-**Issues filed:** 75 / 76, or "not filed: <reason>".
+**Issues filed:** 75 (open: the root `/actuator/health` unanswered within 5 s 12 times of 36 on an exhausted pool, while `maestro` answered every time) and 76 (resolved by PR #63: the S6 before purged 1,000 of 1,000 `perf-foreign` rows, the after kept them), both in `docs/open-issues.md`, by the coordinator's ruling.
 
-**Gates:** Task 7 Step 2's table with log identities. The coordinator's uncached build.
+**Gates:** Task 7 Step 2 (implementer, final review wave): `selftest-evidence.sh` all hold (WP11 474 + WP12, superseded runs pinned); `evidence-selftest.sh`, `baseline-selftest.sh`, `lock-selftest.sh` and `bgloop-selftest.sh` all hold; shellcheck v0.10.0 and actionlint 1.7.7 clean, no `push:` trigger; `k6 inspect` of both new scripts exit 0; `sample-perf` tests and `verifyModuleTestCoverage` SUCCESSFUL; one smoke PASS (runIds in `.superpowers/sdd/wp12-finding-linked-scenarios/task-7-9-report.md`). The coordinator's uncached build: pending.
 
 **Post-merge:** one `Perf (k6)` dispatch of `s5-pool-health` (run URL); the first scheduled run including S5.
