@@ -25,7 +25,11 @@ import java.util.concurrent.Callable;
  * blocking), and MUST NOT throw. {@link CompositeEngineObserver} contains a
  * misbehaving observer by catching {@code RuntimeException} per callback;
  * {@code Error}s (including the engine's control-flow signals) always
- * propagate. {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
+ * propagate — except from {@link #backgroundLoopError}, where every
+ * {@code Error} but a
+ * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError} is
+ * contained too, by the composite per delegate and by the loop's guard.
+ * {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
  * delegate list — including a single observer — so that containment holds for
  * every registration, not only for multi-observer ones (coordinator Ruling 4).
  */

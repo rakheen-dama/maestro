@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,7 +20,10 @@ import java.util.concurrent.Callable;
  * {@link Error}s are deliberately <b>not</b> caught: the composite must never
  * swallow the engine's control-flow signals
  * ({@code ExecutorShutdownException}, {@code WorkflowTerminatedException}) —
- * and observers must never throw them.
+ * and observers must never throw them. The one exception is
+ * {@link #backgroundLoopError}, which contains every {@code Throwable} but a
+ * {@link MaestroControlFlowError} per delegate: it fires while a background
+ * loop is already containing an {@code Error}.
  *
  * <h2>Thread safety</h2>
  * <p>Immutable and thread-safe; thread safety of the callbacks themselves is
@@ -222,7 +226,20 @@ public final class CompositeEngineObserver implements EngineObserver {
 
     @Override
     public void backgroundLoopError(String loop, String errorType) {
-        fanOut("backgroundLoopError", d -> d.backgroundLoopError(loop, errorType));
+        // Wider than fanOut: this callback fires while a loop is already
+        // containing an Error, so a delegate's own Error (an adapter bug, or
+        // the same resource exhaustion) must not skip the delegates after it.
+        for (var delegate : delegates) {
+            try {
+                delegate.backgroundLoopError(loop, errorType);
+            } catch (Throwable t) {
+                if (t instanceof MaestroControlFlowError controlFlow) {
+                    throw controlFlow;
+                }
+                logger.warn("EngineObserver delegate {} threw from backgroundLoopError — contained",
+                        delegate.getClass().getName(), t);
+            }
+        }
     }
 
     @Override
