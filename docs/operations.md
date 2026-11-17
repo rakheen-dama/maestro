@@ -1427,7 +1427,7 @@ normally writes.
 | Executing an activity past the deadline | Not interrupted; `shutdown()` returns and the run keeps going until the JVM exits (`aShutdownThatHitsItsDeadlineNamesTheRunsStillRunning`) | `RUNNING` (or `COMPENSATING`) | held, no longer renewed; expires after `maestro.lock.ttl` (traced) | by a peer's next recovery pass; the activity runs again, so it must be idempotent |
 | Parked on `awaitSignal` / `sleep` | The park throws `ExecutorShutdownException` | `WAITING_SIGNAL` / `WAITING_TIMER` | released at unwind | at once |
 | In a retry backoff | The backoff is abandoned | `RUNNING`, no `ACTIVITY_FAILED` | released | at once |
-| Queued for a workflow or activity slot | Leaves at once, never interrupted (`ShutdownReleasesSlotWaitersTest`) | `RUNNING` | released before `shutdown()` returns | at once |
+| Queued for a workflow or activity slot | Leaves at once, never interrupted (`ShutdownReleasesSlotWaitersTest`) | `RUNNING` | released at unwind — normally before `shutdown()` returns; the drain waits for the unwind only within the deadline, so one still unwinding when it passes releases later, or by TTL | at once |
 | Woken from a park, waiting for its slot again | Leaves; the signal stays unconsumed, a fired timer row stays `FIRED` | `WAITING_SIGNAL` / `WAITING_TIMER` | released | at once |
 | Compensating: parked, queued or in a backoff | `ExecutorShutdownException` passes through the saga without recording the step | `COMPENSATING` | released | at once |
 
@@ -1475,21 +1475,40 @@ Maestro's own term is bounded by `shutdownReturnsWithinItsTimeoutWhenEveryStepIs
 (timeout + under 1 s asserted; about 5 ms over the timeout measured). Every other term is traced from the Spring, Spring Kafka
 and Kubernetes sources and documentation, not run.
 
-- **Defaults, no preStop — the typical case:** 20 (`maestro.shutdown.timeout`,
-  which also covers the web server's drain, run alongside it) + ~1 (Maestro's
-  Kafka containers, typically under 1 s together) + 2 (the wake listener, at
-  most) + 5 (the `DataSource` and JVM margin) ≈ 28 s ≤ 30 s. That fits
-  Kubernetes' default grace (30 s, traced), narrowly, and assumes no host
+**The web server's drain has no timeout of its own.** Spring Boot's Tomcat
+graceful shutdown waits while any request is active (it re-checks every 50 ms
+until aborted, `org.springframework.boot.tomcat.GracefulShutdown` in Spring
+Boot 4.0.5). What ends it is Spring's phase timeout,
+`spring.lifecycle.timeout-per-shutdown-phase` (30 s by default in Spring
+Boot): it bounds the whole phase `MAX-1024`, which Maestro's handler and the
+web drain share, after which the web server is stopped in phase `MAX-2048`
+and the drain aborted (traced). So the `max(...)` term above is the longer of
+`maestro.shutdown.timeout` and the web drain, and at most the phase timeout:
+with a request still active at the end, it is the full phase timeout. To cap
+the web drain at Maestro's deadline, set the phase timeout to
+`maestro.shutdown.timeout + 2 s` (22 s at the defaults).
+
+- **Defaults, no preStop — the typical case:** 20 (`maestro.shutdown.timeout`;
+  the web server's drain runs alongside it and is assumed to end within it) +
+  ~1 (Maestro's Kafka containers, typically under 1 s together) + 2 (the wake
+  listener, at most) + 5 (the `DataSource` and JVM margin) ≈ 28 s ≤ 30 s. That
+  fits Kubernetes' default grace (30 s, traced), narrowly, and assumes no host
   `@KafkaListener` container is slow to stop.
+- **Defaults, an HTTP request still active at the end:** the phase lasts the
+  full 30 s `timeout-per-shutdown-phase`, so 30 + ~1 + 2 + 5 ≈ 38 s, beyond
+  the 30 s default grace. Set the phase timeout to 22 s (≈ 30 s total) or
+  raise the grace.
 - **Defaults, worst case:** each of Maestro's Kafka listener containers — the
   engine's signal container plus one per `@MaestroSignalListener`, N in all —
   can take up to Spring Kafka's 10 s to stop, so 20 + 10·N + 2 + 5 s: 37 s
-  for N = 1, 47 s for N = 2. That exceeds the 30 s default grace, and the
+  for N = 1, 47 s for N = 2 — or, with a request keeping the web drain open to
+  the 30 s phase timeout, 30 + 10·N + 2 + 5 s (47 s for N = 1). That exceeds the 30 s default grace, and the
   kubelet's `SIGKILL` then lands during bean destruction — after the engine
   has drained, so nothing durable is lost (traced), but consumers may not
   leave their group cleanly. If your consumers stop slowly, set
-  `terminationGracePeriodSeconds` to at least 27 + 10·N seconds plus your
-  preStop, plus whatever your own `@KafkaListener` containers and other
+  `terminationGracePeriodSeconds` to at least `max(maestro.shutdown.timeout,
+  timeout-per-shutdown-phase if a request can stay active) + 10·N + 7` seconds
+  plus your preStop, plus whatever your own `@KafkaListener` containers and other
   lifecycle beans take to stop (traced; Issue 69 would take these containers out of the sum).
 - **With a 5 s preStop:** ≈ 33 s typical. Set `terminationGracePeriodSeconds: 45`.
 - **Keeping 30 s of drain:** `maestro.shutdown.timeout: 30s`,
@@ -1524,8 +1543,10 @@ keep consuming through the drain, which is safe because a signal that arrives
 is persisted and recovered with the run it wakes, and they stop at bean
 destruction, where their stop time adds to the arithmetic above. The
 `@MaestroSignalListener` containers stop after the `DataSource`, so a record in
-flight in that window fails and is redelivered after the restart rather than
-dead-lettered (traced, not run). Both are Issue 69.
+flight in that window fails; with redelivery attempts left (the default 10) it
+is redelivered after the restart, with `maestro.messaging.redelivery.max-attempts: 1`
+it goes to `<topic>.DLT`, and with redelivery disabled it is skipped (traced,
+not run). Both are Issue 69.
 
 ### 15.6 Upgrading from 30 s
 

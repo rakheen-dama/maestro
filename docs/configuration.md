@@ -558,9 +558,13 @@ two consequences of that are on the default path (`docs/open-issues.md`
 Issues 29 and 30): a node that adopts more runs than its slots holds their
 instance locks while they queue, so other nodes cannot take that backlog over;
 and a run still queued for a slot when shutdown begins leaves at once — it
-stands down, recoverable, and hands its instance lock back before shutdown
-returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). Nothing is written or
-lost either way.
+stands down, recoverable, and normally hands its instance lock back before
+shutdown returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). That is not a
+guarantee: the drain waits for the run's unwind only for what is left of
+`maestro.shutdown.timeout`, so a run still unwinding when the deadline passes
+(for example behind a run that overran the drain) can release its lock after
+shutdown returns, and a lock it has not released by the time the JVM exits
+expires after `maestro.lock.ttl`. Nothing is written or lost either way.
 
 On a saturated queue, a parked run's periodic re-check (which picks up a
 terminate issued on another node and is the fallback for a missed wake) waits
