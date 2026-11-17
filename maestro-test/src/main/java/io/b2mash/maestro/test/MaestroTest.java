@@ -44,6 +44,16 @@ import java.lang.annotation.Target;
  * <p>The extension shuts the environment down after each test, including every
  * node retired by {@link TestWorkflowEnvironment#recover()}.
  *
+ * <h2>Concurrency limits</h2>
+ * <p>By default the environment's task queues are unbounded. Set
+ * {@link #defaultConcurrency()} and {@link #defaultActivityConcurrency()} to
+ * bound every queue per node as production does
+ * ({@code @MaestroTest(defaultConcurrency = 20, defaultActivityConcurrency = 20)}
+ * is production's default); they are validated like
+ * {@link TestWorkflowEnvironment.Builder#defaultConcurrency(int, int)}. A
+ * {@code @Nested} test class without its own {@code @MaestroTest} uses the
+ * nearest enclosing class's.
+ *
  * @see TestWorkflowEnvironment
  * @see MaestroTestExtension
  */
@@ -52,4 +62,24 @@ import java.lang.annotation.Target;
 @Retention(RetentionPolicy.RUNTIME)
 @ExtendWith(MaestroTestExtension.class)
 public @interface MaestroTest {
+
+    /**
+     * Workflow runs per task queue that may execute at once on the node, like
+     * {@code maestro.worker.default-concurrency}. {@code 0} together with a
+     * {@code 0} {@link #defaultActivityConcurrency()} (the default) leaves
+     * every queue unbounded.
+     *
+     * @return the workflow limit per task queue, or {@code 0}
+     */
+    int defaultConcurrency() default 0;
+
+    /**
+     * Live activity executions per task queue that may run at once on the
+     * node, like {@code maestro.worker.default-activity-concurrency}. {@code 0}
+     * together with a {@code 0} {@link #defaultConcurrency()} (the default)
+     * leaves every queue unbounded.
+     *
+     * @return the activity limit per task queue, or {@code 0}
+     */
+    int defaultActivityConcurrency() default 0;
 }
