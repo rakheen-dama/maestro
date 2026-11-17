@@ -7,7 +7,6 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import tools.jackson.databind.json.JsonMapper;
@@ -65,8 +64,6 @@ class ShutdownReturnsBeforeLockReleaseTest {
     }
 
     @Test
-    @Disabled("Issue 87: red until the shutdown drain also waits for runs that left runningWorkflows "
-            + "but have not released their instance lock (an engine change, routed by the coordinator)")
     void shutdownReturnsOnlyOnceEveryDrainedRunHasReleasedItsInstanceLock() throws Exception {
         a.startWorkflow("wf-1", "ParkWorkflow", "default", null, ParkWorkflow::new, parkMethod());
         assertEquals(WorkflowStatus.WAITING_SIGNAL,

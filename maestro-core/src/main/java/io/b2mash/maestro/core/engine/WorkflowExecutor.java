@@ -167,6 +167,24 @@ public final class WorkflowExecutor {
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
 
     /**
+     * What the shutdown drain waits for: every registered run, keyed by its
+     * thread, from just before it enters {@code runningWorkflows} until its
+     * instance lock has been released. A run leaves {@code runningWorkflows}
+     * <em>before</em> its release (remove-then-release, which the wake-permit
+     * cleanup relies on), so a drain over that map alone could return while a
+     * finished run still held its lock. An entry leaves here only after the
+     * release, whether it returned or threw: at the end of the run thread's
+     * body (the release, on every path a started run takes, happens on that
+     * thread before it), or, for a launch that failed before starting the
+     * thread, in the launch's cleanup after its release.
+     *
+     * <p>Thread-safe: each entry is put once by its launch and removed once by
+     * the run's thread or by the failed launch; the drain reads it weakly
+     * consistently. One put and one remove per run, keyed by thread identity.
+     */
+    private final ConcurrentHashMap<Thread, RunningWorkflow> unreleasedRuns = new ConcurrentHashMap<>();
+
+    /**
      * Test seam: runs on the launching thread once a launch has been admitted
      * — the instance lock acquired and, on a resume, the instance adopted —
      * before the run is set up. A test makes it throw to show that a failure
@@ -2202,7 +2220,10 @@ public final class WorkflowExecutor {
      *       every park and retry backoff is abandoned; every run queued for a
      *       task-queue slot is released.</li>
      *   <li>Drain the runs in flight until the deadline, a run whose launch has
-     *       registered it but not yet started its thread included.</li>
+     *       registered it but not yet started its thread included, and a run
+     *       that has finished but not yet released its instance lock: a run
+     *       drained in time has released its lock when {@code shutdown()}
+     *       returns.</li>
      *   <li>Join the background loops for what is left. A loop still inside
      *       a store call at the deadline is named in a {@code WARN} and ends
      *       after that call.</li>
@@ -2275,7 +2296,7 @@ public final class WorkflowExecutor {
 
     /** D-2's steps 2–10, each bounded step taking what is left of {@code deadline}. */
     private void shutdown(ShutdownDeadline deadline) {
-        var inFlightAtStart = runningWorkflows.size();
+        var inFlightAtStart = unreleasedRuns.size();
         logger.info("Maestro shutdown started: {} run(s) in flight; deadline {} ms (maestro.shutdown.timeout)",
                 inFlightAtStart, deadline.budget().toMillis());
 
@@ -2305,10 +2326,12 @@ public final class WorkflowExecutor {
         taskQueueGovernor.shutdown();
 
         // Step 5: drain in-flight runs until the deadline. Never interrupted.
+        // Over unreleasedRuns, not runningWorkflows: a run that has already
+        // left runningWorkflows but not yet released its instance lock is
+        // still waited for, so shutdown never returns with that lock held.
         beforeShutdownDrain.run();
         var drainStart = System.nanoTime();
-        for (var entry : runningWorkflows.entrySet()) {
-            var run = entry.getValue();
+        for (var run : unreleasedRuns.values()) {
             try {
                 // A run registered before its thread is started (launchWorkflow
                 // registers, then starts) is waited for, not skipped: its
@@ -2327,7 +2350,8 @@ public final class WorkflowExecutor {
                 // Restored at once: every bounded wait below then ends at once
                 // too, and the non-blocking steps still run.
                 Thread.currentThread().interrupt();
-                logger.warn("Interrupted while waiting for workflow '{}' during shutdown", entry.getKey());
+                logger.warn("Interrupted while waiting for workflow '{}' during shutdown",
+                        run.instance().workflowId());
                 break;
             }
         }
@@ -2364,7 +2388,8 @@ public final class WorkflowExecutor {
         // Step 10: the summary line.
         var steps = "drain %d ms, background loops %d ms, instance locks %d ms, lifecycle events %d ms"
                 .formatted(drainMs, loopsMs, locksMs, eventsMs);
-        var stillRunning = List.copyOf(runningWorkflows.keySet());
+        // A run stuck in its lock release counts as still running too.
+        var stillRunning = unreleasedRuns.values().stream().map(r -> r.instance().workflowId()).toList();
         if (stillRunning.isEmpty()) {
             logger.info("Maestro shutdown finished in {} ms of its {} ms deadline: {} run(s) in flight at start, "
                             + "0 still running ({})",
@@ -2909,6 +2934,9 @@ public final class WorkflowExecutor {
                             }
                             throw t; // control-flow Errors included: cleaned up, then rethrown unchanged
                         } finally {
+                            // Last on this thread: the instance lock was released
+                            // above (or its release threw), on every path.
+                            unreleasedRuns.remove(Thread.currentThread());
                             WorkflowMDC.clear();
                         }
                     });
@@ -2917,6 +2945,9 @@ public final class WorkflowExecutor {
             // finishes and removes itself before the put() below executes
             running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
                     cancellation, new CountDownLatch(1));
+            // Tracked for the drain before it is registered, and until after its
+            // lock release, so it is never in neither map while it holds the lock.
+            unreleasedRuns.put(thread, running);
             runningWorkflows.put(instance.workflowId(), running);
             // R22(1): shutdown() requests a shutdown on every run it finds
             // registered. A launch that passed its shuttingDown check before
@@ -2944,9 +2975,10 @@ public final class WorkflowExecutor {
                 e.addSuppressed(releaseFailure);
             } finally {
                 if (running != null) {
-                    // Never started. Released only after the lock is given back, so a
-                    // drain waiting for this launch does not let shutdown finish (and
-                    // the store be torn down) under the release.
+                    // Never started. Untracked and released only after the lock is
+                    // given back, so a drain waiting for this launch does not let
+                    // shutdown finish (and the store be torn down) under the release.
+                    unreleasedRuns.remove(running.thread());
                     running.launched().countDown();
                 }
             }
