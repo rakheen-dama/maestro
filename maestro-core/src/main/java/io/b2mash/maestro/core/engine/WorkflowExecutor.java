@@ -2134,7 +2134,8 @@ public final class WorkflowExecutor {
      * with its count and the remedy. It runs on its own virtual thread,
      * {@code maestro-foreign-service-check}, and ends after that one read.
      *
-     * <p>It never throws and never writes: a failed read is logged once at
+     * <p>Apart from a {@code null} argument (a programming error), it never
+     * throws, and it never writes: a failed read is logged once at
      * {@code INFO}, and while the executor is shutting down this method logs
      * at {@code DEBUG} and starts nothing. {@link #shutdown()} does not wait
      * for it. A store that does not override the read reports nothing, so
@@ -2146,8 +2147,10 @@ public final class WorkflowExecutor {
      *
      * @param registrations map of workflow type → registration metadata; its
      *                      keys are the types checked
+     * @throws NullPointerException if {@code registrations} is {@code null}
      */
     public void startForeignServiceCheck(Map<String, WorkflowRegistration> registrations) {
+        Objects.requireNonNull(registrations, "registrations");
         if (shuttingDown.get()) {
             logger.debug("WorkflowExecutor is shutting down — the service-name check is not started");
             return;

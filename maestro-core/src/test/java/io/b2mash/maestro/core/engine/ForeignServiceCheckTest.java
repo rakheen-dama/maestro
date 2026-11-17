@@ -104,6 +104,16 @@ class ForeignServiceCheckTest {
         assertNull(store.asked());
     }
 
+    /** A null map is a programming error, reported the same way whether or not the executor is stopping. */
+    @Test
+    void aNullRegistrationMapIsRejectedAlsoDuringShutdown() {
+        var running = node();
+        assertThrows(NullPointerException.class, () -> running.startForeignServiceCheck(null));
+        var stopping = node();
+        stopping.shutdown();
+        assertThrows(NullPointerException.class, () -> stopping.startForeignServiceCheck(null));
+    }
+
     // ── helpers ──────────────────────────────────────────────────────
 
     private record Asked(String serviceName, Set<String> workflowTypes, int limit) {
