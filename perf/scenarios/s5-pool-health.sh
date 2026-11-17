@@ -76,8 +76,10 @@ s5_counters() {
 s5_health_phase() { # <name> <secs> <minMatching>
   local from to counters samples
   from=$(db_now_json)
+  [[ "$from" != null ]] || die "s5: phase $1: the database clock could not be read before the health probe (psql failed: see harness.log)"
   k6_run "$1" health-probe.js "PERF_DURATION=$2"
   to=$(db_now_json)
+  [[ "$to" != null ]] || die "s5: phase $1: the database clock could not be read after the health probe (psql failed: see harness.log)"
   counters=$(s5_counters "$1")
   samples=$(psql_json activity-samples -v label=s5 -v "min=$3" -v "from=$(jq -r . <<<"$from")" -v "to=$(jq -r . <<<"$to")")
   jq -nc --arg n "$1" --argjson secs "$2" --argjson from "$from" --argjson to "$to" \

@@ -180,6 +180,7 @@ s2_phase() {
 
   reset=$(psql_json pgss-reset)
   t0=$(db_now_json)
+  [[ "$t0" != null ]] || die "s2 ${name}: the database clock could not be read for the phase's t0 (psql failed: see harness.log)"
   printf '%s' "$(node_url 1)" >"$(s2_up_nodes_file)"
   stop_probes="${RESULTS}/.s2-stop-probes-${lc}"
   stop_hoard="${RESULTS}/.s2-stop-hoard-${lc}"
