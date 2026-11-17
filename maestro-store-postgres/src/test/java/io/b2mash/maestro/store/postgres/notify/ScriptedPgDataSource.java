@@ -55,6 +55,7 @@ final class ScriptedPgDataSource implements DataSource {
     private final AtomicInteger pollCalls = new AtomicInteger();
     private final AtomicInteger refusedConnections = new AtomicInteger();
     private final BlockingQueue<PGNotification> notifications = new LinkedBlockingQueue<>();
+    private final BlockingQueue<PGNotification[]> batches = new LinkedBlockingQueue<>();
     private final AtomicReference<@Nullable Supplier<? extends Exception>> nextPollFailure = new AtomicReference<>();
     private final Object pollGate = new Object();
 
@@ -81,6 +82,19 @@ final class ScriptedPgDataSource implements DataSource {
     /** Queues one notification on {@link #CHANNEL}; a poll takes at most one. */
     void deliver(String workflowId, String signalName) {
         notifications.add(new Notification(CHANNEL, 0, WakeChannel.encode(workflowId, signalName)));
+    }
+
+    /**
+     * Queues one batch: the next poll returns all of these notifications at
+     * once, one per workflow id, each for {@code signalName}, ahead of any
+     * single notification queued by {@link #deliver}.
+     */
+    void deliverInOnePoll(String signalName, String... workflowIds) {
+        var batch = new PGNotification[workflowIds.length];
+        for (int i = 0; i < workflowIds.length; i++) {
+            batch[i] = new Notification(CHANNEL, 0, WakeChannel.encode(workflowIds[i], signalName));
+        }
+        batches.add(batch);
     }
 
     /** Every poll from now on throws what {@code failure} supplies. */
@@ -264,6 +278,10 @@ final class ScriptedPgDataSource implements DataSource {
         var every = everyPollFailure;
         if (every != null) {
             throw every.get();
+        }
+        var batch = batches.poll();
+        if (batch != null) {
+            return batch;
         }
         PGNotification notification;
         try {

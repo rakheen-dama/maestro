@@ -55,14 +55,16 @@ import java.util.function.Consumer;
  * that has already failed is closed without {@code UNLISTEN}.
  *
  * <h2>Failures</h2>
- * <p>A {@code RuntimeException} or an {@code Error} from one poll or one
- * consumer does not end the poll thread: it is logged ({@code WARN} and
- * {@code ERROR} respectively) and the loop polls again one second later, so a
- * fault that repeats on every poll cannot spin it. A notification batch cut
- * short loses its remaining wakes to the engine's
- * {@code maestro.signal.wake-recheck-interval} re-read. Only a
- * {@code MaestroControlFlowError} ends the thread; the connection is still
- * released and the end is logged at {@code ERROR}.
+ * <p>A consumer that throws — a {@code RuntimeException} or an {@code Error}
+ * — is logged at {@code ERROR} and contained per notification: the rest of
+ * the batch is delivered at once. A {@code RuntimeException} or an
+ * {@code Error} from one poll does not end the poll thread: it is logged
+ * ({@code WARN} and {@code ERROR} respectively) and the loop polls again one
+ * second later, so a fault that repeats on every poll cannot spin it. A
+ * notification batch that a poll-side failure cuts short loses its remaining
+ * wakes to the engine's {@code maestro.signal.wake-recheck-interval} re-read.
+ * Only a {@code MaestroControlFlowError} ends the thread; the connection is
+ * still released and the end is logged at {@code ERROR}.
  *
  * <h2>Thread Safety</h2>
  * <p>Thread-safe. {@link #register}/{@link #unregister} may be called from any
@@ -320,9 +322,10 @@ public final class PostgresWakeListener implements AutoCloseable {
                     if (e instanceof MaestroControlFlowError controlFlow) {
                         throw controlFlow;
                     }
-                    // Any other Error — a consumer's AssertionError, a driver's
-                    // LinkageError, an OutOfMemoryError — is contained like a
-                    // RuntimeException. Wakes left in a batch it cut short are covered by
+                    // Any other Error — a driver's LinkageError, an OutOfMemoryError —
+                    // is contained like a RuntimeException. A consumer's Error never gets
+                    // here (dispatch contains it per notification); wakes left in a batch
+                    // that a driver or decode Error cut short are covered by
                     // maestro.signal.wake-recheck-interval, as any lost NOTIFY is.
                     if (running.get()) {
                         logger.error("Postgres wake poll loop on channel '{}' hit {}; continuing in {} ms",
@@ -437,6 +440,14 @@ public final class PostgresWakeListener implements AutoCloseable {
             consumer.accept(payload.signalName());
         } catch (RuntimeException e) {
             logger.error("Wake consumer for workflow '{}' threw: {}", payload.workflowId(), e.getMessage(), e);
+        } catch (Error e) {
+            // Contained per notification, so one consumer's Error neither drops the
+            // rest of this batch nor pauses every other wake for the loop's 1 s.
+            // The control-flow rule still holds: rethrown, it ends the loop.
+            if (e instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            logger.error("Wake consumer for workflow '{}' threw: {}", payload.workflowId(), e.toString(), e);
         }
     }
 

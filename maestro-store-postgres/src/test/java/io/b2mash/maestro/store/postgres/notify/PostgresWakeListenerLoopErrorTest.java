@@ -102,6 +102,42 @@ class PostgresWakeListenerLoopErrorTest {
         assertTrue(woken.await(5, TimeUnit.SECONDS), "the poll loop died on the consumer's Error");
     }
 
+    /**
+     * Review d3: one consumer's {@code Error} is contained per notification,
+     * so the rest of the batch is still delivered, in the same poll, without
+     * the loop's one-second pause.
+     */
+    @Test
+    @DisplayName("an Error from one consumer does not drop or delay the rest of its notification batch")
+    void anErrorFromOneConsumerDoesNotDropTheRestOfTheBatch() throws Exception {
+        var listener = track(scripted.newListener());
+        var thrownAt = new AtomicReference<Long>();
+        var pollAtThrow = new AtomicReference<Integer>();
+        var woken = new CountDownLatch(1);
+        var wokenAt = new AtomicReference<Long>();
+        var pollAtWake = new AtomicReference<Integer>();
+        listener.register("wf-1", s -> {
+            thrownAt.set(System.nanoTime());
+            pollAtThrow.set(scripted.pollCalls());
+            throw new AssertionError("consumer bug");
+        });
+        listener.register("wf-2", s -> {
+            wokenAt.set(System.nanoTime());
+            pollAtWake.set(scripted.pollCalls());
+            woken.countDown();
+        });
+        scripted.deliverInOnePoll("go", "wf-1", "wf-2");
+        listener.start();
+
+        assertTrue(woken.await(5, TimeUnit.SECONDS), "the second wake of the batch was never delivered");
+        assertEquals(pollAtThrow.get(), pollAtWake.get(), "both wakes are delivered by the same poll");
+        var gap = Duration.ofNanos(wokenAt.get() - thrownAt.get());
+        assertTrue(gap.compareTo(Duration.ofMillis(500)) < 0, "the second wake waited after the Error: " + gap);
+        assertTrue(errors().stream().anyMatch(m -> m.contains("Wake consumer for workflow 'wf-1' threw")
+                        && m.contains("java.lang.AssertionError: consumer bug")),
+                "the consumer's Error is logged at ERROR: " + errors());
+    }
+
     @Test
     @DisplayName("an Error from the driver is logged at ERROR, the loop waits a second, then polls and dispatches again")
     void anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain() throws Exception {
