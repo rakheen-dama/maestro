@@ -190,6 +190,17 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                 + " WHERE workflow_instance_id IN (SELECT id FROM candidates))"
                 + " DELETE FROM maestro_workflow_instance WHERE id IN (SELECT id FROM candidates)";
 
+        /**
+         * The completion check {@code docs/operations.md} §11.5 gives after
+         * {@link #MANUAL_PURGE_SQL} reports 0: the same service, status and
+         * age predicates, without {@code SKIP LOCKED}. A report of 0 alone is
+         * not proof, because the purge skips a candidate another transaction
+         * holds; a count above 0 means run the purge again.
+         */
+        static final String MANUAL_PURGE_REMAINING_SQL = "SELECT count(*) AS remaining FROM maestro_workflow_instance"
+                + " WHERE service_name = ? AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
+                + " AND completed_at < now() - CAST(? AS interval)";
+
         @BeforeEach
         void fixture() {
             for (int i = 0; i < 3; i++) {
@@ -409,9 +420,13 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                 }
                 var purge = CompletableFuture.supplyAsync(() -> manualPurge("orders-old", "30 days"));
                 var deleted = purge.copy().completeOnTimeout(-1, 5, SECONDS).get();
+                var again = deleted == 1 ? runManualPurge("orders-old", "30 days") : -1;
+                var remaining = remaining("orders-old", "30 days");
                 conn2.rollback();
                 purge.get(10, SECONDS);
                 assertEquals(1, deleted, "the manual purge waited on a locked candidate (-1) instead of skipping it");
+                assertEquals(List.of(0, 1L), List.of(again, remaining),
+                        "a second run reports 0 while the completion check still counts the locked candidate");
             }
             assertEquals(List.of(1L, 2L, 2L, 2L, 0L), List.of(rowsOfWorkflow("orders-old-0"),
                     childRowsOfWorkflow("maestro_workflow_event", "orders-old-0"),
@@ -419,6 +434,7 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                     childRowsOfWorkflow("maestro_workflow_timer", "orders-old-0"),
                     rowsOfWorkflow("orders-old-1")));
             assertEquals(1, runManualPurge("orders-old", "30 days"), "once released, the next run takes it");
+            assertEquals(0L, remaining("orders-old", "30 days"));
         }
 
         /**
@@ -437,6 +453,14 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                     "service and age are each written once");
             assertEquals(normalised(MANUAL_PURGE_SQL),
                     normalised(statement.replace(":'service'", "?").replace(":'age'", "?").replace(";", "")));
+
+            var countStart = guide.indexOf("SELECT count(*) AS remaining", start);
+            assertTrue(countStart >= 0, "the guide prints the completion check after the purge");
+            var count = guide.substring(countStart, guide.indexOf("```", countStart));
+            assertEquals(List.of(1, 1), List.of(occurrences(count, ":'service'"), occurrences(count, ":'age'")),
+                    "the completion check names service and age once each");
+            assertEquals(normalised(MANUAL_PURGE_REMAINING_SQL),
+                    normalised(count.replace(":'service'", "?").replace(":'age'", "?").replace(";", "")));
         }
 
         /** Runs {@link #MANUAL_PURGE_SQL} once, in autocommit; returns the instance rows it deleted. */
@@ -447,6 +471,11 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                 ps.setString(2, age);
                 return ps.executeUpdate();
             }
+        }
+
+        /** Runs {@link #MANUAL_PURGE_REMAINING_SQL}; returns the count. */
+        private long remaining(String serviceName, String age) throws Exception {
+            return count(MANUAL_PURGE_REMAINING_SQL, serviceName, age);
         }
 
         private int manualPurge(String serviceName, String age) {

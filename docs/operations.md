@@ -1359,6 +1359,19 @@ finished longer ago than the age, oldest first. It deletes their signals,
 timers and events, then the workflows themselves. `psql` prints `DELETE n`,
 the number of workflows removed. **Run it again until it prints `DELETE 0`.**
 
+`DELETE 0` alone does not prove the name is clean. The statement skips any
+candidate that another transaction holds at that moment. So after a
+`DELETE 0`, count what is left, in the same `psql` session and with the same
+variables. This count does not skip locked rows:
+
+```sql
+SELECT count(*) AS remaining FROM maestro_workflow_instance
+WHERE service_name = :'service' AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')
+AND completed_at < now() - CAST(:'age' AS interval);
+```
+
+If `remaining` is above 0, run the purge again, and then this count again.
+
 **Why it is safe beside running services:**
 
 - **It is atomic, even in autocommit.** A single statement either removes a
@@ -1381,11 +1394,11 @@ Tested on Postgres 16 (Testcontainers `postgres:16-alpine`) by
 | `theManualPurgeTakesOnlyTheNamedServicesRowsOlderThanTheAge` | Only the named service, only past the age. |
 | `theManualPurgeTakesAtMostFiveHundredInstancesPerRun` | Runs of 501 rows report 500, 1, then 0. |
 | `aRetryInFlightWhenTheManualPurgeRunsKeepsItsRowAndHistory` | A Retry in flight keeps its row and history. |
-| `theManualPurgeSkipsACandidateLockedElsewhereAndLeavesItsHistory` | A locked candidate is skipped, not waited on. |
-| `theOperationsGuidePrintsExactlyThisStatement` | This text is the tested statement. |
+| `theManualPurgeSkipsACandidateLockedElsewhereAndLeavesItsHistory` | A locked candidate is skipped, not waited on. While it is held, a run reports 0 and the count still reports 1. |
+| `theOperationsGuidePrintsExactlyThisStatement` | This text is the tested statement, and the count is the tested count. |
 
-The tests bind the name and the age as the two parameters. The statement is
-not tested on Postgres 14.
+The tests bind the name and the age as the two parameters. Neither the
+statement nor the count is tested on Postgres 14.
 
 **The cost of scoping in shared tables (Issue 78).** The sweep's candidate
 select still walks `idx_wf_instance_terminal (status, completed_at)` and
