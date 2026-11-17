@@ -195,7 +195,7 @@ final class RecoveryPoller implements StoppableLoop {
                 if (!running) {
                     break;
                 }
-                var recovered = executor.recoverWorkflows(registrations);
+                var recovered = executor.recoveryPass(registrations).adopted();
                 guard.succeeded();
                 if (recovered > 0) {
                     logger.info("Recovery poller adopted {} orphaned workflow(s)", recovered);

@@ -295,12 +295,10 @@ class WorkflowExecutorConcurrencyTest {
     }
 
     /**
-     * Recovery launches every adopted run on its own virtual thread and the
-     * run takes its slot there, so a recovery backlog larger than the default
-     * bound never blocks the recovering thread (at startup: the
-     * {@code ApplicationRunner}) — the runs beyond the bound queue on their
-     * own threads instead (Issue 30 is that they still hold their instance
-     * lock while they queue).
+     * {@code recoverWorkflows} is the ungated pass (the startup pass when the
+     * recovery poller is disabled): it adopts every run without waiting for
+     * slots, and the runs beyond the bound queue on their own threads. The
+     * recovery poller's passes are gated instead: {@code RecoveryCapacityTest}.
      */
     @Test
     void recoveryOfMoreRunsThanTheDefaultBoundReturnsWithoutWaitingForSlots() throws Exception {
