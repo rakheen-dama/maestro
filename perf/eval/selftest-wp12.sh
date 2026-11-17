@@ -174,10 +174,12 @@ out=$(s2 s2-acq-102 "${base} | $(lock_b '$n + $pr + 102' '$n + $pr + 102')")
 expect "s2: lock successes + adoptCas = 2.0204 per adoption: gate.lockAcquisitionsPerAdoption" FAIL "$(st "$out" gate.lockAcquisitionsPerAdoption)"
 out=$(s2 s2-acq-100 "${base} | $(lock_b '$n + $pr + 100' '$n + $pr + 100')")
 expect "s2: lock successes + adoptCas = 2.02 per adoption (the bound): gate.lockAcquisitionsPerAdoption" PASS "$(st "$out" gate.lockAcquisitionsPerAdoption)"
-out=$(s2 s2-lost-1250 "${base} | $(lock_b '$n + $pr' '$n + $pr + 1250')")
-expect "s2: lost lock races = 0.25 per seeded run (the bound): gate.lostLockRaces" PASS "$(st "$out" gate.lostLockRaces)"
-out=$(s2 s2-lost-1251 "${base} | $(lock_b '$n + $pr' '$n + $pr + 1251')")
-expect "s2: lost lock races = 0.2502 per seeded run: gate.lostLockRaces" FAIL "$(st "$out" gate.lostLockRaces)"
+out=$(s2 s2-lost-2500 "${base} | $(lock_b '$n + $pr' '$n + $pr + 2500')")
+expect "s2: lost lock races = 0.5 per seeded run (the bound): gate.lostLockRaces" PASS "$(st "$out" gate.lostLockRaces)"
+out=$(s2 s2-lost-2501 "${base} | $(lock_b '$n + $pr' '$n + $pr + 2501')")
+expect "s2: lost lock races = 0.5002 per seeded run: gate.lostLockRaces" FAIL "$(st "$out" gate.lostLockRaces)"
+out=$(s2 s2-lost-5000 "${base} | $(lock_b '$n + $pr' '$n + $pr + 5000')")
+expect "s2: a peer chasing every row (1 lost race per run): gate.lostLockRaces" FAIL "$(st "$out" gate.lostLockRaces)"
 # Pass rate: scale phase B's page and heldKeys reads to just inside / outside
 # the designed rate x slack, from the evaluator's own ratio on the unscaled run.
 out=$(s2 s2-rate-base "${base}")
@@ -407,10 +409,12 @@ if [[ -n "$s6before" ]]; then
   # Review r12.
   out=$(s6 s6-no-foreign '.seeded.sets.jforeign.signalsUnconsumed = 0 | .final.sets.jforeign.signalsUnconsumed = 0')
   expect "s6: no foreign unconsumed signal seeded: gate.janitorServiceScoped" INVALID "$(st "$out" gate.janitorServiceScoped)"
-  out=$(s6 s6-rpc-edge "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 2, rows: .plan.sets.jown, totalMs: 100, entries: 1}")
-  expect "s6: janitor rows per call = jown / 2 (the bound): gate.janitorBatched" PASS "$(st "$out" gate.janitorBatched)"
-  out=$(s6 s6-rpc-over "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 2, rows: (.plan.sets.jown + 2), totalMs: 100, entries: 1}")
-  expect "s6: janitor rows per call = jown / 2 + 1: gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-rpc-edge "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 10, rows: 10000, totalMs: 100, entries: 1}")
+  expect "s6: janitor 1,000 rows per call (the engine's batch, the bound): gate.janitorBatched" PASS "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-rpc-over "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 10, rows: 10001, totalMs: 100, entries: 1}")
+  expect "s6: janitor 1,000.1 rows per call: gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-rpc-two "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 2, rows: 10000, totalMs: 100, entries: 1}")
+  expect "s6: janitor 2 calls of 5,000 rows (batched, but not by 1,000): gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
   out=$(s6 s6-not-ended '.sweep.ended = false')
   expect "s6: the sweep did not end within its allowance: validity.windows" INVALID "$(st "$out" validity.windows)"
 
