@@ -8,8 +8,13 @@
 # none failed; every accepted start COMPLETED, nothing failed, nothing left)
 # and on the statement gate. A refused start is a correctness FAIL whatever
 # refused it: the full run r20261116t234614z (PASS when it ran) lost one start
-# of 42973 to a connection the node closed ("Request Failed ... EOF" in its k6
-# log), created no row for it, and is FAIL under this rule.
+# of 42973 to a transport error ("Request Failed ... EOF" in its k6 log, no
+# HTTP status), created no row for it, and is FAIL under this rule. Probable
+# cause, not proven: the node closed an idle keep-alive connection as a VU
+# reused it. Since then sample-perf keeps idle connections for 5 min
+# (server.tomcat.keep-alive-timeout) and k6/lib/common.js retries a start
+# that fails at the transport once, with the same workflowId (accepted on 202,
+# or 409 on the retry); the count is reported as s1StartRetries, a note.
 #
 # ── Levels, "sustains" and the ceiling ─────────────────────────────────────
 # Level L's window [ws, we] is the min/max started_at of its rows (ramp into

@@ -301,20 +301,48 @@ against the old baseline, by design):
 4. To record a second scenario, commit the first baseline before its run
    (the new file makes the tree dirty).
 
+**Start retries and connection keep-alive.** A refused start fails S1's
+correctness with zero tolerance. A start that fails at the transport (status
+0: the connection failed or was closed under the request, k6's "Request
+Failed … EOF", or k6's request timeout) is retried **once** with the same
+body, so the same `workflowId` (`perf/k6/lib/common.js` `startWorkflow`,
+every start script). It is accepted when the first attempt got 202, or the
+retry got 202 or 409 (`PerfController`'s answer for an existing
+`workflowId`: the first attempt had created the row); any other status is
+never retried. k6 counts retries in `start_retries`; each k6 record carries
+`startRetries`, and S1 reports its phase's as `s1StartRetries` in
+`correctness.allCompleted` — a non-zero count is a note in the detail, never
+a failure. A retry that fails again is a failed check: FAIL. The node keeps
+an idle keep-alive connection for 5 min (`server.tomcat.keep-alive-timeout:
+5m` in `sample-perf`'s `application.yml`; unset, Tomcat uses its connection
+timeout), longer than any VU waits between two requests (about 120 s: 600
+VUs at 5 starts/s), so it does not close a connection a VU is about to
+reuse. This is the harness's connection setting, not a Maestro one.
+
 **Self-tests (no Docker):** `perf/eval/selftest.sh <smoke dir> <s1 dir> <s3 dir>`
 doctors recorded runs one fault at a time and asserts the verdict each fault
-must produce; `perf/lib/lock-selftest.sh` races the run lock;
-`perf/lib/baseline-selftest.sh` exercises the record path on committed
-evidence (an intended improvement recorded, an INVALID or FAIL run refused
-with the old file untouched).
+must produce (`perf/eval/selftest-evidence.sh` runs it on the three source
+runs rebuilt from `perf/.evidence/wp11/`, including the S1 run's committed
+`prometheus.json`, so it needs no local results); `perf/lib/lock-selftest.sh`
+races the run lock; `perf/lib/baseline-selftest.sh` exercises the record
+path on committed evidence (an intended improvement recorded; an INVALID or
+FAIL run, a settings change without the override, or a failing write refused
+with the old file untouched); `perf/lib/evidence-selftest.sh` asserts that no
+committed evidence or baseline holds an absolute path, a `pwd` or a host
+name, and that `run.sh` still records `uname -srm`. All but the lock race
+pass on jq 1.7.1 and 1.8.1.
 
-**CI:** `.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
+**CI:** a pull request that touches `perf/**`, `sample-perf` or the
+workflow runs `perf.yml`'s `selftest` job (contents: read): the evidence
+guard, the evaluator self-test from committed evidence and the
+baseline-record self-test; never a load run. The load job:
+`.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
 (scenario, profile, replicas, admin_events; defaults `s1-throughput`,
 `local`, `1`, `false`) and Saturday 04:00 UTC (s1-throughput and s3-parked,
 **local** profile: the profile both committed baselines were recorded with,
 so the baseline gates judge; `full` is a manual choice, and its baseline gates
 read NO_BASELINE). Never on pull requests: a load run on a shared 4-vCPU
-runner is not a merge signal. What is hardware-sensitive on such a runner
+runner is not a merge signal (pull requests run only the self-tests above). What is hardware-sensitive on such a runner
 (the statement figures are not): dropped iterations and the plan's iteration
 count (`validity.droppedIterations`, `validity.plan`; also the warm-up drain,
 `validity.warmup` — all INVALID), Scenario 3's 600 s plateau wait
@@ -347,7 +375,7 @@ stated; MacBook Pro, 10 CPUs, Docker 7837 MiB, a **shared** host: "contended"
 | S1 local, baseline record | r20261116t231034z | PASS | 26 net statements per workflow (6337 workflows); ceiling 71.60 completions/s; sustained level 40; contended |
 | S1 local, gate re-run | r20261116t232948z | PASS | gate 26 against 26 ± 0.52; ceiling 73.43/s, hold-window 75.36/s, engine overhead 16.96 ± 2.9 ms; quiet |
 | S1 local, admin events on ×2 | r20261116t222331z, r20261116t225610z | PASS, PASS | 26 and 26 net (164860, 164857 calls vs 164862, 164858 off: r20261116t221747z, r20261116t222856z); ceilings 73.16, 73.48 on vs 73.01, 70.61 off; all four contended |
-| S1 full | r20261116t234614z | PASS when run (gate NO_BASELINE: the baseline is local); **FAIL** under today's evaluator: 1 of 42973 starts was refused (k6 "Request Failed … EOF", the node closed the connection; no row), and a refused start is a correctness failure | 26.01 net over 42972 workflows; completions/s per level L5 4.99, L10 9.80, L20 19.57, L40 39.21, L60 59.19, L80 74.26, L120 75.61 (offered 79.24 / 118.43); p95 309.2 / 321.4 / 397.7 / 417.8 / 395.3 / 8379.0 / 82102.9 ms; contended (2.06 per CPU) |
+| S1 full | r20261116t234614z | PASS when run (gate NO_BASELINE: the baseline is local); **FAIL** under the evaluator of the first fix wave: 1 of 42973 starts was refused (k6 "Request Failed … EOF" with no HTTP status; no row), and a refused start is a correctness failure. Probable cause, not proven: the node closed an idle keep-alive connection just as a VU reused it. Since then the node keeps idle connections for 5 min and k6 retries such a start once (see *Start retries*) | 26.01 net over 42972 workflows; completions/s per level L5 4.99, L10 9.80, L20 19.57, L40 39.21, L60 59.19, L80 74.26, L120 75.61 (offered 79.24 / 118.43); p95 309.2 / 321.4 / 397.7 / 417.8 / 395.3 / 8379.0 / 82102.9 ms; contended (2.06 per CPU) |
 | S3 local, baseline record | r20261116t231822z | PASS | 6.0154 / 6.0137 statements per parked run per minute at P = 1000 / 2000 (3.0077 / 3.0068 per 30 s); linearity 0.9997; arithmetic centre 6.017 |
 | S3 local, gate re-run | r20261116t233507z | PASS | 6.0165 / 6.0161; baseline gate 6.0161 against 6.0137 ± 0.121; quiet |
 | S3 local, sleep mode | r20261116t224549z | PASS | 4.0173 / 4.0169 against the 4.017 arithmetic; re-check 2.0001 / 1.9999 reads per parked run per 30 s |
