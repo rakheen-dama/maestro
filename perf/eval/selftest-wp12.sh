@@ -290,7 +290,17 @@ fi
 if [[ -n "$s6before" ]]; then
   source_is "$s6before" s6-retention
   s6() { eval_case "$s6before" s6-retention "$@"; }
-  busy_at() { printf '.sampler.matchingInSpan = (.sampler.spanSamples * %s | ceil)' "$1"; }
+  # busy_at <f>: the sweep's busy fraction set to f, both the time-weighted
+  # one and the sample count, with pg_stat_statements' purge execution time
+  # set to agree (validity.dutyCrossCheck) and the sampler's span resolution
+  # at 0.2 s (validity.samplerResolution).
+  busy_at() {
+    printf '.sampler.spanSecs = (.sampler.spanSecs // (((.sampler.lastMatchAt[0:19] + "Z") | fromdate) - ((.sampler.firstMatchAt[0:19] + "Z") | fromdate)))
+      | .sampler.busyTimeFraction = %s
+      | .sampler.matchingInSpan = (.sampler.spanSamples * %s | ceil)
+      | .sampler.spanMaxGapSecs = 0.2
+      | .sweep.components.purgeDeletes.totalMs = (%s * .sampler.spanSecs * 1000 - (.sweep.components.purgeCandidates.totalMs // 0))' "$1" "$1" "$1"
+  }
   s6_after='.final.sets.jforeign.signalsUnconsumed = .seeded.sets.jforeign.signalsUnconsumed
     | .sweep.components.janitor = {calls: 10, rows: .plan.sets.jown, totalMs: 100, entries: 1}'
   out=$(s6 s6-before '.')
@@ -323,6 +333,31 @@ if [[ -n "$s6before" ]]; then
   expect "s6: one janitor call: gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
   out=$(s6 s6-post-20 '.windows |= map(if .phase == "post" then .windowSecs = 20 else . end)')
   expect "s6: post window 20 s: validity.windows" INVALID "$(st "$out" validity.windows)"
+  # Review r7: an unmatched statement is INVALID, never a FAIL or a PASS.
+  out=$(s6 s6-janitor-unmatched "$(busy_at 0.5) | ${s6_after} | .sweep.components |= del(.janitor)")
+  expect "s6: janitor statement unmatched while its signals are gone: validity.statementsClassified" INVALID "$(st "$out" validity.statementsClassified)"
+  expect "s6: janitor statement unmatched: gate.janitorBatched not FAIL" INVALID "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-deletes-off "$(busy_at 0.5) | ${s6_after} | .sweep.components.purgeDeletes.calls -= 1")
+  expect "s6: purge DELETE calls not 4 per batch: validity.statementsClassified" INVALID "$(st "$out" validity.statementsClassified)"
+  out=$(s6 s6-duty-disagree "$(busy_at 0.5) | ${s6_after} | .sweep.components.purgeDeletes.totalMs = 100")
+  expect "s6: sampler 0.5 busy, purge execution time ~0.01 of the span: validity.dutyCrossCheck" INVALID "$(st "$out" validity.dutyCrossCheck)"
+  # Review r8: a sampler gap inside the sweep span makes the duty cycle untrustworthy.
+  out=$(s6 s6-span-gap "$(busy_at 0.5) | ${s6_after} | .sampler.spanMaxGapSecs = 0.5")
+  expect "s6: a 0.5 s sampler gap inside the sweep span: validity.samplerResolution" INVALID "$(st "$out" validity.samplerResolution)"
+  out=$(s6 s6-span-gap-edge "$(busy_at 0.5) | ${s6_after} | .sampler.spanMaxGapSecs = 0.3")
+  expect "s6: a 0.3 s sampler gap (the bound): validity.samplerResolution" PASS "$(st "$out" validity.samplerResolution)"
+  out=$(s6 s6-time-weighted "$(busy_at 0.5) | ${s6_after} | .sampler.matchingInSpan = .sampler.spanSamples")
+  expect "s6: the gate reads the time-weighted fraction (0.5), not the sample count (1.0): gate.retentionPaced" PASS "$(st "$out" gate.retentionPaced)"
+  # Review r12.
+  out=$(s6 s6-no-foreign '.seeded.sets.jforeign.signalsUnconsumed = 0 | .final.sets.jforeign.signalsUnconsumed = 0')
+  expect "s6: no foreign unconsumed signal seeded: gate.janitorServiceScoped" INVALID "$(st "$out" gate.janitorServiceScoped)"
+  out=$(s6 s6-rpc-edge "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 2, rows: .plan.sets.jown, totalMs: 100, entries: 1}")
+  expect "s6: janitor rows per call = jown / 2 (the bound): gate.janitorBatched" PASS "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-rpc-over "$(busy_at 0.5) | ${s6_after} | .sweep.components.janitor = {calls: 2, rows: (.plan.sets.jown + 2), totalMs: 100, entries: 1}")
+  expect "s6: janitor rows per call = jown / 2 + 1: gate.janitorBatched" FAIL "$(st "$out" gate.janitorBatched)"
+  out=$(s6 s6-not-ended '.sweep.ended = false')
+  expect "s6: the sweep did not end within its allowance: validity.windows" INVALID "$(st "$out" validity.windows)"
+
   out=$(s6 s6-no-xforeign 'del(.plan.sets.xforeign)')
   expect "s6: xforeign read missing: advisory.foreignRetention" WARN "$(st "$out" advisory.foreignRetention)"
   expect "s6: xforeign read missing: no evaluator ERROR" yes \

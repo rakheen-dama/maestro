@@ -23,9 +23,33 @@
 #   correctness.janitorExact jown's unconsumed signals deleted; jfailed's
 #                            kept; every consumed signal of a kept instance
 #                            kept
-#   gate.retentionPaced (3.11a)  busy fraction: sampler samples with a purge
-#                            statement active / samples from the first such
-#                            sample to the last <= 0.65
+#   validity.statementsClassified  the statement texts were matched: purge
+#                            DELETE calls a whole 4 per batch, and the
+#                            candidate selects that number of batches plus 0
+#                            to 3 short reads (one per terminal status); and
+#                            when the janitor's targets are gone, >= 1
+#                            janitor call. An unmatched text (a changed
+#                            statement) is INVALID, never a FAIL or a PASS
+#                            (review r7)
+#   validity.dutyCrossCheck  two independent reads of the sweep's duty cycle
+#                            agree within 0.15: the sampler's busy fraction
+#                            and pg_stat_statements' purge execution time /
+#                            the sampled span (promoted from an advisory,
+#                            review r7)
+#   validity.samplerResolution  the largest sampler gap inside the sweep span
+#                            <= 0.3 s (review r8); a run recorded before the
+#                            span gap was measured falls back to the
+#                            sampler's largest gap overall
+#   gate.retentionPaced (3.11a)  busy fraction, TIME-WEIGHTED (each sample
+#                            stands for the time to the next;
+#                            activity-samples.sql busyTimeFraction; the sample
+#                            count's matchingInSpan / spanSamples for a run
+#                            recorded before it existed) <= 0.65. The span
+#                            is the sweep's own (first to last purge sample),
+#                            so a paced sweep that spans longer than an
+#                            unpaced one is judged on the same footing: the
+#                            share of its own duration a purge statement was
+#                            running
 #   gate.janitorServiceScoped (3.11b)  jforeign's unconsumed signals all kept
 #   gate.janitorBatched (3.11b)  janitor DELETE calls >= 2 in the sweep window
 #                            and rows per call <= jown / 2. WP8's batch is
@@ -40,8 +64,6 @@
 #                            candidate select's (":331-332", scoped form
 #                            ":357-358"), so no pattern changed.
 #   advisory.foreground      probe p95 during / pre and post / pre <= 1.5
-#   advisory.dutyCrossCheck  pg_stat_statements purge execution time / sweep
-#                            span, next to the sampler's busy fraction
 #   advisory.foreignRetention  xforeign (another service's TERMINATED rows
 #                            past this service's cutoff) purged: recorded as
 #                            an observation, never a gate (the planned
@@ -53,6 +75,15 @@ def s6_max_busy: 0.65;
 def s6_min_active_samples: 20;
 def s6_min_window_secs: 30;
 def s6_fg_ratio: 1.5;
+def s6_duty_tolerance: 0.15;
+def s6_max_span_gap: 0.3;
+def s6_short_reads_max: 3;
+# The sweep span in seconds: the sampler's spanSecs, or its first and last
+# purge samples' timestamps.
+def span_secs($smp): ($smp.spanSecs // (($smp.lastMatchAt | ts_secs) - ($smp.firstMatchAt | ts_secs)));
+def busy_fraction($smp):
+  ($smp.busyTimeFraction // (if ($smp.spanSamples // 0) > 0 and ($smp.matchingInSpan | isnum)
+                             then $smp.matchingInSpan / $smp.spanSamples else null end));
 def setv($s; $k; $f): ($s.sets[$k][$f] // 0);
 def jsets: ["jown", "jfailed", "jforeign"];
 
@@ -118,10 +149,38 @@ $identity[0] as $id
          {jownUnconsumed: 0, jfailedUnconsumed: "kept", consumed: "kept"};
          if $ok then "the janitor deleted this service's unconsumed signals of COMPLETED runs and nothing else"
          else "the janitor left a target signal or deleted one it must keep" end)),
-    (($smp.spanSamples // null) as $span | ($smp.matchingInSpan // null) as $act
-     | (if ($span | isnum) and $span > 0 and ($act | isnum) then $act / $span else null end) as $f
+    ((try $m.sweep.components catch null) // {}) as $c
+    | ($c.purgeDeletes.calls // 0) as $del | ($c.purgeCandidates.calls // 0) as $cand
+    | ($c.janitor.calls // 0) as $jc
+    | ((setv($s0; "jown"; "signalsUnconsumed") - setv($s1; "jown"; "signalsUnconsumed")) > 0) as $janitorWorked
+    | ($del > 0 and $del % 4 == 0 and ($cand - $del / 4) >= 0 and ($cand - $del / 4) <= s6_short_reads_max) as $purgeOk
+    | (($janitorWorked | not) or $jc >= 1) as $janOk
+    | check("validity.statementsClassified"; "validity"; if $purgeOk and $janOk then "PASS" else "INVALID" end;
+        {purgeDeleteCalls: $del, batches: ($del / 4), candidateSelects: $cand, janitorCalls: $jc,
+         janitorTargetsDeleted: $janitorWorked};
+        {purgeDeleteCalls: "4 x batches", candidateSelects: "batches + 0..\(s6_short_reads_max)", janitorCalls: ">= 1 when its targets are gone"};
+        if $purgeOk and $janOk then "the purge and janitor statements were matched: \($del / 4) batches, \($jc) janitor call(s)"
+        else "a purge or janitor statement text was not matched (a changed statement?): the gates on it would judge nothing" end),
+    (busy_fraction($smp) as $f | span_secs($smp) as $span
+     | ((($c.purgeCandidates.totalMs // 0) + ($c.purgeDeletes.totalMs // 0)) / 1000) as $exec
+     | (if ($span | isnum) and $span > 0 then $exec / $span else null end) as $ef
+     | (($f | isnum) and ($ef | isnum) and (($f - $ef) | fabs) <= s6_duty_tolerance) as $ok
+     | check("validity.dutyCrossCheck"; "validity"; if $ok then "PASS" else "INVALID" end;
+         {samplerFraction: ($f | round4), execFraction: ($ef | round4), purgeExecSecs: ($exec | round2), spanSecs: ($span | round2)};
+         {difference: "<= \(s6_duty_tolerance)"};
+         if $ok then "the sampler and pg_stat_statements agree on the sweep's duty cycle"
+         else "the sampler's busy fraction and the purge statements' execution time disagree: the duty cycle is not measured" end)),
+    ((($smp.spanMaxGapSecs // $smp.maxGapSecs) // null) as $g
+     | check("validity.samplerResolution"; "validity"; if ($g | isnum) and $g <= s6_max_span_gap then "PASS" else "INVALID" end;
+         {spanMaxGapSecs: $smp.spanMaxGapSecs, overallMaxGapSecs: $smp.maxGapSecs};
+         {gapSecs: "<= \(s6_max_span_gap)"};
+         if ($g | isnum) and $g <= s6_max_span_gap then "the sampler saw the sweep every \($g) s or better"
+         elif $smp.spanMaxGapSecs == null then "the run predates the span-gap measurement; its largest sampler gap overall was \($g | tojson) s"
+         else "a \($g) s gap in the sampler inside the sweep span: its duty cycle is not resolved" end)),
+    (busy_fraction($smp) as $f
      | check("gate.retentionPaced"; "gate"; if $f == null then "INVALID" elif $f <= s6_max_busy then "PASS" else "FAIL" end;
-         {busyFraction: ($f | round4), activeSamples: $act, spanSamples: $span, firstAt: $smp.firstMatchAt, lastAt: $smp.lastMatchAt};
+         {busyFraction: ($f | round4), timeWeighted: ($smp.busyTimeFraction != null), activeSamples: $smp.matchingInSpan,
+          spanSamples: $smp.spanSamples, spanSecs: (span_secs($smp) | round2), firstAt: $smp.firstMatchAt, lastAt: $smp.lastMatchAt};
          {busyFraction: "<= \(s6_max_busy)"};
          if $f == null then "no sweep span was sampled"
          else "a purge statement was active in \($f * 100 | round) % of the sweep's samples (3.11a: batches back to back hold a connection and the database busy for the whole sweep)" end)),
@@ -135,7 +194,7 @@ $identity[0] as $id
     (($m.sweep.components.janitor // {}) as $j | ($plan.jown // null) as $jown
      | (if ($j.calls | isnum) and $j.calls > 0 then $j.rows / $j.calls else null end) as $rpc
      | check("gate.janitorBatched"; "gate";
-         if ($jown | isnum | not) then "INVALID"
+         if ($jown | isnum | not) or ($j.calls // 0) == 0 then "INVALID"
          elif ($j.calls // 0) >= 2 and $rpc != null and $rpc <= $jown / 2 then "PASS" else "FAIL" end;
          {calls: ($j.calls // 0), rows: ($j.rows // 0), rowsPerCall: ($rpc | round2)};
          {calls: ">= 2", rowsPerCall: "<= jown / 2 = \(if $jown | isnum then $jown / 2 else null end)"};
@@ -148,14 +207,6 @@ $identity[0] as $id
           {pre: $fg.pre, during: $fg.during, post: $fg.post, ratios: $q}; {ratio: "<= \(s6_fg_ratio)"};
           if $q == null then "the foreground's pre-window p95 was not recorded"
           else "foreground p95 during / pre \($q.during), post / pre \($q.post)" end)),
-    advisory_guarded("advisory.dutyCrossCheck";
-      (($m.sweep.components.purgeCandidates.totalMs // 0) + ($m.sweep.components.purgeDeletes.totalMs // 0)) as $ms
-      | (($smp.lastMatchAt | ts_secs) - ($smp.firstMatchAt | ts_secs)) as $span
-      | check("advisory.dutyCrossCheck"; "advisory"; "PASS";
-          {purgeExecMs: ($ms | round2), spanSecs: ($span | round2),
-           execFraction: (if $span > 0 then $ms / 1000 / $span | round4 else null end),
-           samplerFraction: (if ($smp.spanSamples // 0) > 0 then $smp.matchingInSpan / $smp.spanSamples | round4 else null end)};
-          null; "pg_stat_statements' purge execution time over the sampled sweep span, next to the sampler's busy fraction")),
     advisory_guarded("advisory.foreignRetention";
       ($plan.xforeign) as $n | ($s1.sets | type) as $ty
       | if ($n | isnum | not) or $ty != "object" then
