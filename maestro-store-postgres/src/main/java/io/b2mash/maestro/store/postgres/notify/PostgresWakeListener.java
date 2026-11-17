@@ -58,9 +58,14 @@ import java.util.function.Consumer;
  * <p>A consumer that throws — a {@code RuntimeException} or an {@code Error}
  * — is logged at {@code ERROR} and contained per notification: the rest of
  * the batch is delivered at once. A {@code RuntimeException} or an
- * {@code Error} from one poll does not end the poll thread: it is logged
- * ({@code WARN} and {@code ERROR} respectively) and the loop polls again one
- * second later, so a fault that repeats on every poll cannot spin it. A
+ * {@code Error} from one poll does not end the poll thread, and a fault that
+ * repeats on every poll cannot spin it. A {@code RuntimeException} is logged
+ * at {@code WARN} and the session is dropped like one that failed with an
+ * {@code SQLException}: closed without {@code UNLISTEN}, then reconnected
+ * after the back-off, which starts at one second and doubles up to 30 s for
+ * as long as each new session fails before a poll returns. An {@code Error}
+ * is logged at {@code ERROR} and the loop polls the same session again one
+ * second later. A
  * notification batch that a poll-side failure cuts short loses its remaining
  * wakes to the engine's {@code maestro.signal.wake-recheck-interval} re-read.
  * Only a {@code MaestroControlFlowError} ends the thread; the connection is
@@ -276,8 +281,12 @@ public final class PostgresWakeListener implements AutoCloseable {
                         if (!running.get()) {
                             break;
                         }
-                        if (!connect()) {
-                            backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+                        var connected = connect();
+                        // Doubled on every reconnect attempt and reset only by a poll that
+                        // returned, so a session that connects but fails again at once backs
+                        // off too, not only a refused connection.
+                        backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
+                        if (!connected) {
                             continue;
                         }
                         reconnects.incrementAndGet();
@@ -287,8 +296,8 @@ public final class PostgresWakeListener implements AutoCloseable {
                             continue;
                         }
                     }
-                    backoff = INITIAL_BACKOFF_MS;
                     var notifications = pg.getNotifications(POLL_TIMEOUT_MS);
+                    backoff = INITIAL_BACKOFF_MS;
                     if (notifications != null) {
                         for (PGNotification notification : notifications) {
                             dispatch(notification);
@@ -307,14 +316,15 @@ public final class PostgresWakeListener implements AutoCloseable {
                 } catch (RuntimeException e) {
                     // A driver or dispatch bug must never end the poll thread: the listener
                     // would then look connected while delivering nothing until restart.
-                    // Nor may it spin: a driver that keeps throwing waits a second each time.
+                    // Nor may it spin, or retry the same suspect session every second for
+                    // ever: the session is dropped like a failed one (closed without
+                    // UNLISTEN) and the reconnect path's back-off, 1 s doubling to 30 s
+                    // while new sessions keep failing, comes before the next poll.
                     if (running.get()) {
                         logger.warn("Postgres wake poll loop on channel '{}' hit an unexpected error ({}); "
-                                + "continuing", channel, e.toString());
+                                + "dropping the session and reconnecting", channel, e.toString());
                     }
-                    if (pauseAfterFailure()) {
-                        break;
-                    }
+                    closeConnection();
                 } catch (Error e) {
                     // The engine's control-flow rule: rethrown, it ends the loop (the
                     // finally still releases the connection). No consumer throws one in

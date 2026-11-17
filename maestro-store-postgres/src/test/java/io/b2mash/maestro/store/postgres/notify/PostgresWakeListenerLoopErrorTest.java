@@ -103,6 +103,35 @@ class PostgresWakeListenerLoopErrorTest {
     }
 
     /**
+     * Review d4: a session whose poll throws a {@code RuntimeException} (not an
+     * {@code SQLException}) is dropped — closed without {@code UNLISTEN}, as a
+     * failed session is — and the listener reconnects through its back-off,
+     * which grows while each new session fails again, instead of retrying the
+     * same connection every second for ever while {@code isConnected()} says
+     * {@code true}.
+     */
+    @Test
+    @DisplayName("a session that keeps throwing a RuntimeException is dropped and reconnected with a growing back-off")
+    void aSessionThatKeepsThrowingARuntimeExceptionIsDroppedAndReconnectedWithBackoff() {
+        scripted.failPollsWith(() -> new IllegalStateException("driver bug"));
+        var listener = track(scripted.newListener());
+        listener.start();
+        await("three polls").atMost(Duration.ofSeconds(10)).until(() -> scripted.pollStartNanos().size() >= 3);
+
+        var events = scripted.events();
+        var firstPoll = events.indexOf("poll");
+        var secondPoll = events.subList(firstPoll + 1, events.size()).indexOf("poll") + firstPoll + 1;
+        assertEquals(List.of("close", "LISTEN " + ScriptedPgDataSource.CHANNEL), events.subList(firstPoll + 1, secondPoll),
+                "between the failed poll and the next one: the session is dropped, then a new one listens");
+        var starts = scripted.pollStartNanos();
+        var firstGap = Duration.ofNanos(starts.get(1) - starts.get(0));
+        var secondGap = Duration.ofNanos(starts.get(2) - starts.get(1));
+        assertTrue(firstGap.compareTo(Duration.ofMillis(900)) >= 0, "first back-off: " + firstGap);
+        assertTrue(secondGap.compareTo(Duration.ofMillis(1900)) >= 0,
+                "the back-off grows while each new session fails again: " + secondGap);
+    }
+
+    /**
      * Review d3: one consumer's {@code Error} is contained per notification,
      * so the rest of the batch is still delivered, in the same poll, without
      * the loop's one-second pause.
@@ -177,8 +206,10 @@ class PostgresWakeListenerLoopErrorTest {
         assertTrue(elapsed.compareTo(Duration.ofMillis(900)) < 0,
                 "close() must end the one-second wait, not wait it out: took " + elapsed);
         var events = scripted.events();
-        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close"),
-                events.subList(events.lastIndexOf("poll") + 1, events.size()));
+        // Since review d4 the session that threw is dropped like a failed one (closed
+        // without UNLISTEN) before the back-off, so close() finds nothing left to release.
+        assertEquals(List.of("close"), events.subList(events.lastIndexOf("poll") + 1, events.size()),
+                "the failed session is closed once, without UNLISTEN");
     }
 
     @Test
