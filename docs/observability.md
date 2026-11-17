@@ -114,7 +114,10 @@ type is known (the instance exists).
 `maestro.recovery.scanned`, `maestro.recovery.adopted` and
 `maestro.retention.purged` are `increment(n)` calls, not `increment()` — one
 recovery pass or retention sweep moves them by the pass's counts (so a leader
-that found nothing to purge registers the four `kind` series at zero).
+that found nothing to purge registers the four `kind` series at zero). The
+recovery poller's capacity passes — run as task-queue capacity frees while a
+recovery backlog drains — count too, but only those that read rows, so during
+a drain `scanned` grows by the rows each capacity pass reads.
 
 `maestro.loop.errors` counts the five engine loops only. The two
 `maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)

@@ -374,8 +374,8 @@ something else.
 `KafkaTopicVerifier` closes that gap **once, at startup**, from
 `MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated` — after
 every singleton exists (so every `@MaestroSignalListener` is known), before any
-consumer container starts, and before `StartupRecoveryRunner` resumes a
-workflow. It composes the set of topics this service needs and asks the broker,
+consumer container starts, and before the recovery pass `StartupRecoveryRunner`
+starts resumes a workflow. It composes the set of topics this service needs and asks the broker,
 in one `describeTopics` call bounded to 5 seconds, whether each exists:
 
 | Required topic                                                   | When                                              |
@@ -551,16 +551,29 @@ activity slot: the activity does not run. An activity slot is held from the
 activity's start through every retry attempt and backoff to its persisted
 outcome. Every listed limit must be `>= 1`, and naming a queue twice fails startup.
 
-Recovery does not wait for slots: it adopts every instance it can lock, and
-each adopted run then queues for its slot on its own thread, so startup is
-never held up by a backlog. Because every queue is now bounded by default,
-two consequences of that are on the default path (`docs/open-issues.md`
-Issues 29 and 30): a node that adopts more runs than its slots holds their
-instance locks while they queue, so other nodes cannot take that backlog over;
-and a run still queued for a slot when shutdown begins leaves at once — it
+**Recovery adopts only what a node can run or queue.** Before the recovery
+poller locks an instance, it asks the instance's task queue for room on this
+node, without waiting. Per queue, a node adopts at most its free slots plus
+`concurrency` recovered runs that queue for a slot. Every other recoverable
+instance is left unlocked, for another node of the service or for this node
+once capacity frees, and the poller looks again as soon as a slot or a queued
+place frees here, not a whole `poll-interval` later. A node therefore holds at
+most 2 × `concurrency` instance locks per queue for recovery (its running and
+its queued runs), and a restarted fleet shares a backlog instead of the first
+node locking all of it (`RecoveryCapacityTest`, `RecoveryPollerCapacityTest`,
+`MultiNodeRecoveryCapacityIT`). Queued recovered runs wait in the same
+first-in-first-out line as new starts, so neither starves the other: a
+recovered run waits as long as a new start submitted at the same moment, and
+a new start waits behind at most `concurrency` queued recovered runs
+(`RecoveryStarvationTest`). While a backlog drains, that costs a new start at
+most about one run's length of extra wait (arithmetic). With both defaults
+`0` and no listed queue, recovery is unbounded, as before
+(`RecoveryCapacityTest.anUnboundedNodeAdoptsEveryInstanceAsBefore`).
+
+A recovered run still queued for a slot when shutdown begins leaves at once: it
 stands down, recoverable, and hands its instance lock back before shutdown
-returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). Nothing is written or
-lost either way.
+returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). There are at most
+`concurrency` such runs per queue. Nothing is written or lost.
 
 On a saturated queue, a parked run's periodic re-check (which picks up a
 terminate issued on another node and is the fallback for a missed wake) waits
@@ -579,7 +592,10 @@ waiting, because the children's activities cannot get a slot either. For
 unlisted queues both limits are 20 by default. Every `@DurableWorkflow` that
 names no `taskQueue` is on `default`, so a parent and a child of different
 types share these pools unless one of them names its own queue. The test kit
-(`TestWorkflowEnvironment`) is unbounded and will not show this. Remedies:
+(`TestWorkflowEnvironment`) is unbounded by default and will not show this;
+build it with `TestWorkflowEnvironment.builder().defaultConcurrency(20, 20)`
+(or `@MaestroTest(defaultConcurrency = 20, defaultActivityConcurrency = 20)`)
+and it does ([Testing](testing.md#concurrency-limits)). Remedies:
 
 - Put the child workflow type on a task queue of its own
   (`@DurableWorkflow(taskQueue = ...)`). It then gets its own pools.
@@ -636,11 +652,29 @@ Each node compares its clock with the database's when its timer poller starts an
 
 ## Recovery Configuration
 
-Properties under `maestro.recovery.*` control the periodic recovery poller. On
-top of the one-shot recovery at startup, every node re-runs recovery at this
-interval so that workflows owned by a node that has since died (its instance
-lock expired) or shut down are adopted without a restart. All nodes poll — the
-per-instance distributed lock guarantees only one of them wins each workflow.
+Properties under `maestro.recovery.*` control the recovery poller. It starts
+with the node: its first pass, the startup recovery of the workflows that were
+active when the service last stopped, runs at once on the poller's own thread,
+and every node then re-runs recovery every `poll-interval`, so that workflows
+owned by a node that has since died (its instance lock expired) or shut down
+are adopted without a restart. All nodes poll — the per-instance distributed
+lock guarantees only one of them wins each workflow. Startup does not wait for
+recovery: the application can report ready, and accept traffic, before every
+workflow is re-adopted (`StartupRecoveryRunnerTest`). That is safe: a signal
+for a workflow not yet adopted is stored and found by its replay, and a query
+reaches only the node that owns a run. A store failure in the startup pass is
+logged and retried; it does not fail startup.
+
+**Capacity.** Every pass of the poller admits per task queue only what this
+node can run or queue ([Worker Configuration](#worker-configuration)). The
+first pass is immediate (`RecoveryPollerCapacityTest.thePollersFirstPassRunsAtOnce`).
+A *full* pass reads from the first row and runs every `poll-interval`. After a
+pass that left instances for lack of capacity, a *capacity pass* runs as soon
+as capacity frees on this node, at most once per `min(1 s, poll-interval)`. It
+starts at the first instance it left on a queue that now has room and reads a
+page sized to that room (twice the free places, at least 20, at most 200); a
+wake with no free room reads nothing (`RecoveryCapacityTest`,
+`RecoveryPollerCapacityTest`).
 
 A recovery pass reads only the active instances (`RUNNING`, `WAITING_SIGNAL`,
 `WAITING_TIMER`, `COMPENSATING`) whose `service_name` is this node's
@@ -656,7 +690,7 @@ instances are never read or adopted, even when services share one table set:
 
 | Property                         | Type       | Default | Description                                                                 |
 |----------------------------------|------------|---------|-----------------------------------------------------------------------------|
-| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs.                                   |
+| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs. `false`: a one-shot startup pass still runs, without a capacity check, retried every `poll-interval` until it completes. |
 | `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
 
 Migration `V101__recovery_scan_index.sql` adds the partial index the paged scan

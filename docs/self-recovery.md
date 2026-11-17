@@ -138,7 +138,7 @@ Here, no special mechanism is needed because the existing mechanisms compose nat
 
 2. **During downtime.** The signal arrives on Kafka. If another instance of the service is running, its `@MaestroSignalListener` receives the message and persists it to the `maestro_workflow_signal` table with `consumed = false`. If no instance is running, the message waits in Kafka until a consumer comes back online.
 
-3. **On restart.** The Spring Boot application starts. `StartupRecoveryRunner` (an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`) calls `executor.recoverWorkflows()`, which queries:
+3. **On restart.** The Spring Boot application starts. `StartupRecoveryRunner` (an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`) starts the recovery poller, whose first pass runs at once, on its own thread, and queries (in pages of 200, this service's rows only):
    ```sql
    SELECT * FROM maestro_workflow_instance
    WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING')
@@ -226,7 +226,7 @@ flowchart TD
     style I fill:#F5A623,color:#fff
 ```
 
-The `StartupRecoveryRunner` executes as an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`, ensuring it runs before any user-defined `ApplicationRunner` beans. This means workflows are recovered before the service starts accepting new traffic.
+The `StartupRecoveryRunner` executes as an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`, before any user-defined `ApplicationRunner` beans. It only starts recovery — the recovery poller, whose first pass runs at once on its own thread (with `maestro.recovery.enabled=false`, a one-shot pass on its own thread) — and returns without waiting for it (`StartupRecoveryRunnerTest`). So the service may accept traffic before every workflow is re-adopted. That is safe: a signal for a workflow not yet re-adopted is persisted and found by its replay (case 3 above), and a query reaches only the node that owns a run, as for any run between owners. The pass adopts, per task queue, only what this node can run or queue, and leaves the rest for a peer or for when capacity frees ([Configuration § Worker](configuration.md#worker-configuration)).
 
 Recovery queries the `maestro_workflow_instance` table using the `idx_wf_instance_recoverable` partial index, which covers rows with status `RUNNING`, `WAITING_SIGNAL`, `WAITING_TIMER`, or `COMPENSATING`. Only active workflows are considered -- completed and failed workflows are left alone.
 
