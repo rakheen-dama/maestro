@@ -1,6 +1,7 @@
 # Milestone: Engine-hardening cycle (planned 2026-11-12)
 
 Spec, evidence and plans: `docs/superpowers/plans/2026-11-12-engine-hardening-cycle/`.
+Merge dates below are UTC (`gh pr view N --json mergedAt`).
 Driver: the handover's remaining findings, re-verified on `cbf5a2a`, plus a k6 load suite.
 Maven Central blockers and the §6.4 feature gaps are out of scope.
 
@@ -9,7 +10,7 @@ Maven Central blockers and the §6.4 feature gaps are out of scope.
 - [x] WP0 Executor builder (Issue 37) — Lane A — PR #50 merged 2026-11-12 (56e9c00): 5 tasks reviewed, whole-branch review + fix wave, uncached full build green on 9c1cfbf, CI Build & Test green
 - [x] WP1 Replay fidelity (3.8, exact decimals, stored-input rounding) — Lane A — PR #53 merged 2026-11-13 (834a9da): 9 tasks, whole-branch review + fix wave, uncached full build green; NOT yet run on it: nightly E2E, chaos PR-gate x3, 2 h soak; Issues 42-49 filed
 - [x] WP2 Wake permits, timer clock, remove activity lock (3.2, 3.7, 3.10) — Lane A — PR #54 merged 2026-11-16 (c925661): 6 tasks, whole-branch review + fix wave + re-review, uncached full build green twice (7306235, ff11be1), CodeRabbit 9 comments (8 fixed incl. three engine defects, 1 tracked as Issue 51); Issues 50-51 filed; timer accuracy now = DB clock minus scheduling node's clock until Issue 51; NOT yet run: nightly E2E, chaos x3, soak
-- [x] WP3 Admin retry (3.3, Issue 33) — Lane A — PR #57 merged 2026-11-16 (bdcc074d): four reviews, uncached build green, 2 h soak passed on the second run (the first failed because the host slept)
+- [x] WP3 Admin retry (3.3, Issue 33) — Lane A — PR #57 merged 2026-11-17 (bdcc074d): four reviews, uncached build green, 2 h soak passed on the second run (the first failed because the host slept)
 - [x] WP4 Loop liveness and health (3.5) — Lane A — PR #59 merged 2026-11-17 (0ca95927): uncached build green; soak not required
 - [x] WP5 Shutdown (Issue 29, 3.6) — Lane A — PR #60 merged 2026-11-17 (9ad0d458), 2 h soak passed before main was merged in; follow-up PR #61 (bd583f06) fixed two shutdown crashes its review comments had found (merged before they were read — see lessons)
 - [x] WP6 Recovery capacity (Issue 30, Issue 36) — Lane A — PR #62 merged 2026-11-17 (d1600bf1): 2 h soak passed, uncached build green on the final head; load Scenario 2 preview: two-node drain 269 s vs 510 s

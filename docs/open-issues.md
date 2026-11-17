@@ -3593,7 +3593,7 @@ shipped them), and a builder test pins each default.
 
 ### Issue 38 — `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` {#issue-38}
 
-> **Resolved** (WP10, PR #56, merged 2026-11-17). The `WARN` came from the pool, not Maestro:
+> **Resolved** (WP10, PR #56, merged 2026-11-16). The `WARN` came from the pool, not Maestro:
 > `com.zaxxer.hikari.pool.ProxyConnection` logged `Connection … marked as
 > broken because of SQLSTATE(08003)` (connection does not exist) when
 > `close()` ran `UNLISTEN *` on the connection the interrupt had already
