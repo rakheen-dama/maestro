@@ -264,6 +264,41 @@ class RecoveryPollerCapacityTest {
                 + capacityReads.size());
     }
 
+    /**
+     * Carry c3: a capacity wake that finds no headroom waits out one spacing
+     * before it waits on the signal again, so a churn of signals with nothing
+     * free costs at most one headroom check per spacing.
+     */
+    @Test
+    void wakesWithNoHeadroomAreCheckedAtMostOncePerSpacing() throws Exception {
+        var spacing = Duration.ofMillis(100);
+        for (var i = 0; i < 3; i++) {
+            seedRecoverable(store, "rec-" + i, "orders");
+        }
+        var a = node(1);
+        var poller = new RecoveryPoller(a, registrations(a), SERVICE, Duration.ofHours(1),
+                EngineObserver.NOOP, a.taskQueueGovernor().capacitySignal(), spacing);
+        poller.start();
+        try {
+            assertEquals(1, valueWithin(store::pageReads, 1, Duration.ofSeconds(5)));
+            assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)));
+            assertEquals(0, valueWithin(() -> a.recoveryHeadroom(Set.of("orders")), 0L, Duration.ofSeconds(5)));
+            var signal = a.taskQueueGovernor().capacitySignal();
+            var start = System.nanoTime();
+            var churnEnd = start + Duration.ofSeconds(1).toNanos();
+            for (var i = 0; i < 500 || System.nanoTime() < churnEnd; i++) {
+                signal.signal();
+                LockSupport.parkNanos(Duration.ofMillis(2).toNanos());
+            }
+            var elapsedMs = Duration.ofNanos(System.nanoTime() - start).toMillis();
+            var checks = poller.headroomChecks.get();
+            assertTrue(checks <= elapsedMs / spacing.toMillis() + 2,
+                    "headroom checks=" + checks + " in " + elapsedMs + " ms at one per " + spacing.toMillis() + " ms");
+        } finally {
+            poller.stop();
+        }
+    }
+
     @Test
     void thePollersFirstPassRunsAtOnce() {
         var a = node(1);

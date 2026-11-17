@@ -14,6 +14,7 @@ import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Periodically re-runs workflow recovery so that instances owned by a node
@@ -89,6 +90,12 @@ final class RecoveryPoller implements StoppableLoop {
      * interrupt. Package-private; production never assigns it.
      */
     volatile boolean interruptOnStop = true;
+
+    /**
+     * Test seam: how many times the loop has checked for headroom after a
+     * capacity wake. Package-private; read only by tests.
+     */
+    final AtomicInteger headroomChecks = new AtomicInteger();
 
     RecoveryPoller(
             WorkflowExecutor executor,
@@ -393,7 +400,7 @@ final class RecoveryPoller implements StoppableLoop {
      * {@code queues}, but no sooner than {@code capacitySpacing} after
      * {@code lastPassStart}, and no later than the full pass due at
      * {@code nextFull}. A wake whose queues have no headroom makes no statement
-     * and waits again.
+     * and waits again, checking again no sooner than one spacing later.
      *
      * @return {@code true} to run a capacity pass now; {@code false} when the
      *         full pass is due or the poller is stopping
@@ -402,6 +409,8 @@ final class RecoveryPoller implements StoppableLoop {
             throws InterruptedException {
         var spacingNanos = capacitySpacing.toNanos();
         var epoch = seen;
+        // No check before one spacing after the pass, nor within one spacing of a check that found no room.
+        var notBefore = lastPassStart + spacingNanos;
         while (running) {
             var untilFull = nextFull - System.nanoTime();
             if (untilFull <= 0 || !signal.awaitChange(epoch, Duration.ofNanos(untilFull))) {
@@ -410,8 +419,8 @@ final class RecoveryPoller implements StoppableLoop {
             if (!running) {
                 return false;
             }
-            var spacingLeft = lastPassStart + spacingNanos - System.nanoTime();
-            if (spacingLeft > 0 && !sleepUntil(Math.min(lastPassStart + spacingNanos, nextFull))) {
+            var spacingLeft = notBefore - System.nanoTime();
+            if (spacingLeft > 0 && !sleepUntil(Math.min(notBefore, nextFull))) {
                 return false;
             }
             if (nextFull - System.nanoTime() <= 0) {
@@ -419,9 +428,11 @@ final class RecoveryPoller implements StoppableLoop {
             }
             // Read before the headroom check: a release after it wakes the next wait.
             epoch = signal.epoch();
+            headroomChecks.incrementAndGet();
             if (executor.recoveryHeadroom(queues) > 0) {
                 return true;
             }
+            notBefore = System.nanoTime() + spacingNanos;
         }
         return false;
     }
