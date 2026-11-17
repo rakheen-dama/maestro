@@ -77,7 +77,11 @@
 # (r20261112t211806z, dropped iterations) and ONE contended one
 # (r20261112t214359z), to be reproduced on a quiet host; its cause is NOT
 # established (pool, node CPU and host contention are all candidates) and
-# needs node CPU and GC recorded.
+# needs node CPU and GC recorded. NOT seen on today's engine: the full run
+# r20261116t234614z (PASS; host load 1.4 / 2.06 per CPU, so contended by
+# the 2.0 rule) delivered 74.26/s at L80 and 75.61/s at L120, slots pinned
+# at 20 and hold time 264.52 ms at L120; one run on a borderline host, so
+# neither the drop nor its absence is established.
 #
 # Recorded for contention (advisory.contention): node CPU per level from
 # Prometheus (process/system_cpu_usage, system_load_average_1m), the
