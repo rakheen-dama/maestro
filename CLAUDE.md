@@ -308,6 +308,7 @@ any other value fails startup. Removed (setting either fails startup):
   `22`/`23`/`54`, and `StoreFaultGuard` retries outcome appends then latches the run
   `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
   recovery, so any new `catch` that collects failures must rethrow it too.
+  A background loop wraps each iteration in `BackgroundLoopGuard` (package `engine`): it rethrows a `MaestroControlFlowError` and contains every other `Throwable`, so an `Error` never ends a loop silently (3.5b).
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.

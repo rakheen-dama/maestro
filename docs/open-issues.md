@@ -360,6 +360,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
 | [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Open |
+| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | Open |
+| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -4507,6 +4509,97 @@ Hikari-backed test.
 
 **Done when.** Closing the scheduler during a run logs no pool `WARN` and
 evicts no connection.
+
+---
+
+### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** The two `maestro-store-postgres` loops — the lock cleaner
+(`maestro-pg-lock-cleaner`) and the wake listener (`maestro-pg-wake-listener`)
+— contain an `Error` as the five engine loops do, and log it at `ERROR`
+(`PostgresLockCleanerSchedulerTest`, `PostgresWakeListenerLoopErrorTest`).
+But they apply the guard's rule inline: `BackgroundLoopGuard` is
+package-private in `maestro-core`, and neither class holds an
+`EngineObserver`, so neither reaches `maestro.loop.errors`. Neither is in
+`/actuator/health` either: `MaestroHealthIndicator` lives in the starter and
+knows only the `WorkflowExecutor`. `PostgresWakeListener.isConnected()` and the
+cleaner's (package-private) `isRunning()` reach no indicator. The wake
+listener's `WARN` for an unexpected `RuntimeException` is also not
+rate-limited like the guard's lines: once per reconnect attempt, so at most
+one per second, falling to one per 30 s as the back-off grows.
+
+**Where.** `PostgresLockCleanerScheduler.java` (`loop`),
+`PostgresWakeListener.java` (`pollLoop`, `dispatch`); their auto-configurations
+`PostgresLockAutoConfiguration.java` and
+`PostgresSignalWakeAutoConfiguration.java`; `MaestroHealthIndicator.java`.
+
+**Harm.** A dead or failing cleaner (expired lock rows accumulate) or wake
+listener (cross-node wakes fall back to `maestro.signal.wake-recheck-interval`)
+is visible only in the log. No alert on the counter or on health fires for
+them.
+
+**How to tackle it.** Give both classes an `EngineObserver` from their
+auto-configurations (`ObjectProvider<EngineObserver>`, wrapped with
+`CompositeEngineObserver.of`) and two more fixed loop names
+(`lock-cleaner`, `wake-listener`) in `EngineObserver.backgroundLoopError`'s
+contract, so the counter sees them. Add a `HealthContributor` in
+`maestro-store-postgres` (`maestroPostgres`) reporting both loops and the
+listener's session, readiness-only like
+[Operations §14](operations.md#14-health-checks-and-kubernetes-probes).
+
+**Why it is not WP4.** Both need new wiring across module boundaries and a
+change to the callback's documented loop names; WP4 kept to the engine's
+observer and the starter's indicator.
+
+**Done when.** An `Error` in either loop moves `maestro.loop.errors`, and a
+dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
+
+---
+
+### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed. Traced, not tested: the
+> interrupt itself is tested (`MaestroHealthIndicatorTest.aTimedOutProbeIsInterrupted`),
+> its effect on a pooled connection is not.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** When the store probe (`getInstance` on a sentinel id) does
+not finish within 2 s, `MaestroHealthIndicator` reports `UNKNOWN` and
+interrupts the probe's virtual thread. In a pool wait the interrupt is
+harmless. Mid-query it closes the socket — the mechanism WP10 reproduced for
+Issue 38 — so a slow database sees one pool `WARN` and one evicted connection
+per timed-out probe. WP4 made the probe single-flight (a later health call
+joins a probe still in flight instead of starting another), so this is at
+most one connection per stuck probe, not one per health call.
+
+**Where.** `MaestroHealthIndicator.java`, `Probe.abandon()`
+(`thread.interrupt()`), called from `probeStore()` on timeout.
+
+**Harm.** Pool `WARN`s and connection churn on a database that is already
+slow.
+
+**How to tackle it.** Stop interrupting: the single-flight probe already
+bounds the cost of a stuck probe to one thread and one borrowed connection.
+The trade-off to settle first is a probe stuck for ever on a half-open
+connection with no socket timeout, which the interrupt currently frees: with
+no interrupt, health would read `UNKNOWN` until that connection's socket
+timeout or TCP keep-alive gives up. Pin it as `PostgresWakeListenerShutdownTest`
+does: a Hikari pool, a probe that times out mid-query, no pool `WARN`.
+
+**Why it is not WP4.** It changes what a stuck probe costs (a held
+connection instead of an evicted one) and needs a Hikari-backed test; 3.5a
+is the status a timeout reports.
+
+**Done when.** A probe that times out mid-query logs no pool `WARN` and
+evicts no connection, and a stuck probe cannot hold health at `UNKNOWN`
+after the store answers again.
 
 ---
 
