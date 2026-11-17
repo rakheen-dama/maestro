@@ -206,13 +206,30 @@ for f in 'del(.phases[0].status.byStatus)' 'del(.phases[1].status.outputs)' 'del
   expect "s2: ${f}: verdict" INVALID "$(jq -r .verdict <<<"$out")"
   rm -rf "${work}/s2-norecord"
 done
-# PR #65 review: the pass rate's reads and node-seconds cover one interval
-# (to the statement window's end). Phase B's window held open 600 s past the
-# last completion, with the reads the engine's designed rate makes in that
-# tail on both nodes (2 / s + 2 x 25 pages / 60 s each): still in bounds.
-out=$(s2 s2-tail "${base} | .phases[1] |= (.window.snapshotAt = ((.status.lastCompletedAt | fromdate) + 600 | todate)
+# PR #65 review: the pass rate's reads and node-seconds cover one interval,
+# to the component snapshot (componentsAt, read with the page and heldKeys
+# counts, after the window's snapshot; round 2). Phase B's snapshot held
+# open 600 s past the last completion, with the reads the engine's designed
+# rate makes in that tail on both nodes (2 / s + 2 x 25 pages / 60 s each):
+# still in bounds.
+out=$(s2 s2-tail-components "${base} | .phases[1] |= (.components.componentsAt = ((.status.lastCompletedAt | fromdate) + 600 | todate)
    | .components.components.recoveryPage.calls += 1700 | .components.components.heldKeys.calls += 1700)")
-expect "s2: a 600 s tail after the drain, read at the designed rate: gate.recoveryPassRate" PASS "$(st "$out" gate.recoveryPassRate)"
+expect "s2: a 600 s tail to the component snapshot, read at the designed rate: gate.recoveryPassRate" PASS "$(st "$out" gate.recoveryPassRate)"
+out=$(s2 s2-no-components-at "${base} | del(.phases[0].components.componentsAt)")
+expect "s2: no component snapshot time: gate.recoveryPassRate" INVALID "$(st "$out" gate.recoveryPassRate)"
+# Node-seconds on the database clock (dbStartIssuedAt), never the harness's:
+# every harness-clock stamp 3,000 s behind and phase B's reads x12 (ratio
+# 0.13 x 12 = 1.52) must FAIL, not hide behind 3,000 inflated node-seconds
+# per node.
+host_shift='(.phases[] | .starts[] | .startIssuedAt, .infoAt, .readyAt) -= 3000
+  | (.phases[] | .hoardSamples[], .nodesEnd[]) |= (if type == "object" and (.at | type) == "number" then .at -= 3000 else . end)'
+out=$(s2 s2-host-clock "${base} | ${host_shift}")
+expect "s2: harness clock 3,000 s behind the database's: gate.recoveryPassRate" PASS "$(st "$out" gate.recoveryPassRate)"
+expect "s2: harness clock 3,000 s behind the database's: validity.hoardSeries" PASS "$(st "$out" validity.hoardSeries)"
+out=$(s2 s2-host-clock-x12 "${base} | ${host_shift} | .phases[1].components.components |= (.recoveryPage.calls *= 12 | .heldKeys.calls *= 12)")
+expect "s2: harness clock 3,000 s behind, phase B reads x12: gate.recoveryPassRate" FAIL "$(st "$out" gate.recoveryPassRate)"
+out=$(s2 s2-no-db-start "${base} | del(.phases[1].starts[1].dbStartIssuedAt)")
+expect "s2: a start without its database-clock time: gate.recoveryPassRate" INVALID "$(st "$out" gate.recoveryPassRate)"
 
 # Review r9 and r12.
 out=$(s2 s2-node2-unready "${base} | .phases[1].starts[1].readyAt = null")

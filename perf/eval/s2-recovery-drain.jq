@@ -86,12 +86,15 @@
 #                                and its heldKeys; 200 = the page,
 #                                WorkflowExecutor RECOVERY_PAGE_SIZE); a full
 #                                pass = 2 x ceil(N / 200); node-seconds: each
-#                                node's start (startIssuedAt) to the END OF
-#                                THE STATEMENT WINDOW (its snapshotAt), the
-#                                interval the reads are counted over (the
-#                                window closes after the post-drain waits for
-#                                the probes and the sampler, and recovery
-#                                keeps polling in them). The limit 1.25 rests on the
+#                                node's start (dbStartIssuedAt) to the
+#                                component snapshot (componentsAt, read with
+#                                the page and heldKeys counts, after the
+#                                window's snapshotAt), both on the database
+#                                clock, the interval the reads are counted
+#                                over (it closes after the post-drain waits
+#                                for the probes and the sampler, and recovery
+#                                keeps polling in them); either time missing
+#                                is INVALID. The limit 1.25 rests on the
 #                                measurements, not the arithmetic: on that
 #                                interval 0.56-0.71 on one node, 0.78-0.82 on
 #                                two after WP6 (worst 0.824, the preview's
@@ -162,15 +165,15 @@ def stmt_figures($p; $pollSecs):
     | ($p.recovery.adoptCas.calls // null) as $cas
     | adopted_by_nodes($p) as $ad
     | ($p.rows) as $n
-    # node-seconds end where the statement window ends (its snapshot, after
-    # the post-drain waits for the probes and the hoard sampler), the same
-    # interval the page and heldKeys counts cover; the drain's own end only
-    # when the window has no snapshot time
-    | (($p.window.snapshotAt | ts_secs) // ($p.status.lastCompletedAt | ts_secs)) as $end
-    | ([$p.starts[]? | .startIssuedAt | select(isnum) | $end - .] ) as $alive
+    # node-seconds end at the component snapshot (componentsAt: the page and
+    # heldKeys counts are read with it), from each start, both on the
+    # database clock; a missing time leaves the figure null (INVALID)
+    | ($p.components.componentsAt | ts_secs) as $end
+    | ([$p.starts[]? | .dbStartIssuedAt | ts_secs]) as $st
+    | (if ($end | isnum) and ($st | length) > 0 and ($st | all(isnum)) then $st | map($end - .) else null end) as $alive
     | (if ($n | isnum) then ($n / s2_page_rows | ceil) * 2 else null end) as $fullPass
     | (2 / s2_capacity_spacing_secs + (if ($fullPass | isnum) and ($pollSecs | isnum) and $pollSecs > 0 then $fullPass / $pollSecs else 0 end)) as $rate
-    | (($alive | add) // null) as $nodeSecs
+    | (if $alive == null then null else $alive | add end) as $nodeSecs
     | (if ($nodeSecs | isnum) and ($fullPass | isnum) then $rate * $nodeSecs + $fullPass * ($alive | length) else null end) as $designed
     | (comp($p; "recoveryPage") + comp($p; "heldKeys")) as $reads
     | {phase: $p.name, rows: $n, adoptions: $ad, adoptCas: $cas, probeStarts: $pr,
