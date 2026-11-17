@@ -184,6 +184,9 @@ wait_terminal() {
 #    BEFORE releasing <lock-dir>.takeover. So a run that gets the takeover
 #    mutex next always finds a live pid (or a young lock) and refuses: runs
 #    that find one stale lock at the same moment cannot both start.
+#  - Every pid write is exclusive (claim_lock_pid, noclobber): a run that
+#    stalled after its mkdir until its lock read stale finds the pid of the
+#    run that took it over, and refuses rather than overwrite it.
 #  - Finally the run re-checks that the lock names its own pid.
 #  A run killed while holding <lock-dir>.takeover leaves it behind; the
 #  refusal message says to remove it.
@@ -209,6 +212,17 @@ lock_test_pause() {
     || die "lock test hook ${name}='${value}' is not a non-negative number of seconds; refusing to start, nothing touched"
   printf '%s' "$value"
 }
+# Writes this run's pid into <lock-dir>/pid EXCLUSIVELY (noclobber): a run
+# that stalled between its mkdir and this write, long enough for its lock to
+# read stale and be taken over, finds the new owner's pid file and refuses
+# instead of overwriting it; and a takeover that finds the stalled run's pid
+# already written refuses likewise. Either way exactly one run names itself.
+claim_lock_pid() {
+  if ! (set -o noclobber; printf '%s\n' "$$" >"${1}/pid") 2>/dev/null; then
+    log "ERROR: ${1} was taken by another perf run (pid $(cat "${1}/pid" 2>/dev/null || echo '?')) while this run was acquiring it; refusing to start"
+    return 1
+  fi
+}
 take_lock() {
   local lock=$1 owner=$2
   local takeover="${lock}.takeover" holder current took_over="" pause_pid pause_takeover
@@ -219,7 +233,7 @@ take_lock() {
   fi
   if mkdir "$lock" 2>/dev/null; then
     [[ -z "$pause_pid" ]] || sleep "$pause_pid"
-    printf '%s\n' "$$" >"${lock}/pid"
+    claim_lock_pid "$lock" || exit 3
   else
     holder=$(cat "${lock}/pid" 2>/dev/null || true)
     if [[ -n "$holder" ]] && ps -p "$holder" >/dev/null 2>&1; then
@@ -245,7 +259,7 @@ take_lock() {
       die "another perf run took ${lock} first; refusing to start, nothing touched"
     fi
     [[ -z "$pause_pid" ]] || sleep "$pause_pid"
-    printf '%s\n' "$$" >"${lock}/pid"
+    claim_lock_pid "$lock" || { rmdir "$takeover"; exit 3; }
     rmdir "$takeover"
     took_over="pid ${holder:-none}"
   fi

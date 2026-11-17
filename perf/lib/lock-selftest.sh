@@ -86,6 +86,52 @@ for state in free stale-pid stale-no-pid stale-no-pid-interleaved; do
   fi
 done
 
+# stalled-acquirer: contender A takes a FREE lock and stalls between mkdir
+# and writing its pid (PERF_LOCK_TEST_PAUSE_BEFORE_PID 0.8 s); the lock
+# directory is then backdated, as a stall of over a minute would leave it, so
+# contender B judges it stale and takes it over while A is still stalled.
+# When A resumes, its pid write must not land in B's lock: exactly one may
+# win, and the lock must name it.
+bad=0
+for ((it = 1; it <= 10; it++)); do
+  lock="${work}/stall-lock"
+  rm -rf "$lock" "${lock}.takeover" "${work}/release"
+  : >"${work}/wins"
+  : >"${work}/decided"
+  contend() { # <pause before pid or "">
+    PERF_LOCK_SELFTEST=1 PERF_LOCK_TEST_PAUSE_BEFORE_PID="$1" bash -c '
+      source "$1/lib/common.sh"
+      if (take_lock "$3" stall 2>/dev/null); then
+        printf "%s\n" "$$" >>"$2/wins"
+        printf "win\n" >>"$2/decided"
+        while [[ ! -e "$2/release" ]]; do sleep 0.05; done
+      else
+        printf "lose\n" >>"$2/decided"
+      fi' _ "$PERF_DIR" "$work" "$lock" &
+    pids+=("$!")
+  }
+  pids=()
+  contend 0.8
+  while [[ ! -d "$lock" ]]; do sleep 0.01; done
+  touch -t 200001010000 "$lock"
+  contend ""
+  while (($(wc -l <"${work}/decided") < 2)); do sleep 0.05; done
+  touch "${work}/release"
+  for p in "${pids[@]}"; do wait "$p" || true; done
+  wins=$(wc -l <"${work}/wins" | tr -d ' ')
+  holder=$(cat "${lock}/pid" 2>/dev/null || true)
+  if [[ "$wins" != 1 || "$holder" != "$(cat "${work}/wins")" || -e "${lock}.takeover" ]]; then
+    bad=$((bad + 1))
+    echo "  stalled-acquirer race ${it}: ${wins} winner(s) [$(tr '\n' ' ' <"${work}/wins")], lock names '${holder}'"
+  fi
+done
+if ((bad == 0)); then
+  printf 'ok    %-14s %d races: a stalled acquirer never overwrites the pid of the run that took its lock over\n' stalled-acquirer 10
+else
+  printf 'FAIL  %-14s %d of %d races broke\n' stalled-acquirer "$bad" 10
+  failures=$((failures + 1))
+fi
+
 # hook_case <name> <take|refuse> <free|stale-pid> <max secs> [VAR=value…]
 # One take_lock under set -Eeuo pipefail with exactly the given hook
 # environment (PERF_LOCK_SELFTEST and both hooks cleared first).
