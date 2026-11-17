@@ -1402,6 +1402,15 @@ drains, if the phase timed out (traced).
 (`pausingTheContextLeavesTheEngineRunning`). `context.stop()` followed by
 `start()` does not restart it.
 
+A request already in flight that calls `startWorkflow` after the engine's
+shutdown has begun gets `IllegalStateException` (`WorkflowExecutor is shutting
+down — cannot start workflow '…'`), as before WP5. In a web host that is an
+HTTP 500 unless the host maps it, for example to 503 so the client retries
+against another node (`WorkflowExecutorShutdownDeadlineTest.startingAWorkflowDuringTheDrainIsRefused`;
+the HTTP status is traced, not tested). Because the web server now stops
+accepting new requests at the start of the drain instead of after it, only
+requests already in flight can meet this.
+
 ### 15.2 What each workflow looks like afterwards
 
 Shutdown itself appends nothing. A run that keeps executing writes what it
@@ -1461,9 +1470,22 @@ Maestro's own term is bounded by `shutdownReturnsWithinItsTimeoutWhenEveryStepIs
 (timeout + < 500 ms). Every other term is traced from the Spring, Spring Kafka
 and Kubernetes sources and documentation, not run.
 
-- **Defaults, no preStop:** 20 + ~1 + 2 + 5 ≈ 28 s ≤ 30 s. That fits
-  Kubernetes' default grace (30 s, traced), narrowly.
-- **With a 5 s preStop:** ≈ 33 s. Set `terminationGracePeriodSeconds: 45`.
+- **Defaults, no preStop — the typical case:** 20 (`maestro.shutdown.timeout`,
+  which also covers the web server's drain, run alongside it) + ~1 (Maestro's
+  Kafka containers, typically under 1 s together) + 2 (the wake listener, at
+  most) + 5 (the `DataSource` and JVM margin) ≈ 28 s ≤ 30 s. That fits
+  Kubernetes' default grace (30 s, traced), narrowly, and assumes no host
+  `@KafkaListener` container is slow to stop.
+- **Defaults, worst case:** each of Maestro's Kafka listener containers — the
+  engine's signal container plus one per `@MaestroSignalListener`, N in all —
+  can take up to Spring Kafka's 10 s to stop, so 20 + 10·N + 2 + 5 s: 37 s
+  for N = 1, 47 s for N = 2. That exceeds the 30 s default grace, and the
+  kubelet's `SIGKILL` then lands during bean destruction — after the engine
+  has drained, so nothing durable is lost (traced), but consumers may not
+  leave their group cleanly. If your consumers stop slowly, set
+  `terminationGracePeriodSeconds` to at least 27 + 10·N seconds plus your
+  preStop (traced; Issue 69 would take these containers out of the sum).
+- **With a 5 s preStop:** ≈ 33 s typical. Set `terminationGracePeriodSeconds: 45`.
 - **Keeping 30 s of drain:** `maestro.shutdown.timeout: 30s`,
   `spring.lifecycle.timeout-per-shutdown-phase: 35s`, grace ≥ 45 s + preStop.
 - **If the phase timeout is shorter than the drain:** Spring moves on to lower

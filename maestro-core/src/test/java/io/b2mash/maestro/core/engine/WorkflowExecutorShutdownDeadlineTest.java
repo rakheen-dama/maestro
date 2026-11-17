@@ -45,6 +45,7 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -195,6 +196,32 @@ class WorkflowExecutorShutdownDeadlineTest {
         }
         assertTrue(firstFinishedWhenSecondReturned.get(),
                 "the second call returned before the first call's 5 s drain had finished");
+    }
+
+    /**
+     * A request already in flight that starts a workflow while the engine
+     * drains gets {@code IllegalStateException}, as before WP5 — in a web
+     * host an HTTP 500 unless the host maps it.
+     */
+    @Test
+    void startingAWorkflowDuringTheDrainIsRefused() throws Exception {
+        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .build();
+        start("wf-overrun", new BlockingWorkflow(proxy()));
+        await().atMost(5, SECONDS).until(() -> started.get() == 1);
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var first = Thread.ofVirtual().start(executor::shutdown);
+            await().atMost(5, SECONDS).until(() -> logged(logs, "Maestro shutdown started"));
+
+            var refused = assertThrows(IllegalStateException.class, () -> start("wf-late", new QuickWorkflow()));
+            assertTrue(first.isAlive(), "the drain was still in progress");
+            assertTrue(refused.getMessage().contains("shutting down"), refused.getMessage());
+            latch.countDown();
+            assertTrue(first.join(Duration.ofSeconds(5)));
+        }
     }
 
     /** A first call that throws still releases a second caller at once (the latch counts down in a finally). */
