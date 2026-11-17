@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.LockBackendException;
+import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
@@ -10,6 +11,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -19,6 +21,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -83,6 +86,34 @@ class WorkflowInstanceLockManagerCloseTest {
         lock.awaitBlockedRenewerEnded();
         assertFalse(manager.isRenewerRunning());
         assertEquals(List.of(), observer.lockRenewFailed(), "a routine shutdown must not fire renewal-failure alerts");
+    }
+
+    /**
+     * Review c2 (coordinator ruling): a loss the renewer learns of after close
+     * — a renewal stuck past the join that later returns "lost" — still
+     * stands the run down (a run still executing must be fenced), but a
+     * routine deploy fires no alert: INFO, not ERROR, and no
+     * {@code instanceLockLost} to the observer.
+     */
+    @Test
+    void aLockLostAfterCloseStandsTheRunDownWithoutAlerting() throws Exception {
+        var stoodDown = new CopyOnWriteArrayList<String>();
+        manager.onLockLost(stoodDown::add);
+        lock.blockNextRenew();
+        lock.lostAfterRelease = true;
+        assertTrue(lock.inRenew.await(5, SECONDS));
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowInstanceLockManager.class)) {
+            manager.close(Duration.ofMillis(200));
+            lock.release.countDown();
+            lock.awaitBlockedRenewerEnded();
+
+            assertEquals(List.of("wf-1"), stoodDown, "the run is still stood down");
+            assertEquals(List.of(), observer.lockLost(), "a routine shutdown must not fire lost-lock alerts");
+            assertTrue(logs.records().stream().noneMatch(r -> r.level() == Level.ERROR), logs.records().toString());
+            assertTrue(logs.records().stream().anyMatch(r -> r.level() == Level.INFO
+                    && r.message().startsWith("Instance lock for workflow 'wf-1' was lost after shutdown began")),
+                    logs.records().toString());
+        }
     }
 
     @Test
@@ -161,6 +192,8 @@ class WorkflowInstanceLockManagerCloseTest {
         final CountDownLatch release = new CountDownLatch(1);
         final AtomicBoolean renewInterrupted = new AtomicBoolean();
         volatile boolean failAfterRelease;
+        /** With this set, the released call reports every handle lost. */
+        volatile boolean lostAfterRelease;
         private final AtomicBoolean armed = new AtomicBoolean();
         private volatile @Nullable Thread blockedRenewer;
 
@@ -189,6 +222,9 @@ class WorkflowInstanceLockManagerCloseTest {
                 if (failAfterRelease) {
                     throw new LockBackendException("renewAll failed", "renewAll",
                             new IllegalStateException("the backend failed after the release"));
+                }
+                if (lostAfterRelease) {
+                    return Set.copyOf(handles);
                 }
             }
             return super.renewAll(handles, ttl);

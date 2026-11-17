@@ -514,21 +514,37 @@ final class WorkflowInstanceLockManager {
      * held for the workflow — it was released (and perhaps re-acquired by a
      * new run) after the pass took its snapshot, so the stale handle's
      * "loss" says nothing about the current run.
+     *
+     * <p>Once the manager is closed (a renewal still in flight at shutdown
+     * that later reports a loss), the node is giving every lock up anyway:
+     * the loss is logged at INFO and not reported to the observer, so a
+     * routine deploy fires no lost-lock alert. The run is still stood down —
+     * one still executing must be fenced.
      */
     private void lockLost(String workflowId, LockHandle handle) {
         if (!heldLocks.remove(workflowId, handle)) {
             return;
         }
-        logger.error("Instance lock for workflow '{}' was lost — another node may now be "
-                        + "executing this workflow; this run is being stood down and the "
-                        + "store's lease fence rejects any write it still attempts",
-                workflowId);
+        var afterClose = closed.get();
+        if (afterClose) {
+            logger.info("Instance lock for workflow '{}' was lost after shutdown began — this run is "
+                            + "being stood down and the store's lease fence rejects any write it still "
+                            + "attempts",
+                    workflowId);
+        } else {
+            logger.error("Instance lock for workflow '{}' was lost — another node may now be "
+                            + "executing this workflow; this run is being stood down and the "
+                            + "store's lease fence rejects any write it still attempts",
+                    workflowId);
+        }
         // Emitted outside the backend call so a throwing observer is not
         // reported as a transient renew failure, and contained so it cannot
         // escape renewLoop() and kill the single renewer thread — that would
         // silently stop renewing EVERY held lock.
         try {
-            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+            if (!afterClose) {
+                emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+            }
         } finally {
             // Proactive stand-down: tell the executor now, so the run stops at
             // its next stop point rather than after a write the store fences.
