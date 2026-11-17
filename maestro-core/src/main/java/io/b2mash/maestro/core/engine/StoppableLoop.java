@@ -25,7 +25,8 @@ interface StoppableLoop {
 
     /**
      * Asks the loop to stop and returns at once: the loop starts no new
-     * iteration. An iteration already inside a store call finishes it first.
+     * iteration. A store call already in progress may be interrupted
+     * (Issue 64); a driver that ignores the interrupt finishes the call first.
      * Idempotent.
      */
     void requestStop();
