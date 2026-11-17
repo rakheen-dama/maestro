@@ -1,8 +1,12 @@
 package io.b2mash.maestro.spring.health;
 
+import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.LockHandle;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -15,8 +19,10 @@ import org.springframework.boot.health.actuate.endpoint.StatusAggregator;
 import org.springframework.boot.health.contributor.Status;
 import tools.jackson.databind.ObjectMapper;
 
+import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -51,6 +57,143 @@ class MaestroHealthIndicatorTest {
     @AfterEach
     void tearDown() {
         executor.shutdown();
+    }
+
+    // ── Task 7: the signal janitor and the instance-lock renewer ───────────
+
+    private final PayloadSerializer serializer = new PayloadSerializer(new ObjectMapper());
+    private final RenewFailsLock renewLock = new RenewFailsLock();
+    private final WorkflowExecutor executorWithLock = WorkflowExecutor.builder(
+                    new InMemoryWorkflowStore(), serializer, "svc")
+            .distributedLock(new InMemoryDistributedLock())
+            .lifecycleEventsEnabled(false)
+            .build();
+    private final WorkflowExecutor executorWithFailingRenewals = WorkflowExecutor.builder(
+                    new InMemoryWorkflowStore(), serializer, "svc")
+            .distributedLock(renewLock)
+            .instanceLockTtl(Duration.ofMillis(300))                  // renews every 100 ms
+            .lifecycleEventsEnabled(false)
+            .build();
+    private final Method awaitForever = awaitForeverMethod();
+
+    @AfterEach
+    void shutDownLockedExecutors() {
+        executorWithLock.shutdown();
+        executorWithFailingRenewals.shutdown();
+    }
+
+    @Test
+    void aRenewerThatNeverStartedIsIdleAndNotAFault() {
+        var health = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false).health();
+        assertThat(health.getDetails()).containsEntry("instanceLockRenewerRunning", "idle");
+        assertThat(health.getStatus()).isEqualTo(Status.UP);
+    }
+
+    @Test
+    void aRenewerThatStartedAndStoppedIsDown() throws Exception {
+        executorWithLock.startWorkflow("wf-renew", "AwaitForever", "default", null, AwaitForever::new, awaitForever);
+        await().atMost(Duration.ofSeconds(5)).until(executorWithLock::hasInstanceLockRenewerStarted);
+        var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executorWithLock, false, false);
+        assertThat(indicator.health().getDetails()).containsEntry("instanceLockRenewerRunning", true);
+        executorWithLock.shutdown();
+        var health = indicator.health();
+        assertThat(health.getDetails()).containsEntry("instanceLockRenewerRunning", false);
+        assertThat(health.getStatus()).isEqualTo(Status.DOWN);
+    }
+
+    @Test
+    void theSignalJanitorIsStartingThenRunningThenAFaultOnceStopped() {
+        var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false);
+        assertThat(indicator.health().getDetails()).containsEntry("signalJanitorRunning", "starting");
+        executor.startSignalJanitor(Duration.ofHours(1), Duration.ofDays(7));
+        assertThat(indicator.health().getDetails()).containsEntry("signalJanitorRunning", true);
+        executor.shutdown();
+        assertThat(indicator.health().getStatus()).isEqualTo(Status.DOWN);
+        assertThat(indicator.health().getDetails()).containsEntry("signalJanitorRunning", false);
+    }
+
+    /**
+     * Review d7: a renewer whose every pass fails is still running, but held
+     * locks are not being renewed, so it is not {@code UP}; once a pass renews
+     * again it is.
+     */
+    @Test
+    void aRenewerThatKeepsFailingIsDownWhileItStillRunsAndUpOnceItRenewsAgain() throws Exception {
+        executorWithFailingRenewals.startWorkflow("wf-failing-renew", "AwaitForever", "default", null,
+                AwaitForever::new, awaitForever);
+        assertThat(renewLock.renewCalls.await(5, TimeUnit.SECONDS))
+                .as("two renewal passes ran (the first one's failure is fully handled by then)").isTrue();
+        var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executorWithFailingRenewals,
+                false, false);
+
+        var failing = indicator.health();
+        assertThat(failing.getDetails()).containsEntry("instanceLockRenewerRunning", true);
+        assertThat((Integer) failing.getDetails().get("instanceLockRenewerConsecutiveFailures")).isPositive();
+        assertThat(failing.getStatus()).isEqualTo(Status.DOWN);
+
+        renewLock.failing = false;
+        await("a pass that renews").atMost(Duration.ofSeconds(5))
+                .until(() -> executorWithFailingRenewals.instanceLockRenewerFailureStreak() == 0);
+        var recovered = indicator.health();
+        assertThat(recovered.getDetails()).containsEntry("instanceLockRenewerConsecutiveFailures", 0);
+        assertThat(recovered.getStatus()).isEqualTo(Status.UP);
+    }
+
+    private static Method awaitForeverMethod() {
+        try {
+            return AwaitForever.class.getMethod("run");
+        } catch (NoSuchMethodException e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** Parks on a signal that never comes, for an hour. */
+    public static class AwaitForever {
+
+        /** Awaits a signal that is never sent. */
+        public void run() {
+            WorkflowContext.current().awaitSignal("never", String.class, Duration.ofHours(1));
+        }
+    }
+
+    /**
+     * {@link InMemoryDistributedLock} whose {@code renewAll} throws while
+     * {@link #failing}, as a lock backend whose database is down does.
+     */
+    private static final class RenewFailsLock implements DistributedLock {
+
+        private final InMemoryDistributedLock delegate = new InMemoryDistributedLock();
+        final CountDownLatch renewCalls = new CountDownLatch(2);
+        volatile boolean failing = true;
+
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            return delegate.tryAcquire(key, ttl);
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            delegate.release(handle);
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            return delegate.renew(handle, ttl);
+        }
+
+        @Override
+        public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+            renewCalls.countDown();
+            if (failing) {
+                throw new IllegalStateException("db down");
+            }
+            return delegate.renewAll(handles, ttl);
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return delegate.trySetLeader(electionKey, candidateId, ttl);
+        }
     }
 
     @Test

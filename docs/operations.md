@@ -1121,7 +1121,8 @@ never increments it is simply not the leader — expected on all but one node).
 `maestro.retention.purged{kind=instance|event|signal|timer}` moves by the
 sweep's counts. `/actuator/health` reports `retentionSweeperRunning` (`true`,
 `false`, `"starting"`, or `"disabled"` when `maestro.retention.enabled=false`);
-`false` after a start is a dead loop and turns the status `DOWN`. A sweep that
+`false` after a start is a dead loop and turns the status `DOWN`.
+`signalJanitorRunning` and `instanceLockRenewerRunning` read the same way (the renewer reads `"idle"` until this node takes its first instance lock); see §14. A sweep that
 purged anything logs one `INFO` line with its counts; a store failure logs
 `WARN` and the loop retries next interval.
 
@@ -1289,7 +1290,7 @@ slow reads or a short interval, check the product. A pool that runs dry shows up
 
 ## 14. Health checks and Kubernetes probes
 
-**Maestro's health indicator is a readiness signal at most, never liveness.** The `maestro` contributor (`MaestroHealthIndicator`) reports `DOWN` when the store refused the probe (`store: "unreachable"`) or a background loop that started has stopped (`timerPollerRunning`, `recoveryPollerRunning`, `retentionSweeperRunning`: `false`). It reports `UNKNOWN` when the probe (`getInstance` on a sentinel id) did not finish within 2 s (`store: "timed out"`) — usually a pool whose connections are all borrowed, which is the node doing its job. Spring Boot orders statuses `DOWN`, `OUT_OF_SERVICE`, `UP`, `UNKNOWN`, so an `UNKNOWN` `maestro` leaves the aggregate `UP`, and only `DOWN` and `OUT_OF_SERVICE` answer 503.
+**Maestro's health indicator is a readiness signal at most, never liveness.** The `maestro` contributor (`MaestroHealthIndicator`) reports `DOWN` when the store refused the probe (`store: "unreachable"`) or a background loop that started has stopped (`timerPollerRunning`, `recoveryPollerRunning`, `retentionSweeperRunning`, `signalJanitorRunning`, `instanceLockRenewerRunning`: `false`), or the instance-lock renewer is running but its last pass failed (`instanceLockRenewerConsecutiveFailures` above `0`: held locks are not being renewed, and they expire after `maestro.lock.ttl`). It reports `UNKNOWN` when the probe (`getInstance` on a sentinel id) did not finish within 2 s (`store: "timed out"`) — usually a pool whose connections are all borrowed, which is the node doing its job. Spring Boot orders statuses `DOWN`, `OUT_OF_SERVICE`, `UP`, `UNKNOWN`, so an `UNKNOWN` `maestro` leaves the aggregate `UP`, and only `DOWN` and `OUT_OF_SERVICE` answer 503.
 
 - **Liveness.** Spring Boot's `liveness` group contains only `livenessState`; keep it that way, and never point a liveness probe at `/actuator/health`. Restarting a busy pod abandons its in-flight runs to the lock TTL and adds a recovery pass to the fleet's load.
 - **Readiness.** Add `maestro` only if this pod's HTTP traffic needs Maestro's store: `management.endpoint.health.group.readiness.include=readinessState,maestro`. A shared database that is down then takes every pod out of the Service, which is what you want only if the pods cannot serve without it.

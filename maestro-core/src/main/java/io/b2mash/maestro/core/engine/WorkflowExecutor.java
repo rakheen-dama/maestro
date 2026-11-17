@@ -2081,6 +2081,20 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the instance-lock renewer's current failure streak: consecutive
+     * renewal passes that failed (the lock backend's {@code renewAll} threw, or
+     * the pass threw an {@code Error}) since the last pass that did not.
+     * {@code 0} before the renewer starts. A renewer can be running with a
+     * positive streak: its thread is alive, but the locks it holds are not
+     * being renewed.
+     *
+     * @return the number of consecutive failed renewal passes
+     */
+    public int instanceLockRenewerFailureStreak() {
+        return instanceLockManager.renewFailureStreak();
+    }
+
+    /**
      * Returns whether the background signal janitor is currently running on
      * this executor.
      *

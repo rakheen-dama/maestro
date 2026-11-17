@@ -80,6 +80,15 @@ import java.util.concurrent.atomic.AtomicReference;
  *       sweeper, {@code "disabled"} when {@code maestro.retention.enabled=false}. Note
  *       that "running" means the sweep loop is alive on this node, not that this node
  *       is the elected leader that actually purges</li>
+ *   <li>{@code signalJanitorRunning} — {@code true}/{@code false} once the signal janitor has
+ *       started, or the string {@code "starting"} before then</li>
+ *   <li>{@code instanceLockRenewerRunning} — {@code true}/{@code false} once this node's
+ *       instance-lock renewer has started, or the string {@code "idle"} before this node takes
+ *       its first instance lock (a node without a {@code DistributedLock} stays {@code "idle"});
+ *       not a fault</li>
+ *   <li>{@code instanceLockRenewerConsecutiveFailures} — the renewer's consecutive failed passes
+ *       since its last good one; while it is above {@code 0} the status is {@code DOWN}, even with
+ *       the renewer running, because held locks are not being renewed</li>
  *   <li>{@code runningWorkflowCount} — workflows currently executing on this node</li>
  * </ul>
  *
@@ -111,6 +120,12 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * {@code StartupRecoveryRunner} has run.
      */
     static final String STARTING = "starting";
+
+    /**
+     * Detail value for the instance-lock renewer before this node has acquired its first instance lock: on a node
+     * without a {@code DistributedLock}, or one that has run no workflow yet. Not a fault.
+     */
+    static final String IDLE = "idle";
 
     /** {@code store} detail: the probe returned within the bound. */
     static final String REACHABLE = "reachable";
@@ -179,8 +194,12 @@ public class MaestroHealthIndicator implements HealthIndicator {
                 !recoveryPollerEnabled);
         var retention = pollerState(executor.hasRetentionSweeperStarted(), executor.isRetentionSweeperRunning(),
                 !retentionSweeperEnabled);
+        var janitor = pollerState(executor.signalJanitorSettings() != null, executor.isSignalJanitorRunning(), false);
+        var renewerFailures = executor.instanceLockRenewerFailureStreak();
+        var renewer = renewerState(executor.hasInstanceLockRenewerStarted(), executor.isInstanceLockRenewerRunning(),
+                renewerFailures);
 
-        var loopFault = timer.fault() || recovery.fault() || retention.fault();
+        var loopFault = timer.fault() || recovery.fault() || retention.fault() || janitor.fault() || renewer.fault();
         var status = (loopFault || storeProbe.status().equals(UNREACHABLE)) ? Status.DOWN
                 : storeProbe.status().equals(TIMED_OUT) ? Status.UNKNOWN
                 : Status.UP;
@@ -190,6 +209,9 @@ public class MaestroHealthIndicator implements HealthIndicator {
                 .withDetail("timerPollerRunning", timer.detail())
                 .withDetail("recoveryPollerRunning", recovery.detail())
                 .withDetail("retentionSweeperRunning", retention.detail())
+                .withDetail("signalJanitorRunning", janitor.detail())
+                .withDetail("instanceLockRenewerRunning", renewer.detail())
+                .withDetail("instanceLockRenewerConsecutiveFailures", renewerFailures)
                 .withDetail("runningWorkflowCount", executor.runningCount());
 
         if (storeProbe.exception() != null) {
@@ -216,7 +238,25 @@ public class MaestroHealthIndicator implements HealthIndicator {
         return new PollerState(running, !running);
     }
 
-    /** {@code detail} is a {@link Boolean}, or one of {@link #STARTING}/{@link #DISABLED}. */
+    /**
+     * The instance-lock renewer's detail and fault. It starts lazily, with this
+     * node's first instance lock, and may never start, so an unstarted renewer
+     * is {@link #IDLE}, not {@link #STARTING}. A renewer that is running but
+     * whose last pass failed is a fault too (review d7): its thread is alive,
+     * but the locks it holds are not being renewed.
+     *
+     * @param everStarted         whether the renewer has been started
+     * @param running             whether its thread is alive
+     * @param consecutiveFailures its current failure streak
+     */
+    private static PollerState renewerState(boolean everStarted, boolean running, int consecutiveFailures) {
+        if (!everStarted) {
+            return new PollerState(IDLE, false);
+        }
+        return new PollerState(running, !running || consecutiveFailures > 0);
+    }
+
+    /** {@code detail} is a {@link Boolean}, or one of {@link #STARTING}/{@link #DISABLED}/{@link #IDLE}. */
     private record PollerState(Object detail, boolean fault) {
     }
 
