@@ -11,6 +11,7 @@
   "parkMode": "signal",
   "wakeRecheckInterval": "PT30S",
   "recoveryPollInterval": "PT1M",
+  "lockTtl": "PT30S",
   "plateaus": [
     1000,
     2000

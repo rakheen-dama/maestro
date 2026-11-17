@@ -588,6 +588,37 @@ if [[ -n "$s1src" ]]; then
   expect "s1 gate: baseline of another profile: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
   out=$(s1_eval s1-gate-replicas '.' '.' "$(bl "$prof" 2 5 "$net")")
   expect "s1 gate: baseline of another replica count: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
+  # The baseline file itself: its schema and scenario, an empty or
+  # unparseable file, and what the gate's detail says about the baseline.
+  gate_detail() { s1_field "$1" '.checks[] | select(.id == "gate.statementsPerWorkflow") | .detail'; }
+  says() { grep -qF -- "$1" && echo yes || echo no; }
+  out=$(s1_eval s1-base-schema '.' '.' "$(bl "$prof" 1 5 "$net" | jq -c '.schema = 2')")
+  expect "s1 baseline of schema 2: gate INVALID" INVALID "$(st "$out" gate.statementsPerWorkflow)"
+  expect "s1 baseline of schema 2: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  expect "s1 baseline of schema 2: the detail says so" yes "$(gate_detail s1-base-schema | says 'schema 2')"
+  out=$(s1_eval s1-base-scenario '.' '.' "$(bl "$prof" 1 5 "$net" | jq -c '.scenario = "s3-parked"')")
+  expect "s1 baseline of another scenario: gate INVALID" INVALID "$(st "$out" gate.statementsPerWorkflow)"
+  expect "s1 baseline of another scenario: the detail says so" yes "$(gate_detail s1-base-scenario | says 'for scenario \"s3-parked')"
+  out=$(s1_eval s1-base-noschema '.' '.' "$(bl "$prof" 1 5 "$net" | jq -c 'del(.schema)')")
+  expect "s1 baseline without a schema: gate INVALID" INVALID "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-base-empty '.' '.' '  ')
+  expect "s1 baseline file empty: gate ERROR (not \"absent\")" ERROR "$(st "$out" gate.statementsPerWorkflow)"
+  expect "s1 baseline file empty: the detail says empty" yes "$(gate_detail s1-base-empty | says 'is empty')"
+  out=$(s1_eval s1-base-garbage '.' '.' '{"schema": 1, "statementsPerWorkflowNet": ')
+  expect "s1 baseline file not JSON: gate ERROR" ERROR "$(st "$out" gate.statementsPerWorkflow)"
+  expect "s1 baseline file not JSON: the detail says so" yes "$(gate_detail s1-base-garbage | says 'not valid JSON')"
+  out=$(s1_eval s1-base-two '.' '.' "$(bl "$prof" 1 5 "$net") $(bl "$prof" 1 5 "$net")")
+  expect "s1 baseline file with two documents: gate ERROR" ERROR "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-base-array '.' '.' '[1]')
+  expect "s1 baseline file holding an array: gate ERROR" ERROR "$(st "$out" gate.statementsPerWorkflow)"
+  # Duplicate keys: the last value is the one used (jq's rule, documented).
+  dup=$(bl "$prof" 1 5 99)
+  dup="${dup%\}},\"statementsPerWorkflowNet\":${net}}"
+  out=$(s1_eval s1-base-dup '.' '.' "$dup")
+  expect "s1 baseline with statementsPerWorkflowNet twice (99, then the run's): the last wins, PASS" PASS "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-base-named '.' '.' "$(bl "$prof" 1 5 "$net" | jq -c '.runId = "r20991231t235959z" | .engineCommit = "0123456789abcdef0123456789abcdef01234567"')")
+  expect "s1 baseline used: the gate's detail names its run id" yes "$(gate_detail s1-base-named | says 'r20991231t235959z')"
+  expect "s1 baseline used: the gate's detail names its engine commit" yes "$(gate_detail s1-base-named | says '0123456789ab')"
 
   # Ceiling and "sustains" (doctored level rows; the ceiling never moves the verdict).
   all_ok='.levelRows |= map(.completionsInWindowPerSec = .arrivalPerSec | .backlogAtEnd = 0)'
@@ -955,6 +986,29 @@ if [[ -n "$s3src" ]]; then
   expect "s3: baseline at 2 replicas: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
   out=$(s3_eval s3-base-bad '.' '.' "$(mk_base '"6"')")
   expect "s3: malformed baseline value: gate.parkedCostBaseline" ERROR "$(s3st "$out" gate.parkedCostBaseline)"
+  # Lock TTL, plateaus and Pmax must match too; a baseline that predates the
+  # lockTtl field does not match.
+  s3_gate_detail() { s3_field "$1" '.checks[] | select(.id == "gate.parkedCostBaseline") | .detail'; }
+  out=$(s3_eval s3-base-ttl '.' '.' "$(mk_base "$net" '.lockTtl = "PT60S"')")
+  expect "s3: baseline at another lock TTL: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  expect "s3: baseline at another lock TTL: the detail says lockTtl" yes "$(s3_gate_detail s3-base-ttl | grep -qF lockTtl && echo yes || echo no)"
+  out=$(s3_eval s3-base-nottl '.' '.' "$(mk_base "$net" 'del(.lockTtl)')")
+  expect "s3: baseline without lockTtl: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-plateaus '.' '.' "$(mk_base "$net" '.plateaus = [1000, 5000, 10000]')")
+  expect "s3: baseline of other plateaus: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-pmax '.' '.' "$(mk_base "$net" '.Pmax = 10000')")
+  expect "s3: baseline at another Pmax: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-schema '.' '.' "$(mk_base "$net" '.schema = 2')")
+  expect "s3: baseline of schema 2: gate.parkedCostBaseline" INVALID "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-scenario '.' '.' "$(mk_base "$net" '.scenario = "s1-throughput"')")
+  expect "s3: baseline of another scenario: gate.parkedCostBaseline" INVALID "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-empty '.' '.' '  ')
+  expect "s3: baseline file empty: gate.parkedCostBaseline" ERROR "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-garbage '.' '.' '{"schema": ')
+  expect "s3: baseline file not JSON: gate.parkedCostBaseline" ERROR "$(s3st "$out" gate.parkedCostBaseline)"
+  out=$(s3_eval s3-base-named '.' '.' "$(mk_base "$net" '.runId = "r20991231t235959z" | .engineCommit = "0123456789abcdef0123456789abcdef01234567"')")
+  expect "s3: baseline used: the gate's detail names its run id and engine commit" yes \
+    "$(s3_gate_detail s3-base-named | grep -q 'r20991231t235959z.*0123456789ab' && echo yes || echo no)"
 
   # validity.record: a malformed record is INVALID, naming the field, never
   # an evaluator crash and never a pass.

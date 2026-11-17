@@ -346,6 +346,44 @@ def statements_gate($id; $s; $expected; $relativeAllowance):
     end;
 def statements_gate($id; $s; $expected): statements_gate($id; $s; $expected; 0);
 
+# ── Baselines ───────────────────────────────────────────────────────────────
+# perf/baselines/<scenario>.json as lib/evaluate.sh read it: $bs = its JSON
+# documents (slurped: [] when the file is absent), $err = why the file could
+# not be read (empty, not JSON) or null. Returns {b, status, detail}:
+#   status null         one object of schema 1 for this scenario: the
+#                       scenario matches its settings (b) itself;
+#   status NO_BASELINE  no file;
+#   status ERROR        the file is empty, not JSON, holds more than one
+#                       document or something other than an object;
+#   status INVALID      its schema is not 1 or its scenario is not this one.
+# A key that appears twice in the file takes its LAST value (jq's parser).
+def baseline_record($bs; $err; $scenario):
+  "perf/baselines/\($scenario).json" as $path
+  | if $err != null then {b: null, status: "ERROR", detail: "\($path) \($err): fix or delete it"}
+    elif ($bs | type) != "array" or ($bs | length) == 0 then {b: null, status: "NO_BASELINE", detail: "\($path) is absent"}
+    elif ($bs | length) > 1 then {b: null, status: "ERROR", detail: "\($path) holds \($bs | length) JSON documents, not one"}
+    elif ($bs[0] | type) != "object" then {b: null, status: "ERROR", detail: "\($path) holds a JSON \($bs[0] | type), not an object"}
+    elif $bs[0].schema != 1 then {b: null, status: "INVALID", detail: "\($path) is baseline schema \($bs[0].schema | tojson), not 1: this evaluator cannot read it"}
+    elif $bs[0].scenario != $scenario then {b: null, status: "INVALID", detail: "\($path) is a baseline for scenario \($bs[0].scenario | tojson), not \($scenario | tojson)"}
+    else {b: $bs[0], status: null, detail: null} end;
+
+# Applies the baseline's state to a baseline gate's check (statements_gate's
+# output, judged against $expected = null unless $br is usable and matched):
+# a broken file makes the gate ERROR, a baseline of another schema or
+# scenario makes it INVALID (unless the gate already FAILed on its own), an
+# unmatched one leaves NO_BASELINE with the reason ($noBase), and a used one
+# names its source run and engine commit in the detail.
+def baseline_gate_detail($br; $noBase):
+  if $br.status == "ERROR" then
+    .status = "ERROR" | .detail = "the baseline cannot be read: \($br.detail)"
+  elif $br.status == "INVALID" then
+    (if .status == "NO_BASELINE" then .status = "INVALID" | .detail = "the baseline cannot be used: \($br.detail)"
+     else .detail += "; the baseline cannot be used: \($br.detail)" end)
+  elif .status == "NO_BASELINE" then .detail = "no usable baseline: \($noBase)"
+  elif $br.b != null and $noBase == null then
+    .detail += "; baseline \($br.b.runId // "with no runId") (engine \($br.b.engineCommit // "unknown" | tostring | .[0:12]), recorded \($br.b.recordedAtUtc // "at an unknown time"))"
+  else . end;
+
 # validity.warmup: the warm-up batch finished, every run of it COMPLETED,
 # before the idle window opened. Otherwise warm-up work leaks into the
 # background window, the background rate comes out high and the net figure

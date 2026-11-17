@@ -13,11 +13,26 @@ scenario=${2:?scenario}
 baseline=${3:-}
 
 args=(--slurpfile identity "${results}/identity.json" --slurpfile measurements "${results}/measurements.json")
+# $baseline is the file's JSON documents (none when it is absent); a file that
+# exists but cannot be read as JSON is reported through $baselineError (the
+# scenario's baseline gate is then ERROR, never "absent"). The message names
+# no path (result.json is committed as evidence). A key that appears twice in
+# the file takes its LAST value (jq's rule).
+baseline_error=null
 if [[ -n "$baseline" && -f "$baseline" ]]; then
-  args+=(--slurpfile baseline "$baseline")
+  if ! grep -q '[^[:space:]]' "$baseline"; then
+    baseline_error='"is empty"'
+    args+=(--argjson baseline '[]')
+  elif ! jq -s . "$baseline" >/dev/null 2>&1; then
+    baseline_error='"is not valid JSON"'
+    args+=(--argjson baseline '[]')
+  else
+    args+=(--slurpfile baseline "$baseline")
+  fi
 else
   args+=(--argjson baseline '[]')
 fi
+args+=(--argjson baselineError "$baseline_error")
 # The run's Prometheus range data (written by run.sh before evaluation), for
 # scenarios that use it (s1-throughput: the hold-window overhead basis).
 if [[ -s "${results}/prometheus.json" ]]; then

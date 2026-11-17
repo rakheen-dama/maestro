@@ -179,7 +179,10 @@
 # statements_gate (common.jq): symmetric band = tolerance + relativeAllowance
 # x expected. The expected value comes from perf/baselines/s1-throughput.json,
 # used only when its workflowShape {activities, activityMillis}, profile and
-# replicas match this run (otherwise NO_BASELINE, with the reason).
+# replicas match this run (otherwise NO_BASELINE, with the reason); a file of
+# another schema or scenario is INVALID, an empty or unparseable one ERROR
+# (common.jq baseline_record). The detail names the baseline's runId and
+# engine commit.
 #
 # relativeAllowance = s1_relative_allowance below: 0.02, from measurements.
 # Every run cited here has its result.json committed under
@@ -284,8 +287,7 @@ def container_cpu_avg($m; $name; $a; $b):
   | if ($v | length) > 0 then {avg: ($v | add / length | round2), max: ($v | max), samples: ($v | length)} else null end;
 
 def s1_baseline_match($b; $m; $id):
-  if $b == null then "perf/baselines/s1-throughput.json is absent"
-  elif ($b.workflowShape | type) != "object"
+  if ($b.workflowShape | type) != "object"
        or ($b.workflowShape | {activities, activityMillis}) != ($m.workflowShape | {activities, activityMillis})
     then "baseline workflowShape \($b.workflowShape | tojson) is not this run's \($m.workflowShape | {activities, activityMillis} | tojson)"
   elif $b.profile != $id.profile then "baseline profile \($b.profile | tojson) is not this run's \($id.profile | tojson)"
@@ -325,7 +327,8 @@ def level_statements($m; $ws; $we; $rate):
 
 $identity[0] as $id
 | $measurements[0] as $m
-| ($baseline[0] // null) as $b
+| baseline_record($baseline; $baselineError; "s1-throughput") as $br
+| $br.b as $b
 | $id.config.replicas as $replicas
 | (($id.nodes[0].workerDefaultConcurrency // null) as $c | if ($c | isnum) then $c * $replicas else null end) as $slots
 | ($m.runStatus.byStatus // {}) as $by
@@ -430,7 +433,7 @@ $identity[0] as $id
 | ($m.plan.levels // []) as $planned
 | ($m.k6 // [] | map(select(.phase == "s1")) | last) as $k6s1
 | ($m.k6 // [] | map(select(.phase == "warmup")) | last) as $k6wu
-| s1_baseline_match($b; $m; $id) as $noBase
+| (if $br.status != null then $br.detail else s1_baseline_match($b; $m; $id) end) as $noBase
 | (if $noBase == null then $b.statementsPerWorkflowNet else null end) as $expected
 | [
     background_check($m.background; $replicas),
@@ -541,7 +544,7 @@ $identity[0] as $id
           if $m.foreignRows == 0 then "no instance row outside this run's id space \($m.runPrefix)"
           else "\($m.foreignRows) instance row(s) outside \($m.runPrefix): leftover state" end),
     ( statements_gate("gate.statementsPerWorkflow"; $s; $expected; s1_relative_allowance)
-      | if .status == "NO_BASELINE" then .detail = "no usable baseline: \($noBase)" else . end ),
+      | baseline_gate_detail($br; $noBase) ),
     advisory_guarded("advisory.ceiling";
       check("advisory.ceiling"; "advisory";
             if ($levels | length) > 0 and ($ceiling.ceilingPerSec | isnum) then "PASS" else "WARN" end;

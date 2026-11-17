@@ -104,8 +104,11 @@
 # gate.parkedCostBaseline: statements_gate (common.jq; symmetric band =
 #   tolerance + relativeAllowance x expected) on perParkedCallsPerMin(Pmax)
 #   against perf/baselines/s3-parked.json's perParkedCallsPerMin, used only
-#   when its parkMode, wakeRecheckInterval, recoveryPollInterval, profile and
-#   replicas match this run (otherwise NO_BASELINE, with the reason).
+#   when its parkMode, wakeRecheckInterval, recoveryPollInterval, lockTtl,
+#   plateaus, Pmax, profile and replicas match this run (otherwise
+#   NO_BASELINE, with the reason); a file of another schema or scenario is
+#   INVALID, an empty or unparseable one ERROR (common.jq baseline_record).
+#   The detail names the baseline's runId and engine commit.
 #   relativeAllowance = s3_relative_allowance below; its justification is
 #   recorded here from the cold local runs that pass this evaluator.
 #
@@ -245,7 +248,8 @@ def iterations_ok($got; $want): ($got | isnum) and ($want | isnum) and ((($got -
 
 $identity[0] as $id
 | $measurements[0] as $m
-| ($baseline[0] // null) as $b
+| baseline_record($baseline; $baselineError; "s3-parked") as $br
+| $br.b as $b
 | $id.config.replicas as $replicas
 | (($replicas | isnum) and $replicas >= 1 and ($replicas | floor) == $replicas) as $replicasOk
 | ($m.plan // {}) as $plan
@@ -405,10 +409,13 @@ $identity[0] as $id
                              or (.nodeCpu.systemAvg | isnum) and .nodeCpu.systemAvg >= cpu_saturation) | .P]) as $cpuHot
 | (($loadPerCpu | length) > 0 and ($loadPerCpu | max) > host_load_per_cpu_max) as $loadHot
 # ── baseline ──
-| (if $b == null then "perf/baselines/s3-parked.json is absent"
+| (if $br.status != null then $br.detail
    elif $b.parkMode != $mode then "baseline parkMode \($b.parkMode | tojson) is not this run's \($mode | tojson)"
    elif $b.wakeRecheckInterval != $node0.wakeRecheckInterval then "baseline wakeRecheckInterval \($b.wakeRecheckInterval | tojson) is not this run's \($node0.wakeRecheckInterval | tojson)"
    elif $b.recoveryPollInterval != $node0.recoveryPollInterval then "baseline recoveryPollInterval \($b.recoveryPollInterval | tojson) is not this run's \($node0.recoveryPollInterval | tojson)"
+   elif $b.lockTtl != $node0.lockTtl then "baseline lockTtl \($b.lockTtl | tojson) is not this run's \($node0.lockTtl | tojson) (the renewal period is lockTtl / 3)"
+   elif $b.plateaus != ($plan.plateaus // null) then "baseline plateaus \($b.plateaus | tojson) are not this run's \($plan.plateaus | tojson)"
+   elif $b.Pmax != ($wMax.P // null) then "baseline Pmax \($b.Pmax | tojson) is not this run's \($wMax.P // null | tojson)"
    elif $b.profile != $id.profile then "baseline profile \($b.profile | tojson) is not this run's \($id.profile | tojson)"
    elif $b.replicas != $replicas then "baseline replicas \($b.replicas | tojson) is not this run's \($replicas)"
    else null end) as $noBase
@@ -653,7 +660,7 @@ $identity[0] as $id
     ( statements_gate("gate.parkedCostBaseline";
           {statementsPerWorkflowNet: ($wMax.perParkedCallsPerMin // null), netTolerancePerWorkflow: ($wMax.tolerancePerMin // null)};
           $expected; s3_relative_allowance)
-      | if .status == "NO_BASELINE" then .detail = "no usable baseline: \($noBase)" else . end
+      | baseline_gate_detail($br; $noBase)
       | .detail = "per parked run per minute at P=\($wMax.P // "n/a"): " + .detail ),
     # ── advisories ──
     advisory_guarded("advisory.decomposition";
@@ -788,7 +795,8 @@ $identity[0] as $id
                idleCallsPerSec: ($cps0 | round4), decomposition: $decomposition, seeds: $seeds,
                releaseFigures: $releaseFig, plateauTable: $table,
                baselineCandidate: {parkMode: $mode, wakeRecheckInterval: $node0.wakeRecheckInterval,
-                                   recoveryPollInterval: $node0.recoveryPollInterval, plateaus: $planned,
+                                   recoveryPollInterval: $node0.recoveryPollInterval, lockTtl: $node0.lockTtl,
+                                   plateaus: $planned,
                                    Pmax: ($wMax.P // null),
                                    perParkedCallsPerMin: ($wMax.perParkedCallsPerMin // null),
                                    perParkedCallsPer30s: ($wMax.perParkedCallsPer30s // null),
