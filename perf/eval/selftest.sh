@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Evaluator self-test:
-#   perf/eval/selftest.sh <a PASSING smoke result dir> [<a PASSING s1-throughput result dir>]
+#   perf/eval/selftest.sh <a PASSING smoke result dir> [<a PASSING 1-replica s1-throughput result dir>]
 #                         [<a PASSING local 1-replica s3-parked result dir>]
 # With the second argument it also runs the Scenario 1 cases (ceiling and
 # "sustains", the WP11 meters degrading to "not available", the statement
@@ -437,6 +437,11 @@ expect "validity INVALID beats gate FAIL" INVALID "$(verdict_of 'map(if .class =
 # ── Scenario 1 (s1-throughput) ──────────────────────────────────────────────
 if [[ -n "$s1src" ]]; then
   [[ "$(jq -r .scenario "${s1src}/identity.json")" == s1-throughput ]] || { echo "selftest: ${s1src} is not an s1-throughput run"; exit 1; }
+  # The S1 cases assume one replica (the test baselines, the 20-slot model
+  # cap in the Little's-law detail): refuse any other source up front, as the
+  # Scenario 3 section does, rather than fail dozens of cases obscurely.
+  [[ "$(jq -r .config.replicas "${s1src}/identity.json")" == 1 ]] \
+    || { echo "selftest: ${s1src} is not a 1-replica s1-throughput run (replicas $(jq -c .config.replicas "${s1src}/identity.json"))"; exit 1; }
   # s1_eval <case> <measurements filter> [<identity filter>] [<baseline json>]
   s1_eval() {
     local dir="${work}/$1" base=""
