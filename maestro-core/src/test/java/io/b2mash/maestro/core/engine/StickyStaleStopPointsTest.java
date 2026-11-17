@@ -61,9 +61,13 @@ class StickyStaleStopPointsTest {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observer = new RecordingEngineObserver();
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "node",
-                "maestro:lock:", Duration.ofSeconds(30), true,
-                Duration.ofSeconds(5), Duration.ofSeconds(30), observer);
+        executor = WorkflowExecutor.builder(store, serializer, "node")
+                .lockKeyPrefix("maestro:lock:")
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
         store.winnerAppearsOnNextAppend(1, EventType.ACTIVITY_COMPLETED, serializer.serialize("winner"));
     }
 

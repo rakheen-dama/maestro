@@ -88,10 +88,13 @@ class BackgroundLoopStartShutdownRaceTest {
         var starterFailure = new AtomicReference<Throwable>();
         for (var i = 0; i < ROUNDS; i++) {
             var store = new CountingStore();
-            var executor = new WorkflowExecutor(store, null, null, null,
-                    new PayloadSerializer(new ObjectMapper()), "node", "maestro:lock:",
-                    Duration.ofSeconds(30), true, Duration.ofSeconds(5), Duration.ofSeconds(30),
-                    new io.b2mash.maestro.core.observe.RecordingEngineObserver());
+            var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "node")
+                    .lockKeyPrefix("maestro:lock:")
+                    .instanceLockTtl(Duration.ofSeconds(30))
+                    .shutdownTimeout(Duration.ofSeconds(5))
+                    .wakeRecheckInterval(Duration.ofSeconds(30))
+                    .observer(new io.b2mash.maestro.core.observe.RecordingEngineObserver())
+                    .build();
             var barrier = new CyclicBarrier(2);
             var starting = Thread.ofPlatform().start(() -> {
                 try {

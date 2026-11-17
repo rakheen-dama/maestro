@@ -73,10 +73,12 @@ class WorkflowExecutorRetryTest {
         store = new VersionedInMemoryStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(
-                store, null, messaging, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30),
-                true, Duration.ofSeconds(5), Duration.ofMillis(200));
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .build();
     }
 
     @AfterEach
@@ -111,6 +113,7 @@ class WorkflowExecutorRetryTest {
         // Fix the fault — the test seam a real operator's "dependency is back
         // up" corresponds to — THEN retry.
         activityImpl.faultFixed.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "retry-headline", Duration.ofSeconds(5));
         var outcome = executor.retryWorkflow("retry-headline", registration);
 
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, outcome);
@@ -216,6 +219,7 @@ class WorkflowExecutorRetryTest {
         awaitStatus("retry-dup", WorkflowStatus.FAILED);
 
         activityImpl.faultFixed.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "retry-dup", Duration.ofSeconds(5));
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED,
                 executor.retryWorkflow("retry-dup", registration));
         awaitStatus("retry-dup", WorkflowStatus.COMPLETED);
@@ -239,6 +243,7 @@ class WorkflowExecutorRetryTest {
 
         executor.startWorkflow("retry-concurrent", "ThreeStepWorkflow", "default", null, () -> workflow, method);
         awaitStatus("retry-concurrent", WorkflowStatus.FAILED);
+        TestTerminalWait.awaitRunEnded(executor, "retry-concurrent", Duration.ofSeconds(5));
         activityImpl.faultFixed.set(true);
 
         var pool = Executors.newFixedThreadPool(2);
@@ -290,7 +295,10 @@ class WorkflowExecutorRetryTest {
     @DisplayName("retry CASes to RUNNING even when another node holds the instance lock, and leaves it for recovery")
     void retryWithLockHeldElsewhere_leavesInstanceRunningForRecovery() throws Exception {
         var lock = new MapLock();
-        var lockedExecutor = new WorkflowExecutor(store, lock, messaging, null, serializer, "test-service");
+        var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .distributedLock(lock)
+                .messaging(messaging)
+                .build();
         try {
             var workflow = new ParkedWorkflow();
             var method = ParkedWorkflow.class.getMethod("run");
@@ -452,6 +460,7 @@ class WorkflowExecutorRetryTest {
                 "the row is untouched by a delete that happened before any CAS");
 
         activityImpl.faultFixed.set(true);
+        TestTerminalWait.awaitRunEnded(executor, "retry-crash-delete", Duration.ofSeconds(5));
         var outcome = executor.retryWorkflow("retry-crash-delete", registration);
 
         assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, outcome,

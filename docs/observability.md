@@ -20,7 +20,7 @@ Two adapters ship:
 
 | Adapter | Class | Produces |
 |---|---|---|
-| Meters | `MicrometerEngineObserver` + `MaestroEngineGauges` | Micrometer counters, timers, gauges under `maestro.*` |
+| Meters | `MicrometerEngineObserver` + `MaestroEngineGauges` + `MaestroTaskQueueGauges` | Micrometer counters, timers, gauges under `maestro.*` |
 | Tracing | `TracingEngineObserver` | Spans via the Micrometer Tracing API (`io.micrometer.tracing.Tracer`) |
 
 Both are registered by `MaestroObservabilityAutoConfiguration`, and both are
@@ -51,13 +51,23 @@ not `workflowStarted`, and `MicrometerEngineObserver` does not implement
 replayed step's timer count stays 1) and, for spans, by
 `TracingReplayNoSpansIT`.
 
+`maestro.workflow.duration` is not replay-flagged: it is recorded once, by the
+node that finishes the workflow. For a recovered run that duration spans the
+downtime too — it is measured from the instance row's `startedAt`, not from
+the recovering node's adoption.
+
 ### Failure containment
 
 Both adapters wrap each emission: a `RuntimeException` thrown by the registry
 or the tracer is caught and logged **once per meter name / callback name**,
 never propagated into the engine. `Error`s — the engine's control-flow signals
 (`MaestroControlFlowError`) — deliberately propagate, because swallowing one
-would convert a stand-down or a terminate into a workflow failure.
+would convert a stand-down or a terminate into a workflow failure. One
+callback is wider: `CompositeEngineObserver.backgroundLoopError` fires while a
+loop is already containing an `Error`, so it contains every `Throwable` from a
+delegate except a control-flow `Error`, logging `WARN` with the stack trace
+once per delegate and loop until that delegate succeeds again
+(`CompositeEngineObserverLoopErrorTest`).
 
 Observers are composed through `CompositeEngineObserver.of(...)`, which always
 wraps even a single observer, so containment is structural at every emission
@@ -67,10 +77,11 @@ site.
 
 ## Meter catalog
 
-Seventeen meters: **14 counters and 1 timer**, registered by
-`MicrometerEngineObserver`, plus **2 gauges**, registered by
-`MaestroEngineGauges` — both in the `io.b2mash.maestro.spring.observe` package
-of `maestro-spring-boot-starter`.
+Twenty-four meters: **17 counters and 2 timers**, registered by
+`MicrometerEngineObserver`, plus **5 gauges** — four registered by
+`MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
+bounded task queue and kind) by `MaestroTaskQueueGauges` — all in the
+`io.b2mash.maestro.spring.observe` package of `maestro-spring-boot-starter`.
 
 **Cardinality rule:** no meter is ever tagged with `workflowId`, `runId`, or a
 timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
@@ -94,6 +105,7 @@ type is known (the instance exists).
 | `maestro.workflow.failed` | `workflow` | workflow type | A run is recorded `FAILED` |
 | `maestro.workflow.compensated` | `workflow` | workflow type | The saga compensation phase starts (callback is `workflowCompensating`) |
 | `maestro.workflow.terminated` | `workflow` | workflow type | An operator terminated the workflow |
+| `maestro.activity.result.unreadable` | `workflow`, `activity` | workflow type, activity name | A live activity's result was recorded but either cannot be read back as its declared type (the run will stand down as `unknown_event_payload` at its next recovery, D9) or reads back as another class than the object the activity returned (a replay will hand workflow code that class). Either way the run continued with the activity's own object; one counter for both, the cause is not a tag. It moves on every such call (the `WARN` is once per method), so a method declared `Collection` or `Iterable` that returns a view such as `map.values()` counts on each call ([Pitfalls rule 12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned)) |
 | `maestro.signal.consumed` | `workflow`, `signal` | workflow type (or the literal `unknown` when the workflow type is not yet known), signal name | A signal is consumed live |
 | `maestro.signal.duplicates` | `workflow`, `signal` | workflow type and signal name — both the literal `unknown` for a pre-delivered (orphan) duplicate, see the cardinality rule | A delivery carried a message id already stored for that workflow and signal name, so no row was written (a transport redelivery, a producer republish, a client retry) — see [Cross-service §Signal identity](cross-service.md#signal-identity) |
 | `maestro.timer.fired` | `workflow` | workflow type | A durable timer fires live |
@@ -102,12 +114,34 @@ type is known (the instance exists).
 | `maestro.retention.sweeps` | *(none)* | — | A retention sweep finished on this node as the elected leader (non-leaders never increment it) |
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
+| `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
+| `maestro.run.abandoned` | `reason` | `shutdown`, `terminated`, `converged`, `terminal_write_failed`, `node_error`, `store_unavailable` | A local run ended on the workflow's own thread without this node recording a terminal outcome (`runAbandoned`) — see [below](#which-callbacks-the-meter-adapter-implements) |
 
 `maestro.recovery.scanned`, `maestro.recovery.adopted` and
 `maestro.retention.purged` are `increment(n)` calls, not `increment()` — one
 recovery pass or retention sweep moves them by the pass's counts (so a leader
-that found nothing to purge registers the four `kind` series at zero).
+that found nothing to purge registers the four `kind` series at zero). The
+recovery poller's capacity passes — run as task-queue capacity frees while a
+recovery backlog drains — count too, but only those that read rows, so during
+a drain `scanned` grows by the rows each capacity pass reads.
+
+`maestro.loop.errors` counts the five engine loops only. The two
+`maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)
+and the wake listener (`maestro-pg-wake-listener`) — contain an `Error` the
+same way and log it at `ERROR`, but they reach no `EngineObserver`, so they
+are logged and **not counted** ([Issue 65](open-issues.md#issue-65)). Unlike
+the other counters here, its five series are registered at zero when
+`MicrometerEngineObserver` is created, so a rate query sees the first `Error`
+rather than a series that appears already at 1. Alert on
+`increase(maestro_loop_errors_total[15m]) > 0`: it fires on a new `Error` and
+clears once the loop stops hitting them, where `maestro_loop_errors_total > 0`
+would stay firing until the node restarts. The error type is not a tag
+(open-ended); the log line names it. Pinned by
+`MicrometerEngineObserverTest.backgroundLoopErrorCountsByLoop` and
+`loopErrorSeriesExistAtZeroBeforeAnyFailure` and, through the composite
+observer and a real executor, by `LoopErrorCounterWiringTest` (one `Error` per
+loop counts exactly 1).
 
 The `reason` tag value set is closed at five, mapped from
 `io.b2mash.maestro.core.observe.StandDownReason`:
@@ -131,9 +165,27 @@ incompatible payload change on a homogeneous fleet.
 | Meter | Tags | Tag values |
 |---|---|---|
 | `maestro.activity.duration` | `workflow`, `activity`, `outcome` | workflow type, activity name, `completed` or `failed` |
+| `maestro.workflow.duration` | `workflow`, `outcome` | workflow type, `completed` or `failed` |
 
-`outcome` has exactly two values. Replayed activities are excluded, so this
-timer measures real executions only.
+On both timers `outcome` has exactly two values.
+`maestro.activity.duration` excludes replayed activities, so it measures real
+executions only.
+
+`maestro.workflow.duration` (Prometheus `maestro_workflow_duration_seconds_count`,
+`_sum`, `_max`, plus `_bucket` when the host enables a histogram) is recorded
+from `workflowFinished`. That callback fires once per terminal transition (a
+manually retried workflow records once per outcome it reached), only on the
+node that won that transition, directly after `workflowCompleted` or
+`workflowFailed`. It records end-to-end wall time: from the instance row's
+`startedAt` to the terminal write, including every park (signals, timers) and
+any downtime before a recovery adopted the run. A manually retried workflow
+keeps its original `startedAt`, so a run that failed, was retried and then
+completed records once under `outcome=failed` and once under
+`outcome=completed`, and the completed duration includes the time it sat
+`FAILED`. The duration is measured on the wall clock (the instance row's
+`startedAt` and the terminal moment are both `Instant.now()`), so
+`TestWorkflowEnvironment`'s controllable clock does not move it. It is not
+recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 
 ### Gauges
 
@@ -141,10 +193,19 @@ timer measures real executions only.
 |---|---|---|
 | `maestro.workflows.running` | *(none)* | `WorkflowExecutor.runningCount()` |
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
+| `maestro.wake.permits` | *(none)* | `WorkflowExecutor.wakePermitCount()` |
+| `maestro.recovery.deferred` | *(none)* | `WorkflowExecutor.recoveryDeferredCount()` |
+| `maestro.taskqueue.slots.used` | `queue`, `kind` | `TaskQueueGovernor.workflowSlotsInUse(queue)` (`kind=workflow`) / `activitySlotsInUse(queue)` (`kind=activity`) |
 
-Both are registered by `MaestroEngineGauges` with `.strongReference(true)` —
-Micrometer's `Gauge.Builder` holds its state object behind a `WeakReference` by
-default, which would report `NaN` once the builder went out of scope.
+`queue` is the `taskQueue` of a registered `@DurableWorkflow` that is bounded
+on this node; `kind` is `workflow` or `activity`. Prometheus exposes it as
+`maestro_taskqueue_slots_used`.
+
+All five are registered with `.strongReference(true)` — the first four by
+`MaestroEngineGauges`, `maestro.taskqueue.slots.used` by
+`MaestroTaskQueueGauges` — because Micrometer's `Gauge.Builder` holds its state
+object behind a `WeakReference` by default, which would report `NaN` once the
+builder went out of scope.
 
 **How they are sourced, and what a value means:**
 
@@ -157,6 +218,56 @@ default, which would report `NaN` once the builder went out of scope.
   by **parking key** — one entry per active park (a `sleep()` on a durable
   timer, or an `awaitSignal()`). Entries are removed on unpark, timeout,
   interrupt, or exception.
+- `maestro.wake.permits` is the size of `ParkingLot`'s permit map, keyed by
+  parking key: a wake (a signal, a timer fire or cancel, a cross-node
+  notification) that reached this node when nobody was parked on that key yet.
+  Since 3.2 a permit is stored only for a workflow running on this node, and it
+  is dropped when that run parks, ends, is terminated or the node shuts down,
+  so the value stays near zero; one that grows with signal or timer throughput
+  is a regression. Tests show this: `WakePermitLocalityTest`,
+  `ParkingLotWakeGateTest`.
+- `maestro.recovery.deferred` (Prometheus `maestro_recovery_deferred`) is how
+  many recoverable workflows this node's latest **full** recovery pass left
+  unadopted because their task queue had no free slot and no room in its line
+  of queued recovered runs on this node; `0` before the first full pass. A
+  full pass runs when the recovery poller starts and then every
+  `maestro.recovery.poll-interval`; the capacity passes in between do not
+  update it. It reads `0` on a healthy fleet. During a recovery drain it is the
+  backlog this node could see but not yet run, recounted by each full pass, so
+  it falls as the drain proceeds (traced, not tested). A value that stays high
+  over several full passes means this node's queues cannot keep up with
+  recovery. Like the other gauges it is node-local,
+  but do **not** sum it across pods: every node of a service sees the same
+  unadopted rows, so a sum counts each one once per node. Pinned by
+  `MaestroEngineGaugesTest.recoveryDeferredGaugeReadsTheLatestFullPass`
+  (4 instances at limits (1, 1): the gauge reads 2).
+- `maestro.taskqueue.slots.used` is the queue's limit minus the free permits of
+  its slot pool in `TaskQueueGovernor` — the slots held right now **on this
+  JVM**. `kind=workflow` counts runs executing on the queue; a parked run gives
+  its slot back for the park, so a parked workflow counts in
+  `maestro.workflows.running` but not here. `kind=activity` counts live
+  activity executions (from the first attempt through every retry to
+  the persisted outcome); a replayed step takes no slot. Compare it against the
+  queue's `maestro.worker.task-queues[]` limits, or the
+  `maestro.worker.default-*` limits (20/20) for an unlisted queue, to see
+  saturation. The gauges are registered on `ContextRefreshedEvent`, once
+  `WorkflowRegistrar` has registered every workflow, for each distinct task
+  queue those workflows name. **An unbounded queue has no gauge** (both
+  defaults `0` and not listed): it has no slots to count. A queue listed in
+  configuration that no registered workflow names has none either. Reading the
+  gauge never takes or waits for a slot. **During a shutdown it reads one
+  low:** `WorkflowExecutor.shutdown()` lends each bounded pool one permit to
+  release the runs queued for a slot (Issue 29, [Operations §15](operations.md#15-shutdown-one-deadline-and-the-grace-period))
+  and takes it back after the drain, so until then each series reads one less
+  than the slots held — `-1` on an idle pool. A pool whose loan could not be
+  taken back (the drain hit its deadline with runs still queued, or with every
+  slot held) reads one less until the node exits
+  (`TaskQueueGovernorTest.inUseReadsOneLessWhileTheShutdownLoanIsOutAndIsExactAfterTheReclaim`).
+  **During recovery**, a slot the recovery poller reserved for a run it is
+  adopting counts from the reservation, before that run starts executing (the
+  permit is taken; the run's claim takes no second one), and a recovered run
+  queued for a slot does not count, like any run waiting for one
+  (`TaskQueueGovernorTest$RecoveryAdmission.slotsInUseCountsAReservedSlotButNotAQueuedRecoveredRun`).
 
 **These are node-local, in-JVM values.** They are not store-derived, they do not
 survive a restart, and they say nothing about workflows owned by other nodes.
@@ -169,7 +280,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 13 of the 23 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 19 of the 28 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,
@@ -177,29 +288,42 @@ It deliberately does **not** implement:
   `instanceLockAcquired` — no meter in the catalog needs them.
 - `wrapActivityAttempt` — its default returns the attempt unchanged; a meter
   needs no thread-local context on the attempt thread.
-- **`runAbandoned`** — this fires when a run stops because the node is shutting
-  down, an operator terminated the workflow, another writer finalised the row
-  first, the terminal status write failed, the store was unavailable
-  (`STORE_UNAVAILABLE`), or a node-level `Error` escaped the
-  workflow method, an activity or a compensation action (`NODE_ERROR`). Counting it would double-count:
-  `workflowTerminated` already fires exactly once per terminate. It exists for
-  the tracing adapter, which needs a callback on the workflow's own thread to
-  close its span. `NODE_ERROR` — a `LinkageError` (`NoClassDefFoundError`,
-  `ExceptionInInitializerError`, ...) or a `VirtualMachineError` other than
-  `StackOverflowError` (`OutOfMemoryError`, `InternalError`, ...) — is the one
-  reason that is not routine: it is a bad deploy or resource exhaustion on that
-  node, the instance keeps its active status (`RUNNING`, or `COMPENSATING`
-  mid-unwind) and stays recoverable, and nothing is recorded as a workflow or
-  activity failure — an activity that throws one is not retried. It is visible as the segment attribute
-  `maestro.abandon.reason=NODE_ERROR` and as an `ERROR` log line under the
-  workflow MDC (`... abandoned its local run on a node-level error (<class>)
-  ...`); alert on either. `STORE_UNAVAILABLE` is routine during a database
-  outage and a problem only when it persists after the database is back: the
-  store kept failing after the in-place retries, nothing was recorded, and
-  recovery resumes the instance once the store answers. It is visible as
-  `maestro.abandon.reason=STORE_UNAVAILABLE` and as a `WARN` (`... abandoned
-  its local run — the store is unavailable ...`); see
-  [Operations §10.9](operations.md#109-store-outages-store_unavailable-abandons).
+
+**`runAbandoned` is counted under its own meter, `maestro.run.abandoned{reason}`.**
+It fires on the workflow's own thread when a run stops because the node is
+shutting down (`shutdown`), an operator terminated the workflow
+(`terminated`), another writer finalised the row first (`converged`), the
+terminal status write failed (`terminal_write_failed`), a node-level `Error`
+escaped the workflow method, an activity or a compensation action
+(`node_error`), or the store was unavailable (`store_unavailable`). The tag
+value set is closed at six, mapped from
+`io.b2mash.maestro.core.observe.AbandonReason`, and the meter carries no
+`workflow` tag. A terminate moves `maestro.workflow.terminated` once, from
+`workflowTerminated` on the node that handled the terminate.
+`maestro.run.abandoned{reason="terminated"}` moves at most once, when the run
+unwinds on its own thread on the node running the workflow — which may be
+another node — and not at all if no node holds a live run. Never add the two
+together as "terminates". The tracing
+adapter uses the same callback to close its segment span.
+
+`node_error` is the one reason that is not routine. It is a `LinkageError`
+(`NoClassDefFoundError`, `ExceptionInInitializerError`, ...) or a
+`VirtualMachineError` other than `StackOverflowError` (`OutOfMemoryError`,
+`InternalError`, ...): a bad deploy or resource exhaustion on that node. The
+instance keeps its active status (`RUNNING`, or `COMPENSATING` mid-unwind) and
+stays recoverable, and nothing is recorded as a workflow or activity failure —
+an activity that throws one is not retried. Alert on any increase of
+`maestro_run_abandoned_total{reason="node_error"}`; the same event is the
+segment attribute `maestro.abandon.reason=NODE_ERROR` and an `ERROR` log line
+under the workflow MDC (`... abandoned its local run on a node-level error
+(<class>) ...`). `store_unavailable` is routine during a database outage and a
+problem only when it persists after the database is back: the store kept
+failing after the in-place retries, nothing was recorded, and recovery resumes
+the instance once the store answers. Alert on a sustained rate of
+`maestro_run_abandoned_total{reason="store_unavailable"}` after the database
+is healthy; the same event is `maestro.abandon.reason=STORE_UNAVAILABLE` and a
+`WARN` (`... abandoned its local run — the store is unavailable ...`); see
+[Operations §10.9](operations.md#109-store-outages-store_unavailable-abandons).
 
 Every `EngineObserver` method is a `default` no-op, so a custom observer
 implements only what it cares about.

@@ -1,8 +1,10 @@
 package io.b2mash.maestro.core.context;
 
+import org.jspecify.annotations.Nullable;
+
 /**
- * Engine-internal access to {@link WorkflowContext}'s sequence counter and
- * replay flag.
+ * Engine-internal access to {@link WorkflowContext}'s sequence counter,
+ * replay flag and failure-memo registry.
  *
  * <p><b>Not for workflow code.</b> Calling any method here from a workflow
  * method corrupts the memoization sequence or the replay state and breaks
@@ -57,5 +59,38 @@ public final class WorkflowContextInternals {
      */
     public static void setReplaying(WorkflowContext ctx, boolean replaying) {
         ctx.setReplaying(replaying);
+    }
+
+    /**
+     * Engine-internal: registers {@code thrown}, the exact exception object the
+     * engine is about to throw for a durable failure memo
+     * ({@code ACTIVITY_FAILED} or {@code SIGNAL_TIMEOUT}, live or replayed),
+     * against that memo's sequence in the run's failure-memo registry. The
+     * registry is shared by the root context and every bounded context of the
+     * run, keyed by identity, and read when the run records
+     * {@code WORKFLOW_FAILED} ({@code failedSequences}) so that admin Retry
+     * can tell which failure ended the run.
+     *
+     * <p>Registering changes nothing about what is thrown; it only remembers.
+     *
+     * @param ctx      any context of the run (root or branch)
+     * @param thrown   the exact object about to be thrown
+     * @param sequence the sequence number of its failure memo
+     */
+    public static void recordFailureMemo(WorkflowContext ctx, Throwable thrown, int sequence) {
+        ctx.recordFailureMemo(thrown, sequence);
+    }
+
+    /**
+     * Engine-internal: returns the sequence of the failure memo {@code thrown}
+     * was registered against in this run, by identity.
+     *
+     * @param ctx    any context of the run (root or branch)
+     * @param thrown an exception
+     * @return the memo's sequence, or {@code null} if the run registered no
+     *         memo for this exact object
+     */
+    public static @Nullable Integer failureMemoSequence(WorkflowContext ctx, Throwable thrown) {
+        return ctx.failureMemoSequence(thrown);
     }
 }

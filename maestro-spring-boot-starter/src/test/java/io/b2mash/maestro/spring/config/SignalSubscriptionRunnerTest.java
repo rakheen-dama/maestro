@@ -40,7 +40,7 @@ class SignalSubscriptionRunnerTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "order-service");
+        executor = WorkflowExecutor.builder(store, serializer, "order-service").build();
         commandDispatcher = new AdminCommandDispatcher(executor, store, new WorkflowRegistrar(executor));
         properties = new MaestroProperties();
         properties.setServiceName("order-service");
@@ -107,8 +107,7 @@ class SignalSubscriptionRunnerTest {
     void handlerPropagatesDeliveryFailure() {
         var failingStore = new FailingSaveSignalStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        var failingExecutor = new WorkflowExecutor(
-                failingStore, null, null, null, serializer, "order-service");
+        var failingExecutor = WorkflowExecutor.builder(failingStore, serializer, "order-service").build();
         var failingDispatcher = new AdminCommandDispatcher(
                 failingExecutor, failingStore, new WorkflowRegistrar(failingExecutor));
         var runner = new SignalSubscriptionRunner(failingExecutor, failingDispatcher, messaging, properties);

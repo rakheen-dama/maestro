@@ -1,0 +1,148 @@
+# Maestro k6 load harness — the system under test and its tools.
+#
+# Driven by perf/run.sh; not meant to be brought up by hand (the node mounts a
+# jar the driver builds and stamps first). Every run is cold: run.sh starts
+# with `down -v`. No service binds a host port except Prometheus, on loopback,
+# for humans; the harness reaches everything in-network through `curl`, `k6`
+# and `docker compose exec`.
+#
+# Every image is pinned: an exact version tag (never `latest`), or, for the two
+# images whose upstream tag floats (postgres:16-alpine moves with every 16.x
+# patch, eclipse-temurin:25-jre with every 25.x update), the tag plus the
+# digest of the multi-arch index that every committed run used
+# (perf/.evidence/wp11/*: identity.imageDigests, one digest per image across
+# all 37 runs; linux/amd64 and linux/arm64 both in the index). Moving one is a
+# deliberate edit here. run.sh records every image, with its digest, in each
+# run's identity.json.
+
+name: maestro-perf
+
+services:
+
+  postgres:
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    # pg_stat_statements is how the harness counts the engine's statements.
+    # max is far above what a run produces, so no entry is evicted
+    # (validity.pgssComplete checks dealloc == 0).
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      - -c
+      - pg_stat_statements.track=all
+      - -c
+      - pg_stat_statements.track_utility=on
+      - -c
+      - pg_stat_statements.max=10000
+      - -c
+      - max_connections=300
+    volumes:
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      # Over TCP: during initdb the image's temporary server listens on the
+      # socket only, so this cannot go healthy before init.sql has run.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U postgres -d maestro"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  kafka:
+    image: apache/kafka:3.9.0
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Bind-all listeners use the empty-host form (://:port), not 0.0.0.0:
+      # the image's storage-format step rejects the meta-address.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      # Topics are pre-created by kafka-init; Maestro never auto-creates them.
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      CLUSTER_ID: "maestro-perf-cluster-001"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 15
+      start_period: 20s
+
+  # Pre-creates every topic sample-perf uses: its signal topic, that topic's
+  # .DLT companion (startup topic verification requires it) and the admin
+  # lifecycle topic (whose end offset tells the harness whether admin events
+  # were really published).
+  kafka-init:
+    image: apache/kafka:3.9.0
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        KAFKA="/opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092"
+        $$KAFKA --create --if-not-exists --topic maestro.signals.perf     --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.signals.perf.DLT --partitions 3 --replication-factor 1
+        $$KAFKA --create --if-not-exists --topic maestro.admin.events     --partitions 3 --replication-factor 1
+        $$KAFKA --list
+
+  # The system under test: N replicas (`--scale node=N`), named
+  # maestro-perf-node-<i>, each running the jar run.sh just built and stamped.
+  node:
+    image: eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699
+    command: ["java", "-jar", "/app/app.jar"]
+    volumes:
+      - ../maestro-samples/sample-perf/build/libs/sample-perf.jar:/app/app.jar:ro
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/maestro
+      SPRING_DATASOURCE_USERNAME: maestro
+      SPRING_DATASOURCE_PASSWORD: maestro
+      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      # maestro.admin.events.enabled, set explicitly on every run (run.sh
+      # exports it; false = the engine's default since 3.11c).
+      PERF_ADMIN_EVENTS: ${PERF_ADMIN_EVENTS:-false}
+      JAVA_TOOL_OPTIONS: -Xmx${PERF_NODE_HEAP:-1g}
+    cpus: ${PERF_NODE_CPUS:-2}
+    mem_limit: ${PERF_NODE_MEM:-1536m}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # For humans watching a run; the harness queries prometheus:9090 in-network.
+    ports:
+      - "127.0.0.1:${PERF_PROMETHEUS_PORT:-59090}:9090"
+
+  # ── Tools (profile `tools`): started by run.sh, never part of the SUT ──
+
+  k6:
+    image: grafana/k6:2.3.0
+    profiles: [tools]
+    volumes:
+      - ./k6:/scripts:ro
+      - ${PERF_RESULTS_DIR:-./results}:/results
+    # Writable results on Linux CI, where the bind mount keeps host ownership.
+    user: "${PERF_UID:-1000}:${PERF_GID:-1000}"
+
+  # The harness's in-network HTTP client (nodes have no host ports): kept
+  # running, and used through `docker compose exec -T curl curl …`.
+  curl:
+    image: curlimages/curl:8.11.1
+    profiles: [tools]
+    init: true
+    entrypoint: ["tail", "-f", "/dev/null"]

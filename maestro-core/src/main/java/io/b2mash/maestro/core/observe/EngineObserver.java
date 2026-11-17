@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
@@ -25,7 +26,11 @@ import java.util.concurrent.Callable;
  * blocking), and MUST NOT throw. {@link CompositeEngineObserver} contains a
  * misbehaving observer by catching {@code RuntimeException} per callback;
  * {@code Error}s (including the engine's control-flow signals) always
- * propagate. {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
+ * propagate — except from {@link #backgroundLoopError}, where every
+ * {@code Error} but a
+ * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError} is
+ * contained too, by the composite per delegate and by the loop's guard.
+ * {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
  * delegate list — including a single observer — so that containment holds for
  * every registration, not only for multi-observer ones (coordinator Ruling 4).
  */
@@ -53,6 +58,28 @@ public interface EngineObserver {
      *        (open-ended cardinality)
      */
     default void workflowFailed(WorkflowInfo w, String exceptionType) {}
+
+    /**
+     * This node won the terminal transition, and this is how long the workflow
+     * took from start to that outcome.
+     *
+     * <p>Fired only by the node that won the terminal transition, directly
+     * after {@link #workflowCompleted} or {@link #workflowFailed}, on the same
+     * thread. Never fired for a converged loser, a stand-down, an abandoned run
+     * ({@link #runAbandoned}) or a terminate ({@link #workflowTerminated}).
+     * It fires once per terminal transition, not once per workflow: a
+     * workflow that failed, was manually retried and then completed fires it
+     * once with each status.
+     *
+     * @param w       identity of the workflow that finished
+     * @param status  the outcome this node recorded:
+     *                {@link WorkflowStatus#COMPLETED} or {@link WorkflowStatus#FAILED}
+     * @param elapsed now minus the instance row's {@code startedAt}, clamped at
+     *                {@link Duration#ZERO}. It is end-to-end wall time, not
+     *                execution time: it includes park time (signals, timers)
+     *                and any downtime before a recovery adopted the workflow
+     */
+    default void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {}
 
     /** Saga compensation is starting for this workflow. */
     default void workflowCompensating(WorkflowInfo w) {}
@@ -125,6 +152,50 @@ public interface EngineObserver {
     default void activityFailed(ActivityInfo a, Duration duration,
                                 String exceptionType, boolean replayed) {}
 
+    /**
+     * The {@code exceptionType} {@link #activityResultUnreadable} carries when
+     * a live result <em>was</em> read back, but as another class than the
+     * object the activity returned.
+     */
+    String READ_BACK_TYPE_MISMATCH = "maestro:read-back-type-mismatch";
+
+    /**
+     * A live activity's result was persisted, and either cannot be read back
+     * as the method's declared return type, or reads back as another class
+     * than the object the activity returned. Either way the run continues with
+     * the object the activity returned, and the live run and a replay of this
+     * step will not agree:
+     * <ul>
+     *   <li><b>Cannot be read back</b> ({@code exceptionType} is the
+     *       deserialization root cause's class name): a replay of this step
+     *       will stand the run down as {@code unknown_event_payload}, so every
+     *       call is a leading indicator of a stand-down at the run's next
+     *       recovery.</li>
+     *   <li><b>Reads back as another class</b> ({@code exceptionType} is
+     *       {@link #READ_BACK_TYPE_MISMATCH}) — a subtype under a declared
+     *       supertype, a value under {@code Object} or a type variable, a
+     *       {@code Long} under {@code Number}: a replay of this step hands
+     *       workflow code the read-back class instead. A later recorded step
+     *       whose arguments depend on the difference stands the recovered run
+     *       down as {@code nondeterministic_history}; workflow code that
+     *       branches on it can also fail or complete differently.</li>
+     * </ul>
+     * Only the top-level class is compared, never the elements of a
+     * collection or map, and a container that reads back as another
+     * container of the same kind (both a {@code List}, a {@code Set}, a
+     * {@code Queue} or a {@code Map}) is not a class difference.
+     *
+     * <p>Fired live only, on the workflow thread, after the outcome append and
+     * before {@link #activityCompleted}. Never fired on replay.
+     *
+     * @param a             the activity whose result could not be read back as
+     *                      what it returned
+     * @param exceptionType fully-qualified class name of the deserialization
+     *                      root cause, or {@link #READ_BACK_TYPE_MISMATCH}; never
+     *                      use it as a metric tag
+     */
+    default void activityResultUnreadable(ActivityInfo a, String exceptionType) {}
+
     // ── Signals ───────────────────────────────────────────────────────
 
     /** A signal row was durably persisted (delivery side, any node). */
@@ -180,6 +251,22 @@ public interface EngineObserver {
      */
     default void retentionPass(io.b2mash.maestro.core.spi.PurgeResult purged) {}
 
+    // ── Background loops ──────────────────────────────────────────────
+
+    /**
+     * A background loop (one of {@code timer-poller}, {@code recovery-poller},
+     * {@code signal-janitor}, {@code retention-sweeper},
+     * {@code instance-lock-renewer}) contained an {@code Error} that is not a
+     * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError}, and
+     * keeps running. Fires on the loop's own thread, never on a workflow
+     * thread. {@code errorType} is the {@code Error}'s class name. Any
+     * occurrence means a bug or resource exhaustion on this node.
+     *
+     * @param loop      the loop's fixed name (bounded: the five names above)
+     * @param errorType fully-qualified class name of the contained {@code Error}
+     */
+    default void backgroundLoopError(String loop, String errorType) {}
+
     // ── Stand-down ────────────────────────────────────────────────────
 
     /** A local run stood down without recording a workflow outcome. */
@@ -212,9 +299,11 @@ public interface EngineObserver {
      * state. Without this callback a span opened on the workflow thread is
      * never closed and therefore never exported.
      *
-     * <p>Counting observers should <b>not</b> implement this: {@link
-     * #workflowTerminated} already fires exactly once for a terminate, so a
-     * second emission here would double-count.
+     * <p>A counting observer should count this under its <b>own</b> meter,
+     * never fold {@link AbandonReason#TERMINATED} into a terminate counter:
+     * {@link #workflowTerminated} already fires exactly once per terminate, on
+     * the operator's thread, so counting {@code TERMINATED} there as well
+     * would double-count the terminate.
      *
      * @param w      identity of the workflow whose local run ended
      * @param reason why the run was abandoned

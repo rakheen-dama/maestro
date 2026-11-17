@@ -75,9 +75,14 @@ class UnknownHistoryStandDownTest {
         lock = new MapLock();
         observer = new RecordingEngineObserver();
         var serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, lock, null, null, serializer, "old-node",
-                LOCK_PREFIX, Duration.ofSeconds(30), true,
-                Duration.ofSeconds(5), Duration.ofSeconds(30), observer);
+        executor = WorkflowExecutor.builder(store, serializer, "old-node")
+                .distributedLock(lock)
+                .lockKeyPrefix(LOCK_PREFIX)
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofSeconds(30))
+                .observer(observer)
+                .build();
     }
 
     @AfterEach

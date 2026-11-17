@@ -56,9 +56,9 @@ replace the Postgres it started with.
   is promoted having **lost the last few hundred milliseconds of commits**.
 - **What is at stake:** rows the engine already believes exist vanish. A node
   that appended `ACTIVITY_COMPLETED` at seq 7 and moved on to seq 8 now runs
-  against a database where seq 7 is missing; the activity lock row, the
-  signal-consumed flag and the `lease_epoch` bump may all have been rolled
-  back. This is the one way INV-LOG can be violated *without* two writers.
+  against a database where seq 7 is missing; the signal-consumed flag and
+  the `lease_epoch` bump may both have been rolled back. This is the one way
+  INV-LOG can be violated *without* two writers.
 - **Expected engine behaviour (derive, then pin):**
   - The next fenced write from the live run either succeeds (its epoch row
     survived) or sees `lease_epoch` regressed. A regressed epoch is **lower**
@@ -313,8 +313,7 @@ replace the Postgres it started with.
   sends SIGKILL at 30 s.
 - **Expected:** the shutdown path marks nothing FAILED (`ExecutorShutdownException`
   is a control-flow `Error`); the kill truncates the activity; recovery
-  re-runs it. Check that the slot waiters not interrupted on shutdown
-  (Issue 29) do not hold the JVM past the orchestrator's grace period and that
+  re-runs it. Slot waiters leave at shutdown since WP5 (Issue 29). Check that
   the health endpoint reports "stopping" so the load balancer stops routing
   starts.
 - **Measure:** startWorkflow calls accepted after shutdown began.

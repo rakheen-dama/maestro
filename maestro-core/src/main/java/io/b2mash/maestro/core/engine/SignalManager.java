@@ -509,9 +509,9 @@ final class SignalManager {
             observer.signalDuplicateSuppressed(info);
         }
 
-        // Unpark if waiting locally
+        // Wake a local waiter; a permit only if this node runs the workflow
         var parkKey = workflowId + ":signal:" + signalName;
-        parkingLot.unpark(parkKey, signalPayload);
+        parkingLot.wake(workflowId, parkKey);
 
         // Notify other instances — best-effort, and never on this thread.
         if (signalNotifier != null) {
@@ -660,7 +660,7 @@ final class SignalManager {
         // the next poll fires for nobody.
         if (!timeout.isPositive()) {
             appendTimeout(ctx, seq, stepName, signalName, timeout);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+            throw registeredTimeout(ctx, seq, new SignalTimeoutException(ctx.workflowId(), signalName, timeout));
         }
 
         // No signal yet — subscribe for cross-instance wake, then park.
@@ -728,6 +728,17 @@ final class SignalManager {
     }
 
     /**
+     * Registers {@code timeout} against its durable {@code SIGNAL_TIMEOUT}
+     * memo at {@code seq} in the run's failure-memo registry (WP3), and
+     * returns it for the caller to throw.
+     */
+    private static SignalTimeoutException registeredTimeout(WorkflowContext ctx, int seq,
+                                                            SignalTimeoutException timeout) {
+        WorkflowContextInternals.recordFailureMemo(ctx, timeout, seq);
+        return timeout;
+    }
+
+    /**
      * Replays a memoized outcome — {@code SIGNAL_RECEIVED} returns its
      * payload, {@code SIGNAL_TIMEOUT} re-raises — from the log alone, with no
      * store read and no signal consumption.
@@ -745,7 +756,7 @@ final class SignalManager {
         if (outcome.eventType() == EventType.SIGNAL_TIMEOUT) {
             logger.debug("Replaying timed-out await of '{}' at seq {} — re-raising deterministically",
                     signalName, seq);
-            throw new SignalTimeoutException(ctx.workflowId(), signalName, timeout);
+            throw registeredTimeout(ctx, seq, new SignalTimeoutException(ctx.workflowId(), signalName, timeout));
         }
         logger.debug("Replaying signal '{}' at seq {}", signalName, seq);
         observer.signalConsumed(
@@ -975,7 +986,8 @@ final class SignalManager {
                     appendTimeout(ctx, outcomeSeq, stepName, signalName, timeout);
                     updateInstanceStatus(ctx, WorkflowStatus.RUNNING);
                     observer.workflowUnparked(observed(ctx), ParkKind.SIGNAL);
-                    throw new SignalTimeoutException(workflowId, signalName, timeout);
+                    throw registeredTimeout(ctx, outcomeSeq,
+                            new SignalTimeoutException(workflowId, signalName, timeout));
                 }
 
                 // 3. Park in re-check-interval chunks. Every wake OR chunk
@@ -1011,7 +1023,7 @@ final class SignalManager {
             // over-hold permanent, deadlocking concurrency=1 whenever a branch
             // waits on a signal produced by another run of the same queue.
             governor.parked(ctx.workflowId(), () -> {
-                parkingLot.parkWithTimeout(parkKey, chunk);
+                parkingLot.parkWithTimeout(ctx.workflowId(), parkKey, chunk);
                 return null;
             });
             woken = true;
@@ -1140,7 +1152,7 @@ final class SignalManager {
     void onTimerTransition(String workflowId, String timerId) {
         var parkKey = awaitWakeKeys.get(workflowId + ":" + timerId);
         if (parkKey != null) {
-            parkingLot.unpark(parkKey, null);
+            parkingLot.wake(workflowId, parkKey);
         }
     }
 
@@ -1250,12 +1262,13 @@ final class SignalManager {
     /**
      * Cross-instance notification callback: unparks the local waiter, which
      * then re-reads the signal from the store. May run on a network event
-     * loop thread — must stay lightweight and non-blocking. Unparking an
-     * absent key (self-echo of a local delivery, or a waiter that already
-     * woke) is a no-op.
+     * loop thread — must stay lightweight and non-blocking. A notification
+     * for an absent key (self-echo of a local delivery, or a waiter that
+     * already woke) stores at most a permit while the run is still on this
+     * node, and nothing once it has ended (3.2).
      */
     private void onRemoteSignal(String workflowId, String signalName) {
-        parkingLot.unpark(workflowId + ":signal:" + signalName, null);
+        parkingLot.wake(workflowId, workflowId + ":signal:" + signalName);
     }
 
     // ── Orphan adoption ─────────────────────────────────────────────────

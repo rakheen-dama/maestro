@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.messaging.kafka.listener.MaestroSignalListenerBeanPostProcessor;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.MaestroProperties;
@@ -19,6 +20,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -70,8 +72,13 @@ import java.util.HashMap;
  * engine topics. See {@code docs/configuration.md} § Kafka client
  * configuration for the full precedence table.
  *
- * <p>All beans are guarded with {@link ConditionalOnMissingBean} to allow
- * user overrides.
+ * <p>Maestro's Kafka beans are not default candidates. Inject them with
+ * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)} (or {@code PRODUCER_FACTORY},
+ * {@code CONSUMER_FACTORY}). Replace one by declaring a bean with the same
+ * name, with {@code defaultCandidate = false}.
+ *
+ * <p>Your own Kafka traffic uses Spring Boot's beans and {@code spring.kafka.*},
+ * as in a service without Maestro.
  *
  * <h2>Thread Safety</h2>
  * <p>This class holds no mutable instance state — every {@code @Bean} method
@@ -98,21 +105,11 @@ import java.util.HashMap;
                 "org.springframework.boot.micrometer.tracing.autoconfigure.NoopTracerAutoConfiguration",
                 "org.springframework.boot.micrometer.tracing.opentelemetry.autoconfigure.OpenTelemetryTracingAutoConfiguration",
                 "org.springframework.boot.micrometer.tracing.brave.autoconfigure.BraveAutoConfiguration"
-        },
-        // Maestro's typed producer/consumer factory beans must register before
-        // Boot's KafkaAutoConfiguration evaluates its own @ConditionalOnMissingBean
-        // (ProducerFactory/ConsumerFactory) conditions, so Boot's type-conditioned
-        // beans back off in favour of Maestro's engine-owned ones — a suppression
-        // that used to work only by alphabetical accident between the two package
-        // names, now pinned explicitly. This is deliberate, not a bug: Maestro
-        // needs a single byte[]-valued producer/consumer pair for its own topics,
-        // not Boot's Object-typed general-purpose ones. Do NOT add `afterName` on
-        // KafkaAutoConfiguration instead — that would let Boot's typed beans
-        // register too and the context would fail with
-        // NoUniqueBeanDefinitionException. Boot's bound KafkaProperties is
-        // consumed at *instantiation* time (as a constructor-injected parameter),
-        // which this declaration ordering does not affect.
-        beforeName = "org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration")
+        })
+// No ordering against Boot's KafkaAutoConfiguration: Maestro's Kafka beans are
+// not default candidates, so Boot's type-conditioned Kafka beans register
+// whichever configuration runs first
+// (KafkaCoexistenceContextTest.bootsBeansCoexistWhicheverAutoConfigurationRunsFirst).
 @ConditionalOnClass(KafkaTemplate.class)
 // Audit F8: maestro.enabled=false is documented as the master kill-switch
 // (see MaestroAutoConfiguration), but this class previously had no direct
@@ -134,8 +131,22 @@ public class KafkaMessagingAutoConfiguration {
      */
     static final int DEFAULT_MAX_BLOCK_MS = 10_000;
 
-    @Bean
-    @ConditionalOnMissingBean(name = "maestroKafkaProducerFactory")
+    /**
+     * The engine's {@code String}/{@code byte[]} producer factory, built from
+     * {@code spring.kafka.producer.*} with the engine's wire-format invariants
+     * forced last.
+     *
+     * <p>Not a default candidate: inject with
+     * {@code @Qualifier(MaestroKafkaBeans.PRODUCER_FACTORY)}; replace by
+     * declaring a bean of this name with {@code defaultCandidate = false}
+     * (required for this bean; see {@link MaestroKafkaBeans}).
+     *
+     * @param kafkaProperties   Boot's bound {@code spring.kafka.*}
+     * @param connectionDetails overrides the bootstrap servers when present
+     * @return the engine's producer factory
+     */
+    @Bean(name = MaestroKafkaBeans.PRODUCER_FACTORY, defaultCandidate = false)
+    @ConditionalOnMissingBean(name = MaestroKafkaBeans.PRODUCER_FACTORY)
     public ProducerFactory<String, byte[]> maestroKafkaProducerFactory(
             KafkaProperties kafkaProperties,
             ObjectProvider<KafkaConnectionDetails> connectionDetails
@@ -159,10 +170,24 @@ public class KafkaMessagingAutoConfiguration {
         return new DefaultKafkaProducerFactory<>(props);
     }
 
-    @Bean
-    @ConditionalOnMissingBean(name = "maestroKafkaTemplate")
+    /**
+     * The engine's {@code String}/{@code byte[]} template, over
+     * {@link #maestroKafkaProducerFactory}.
+     *
+     * <p>Not a default candidate: inject with
+     * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)}; replace by declaring a
+     * bean of this name, preferably with {@code defaultCandidate = false}
+     * (see {@link MaestroKafkaBeans}).
+     *
+     * @param maestroKafkaProducerFactory the engine's producer factory
+     * @param tracePropagation            present when tracing is wired; turns observation on by default
+     * @param env                         reads {@code spring.kafka.template.observation-enabled}
+     * @return the engine's template
+     */
+    @Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)
+    @ConditionalOnMissingBean(name = MaestroKafkaBeans.TEMPLATE)
     public KafkaTemplate<String, byte[]> maestroKafkaTemplate(
-            ProducerFactory<String, byte[]> maestroKafkaProducerFactory,
+            @Qualifier(MaestroKafkaBeans.PRODUCER_FACTORY) ProducerFactory<String, byte[]> maestroKafkaProducerFactory,
             ObjectProvider<KafkaTracePropagation> tracePropagation,
             Environment env
     ) {
@@ -194,8 +219,23 @@ public class KafkaMessagingAutoConfiguration {
         return configured != null ? configured : tracerPresent;
     }
 
-    @Bean
-    @ConditionalOnMissingBean(name = "maestroKafkaConsumerFactory")
+    /**
+     * The engine's {@code String}/{@code byte[]} consumer factory, built from
+     * {@code spring.kafka.consumer.*} with the engine's wire-format invariants
+     * and group id forced last.
+     *
+     * <p>Not a default candidate: inject with
+     * {@code @Qualifier(MaestroKafkaBeans.CONSUMER_FACTORY)}; replace by
+     * declaring a bean of this name, preferably with
+     * {@code defaultCandidate = false} (see {@link MaestroKafkaBeans}).
+     *
+     * @param kafkaProperties   Boot's bound {@code spring.kafka.*}
+     * @param connectionDetails overrides the bootstrap servers when present
+     * @param messagingConfig   supplies the engine-owned group id
+     * @return the engine's consumer factory
+     */
+    @Bean(name = MaestroKafkaBeans.CONSUMER_FACTORY, defaultCandidate = false)
+    @ConditionalOnMissingBean(name = MaestroKafkaBeans.CONSUMER_FACTORY)
     public ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory(
             KafkaProperties kafkaProperties,
             ObjectProvider<KafkaConnectionDetails> connectionDetails,
@@ -270,13 +310,6 @@ public class KafkaMessagingAutoConfiguration {
      * Resolves the admin-events topic, honouring the deprecated
      * {@code maestro.admin.events.topic} alias.
      *
-     * <p>Twin of {@code AdminClientAutoConfiguration.resolveTopic} in
-     * {@code maestro-admin-client} — that module cannot depend on this
-     * starter (see module Javadoc / CLAUDE.md) or reuse
-     * {@link MaestroProperties}, so it re-derives the same precedence
-     * directly from {@code Environment}. Keep the two in sync if this rule
-     * ever changes.
-     *
      * <p>{@code maestro.messaging.topics.admin-events} is the canonical
      * property. {@code maestro.admin.events.topic} is kept as an alias for
      * deployments that only ever touched the admin block. Both properties
@@ -319,8 +352,8 @@ public class KafkaMessagingAutoConfiguration {
     @Bean
     @ConditionalOnMissingBean(WorkflowMessaging.class)
     public KafkaWorkflowMessaging kafkaWorkflowMessaging(
-            KafkaTemplate<String, byte[]> maestroKafkaTemplate,
-            ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory,
+            @Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]> maestroKafkaTemplate,
+            @Qualifier(MaestroKafkaBeans.CONSUMER_FACTORY) ConsumerFactory<String, byte[]> maestroKafkaConsumerFactory,
             ObjectMapper objectMapper,
             KafkaMessagingConfig maestroKafkaMessagingConfig,
             ObjectProvider<KafkaTracePropagation> tracePropagation
@@ -363,6 +396,28 @@ public class KafkaMessagingAutoConfiguration {
         public KafkaTracePropagation maestroKafkaTracePropagation(Tracer tracer, Propagator propagator) {
             return new KafkaTracePropagation(tracer, propagator);
         }
+    }
+
+    /**
+     * Fails startup when a bean injects a {@code KafkaTemplate<…, byte[]>}
+     * without a qualifier and received a template that cannot send
+     * {@code byte[]} unchanged (Spring Boot's {@code kafkaTemplate} with its
+     * default {@code StringSerializer}, or a JSON serializer). See
+     * {@link ByteArrayTemplateInjectionCheck};
+     * {@code maestro.messaging.template-injection-check} turns it into a
+     * {@code WARN} or off.
+     *
+     * <p>Declared before {@link #maestroSignalListenerBeanPostProcessor}: Spring
+     * calls {@code afterSingletonsInstantiated} in bean-registration order, so
+     * the check fails startup before the post-processor probes the topics and
+     * starts any {@code @MaestroSignalListener} consumer.
+     *
+     * @param properties the bound Maestro configuration
+     * @return the startup check
+     */
+    @Bean
+    ByteArrayTemplateInjectionCheck maestroKafkaTemplateInjectionCheck(MaestroProperties properties) {
+        return new ByteArrayTemplateInjectionCheck(properties.getMessaging().templateInjectionCheck());
     }
 
     @Bean

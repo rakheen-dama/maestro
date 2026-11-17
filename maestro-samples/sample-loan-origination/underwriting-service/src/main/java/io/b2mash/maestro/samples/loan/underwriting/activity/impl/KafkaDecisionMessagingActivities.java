@@ -1,5 +1,6 @@
 package io.b2mash.maestro.samples.loan.underwriting.activity.impl;
 
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.messaging.kafka.MaestroSignalHeaders;
 import io.b2mash.maestro.messaging.kafka.SignalMessageIds;
 import io.b2mash.maestro.samples.loan.underwriting.activity.DecisionMessagingActivities;
@@ -8,6 +9,7 @@ import io.b2mash.maestro.samples.loan.underwriting.domain.UnderwritingDecision;
 import io.b2mash.maestro.samples.loan.underwriting.queue.PendingReviewRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Component;
 import tools.jackson.databind.ObjectMapper;
@@ -34,7 +36,7 @@ public class KafkaDecisionMessagingActivities implements DecisionMessagingActivi
     private final ObjectMapper objectMapper;
     private final PendingReviewRegistry registry;
 
-    public KafkaDecisionMessagingActivities(KafkaTemplate<String, byte[]> kafkaTemplate,
+    public KafkaDecisionMessagingActivities(@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]> kafkaTemplate,
                                             ObjectMapper objectMapper,
                                             PendingReviewRegistry registry) {
         this.kafkaTemplate = kafkaTemplate;

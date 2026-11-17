@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -8,7 +9,6 @@ import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -28,6 +28,18 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * (effectively renewing the TTL). If the lock backend is unavailable
  * ({@code null}), the poller runs unconditionally (single-node mode).
  *
+ * <h2>Clock</h2>
+ * <p>A due timer is one the store says is due by its own clock
+ * ({@link WorkflowStore#getDueTimers(int)}). On Postgres that is the
+ * database's clock ({@code fire_at <= now()}), so this leader's own clock
+ * does not decide when a timer fires. On a store without a clock of its own
+ * (the in-memory test store, a custom store) it is this JVM's clock, as
+ * before. A timer's {@code fireAt} itself is still armed by the node that
+ * schedules it, on that node's clock; so every node, leader or not, runs a
+ * {@link ClockSkewCheck} at the end of each loop iteration (at start, then
+ * every {@link ClockSkewCheck#INTERVAL}) and logs a {@code WARN} when its clock
+ * is more than {@link ClockSkewCheck#WARN_ABOVE} off the store's.
+ *
  * <h2>Idempotency</h2>
  * <p>Duplicate timer fires are handled safely:
  * <ul>
@@ -38,19 +50,30 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       the CAS succeeds — a duplicate or cancelled fire is a no-op.</li>
  * </ul>
  *
+ * <h2>Failures</h2>
+ * <p>An iteration that throws — a store or lock-backend fault, or any
+ * {@code Error} but a {@code MaestroControlFlowError} — is contained by the
+ * loop's {@link BackgroundLoopGuard}, and the poller tries again after its own
+ * {@code pollInterval} (5 s by default), never sooner and never later. A
+ * failure streak logs one {@code ERROR} with the stack trace, then
+ * {@code DEBUG} with an {@code ERROR} reminder every 5 minutes while it
+ * continues, and one {@code INFO} when an iteration succeeds again.
+ *
  * <h2>Thread Safety</h2>
  * <p>{@link #start()} and {@link #stop()} may be called from any thread.
  * The polling loop runs on its own virtual thread. Concurrent {@code start()}
  * calls are guarded by an {@link AtomicBoolean}.
  *
- * @see TimerManager
  * @see WorkflowExecutor#fireTimer(String, String, UUID)
  */
-final class TimerPoller {
+final class TimerPoller implements StoppableLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(TimerPoller.class);
     private static final Duration LEADER_TTL = Duration.ofSeconds(15);
     private static final String LEADER_KEY_PREFIX = "maestro:leader:timer-poller:";
+
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     private final WorkflowStore store;
     private final WorkflowExecutor executor;
@@ -59,6 +82,8 @@ final class TimerPoller {
     private final Duration pollInterval;
     private final int batchSize;
     private final String candidateId;
+    private final ClockSkewCheck skewCheck;
+    private final BackgroundLoopGuard guard;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private volatile boolean running;
@@ -83,6 +108,31 @@ final class TimerPoller {
             Duration pollInterval,
             int batchSize
     ) {
+        this(store, executor, distributedLock, serviceName, pollInterval, batchSize, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new timer poller that reports contained {@code Error}s.
+     *
+     * @param store           workflow store for timer queries
+     * @param executor        workflow executor for firing timers
+     * @param distributedLock optional lock backend for leader election
+     *                        ({@code null} for single-node mode)
+     * @param serviceName     the owning service name (for leader election key)
+     * @param pollInterval    interval between polling cycles
+     * @param batchSize       maximum timers to process per cycle
+     * @param observer        receives {@link EngineObserver#backgroundLoopError}
+     *                        for every {@code Error} the loop contains
+     */
+    TimerPoller(
+            WorkflowStore store,
+            WorkflowExecutor executor,
+            @Nullable DistributedLock distributedLock,
+            String serviceName,
+            Duration pollInterval,
+            int batchSize,
+            EngineObserver observer
+    ) {
         if (store == null) throw new NullPointerException("store must not be null");
         if (executor == null) throw new NullPointerException("executor must not be null");
         if (serviceName == null || serviceName.isBlank()) {
@@ -101,6 +151,8 @@ final class TimerPoller {
         this.pollInterval = pollInterval;
         this.batchSize = batchSize;
         this.candidateId = UUID.randomUUID().toString();
+        this.skewCheck = new ClockSkewCheck(store);
+        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.TIMER_POLLER, pollInterval, () -> !running, observer);
     }
 
     /**
@@ -115,30 +167,71 @@ final class TimerPoller {
         running = true;
         pollerThread = Thread.ofVirtual()
                 .name("maestro-timer-poller-" + serviceName)
+                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
                 .start(this::pollLoop);
         logger.info("Timer poller started (interval={}, batchSize={}, service={})",
                 pollInterval, batchSize, serviceName);
     }
 
     /**
-     * Stops the polling loop.
-     *
-     * <p>Interrupts the poller thread and waits up to 5 seconds for it
-     * to terminate. After stopping, the poller cannot be restarted.
+     * Stops the polling loop: {@link #requestStop()}, then
+     * {@link #awaitStopped(Duration) awaitStopped(STOP_JOIN)} — waits up to
+     * {@link #STOP_JOIN} (5 seconds) for the thread to end. After stopping,
+     * the poller cannot be restarted.
      */
-    synchronized void stop() {
+    void stop() {
+        requestStop();
+        awaitStopped(STOP_JOIN);
+    }
+
+    @Override
+    public String loopName() {
+        return BackgroundLoopGuard.TIMER_POLLER;
+    }
+
+    /**
+     * Asks the polling loop to stop and returns at once: no new iteration starts,
+     * and the thread is interrupted (Issue 64 tracks that interrupt, which
+     * can land inside a store call). Never joins. Idempotent.
+     */
+    @Override
+    public synchronized void requestStop() {
         running = false;
         var thread = pollerThread;
         if (thread != null) {
             thread.interrupt();
-            try {
-                thread.join(Duration.ofSeconds(5));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Waits at most {@code bound} for the polling loop's thread to end. Once it
+     * has ended, logs that the poller stopped (once) and forgets the thread.
+     *
+     * @param bound the longest to wait; zero or negative only checks
+     * @return {@code true} if the thread has ended or was never started,
+     *         {@code false} if it is still running — nothing is logged then
+     */
+    @Override
+    public boolean awaitStopped(Duration bound) {
+        var thread = pollerThread;
+        if (thread == null) {
+            return true;
+        }
+        try {
+            thread.join(bound);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (thread.isAlive()) {
+            return false;
+        }
+        synchronized (this) {
+            if (pollerThread == thread) {
+                pollerThread = null;
+                logger.info("Timer poller stopped");
             }
         }
-        pollerThread = null;
-        logger.info("Timer poller stopped");
+        return true;
     }
 
     /**
@@ -151,26 +244,65 @@ final class TimerPoller {
         return running && thread != null && thread.isAlive();
     }
 
+    /**
+     * The loop's current failure streak (failed iterations since the last
+     * successful one). Safe to call from any thread.
+     *
+     * @return the number of consecutive failed iterations
+     */
+    int consecutiveFailures() {
+        return guard.consecutiveFailures();
+    }
+
     // ── Internal: polling loop ──────────────────────────────────────────
 
     private void pollLoop() {
         logger.debug("Timer poller loop started on thread '{}'", Thread.currentThread().getName());
         while (running) {
             try {
-                if (isLeader()) {
-                    var fired = pollDueTimers();
-                    if (fired > 0) {
-                        logger.debug("Fired {} due timer(s)", fired);
+                // Leadership first: the skew check's SELECT now() can block on
+                // an exhausted pool for longer than LEADER_TTL, so it runs
+                // after this pass's renewal and poll. It still sits between
+                // this renewal and the next one, so a blocked read can delay
+                // the NEXT renewal (at most once per ClockSkewCheck.INTERVAL);
+                // losing the lease is safe, firing a timer is a compare-and-set.
+                try {
+                    // Inside this try so that a failed election still runs
+                    // the skew check below; the failure itself goes to the guard.
+                    if (isLeader()) {
+                        var fired = pollDueTimers();
+                        if (fired > 0) {
+                            logger.debug("Fired {} due timer(s)", fired);
+                        }
                     }
+                } finally {
+                    // Every node, leader or not: every node arms deadlines
+                    // (3.7). Runs even when the election or the poll threw.
+                    // Never throws a RuntimeException; at most one store read
+                    // per ClockSkewCheck.INTERVAL.
+                    skewCheck.maybeCheck();
+                }
+                guard.succeeded();
+                // As in the failure arm: a store call may swallow stop()'s
+                // interrupt and return normally.
+                if (!running) {
+                    break;
                 }
                 Thread.sleep(pollInterval);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 logger.debug("Timer poller interrupted, exiting loop");
                 break;
-            } catch (Exception e) {
-                logger.error("Timer polling error — will retry next cycle", e);
-                // Don't let one error kill the poller
+            } catch (Throwable t) {
+                // Rethrows a MaestroControlFlowError (ending the loop);
+                // contains and logs everything else.
+                guard.failed(t);
+                // stop() interrupts this thread, but a store call may swallow
+                // that interrupt and then throw; without this re-check the loop
+                // would sleep a full interval after stop().
+                if (!running) {
+                    break;
+                }
                 try {
                     Thread.sleep(pollInterval);
                 } catch (InterruptedException ie) {
@@ -183,7 +315,7 @@ final class TimerPoller {
     }
 
     private int pollDueTimers() {
-        var dueTimers = store.getDueTimers(Instant.now(), batchSize);
+        var dueTimers = store.getDueTimers(batchSize);
         var fired = 0;
 
         for (var timer : dueTimers) {
@@ -210,23 +342,20 @@ final class TimerPoller {
      *
      * <p>Uses {@link DistributedLock#trySetLeader} which serves as both
      * initial election and TTL renewal — the implementation returns
-     * {@code true} if this candidate is (or becomes) the leader.
+     * {@code true} if this candidate is (or becomes) the leader. A backend
+     * failure propagates to the loop's {@link BackgroundLoopGuard}, which
+     * logs it, and skips this cycle's poll; the next cycle elects (or renews)
+     * again.
      */
     private boolean isLeader() {
         if (distributedLock == null) {
             return true; // No lock backend — single-node mode, always poll
         }
 
-        var key = LEADER_KEY_PREFIX + serviceName;
-        try {
-            var elected = distributedLock.trySetLeader(key, candidateId, LEADER_TTL);
-            if (!elected) {
-                logger.debug("Another instance holds timer poller leadership for service '{}'", serviceName);
-            }
-            return elected;
-        } catch (Exception e) {
-            logger.warn("Leader election failed for service '{}' — skipping this poll cycle", serviceName, e);
-            return false;
+        var elected = distributedLock.trySetLeader(LEADER_KEY_PREFIX + serviceName, candidateId, LEADER_TTL);
+        if (!elected) {
+            logger.debug("Another instance holds timer poller leadership for service '{}'", serviceName);
         }
+        return elected;
     }
 }

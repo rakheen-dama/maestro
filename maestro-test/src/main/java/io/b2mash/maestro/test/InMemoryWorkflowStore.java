@@ -23,12 +23,17 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 /**
  * In-memory {@link WorkflowStore} for fast, deterministic workflow tests.
@@ -266,6 +271,38 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                 .toList();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Counts over the instances map, as the JDBC store's query does: active
+     * instances of the given types under every other service name, by count
+     * descending, then name.
+     */
+    @Override
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        if (workflowTypes.isEmpty()) {
+            return Map.of();
+        }
+        var counts = instances.values().stream()
+                .filter(i -> i.status().isActive())
+                .filter(i -> !serviceName.equals(i.serviceName()))
+                .filter(i -> workflowTypes.contains(i.workflowType()))
+                .collect(Collectors.groupingBy(WorkflowInstance::serviceName, Collectors.counting()));
+        var ordered = new LinkedHashMap<String, Long>();
+        counts.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed()
+                        .thenComparing(Map.Entry.comparingByKey()))
+                .limit(limit)
+                .forEach(e -> ordered.put(e.getKey(), e.getValue()));
+        return ordered;
+    }
+
     @Override
     public void updateInstance(WorkflowInstance instance) {
         var lock = instanceLocks.get(instance.workflowId());
@@ -453,6 +490,59 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         return before - instanceEvents.size();
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Under the timer lock and then the per-workflow instance lock — the
+     * purge's lock order, data lock before instance lock — so a concurrent
+     * purge, retry, terminate or adoption orders strictly before or after it.
+     * Every check ({@code reopened} is {@code RUNNING} with no
+     * {@code completedAt}, the instance exists with this id, its version is
+     * {@code reopened.version() - 1}, it is {@code FAILED}) is made before
+     * anything is mutated, so a refused reopen leaves the events, the timer
+     * rows and the row untouched; then the events are removed, then the timer
+     * rows, then the row is written. Signals are not touched.
+     */
+    @Override
+    public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                     Set<String> deleteTimerIds) {
+        Objects.requireNonNull(reopened, "reopened");
+        Objects.requireNonNull(deleteEventSequences, "deleteEventSequences");
+        Objects.requireNonNull(deleteTimerIds, "deleteTimerIds");
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
+        var lock = instanceLocks.get(reopened.workflowId());
+        if (lock == null) {
+            throw new WorkflowNotFoundException(reopened.workflowId());
+        }
+        synchronized (timerLock) {
+            synchronized (lock) {
+                var current = instances.get(reopened.workflowId());
+                if (current == null || !current.id().equals(reopened.id())) {
+                    throw new WorkflowNotFoundException(reopened.workflowId());
+                }
+                var expectedPreviousVersion = reopened.version() - 1;
+                // A row at the expected version that is no longer FAILED also
+                // throws here, with "expected version N but found N":
+                // unreachable while every instance write bumps the version.
+                if (current.version() != expectedPreviousVersion || current.status() != WorkflowStatus.FAILED) {
+                    throw new OptimisticLockException(
+                            reopened.workflowId(), expectedPreviousVersion, current.version());
+                }
+                var instanceEvents = events.get(current.id());
+                if (instanceEvents != null) {
+                    instanceEvents.keySet().removeAll(deleteEventSequences);
+                }
+                timers.removeIf(t -> t.workflowInstanceId().equals(current.id())
+                        && deleteTimerIds.contains(t.timerId()));
+                instances.put(reopened.workflowId(), reopened);
+            }
+        }
+    }
+
     // ── Signal operations ────────────────────────────────────────────────
 
     /**
@@ -578,6 +668,43 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Evaluated under the signal lock against the current instance map,
+     * with the one-argument form's predicate plus the instance's service name;
+     * removes the first {@code limit} qualifying signals in storage order.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        synchronized (signalLock) {
+            var purgeable = new HashSet<UUID>();
+            for (var instance : instances.values()) {
+                var status = instance.status();
+                var completedAt = instance.completedAt();
+                if ((status == WorkflowStatus.COMPLETED || status == WorkflowStatus.TERMINATED)
+                        && completedAt != null && completedAt.isBefore(cutoff)
+                        && serviceName.equals(instance.serviceName())) {
+                    purgeable.add(instance.id());
+                }
+            }
+            int deleted = 0;
+            for (var it = signals.iterator(); it.hasNext() && deleted < limit; ) {
+                var s = it.next();
+                if (!s.consumed() && s.workflowInstanceId() != null && purgeable.contains(s.workflowInstanceId())) {
+                    it.remove();
+                    deleted++;
+                }
+            }
+            return deleted;
+        }
+    }
+
     // ── Retention ────────────────────────────────────────────────────────
 
     /**
@@ -594,6 +721,26 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        return purge(status, cutoff, batchSize, instance -> true);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The unscoped form's body, with candidates restricted to
+     * {@code serviceName}'s instances. The service name is re-checked with
+     * status and {@code completedAt} under each candidate's lock, so a row
+     * rewritten to another service after the candidate select is left alone.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purge(status, cutoff, batchSize, instance -> serviceName.equals(instance.serviceName()));
+    }
+
+    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize,
+                              Predicate<WorkflowInstance> scope) {
         if (!status.isTerminal()) {
             throw new IllegalArgumentException("Only terminal statuses can be purged, got " + status);
         }
@@ -604,6 +751,7 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
             synchronized (timerLock) {
                 var candidates = instances.values().stream()
                         .filter(i -> qualifies(i, status, cutoff))
+                        .filter(scope)
                         .sorted(Comparator.comparing(WorkflowInstance::completedAt))
                         .limit(batchSize)
                         .toList();
@@ -618,8 +766,8 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
                     }
                     synchronized (lock) {
                         var current = instances.get(candidate.workflowId());
-                        if (current == null || !qualifies(current, status, cutoff)) {
-                            continue; // retried (or purged) since the candidate select
+                        if (current == null || !qualifies(current, status, cutoff) || !scope.test(current)) {
+                            continue; // retried, moved to another service, or purged since the candidate select
                         }
                         var id = current.id();
                         var instanceEvents = events.remove(id);

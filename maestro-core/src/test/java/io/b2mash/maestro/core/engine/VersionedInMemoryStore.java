@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
+import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -20,6 +21,7 @@ import tools.jackson.databind.JsonNode;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -361,6 +363,47 @@ class VersionedInMemoryStore implements WorkflowStore {
         synchronized (events) {
             return removeFailureEvents(events, timers, instanceId);
         }
+    }
+
+    /**
+     * Behaves as the shipped stores do: every check ({@code reopened} is
+     * {@code RUNNING} with no {@code completedAt}, the instance exists with
+     * this id, its version is {@code reopened.version() - 1}, it is
+     * {@code FAILED}) is made under this store's monitor before anything is
+     * mutated; then the events, then the timer rows, then the row. Lock order
+     * {@code this → events → timers}, the order {@link #completeInstance}
+     * already takes ({@code this → events}); nothing takes them the other way.
+     * Not routed through {@link #updateInstance}, so {@link #failNextUpdates}
+     * does not apply to it.
+     */
+    @Override
+    public synchronized void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                                  Set<String> deleteTimerIds) {
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
+        var stored = byWorkflowId.get(reopened.workflowId());
+        if (stored == null || !stored.id().equals(reopened.id())) {
+            throw new WorkflowNotFoundException(reopened.workflowId());
+        }
+        var expectedPreviousVersion = reopened.version() - 1;
+        // A row at the expected version that is no longer FAILED also throws
+        // here, with "expected version N but found N": unreachable while every
+        // instance write bumps the version.
+        if (stored.version() != expectedPreviousVersion || stored.status() != WorkflowStatus.FAILED) {
+            throw new OptimisticLockException(reopened.workflowId(), expectedPreviousVersion, stored.version());
+        }
+        synchronized (events) {
+            events.removeIf(e -> e.workflowInstanceId().equals(reopened.id())
+                    && deleteEventSequences.contains(e.sequenceNumber()));
+        }
+        synchronized (timers) {
+            timers.removeIf(t -> t.workflowInstanceId().equals(reopened.id())
+                    && deleteTimerIds.contains(t.timerId()));
+        }
+        byWorkflowId.put(reopened.workflowId(), reopened);
     }
 
     // ── Signals ─────────────────────────────────────────────────────────

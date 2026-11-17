@@ -30,8 +30,8 @@ import java.util.function.Consumer;
  * point where the delegate and the flag are both known. The gate then lives
  * in exactly one place.
  *
- * <p>{@code WorkflowExecutor} wraps the {@code messaging} constructor
- * argument with this class and hands the wrapped reference to every
+ * <p>{@code WorkflowExecutor} wraps the {@code messaging} it is built with
+ * with this class and hands the wrapped reference to every
  * component it builds ({@link SignalManager}, {@link
  * io.b2mash.maestro.core.saga.SagaManager}, {@link
  * DefaultWorkflowOperations}) — since Feature 3 as a {@link LifecycleEventSink}

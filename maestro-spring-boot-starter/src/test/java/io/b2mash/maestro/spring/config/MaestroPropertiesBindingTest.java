@@ -1,12 +1,18 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.spring.config.MaestroProperties.MessagingProperties.TemplateInjectionCheck;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.env.SystemEnvironmentPropertySource;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
+import java.util.Collections;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -201,7 +207,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getRetry().defaultMaxAttempts()).isEqualTo(3);
             assertThat(properties.getWorker().taskQueues()).isEmpty();
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");
-            assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(30));
+            assertThat(properties.getShutdown().timeout()).isEqualTo(Duration.ofSeconds(20));
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
             assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));
@@ -218,6 +224,27 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getObservability().tracing().enabled()).isTrue();
             assertThat(properties.getReplay().verifyArguments()).isTrue();
         });
+    }
+
+    @Test
+    @DisplayName("admin lifecycle events are off unless enabled (D3)")
+    void adminEventsAreOffByDefault() {
+        // No maestro.admin.* at all: the field initialiser (AdminProperties.defaults()) is what is used.
+        runner.withPropertyValues("maestro.service-name=binding-test").run(ctx ->
+                assertThat(ctx.getBean(MaestroProperties.class).getAdmin().events().enabled()).isFalse());
+        assertThat(MaestroProperties.EventsProperties.defaults().enabled()).isFalse();
+        // Another maestro.admin.events.* key set: the record is bound and its @DefaultValue applies.
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.admin.events.topic=custom.admin.events")
+                .run(ctx -> {
+                    var events = ctx.getBean(MaestroProperties.class).getAdmin().events();
+                    assertThat(events.topic()).isEqualTo("custom.admin.events");
+                    assertThat(events.enabled()).isFalse();
+                });
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.admin.events.enabled=true")
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getAdmin().events().enabled())
+                        .isTrue());
     }
 
     @Test
@@ -262,6 +289,72 @@ class MaestroPropertiesBindingTest {
                     assertThat(worker.defaultConcurrency()).isEqualTo(4);
                     assertThat(worker.defaultActivityConcurrency()).isEqualTo(6);
                 });
+    }
+
+    @Test
+    @DisplayName("maestro.messaging.template-injection-check defaults to fail and binds each mode, relaxed")
+    void templateInjectionCheckBinds() {
+        runner.withPropertyValues("maestro.service-name=binding-test")
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getMessaging().templateInjectionCheck())
+                        .isEqualTo(TemplateInjectionCheck.FAIL));
+        assertThat(MaestroProperties.MessagingProperties.defaults().templateInjectionCheck())
+                .isEqualTo(TemplateInjectionCheck.FAIL);
+        // Another maestro.messaging.* key set: the record is bound and its @DefaultValue applies.
+        runner.withPropertyValues("maestro.service-name=binding-test", "maestro.messaging.consumer-group=g")
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getMessaging().templateInjectionCheck())
+                        .isEqualTo(TemplateInjectionCheck.FAIL));
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.messaging.template-injection-check=warn")
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getMessaging().templateInjectionCheck())
+                        .isEqualTo(TemplateInjectionCheck.WARN));
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.messaging.templateInjectionCheck=OFF")
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getMessaging().templateInjectionCheck())
+                        .as("camel case, upper-case value")
+                        .isEqualTo(TemplateInjectionCheck.OFF));
+        runner.withPropertyValues("maestro.service-name=binding-test")
+                .withInitializer(ctx -> ctx.getEnvironment().getPropertySources().addFirst(
+                        new SystemEnvironmentPropertySource("test-systemEnvironment",
+                                Map.of("MAESTRO_MESSAGING_TEMPLATEINJECTIONCHECK", "warn"))))
+                .run(ctx -> assertThat(ctx.getBean(MaestroProperties.class).getMessaging().templateInjectionCheck())
+                        .as("environment variable")
+                        .isEqualTo(TemplateInjectionCheck.WARN));
+    }
+
+    @Test
+    @DisplayName("an unknown maestro.messaging.template-injection-check value fails startup naming the property")
+    void templateInjectionCheckRejectsAnUnknownValue() {
+        runner.withPropertyValues("maestro.service-name=binding-test",
+                        "maestro.messaging.template-injection-check=maybe")
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(ctx.getStartupFailure())
+                            .rootCause()
+                            .hasMessageContaining("maybe")
+                            .hasMessageContaining(TemplateInjectionCheck.class.getName().replace('$', '.'));
+                    assertThat(ctx.getStartupFailure())
+                            .hasStackTraceContaining("maestro.messaging.template-injection-check");
+                });
+    }
+
+    @Test
+    @DisplayName("the configuration metadata describes maestro.messaging.template-injection-check")
+    void templateInjectionCheckHasConfigurationMetadata() throws Exception {
+        var resources = getClass().getClassLoader().getResources("META-INF/spring-configuration-metadata.json");
+        JsonNode entry = null;
+        for (var url : Collections.list(resources)) {
+            try (var in = url.openStream()) {
+                for (var property : new ObjectMapper().readTree(in).path("properties")) {
+                    if ("maestro.messaging.template-injection-check".equals(property.path("name").asString())) {
+                        entry = property;
+                    }
+                }
+            }
+        }
+        assertThat(entry).as("a metadata entry").isNotNull();
+        assertThat(entry.path("type").asString()).isEqualTo(TemplateInjectionCheck.class.getName());
+        assertThat(entry.path("defaultValue").asString()).isEqualTo("fail");
+        assertThat(entry.path("description").asString()).contains("KafkaTemplate", "byte[]");
     }
 
     /** Enables the properties without dragging in the rest of the engine. */

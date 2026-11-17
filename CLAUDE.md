@@ -13,14 +13,14 @@ Read these before making architectural decisions:
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
-- `docs/pitfalls.md` — The eleven workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities)
+- `docs/pitfalls.md` — The twelve workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them)
 
 ## Core Design: Hybrid Memoization
 
 1. Workflow method runs on a **Java 25 virtual thread**.
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
-4. **Live (not found):** Execute activity, persist result, return it.
+4. **Live (not found):** Execute activity, persist result, return it **as read back from the persisted payload** (deserialized into the method's declared return type, exactly as a replay reads it — not the activity's own object). Three exceptions return the activity's own object and still differ on replay (`docs/pitfalls.md` rule 12): a result that cannot be read back (stands down on replay), one that reads back as another class (the type valve: supertype/`Object`/type-variable declarations; a same-kind container — both `List`, `Set`, `Queue` or `Map` — is not a difference), and a `Future`/`CompletionStage` return type (never read back live). The first two are reported via `EngineObserver.activityResultUnreadable` and `maestro.activity.result.unreadable`.
 5. **Recovery:** Re-invoke workflow method. Completed steps replay instantly. Resumes from first uncompleted step.
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.
@@ -65,12 +65,13 @@ maestro/
 ├── maestro-store-jdbc              ← Abstract JDBC WorkflowStore SPI.
 ├── maestro-store-postgres          ← Postgres WorkflowStore + DistributedLock + LISTEN/NOTIFY signal wake; Flyway 11 migrations.
 ├── maestro-messaging-kafka         ← Spring Kafka 4.x WorkflowMessaging SPI (the only transport).
-├── maestro-admin-client            ← Lightweight lifecycle event publisher.
+├── maestro-admin-client            ← Plain AdminEventPublisher class only; no auto-config, no service needs it (Issue 52).
 ├── maestro-admin                   ← Standalone dashboard (Thymeleaf + HTMX, own Postgres).
 ├── maestro-test                    ← In-memory SPIs, controllable clock, TestWorkflowEnvironment (crash/recover a node to exercise replay).
 ├── maestro-samples/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
+│   ├── sample-perf                 ← Load-test target for perf/ (k6); unpublished, engine defaults
 │   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```
@@ -85,10 +86,13 @@ public interface WorkflowStore {
     Optional<WorkflowInstance> getInstance(String workflowId);
     List<WorkflowInstance> getRecoverableInstances();     // unbounded, all services; the engine no longer calls it
     default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V101 index)
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, Set<String> workflowTypes, int limit); // startup advisory (Issue 39); default empty
     void updateInstance(WorkflowInstance instance);       // optimistic locking
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
+    default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences, Set<String> deleteTimerIds); // manual Retry: exact deletes + FAILED→RUNNING CAS, one transaction in JDBC; the default is today's non-atomic two-step
 
     void appendEvent(WorkflowEvent event);
+    default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease); // the payload as stored (Postgres: INSERT … RETURNING); a live activity returns what replay reads; a store decorator must forward it (the default returns the payload sent, not the jsonb form)
     Optional<WorkflowEvent> getEventBySequence(UUID instanceId, int seq);
     List<WorkflowEvent> getEvents(UUID instanceId);
 
@@ -96,11 +100,15 @@ public interface WorkflowStore {
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
     boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
     void adoptOrphanedSignals(String workflowId, UUID instanceId);
-    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // janitor; COMPLETED/TERMINATED only
-    PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize); // retention sweeper; one batch = one transaction, children before parent
+    int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // COMPLETED/TERMINATED only, every service; the engine no longer calls it
+    default int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit); // janitor batch, this service only; default = the unscoped, unbounded one
+    PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize); // one batch = one transaction, children before parent; every service
+    default PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff, int batchSize); // retention sweeper, this service only; default = unscoped
 
     void saveTimer(WorkflowTimer timer);
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
+    default List<WorkflowTimer> getDueTimers(int batchSize); // due by the store's clock (Postgres: fire_at <= now()); the timer poller calls this
+    default Optional<Instant> storeTime(); // the store's clock, for the skew WARN; empty = no clock
     Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId); // any status; replay self-heal
     boolean markTimerFired(UUID timerId);                 // CAS: false if already fired/cancelled
     void markTimerCancelled(UUID timerId);
@@ -165,7 +173,7 @@ io.b2mash.maestro.samples.payment            — Sample payment gateway (e-comme
 
 ## Database Tables
 
-Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (V1–V9, V101) and `db/maestro/lock` (V100). **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history; band 200–299 (the removed Postgres messaging transport) stays retired and must never be reused** (orphan-table upgrade note: `docs/configuration.md` § Schema management). The directory says which component a migration belongs to; the version number does not. Why: every build since PR #36 resolves V100, and to it an applied migration it does not ship is "future" (ignored, the node starts) above V100 but "missing" (startup fails) below it; `MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule` guards the rule. They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. Flyway runs with `outOfOrder(true)` for databases that recorded V100 before V6–V9 (Issue 35):
+Prefix `maestro_` (fixed; `maestro.store.table-prefix` was removed). Migrations live in maestro-store-postgres under `db/maestro/store` (V1–V9, V101) and `db/maestro/lock` (V100). **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history; band 200–299 (the removed Postgres messaging transport) stays retired and must never be reused** (orphan-table upgrade note: `docs/configuration.md` § Schema management). The directory says which component a migration belongs to; the version number does not. Why: every build since PR #36 resolves V100, and to it an applied migration it does not ship is "future" (ignored, the node starts) above V100 but "missing" (startup fails) below it; `MaestroSchemaInitializerTest.migrationVersionsFollowTheNumberingRule` guards the rule. They run through `MaestroSchemaInitializer` into Maestro's own history table `maestro_schema_history` (`maestro.store.schema.mode` = flyway | validate | none); the host's `flyway_schema_history` is untouched. Flyway runs with `outOfOrder(true)`, which is load-bearing: databases that recorded V100 before V6–V9 (Issue 35), and databases holding any of the retired V200–V202 rows, where V101 and every future migration sort below the retired rows, apply them only out of order. The migrations shipped at `cbf5a2a` (V1–V9, V100, V101) are frozen (`ShippedMigrationsFrozenTest` fails if one is edited, renamed or deleted); a migration added after it (V102 onward) is not protected until a later release's migrations fixture is captured (`RELEASING.md` § Upgrade fixtures). Tables:
 
 - `maestro_workflow_instance`
 - `maestro_workflow_event` (unique on `workflow_instance_id, sequence_number`)
@@ -204,14 +212,17 @@ Locks are rows in `maestro_distributed_lock` / `maestro_leader_election` (`lock_
 
 ```
 maestro:lock:workflow:{workflowId}           — Instance lock (30s TTL, renewed every 10s)
-maestro:lock:activity:{workflowId}:{seq}     — Activity execution lock, best-effort dedup fast path (timeout + 10s TTL)
 maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader_election (15s TTL)
 maestro:leader:retention:{service}            — Retention sweeper leader in maestro_leader_election (15s TTL, re-elected per batch)
 ```
 
-Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
+There is no per-activity lock (3.10). With a lock backend, two runners execute a step concurrently only in the window after a node lost its instance lock, or after a node's instance-lock acquire failed and it proceeded unlocked (traced, not tested); lease fencing (V6) rejects the stale runner's outcome append, so the stale runner records nothing, and the adopting node, finding no recorded outcome, runs the step again — so activities must be idempotent. A duplicate Kafka delivery is deduplicated by the signal's message id (V9), not by a lock.
 
-Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via one `heldKeys` read per page: every node of a service must share one service name, or its workflows are stranded. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
+Due timers are polled on the database clock (`fire_at <= now()`); `fire_at` and await deadlines are armed on the scheduling node's clock, and every node WARNs when its clock is more than 1 s from the database's (checked at timer-poller start and every 10 min).
+
+Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; at shutdown its poll thread `UNLISTEN`s and returns it to the pool (no interrupt, Issue 38); `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
+
+Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via one `heldKeys` read per page: every node of a service must share one service name, or its workflows are stranded. At startup each node runs one advisory read off the runner thread and WARNs once per other `service_name` holding active instances of its workflow types (`WorkflowExecutor.startForeignServiceCheck`). Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
@@ -224,21 +235,28 @@ at startup (`maestro.messaging.topics.verify-on-startup` = fail | warn | off,
 default `fail`: a confirmed-missing topic fails startup naming every missing
 topic with a `kafka-topics.sh --create` line each; an unreachable broker only
 WARNs). Full reference: `docs/configuration.md`. Notable properties added post-0.3.0:
-`maestro.shutdown.timeout` (default 30s), `maestro.signal.wake-recheck-interval`
+`maestro.shutdown.timeout` (default 20s; one deadline for the whole engine shutdown), `maestro.signal.wake-recheck-interval`
 (default 30s), `maestro.messaging.redelivery.*` (bounded retry + dead-letter
-policy, Kafka), `maestro.admin.events.enabled` (now actually wired;
-`.topic` is a deprecated alias for `maestro.messaging.topics.admin-events`),
+policy, Kafka), `maestro.admin.events.enabled` (default `false` since WP7;
+dashboard users set `true` on every service; the admin-events topic is required
+at startup only while it is `true`; `.topic` is a deprecated alias for
+`maestro.messaging.topics.admin-events`), `maestro.messaging.template-injection-check`
+(fail | warn | off, default `fail`; the way out of last resort when an unqualified
+`KafkaTemplate<…, byte[]>` point that received a template unable to send `byte[]`
+unchanged sits in code the host cannot change),
 `maestro.observability.metrics.enabled` / `maestro.observability.tracing.enabled`
 (both default `true`, both silently inert without a `MeterRegistry` / `Tracer`;
 the tracing flag gates the Kafka W3C header injection too — see
 `docs/observability.md`), `maestro.signal.janitor-interval` (default 1h) /
 `maestro.signal.terminal-retention` (default 7d) (the signal janitor purges
 unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
-retention; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` default
+retention, this service's only, in batches of 1,000, at most 1,000 batches per
+sweep; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` default
 `true`, `interval` 1h, `completed-retention` 30d, `terminated-retention` 30d,
 `failed-retention` 90d, `batch-size` 500, `max-batches-per-sweep` 100 — the
-leader-elected retention sweeper purges finished workflows with their whole
-history via `WorkflowStore.purgeTerminalInstancesBefore`; migration V8 adds its
+leader-elected retention sweeper purges finished workflows of this service only,
+with their whole history, via `WorkflowStore.purgeTerminalInstancesBefore`,
+pausing between batches as long as the last batch took (≤ 5 s); migration V8 adds its
 indexes), `maestro.replay.verify-arguments` (default `true`; every
 `ACTIVITY_COMPLETED`/`ACTIVITY_FAILED` event carries a SHA-256 fingerprint of
 the call's arguments — `maestro_workflow_event.args_hash`, migration V7 — and a
@@ -296,6 +314,7 @@ any other value fails startup. Removed (setting either fails startup):
   `22`/`23`/`54`, and `StoreFaultGuard` retries outcome appends then latches the run
   `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
   recovery, so any new `catch` that collects failures must rethrow it too.
+  A background loop never ends on an `Error` silently (3.5b): it rethrows a `MaestroControlFlowError` and contains every other `Throwable`. The five engine loops (timer poller, recovery poller, signal janitor, retention sweeper, instance-lock renewer) wrap each iteration in `BackgroundLoopGuard` (package `engine`); the two `maestro-store-postgres` loops (`PostgresLockCleanerScheduler`, `PostgresWakeListener`) cannot see that package-private class and apply the same rule inline. A new loop does one or the other.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
 - **No Lombok.** Records and IDE-generated code only.
 - **Javadoc:** All public APIs. SPIs especially.
@@ -320,6 +339,9 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never assume signal ordering.**
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config, and enforced at startup: `KafkaTopicVerifier` fails the context on a confirmed-missing topic (`maestro.messaging.topics.verify-on-startup=fail`, the default), the engine consumer defaults `allow.auto.create.topics=false`, and under `fail` — once the probe has confirmed every required topic present (`KafkaTopicVerifier.fatalOnMissing`; never after an inconclusive probe, which must not turn into a restart loop) — every Maestro container is `missingTopicsFatal`. Every suite that touches a broker pre-creates its topics — `.DLT` companions included — against a broker with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
+- **Never inject a Maestro Kafka bean by type** — `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` are `@Bean(defaultCandidate = false)`, so Spring Boot's Kafka beans exist beside them; Maestro code injects them only with `@Qualifier(MaestroKafkaBeans.TEMPLATE)` (or `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). An unqualified `KafkaTemplate<String, byte[]>` receives Spring Boot's template (with Boot's `StringSerializer`, which `ByteArrayTemplateInjectionCheck` fails startup over) or, once the host declares a template of its own for another value type, nothing at all (a `NoSuchBeanDefinitionException` that `ByteArrayTemplateMissingFailureAnalyzer` explains).
 - **Never publish a lifecycle event on the workflow thread** — go through `LifecycleEventSink` (`WorkflowExecutor.lifecycleEventSink()`), never `WorkflowMessaging.publishLifecycleEvent` directly; a Kafka producer blocks up to `max.block.ms` on a missing topic.
+- **Never give a shutdown step its own timeout** — every step of `WorkflowExecutor.shutdown()` waits at most what is left of its `ShutdownDeadline` (3.6).
+- **Never interrupt a thread that may be inside a JDBC call** — stop it with a latch and a bounded join, as `PostgresWakeListener` and `WorkflowInstanceLockManager` do; the four core pollers and the lock cleaner still interrupt (Issue 64), and so does the health probe (Issue 66).
 - **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`. The one exception is the annotations package: Jackson 3 keeps `com.fasterxml.jackson.annotation` (`@JsonTypeInfo`, `@JsonSubTypes`, `@JsonProperty`, …), so those imports are correct and required.
 - **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.

@@ -29,7 +29,7 @@ sensible defaults and can be left unset for local development.
 **`maestro.enabled=false` disables every Maestro auto-configuration in the
 application**, not just the core engine: `maestro-messaging-kafka`,
 `maestro-store-postgres` (store, lock and the LISTEN/NOTIFY wake listener),
-`maestro-admin-client`, and the health/observability
+and the health/observability
 auto-configurations all carry the same `@ConditionalOnProperty(maestro.enabled)`
 gate as the core `MaestroAutoConfiguration`, so flipping this one flag backs
 every module off cleanly rather than leaving, say, a `LISTEN` connection
@@ -60,17 +60,101 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 | Distributed lock + leader election | `classpath:db/maestro/lock` | V100      |
 | *(retired)* Postgres messaging transport | *(no longer shipped)*  | 200–299 — never reused |
 
-**Numbering rule.** Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199. Versions 1–9 and 100 are history: nothing is ever added below V100 again. Band 200–299 stays retired and must never be reused. The directory says which component a migration belongs to; the version number no longer does. The reason is older builds. Every build since the lock band joined `maestro-store-postgres` resolves V100. To such a build, an applied migration it does not ship is a "future" migration if it sorts above V100, and Flyway's default `ignoreMigrationPatterns=*:future` ignores it, so the older node starts normally. Below V100 the same migration is "missing", and the older node fails startup in `flyway` and `validate` mode with `Detected applied migration not resolved locally: <n>`. Numbered this way, a migration never stops a node on an earlier build from restarting, or a rollback from starting. `MaestroSchemaInitializerTest` pins the rule and runs main @ a27a275's exact Flyway configuration against a database this build migrated.
+**Numbering rule.** Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199. Versions 1–9 and 100 are history: nothing is ever added below V100 again. Band 200–299 stays retired and must never be reused. The directory says which component a migration belongs to; the version number no longer does. The reason is older builds. Every build since the lock band joined `maestro-store-postgres` resolves V100. To such a build, an applied migration it does not ship is a "future" migration if it sorts above V100, and Flyway's default `ignoreMigrationPatterns=*:future` ignores it, so the older node starts normally. Below V100 the same migration is "missing", and the older node fails startup in `flyway` and `validate` mode with `Detected applied migration not resolved locally: <n>`. Flyway's rule is about the earlier build's *highest resolved* version: an applied migration it does not ship is ignored above it and fails startup below it. Every main build from e91bd9d (PR #43) on, main @ a27a275 and `cbf5a2a` included, resolves V1–V9 and V100 (`cbf5a2a` also V101) and nothing higher, so a migration numbered this way never stops a node on such a build from restarting, or a rollback to it from starting. It does not hold for a build whose highest resolved version is above the new migration: a pre-PR #36 build with `maestro-messaging-postgres` resolves the retired band (V200 and up), so V6–V9, V101 and every later migration are "missing" to it. Such a build, and every other build before e91bd9d that resolves V100, already fails against any database that recorded V6–V9 ("Out-of-order application" below), so moving a database onto this build is a one-way step for them in any case. This was checked by hand, not by a test: the frozen `c01d498` set, run with that build's Flyway settings against a database this build migrated, fails with `Detected applied migration not resolved locally` for 6–9 with the lock band, and for 6–9 and 101 with the messaging band too; with the store band alone (highest V5) it starts. `MaestroSchemaInitializerTest` pins the rule and runs main @ a27a275's exact Flyway configuration against a database this build migrated, and `ShippedMigrationsFrozenTest` fails if any migration shipped at `cbf5a2a` is edited, renamed or deleted.
 
-Band 200–299 belonged to the Postgres messaging transport (`V200`–`V202`), removed in favour of Kafka as the only transport. A database that applied it keeps its rows in `maestro_schema_history` and an orphan `maestro_signal_queue` table (and, if it never reached `V202`, `maestro_task_queue` and `maestro_lifecycle_event_queue`). Flyway's default `ignoreMigrationPatterns=*:future` treats those history rows as future versions, so `flyway` and `validate` modes keep passing; `DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;` is optional cleanup once no node on an earlier build remains.
+Band 200–299 belonged to the Postgres messaging transport (`V200`–`V202`), removed in favour of Kafka as the only transport. A database that applied it keeps its rows in `maestro_schema_history` and an orphan `maestro_signal_queue` table (and, if it never reached `V202`, `maestro_task_queue` and `maestro_lifecycle_event_queue`). Flyway's default `ignoreMigrationPatterns=*:future` treats those history rows as future versions, so `flyway` and `validate` modes keep passing; but those rows still count as the highest applied version, so V6–V9, V101 and every later migration apply on such a database only because the initializer runs Flyway with `outOfOrder`, and anyone applying Maestro's SQL to such a database with the Flyway CLI must pass `-outOfOrder=true`. `DROP TABLE IF EXISTS maestro_signal_queue, maestro_task_queue, maestro_lifecycle_event_queue;` is optional cleanup once no node on an earlier build remains.
 
-**Out-of-order application, for V6–V9.** V6–V9 shipped before the numbering rule, below V100. A database first migrated before they shipped recorded V100 before them, so they sort below its highest applied version. The store and lock migrations never depend on each other, so the initializer runs Flyway with `outOfOrder` enabled: such a migration is applied although it sorts below V100, and `validate` reports it as pending ([Issue 35](open-issues.md#issue-35)). The same history has a limit that this build cannot remove, because it lies in the older build's own Flyway check. A node on an earlier, unreleased build that lacks one of V6–V9 cannot start in `flyway` or `validate` mode against a database that recorded it (`Detected applied migration not resolved locally: <n>`). Those are the main builds from c01d498 (PR #35) up to, but not including, e91bd9d (PR #43): from PR #36 every build resolves V100; before it, a build did only when the host had the optional `maestro-lock-postgres` module (or `maestro-messaging-postgres`, whose V200–V202 sort above every store version). Nodes already running are unaffected, because Flyway checks only at startup. Such a node can start against the newer history only with `maestro.store.schema.mode: none`. Every build from e91bd9d on, main @ a27a275 included, ships V1–V9 and V100, and V101 is a future migration to it. (A pre-PR #36 build with `maestro-messaging-postgres` sees V101 as missing too, but it already fails on V6–V9.)
+**Out-of-order application.** Flyway refuses a migration that sorts below the highest version a database has recorded, and that includes versions this build does not ship. Two real histories hit this, so `outOfOrder` is load-bearing and must never be removed: a database that ran the retired Postgres messaging transport recorded V200–V202 (or as much of that band as it reached), so V6–V9, V101 and every future V102–V199 sort below the retired rows there (see above); and a database first migrated before V6–V9 shipped recorded V100 before them. `MaestroSchemaInitializerTest` pins both. For V6–V9: V6–V9 shipped before the numbering rule, below V100. A database first migrated before they shipped recorded V100 before them, so they sort below its highest applied version. The store and lock migrations never depend on each other, so the initializer runs Flyway with `outOfOrder` enabled: such a migration is applied although it sorts below V100, and `validate` reports it as pending ([Issue 35](open-issues.md#issue-35)). The same history has a limit that this build cannot remove, because it lies in the older build's own Flyway check. A node on an earlier, unreleased build that lacks one of V6–V9 cannot start in `flyway` or `validate` mode against a database that recorded it (`Detected applied migration not resolved locally: <n>`). Those are the main builds from c01d498 (PR #35) up to, but not including, e91bd9d (PR #43): from PR #36 every build resolves V100; before it, a build did only when the host had the optional `maestro-lock-postgres` module (or `maestro-messaging-postgres`, whose V200–V202 sort above every store version). Nodes already running are unaffected, because Flyway checks only at startup. Such a node can start against the newer history only with `maestro.store.schema.mode: none`. Every build from e91bd9d on, main @ a27a275 included, ships V1–V9 and V100, and V101 is a future migration to it. (A pre-PR #36 build with `maestro-messaging-postgres` sees V101 as missing too, but it already fails on V6–V9.)
 
 The initializer runs after your application's own database initializers (its Flyway, Liquibase or `spring.sql.init` scripts) and before the store and engine beans are created. When it first meets a schema that already holds your tables, it writes a baseline marker row at version `0` into `maestro_schema_history` and then applies every Maestro migration — your tables are not touched. Several nodes starting at once are safe: Flyway serialises concurrent runs with a database lock. (If you add Flyway to your own application *later*, against a database that already holds Maestro's tables, your Flyway needs `spring.flyway.baseline-on-migrate: true` for its first run, as for any non-empty schema.)
 
 The ordering covers only database initializers that Spring Boot knows about (`spring.flyway.*`, `spring.liquibase.*`, `spring.sql.init.*`). If your application runs Flyway by hand — its own `Flyway.configure()...migrate()` in a bean or a runner — it is not ordered before Maestro's initializer: either migrate through `spring.flyway.*`, or set `maestro.store.schema.mode: none` and call `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY, classLoader).initialize()` yourself after your own migration.
 
 The initializer belongs to `maestro-store-postgres` and runs only when `maestro.store.type` is `postgres` (the only supported store). The lock tables are created by that same initializer, from the same module.
+
+**In production.** By default (`flyway`), every node start runs Maestro's DDL as the application's own database role: the initializer's Flyway connects through the application's `DataSource` and applies whatever is pending. This is the same as Spring Boot's own Flyway default. That role must therefore be able to create tables in the schema and must own the `maestro_*` tables (PostgreSQL lets only the owner alter a table or index it, see below). Index migrations lock their table against writes while they run, so the deploy that ships one pauses workflow writes on that table for as long as the index takes to build.
+
+The recommended production setup separates two roles. The SQL below uses placeholder names: `maestro_owner` is the role that migrates and owns Maestro's tables, `maestro_app` is the role the nodes connect as, and `public` is the schema that holds Maestro's tables (see "A schema other than `public`" below before you change it).
+
+**Apply migrations as the owner, as a separate step before deploying the build that ships them.** Connect as `maestro_owner`. Either run the Flyway CLI with the options listed under "`validate` and `none`" below (they must include `-outOfOrder=true`, see "Out-of-order application" above), or run a one-off job that calls `new MaestroSchemaInitializer(ownerDataSource, SchemaMode.FLYWAY, classLoader).initialize()`. Maestro has no `maestro.store.schema.user` or `maestro.store.schema.password`, so the owner's credentials go only to that job, never to the nodes. The migration role need not be a superuser. It needs `USAGE` and `CREATE` on the schema, and the nodes' role needs `USAGE`. Only a role entitled to grant on the schema can grant these: its owner, a member of the owning role, a superuser, or a holder of the grant option. Issued by any other role, the `GRANT` grants nothing. It draws only a warning (`no privileges were granted`) if the role holds some privilege on the schema (as `maestro_owner` does after the first line), and fails with `permission denied for schema` if it holds none. "Holds" includes what it holds through `PUBLIC`: on the default `public` schema of PostgreSQL 15 and later, `PUBLIC` has `USAGE`, so there every role holds a privilege, and a `GRANT` issued by the wrong role ends in that warning with nothing granted, never in an error (checked by hand on PostgreSQL 16; the tests named below revoke `PUBLIC`'s rights first, so they do not cover it):
+
+```sql
+GRANT USAGE, CREATE ON SCHEMA public TO maestro_owner;
+GRANT USAGE ON SCHEMA public TO maestro_app;
+```
+
+The migration role must also own the `maestro_*` tables. It does if it created them; a role that did not create them must be a member of the role that did. A member that migrates without `SET ROLE maestro_owner` creates any new table as itself, so `ALTER DEFAULT PRIVILEGES FOR ROLE maestro_owner` (below) does not cover that table. Run `SET ROLE maestro_owner` before migrating, or issue the default privileges `FOR ROLE` the role that actually creates the tables. Neither the Flyway CLI nor a one-off job switches role by itself: configure the switch explicitly as an init SQL statement on the migration connection, `SET ROLE maestro_owner` (the Flyway CLI's `-initSql`, or the connection pool's init SQL, such as HikariCP's `connectionInitSql`, for the job's `DataSource`). The membership case, including that role switch, is not covered by the tests named below.
+
+**Run every node with `maestro.store.schema.mode: validate`** and a role that holds only that `USAGE` and these table grants, issued by `maestro_owner`:
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON maestro_workflow_instance, maestro_workflow_timer,
+    maestro_workflow_signal, maestro_distributed_lock, maestro_leader_election TO maestro_app;
+GRANT SELECT, INSERT, DELETE ON maestro_workflow_event TO maestro_app;
+GRANT SELECT ON maestro_schema_history TO maestro_app;
+```
+
+Under `validate` a node never needs DDL rights: it reads `maestro_schema_history`, and it refuses to start, naming the pending versions, until the owner has applied them. The role can append workflow history and purge it, but not rewrite it: it holds no `UPDATE` on `maestro_workflow_event`, and Maestro issues none. Nothing else is needed: Maestro's tables use no sequences, `LISTEN` and `pg_notify` (the cross-node signal wake) need no grant, and the lock cleaner's deletes are covered by `DELETE`. The role also needs `CONNECT` on the database, which PostgreSQL grants to `PUBLIC` by default. A role without `USAGE` on the schema cannot see `maestro_schema_history`, so `validate` reports *every* migration as pending, even on a fully migrated database.
+
+**A schema other than `public`.** Replacing `public` in the SQL above fixes only the schema grants. The table names in the grants are unqualified, so they resolve through the `search_path` of the session that issues them. Maestro's Flyway run names no schema either, so it reads `maestro_schema_history`, and creates tables, in each connection's current schema: the first schema on its `search_path` that exists and that the role may use. Point both roles at Maestro's schema, with `ALTER ROLE maestro_owner SET search_path = <schema>` and the same for `maestro_app`, or with `currentSchema=<schema>` in each role's JDBC URL (see "Isolating services that share a database" above). An application role whose search path misses the schema shows the same symptom as a missing `USAGE`: `validate` reports every migration as pending.
+
+**Tables added by a later migration.** The grants name tables, so they cover only the tables that exist when you run them. A migration that only adds a column or an index needs no new grant; one that adds a `maestro_*` table does. `validate` checks the migration history, never grants. A node whose role lacks the new table's grant therefore starts normally, and then every statement on that table fails with SQLSTATE `42501`. Maestro's store treats that as a store fault (`StoreUnavailableException`): only SQLSTATE classes `22`, `23` and `54` count as an error in the workflow's own data. So the affected runs are not failed. They stand down and are abandoned for recovery, over and over. To prevent it, run this once as `maestro_owner`, in this order: after the first migration, after the table grants above, and before any migration that adds a table:
+
+```sql
+ALTER DEFAULT PRIVILEGES FOR ROLE maestro_owner IN SCHEMA public
+    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO maestro_app;
+```
+
+It has two limits. It covers only tables that `maestro_owner` creates after it is issued; tables that already exist still need the table grants above. And it covers every table that role creates in that schema, not only Maestro's, so use Maestro's migration role for nothing else. The alternative is to re-run the table grants, extended with the new table, after each migration and before any node of the new build starts.
+
+The order matters. Issued before the first migration, the default privileges also cover the tables that migration creates. `maestro_app` then holds `UPDATE` on `maestro_workflow_event` and `INSERT`, `UPDATE` and `DELETE` on `maestro_schema_history`: nothing fails, but the role can rewrite workflow history and the migration record. To check, run this as `maestro_owner`:
+
+```sql
+SELECT table_name, privilege_type FROM information_schema.role_table_grants
+    WHERE grantee = 'maestro_app' AND table_schema = current_schema()
+        AND table_name IN ('maestro_workflow_event', 'maestro_schema_history')
+    ORDER BY table_name, privilege_type;
+```
+
+`current_schema()` is the schema the unqualified table names in the grants and in the repair below resolve to (see "A schema other than `public`" above), so where one `maestro_app` is granted Maestro's tables in several schemas (see "Isolating services that share a database" above), the other schemas add no rows. Run it once per schema, with the session's search path pointing at that schema.
+
+In the documented state it returns exactly four rows: `SELECT` on `maestro_schema_history`, and `DELETE`, `INSERT` and `SELECT` on `maestro_workflow_event`. More rows than that means `maestro_app` is over-granted: repair it as `maestro_owner` with the statements below. Fewer rows, or none, is not a pass. `information_schema.role_table_grants` shows a grant only to a role that is its grantor or its grantee, or a member of one of them; a superuser sees every row, and any other role, such as a managed-cloud admin role that is a member of neither, sees none, whatever is granted. A role whose search path does not reach Maestro's schema sees none either. So run it as `maestro_owner`, the grantor; if it still returns fewer than four rows, the table grants above are missing. Repair, as `maestro_owner`:
+
+```sql
+REVOKE UPDATE ON maestro_workflow_event FROM maestro_app;
+REVOKE INSERT, UPDATE, DELETE ON maestro_schema_history FROM maestro_app;
+```
+
+That check reads the grants recorded *to* `maestro_app`. It cannot see a privilege the role holds another way: granted to `PUBLIC`, or to a role `maestro_app` is a member of and inherits from, or granted on a column rather than the table. With `UPDATE` on `maestro_workflow_event` granted to `PUBLIC`, it still returns exactly the four rows while `maestro_app` can rewrite workflow history. So also ask PostgreSQL what the role can actually do:
+
+```sql
+SELECT t.table_name, p.privilege_type
+    FROM (VALUES ('maestro_schema_history'), ('maestro_workflow_event')) AS t (table_name)
+    CROSS JOIN (VALUES ('DELETE'), ('INSERT'), ('SELECT'), ('TRUNCATE'), ('UPDATE')) AS p (privilege_type)
+    WHERE CASE WHEN p.privilege_type IN ('DELETE', 'TRUNCATE')
+        THEN has_table_privilege('maestro_app', format('%I.%I', current_schema(), t.table_name), p.privilege_type)
+        ELSE has_any_column_privilege('maestro_app', format('%I.%I', current_schema(), t.table_name), p.privilege_type)
+        END
+    ORDER BY t.table_name, p.privilege_type;
+```
+
+In the documented state it returns the same four rows. It counts a privilege wherever it comes from: granted to `maestro_app`, to `PUBLIC`, or to a role `maestro_app` inherits from, on the table or (for `INSERT`, `SELECT` and `UPDATE`) on any column of it. Any role may run it, not only a grantor: `has_table_privilege` and `has_any_column_privilege` answer for another role without that restriction. The caller must still be able to resolve the tables, which needs `USAGE` on the schema; a caller that cannot gets an error (`permission denied for schema`, or `relation ... does not exist`), never an empty result. Each check proves something the other does not:
+
+- The grants check shows what was granted to `maestro_app` itself, and so what the `REVOKE ... FROM maestro_app` repair above removes. It does not prove the role cannot do more.
+- The effective check shows what `maestro_app` can do on those two tables. It does not say where a privilege comes from, so a row the repair above does not remove was granted elsewhere. Revoke it where it was granted, from `PUBLIC` or from the parent role (in `psql`, `\dp maestro_workflow_event` lists the table's grants, column grants included). Neither check covers `REFERENCES` or `TRIGGER`, or the other `maestro_*` tables, which hold full DML by design.
+
+**PostgreSQL 14.** Up to PostgreSQL 14, the oldest version Maestro supports, `PUBLIC` holds `CREATE` on the `public` schema by default, so `maestro_app` could still create tables there. To keep it DML-only, run `REVOKE CREATE ON SCHEMA public FROM PUBLIC;` (the default from PostgreSQL 15) together with `GRANT USAGE, CREATE ON SCHEMA public TO maestro_owner;`. Without that grant, a migration role that does not own the schema and relied on `PUBLIC`'s `CREATE` can no longer migrate. This advice is not covered by the tests named below: every suite runs PostgreSQL 16.
+
+**Order during a rolling deploy: migrate first.** Nodes still on the earlier build keep running against the migrated database, because Flyway checks only at startup. Nodes on a main build from e91bd9d (PR #43) on also keep restarting, because every new migration takes a version above V100 and is a "future" version to them; an older build may not restart (see "Numbering rule" above). That covers Flyway's version check only. The earlier build's SQL keeps working only if the new migration is backward-compatible with it: one that adds what the earlier build ignores, not one that renames, drops or tightens what it reads and writes.
+
+`validate` is not the default because it would fail every first start of every new installation: on an empty database every migration is pending. Four tests in `MaestroSchemaInitializerTest` run this setup with exactly the SQL printed here, on a schema where `PUBLIC` holds no rights, with a non-superuser owner that holds only the schema grants above:
+
+- `aDmlOnlyRoleRunsValidateModeButCannotMigrate`: with only these grants, a node starts under `validate` and drives the store, the lock, the lock cleaner and the signal wake. A migration, `CREATE TABLE`, `CREATE INDEX` and `ALTER TABLE` all fail with a permission error.
+- `aTableAddedByALaterMigrationNeedsDefaultPrivileges`: a table added by a later migration passes `validate` and is refused with `42501`. With `ALTER DEFAULT PRIVILEGES` issued in the documented order, both checks return the four rows, and a table added afterwards is usable.
+- `defaultPrivilegesBeforeTheFirstMigrationOverGrant`: issued before the first migration, the default privileges let `maestro_app` update `maestro_workflow_event` and `maestro_schema_history`. Both checks show the extra rows, and the repair removes them. A second schema holding Maestro's tables, over-granted to the same `maestro_app`, adds no rows to either check; for the grants check, a superuser sees the owner's rows and a role unrelated to either sees none, while the effective check returns the same rows to that unrelated role.
+- `privilegesHeldThroughPublicOrAParentRoleEscapeTheGrantsCheck`: with `UPDATE` on `maestro_workflow_event` granted to `PUBLIC`, and then `UPDATE` on one of its columns granted to a role `maestro_app` inherits from, the grants check still returns the four rows while `maestro_app` can update the table; the effective check shows the extra `UPDATE` both times.
+
+`theDocumentedSqlIsTheTestedSql` fails if the `sql` blocks of this "In production" text (from its heading to "`validate` and `none`" below) and the SQL those tests run differ by a single line. It checks no other SQL on this page. The "A schema other than `public`" setup is not covered by a test.
 
 **`validate` and `none`.** With `maestro.store.schema.mode: validate` Maestro applies nothing and fails startup — naming the pending versions — if any migration is pending, or if an applied one no longer matches the shipped SQL; it reads `maestro_schema_history`, so whoever applies the SQL out of band must record it there (e.g. the Flyway CLI with `-table=maestro_schema_history`, the locations above, `-outOfOrder=true`, and — on a schema that already holds your tables — `-baselineOnMigrate=true -baselineVersion=0`, exactly as Maestro's own run does). Do not insert a history row by hand: `validate` compares each applied migration's checksum with the shipped SQL, so a hand-written row fails it. Whatever records a migration must connect as the role that owns the `maestro_*` tables. PostgreSQL checks table ownership before `IF NOT EXISTS`, so even a `CREATE INDEX IF NOT EXISTS` for an index that already exists fails for any other role with `must be owner of table maestro_workflow_instance` (verified on PostgreSQL 16). Under `validate`, the application's role often has no DDL rights, so the Flyway CLI run by the owning role is the usual route. If the application's role does own the tables, one start of a node, or a one-off job calling `new MaestroSchemaInitializer(dataSource, SchemaMode.FLYWAY, classLoader).initialize()`, with `maestro.store.schema.mode: flyway`, then the rest under `validate`, works too. With `none` Maestro does nothing and reads no history: you apply the SQL under the locations above yourself, in version order, before deploying the build that ships it. A build at or past V5 omits `received_at` from signal inserts, so a self-managed database must have V5 applied (`ALTER TABLE maestro_workflow_signal ALTER COLUMN received_at SET DEFAULT now()`) before that build is deployed, or every signal insert fails. A build at or past V6 names `maestro_workflow_instance.lease_epoch` in every instance read and write (the lease-fencing token), so V6 (`ALTER TABLE maestro_workflow_instance ADD COLUMN IF NOT EXISTS lease_epoch BIGINT NOT NULL DEFAULT 0`) must likewise be applied first, or no workflow can be started, resumed or read. A build at or past V7 names `maestro_workflow_event.args_hash` in every event insert and read (the activity-argument fingerprint), so V7 (`ALTER TABLE maestro_workflow_event ADD COLUMN IF NOT EXISTS args_hash VARCHAR(64)`) must likewise be applied first, or no activity outcome can be recorded or replayed.
 
@@ -229,6 +313,7 @@ on the node that started it.
 |---------------------------------|----------|------------|-------------------------------------------------------------------------------------------------|
 | `maestro.messaging.type`        | `String` | `"kafka"`  | Messaging implementation. `kafka` is the only supported value; any other value (including the removed `postgres`) fails startup with a message naming the removal. |
 | `maestro.messaging.consumer-group`| `String`| `null`   | Kafka consumer group ID. If not set, defaults to `maestro-{serviceName}` at runtime.            |
+| `maestro.messaging.template-injection-check` | `fail` \| `warn` \| `off` | `fail` | What happens at startup when a bean injects a `KafkaTemplate<…, byte[]>` without a qualifier and received a template that cannot send `byte[]` unchanged: fail startup, log each case at `WARN` and start, or check nothing. A way out of last resort — see [Kafka Client Configuration](#kafka-client-configuration). Any other value fails startup. |
 
 ### Topic Properties
 
@@ -289,15 +374,15 @@ something else.
 `KafkaTopicVerifier` closes that gap **once, at startup**, from
 `MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated` — after
 every singleton exists (so every `@MaestroSignalListener` is known), before any
-consumer container starts, and before `StartupRecoveryRunner` resumes a
-workflow. It composes the set of topics this service needs and asks the broker,
+consumer container starts, and before the recovery pass `StartupRecoveryRunner`
+starts resumes a workflow. It composes the set of topics this service needs and asks the broker,
 in one `describeTopics` call bounded to 5 seconds, whether each exists:
 
 | Required topic                                                   | When                                              |
 |------------------------------------------------------------------|---------------------------------------------------|
 | `maestro.signals.{serviceName}` (or `maestro.messaging.topics.signals`) | always                                     |
 | `maestro.signals.{serviceName}.DLT` (`+ dead-letter-suffix`)     | `maestro.messaging.redelivery.enabled=true` (default) |
-| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default)     |
+| `maestro.messaging.topics.admin-events`                          | `maestro.admin.events.enabled=true` (default `false`) |
 | every `@MaestroSignalListener(topic = "...")` topic              | always                                            |
 | each listener topic `+ dead-letter-suffix`                       | `maestro.messaging.redelivery.enabled=true` (default) |
 
@@ -394,7 +479,7 @@ that crashes the JVM is redelivered on restart until `max-attempts` is spent
 ## Lock Configuration
 
 Properties under `maestro.lock.*` configure the distributed locking layer used
-for workflow instance locks, activity deduplication, and timer leader election.
+for workflow instance locks and leader election (timer poller, retention sweeper).
 The lock is table-backed, in the same PostgreSQL database as the workflow store,
 and ships in `maestro-store-postgres` — there is no separate lock module and
 nothing extra to deploy.
@@ -402,7 +487,7 @@ nothing extra to deploy.
 | Property                        | Type       | Default          | Description                                                                                  |
 |---------------------------------|------------|------------------|----------------------------------------------------------------------------------------------|
 | `maestro.lock.type`             | `String`   | `"postgres"`     | Lock implementation. `postgres` is the only supported value; any other value (including the removed `valkey`) fails startup with a message naming the removal. |
-| `maestro.lock.key-prefix`       | `String`   | `"maestro:lock:"`| Prefix for all lock keys — the `lock_key` column of `maestro_distributed_lock`. Change this to isolate multiple environments that share a schema. Applies to the instance lock and the activity lock alike. |
+| `maestro.lock.key-prefix`       | `String`   | `"maestro:lock:"`| Prefix for all lock keys — the `lock_key` column of `maestro_distributed_lock`. Change this to isolate multiple environments that share a schema. |
 | `maestro.lock.ttl`              | `Duration` | `30s`            | Lock time-to-live. Locks are automatically renewed while the workflow is executing. If a node crashes, locks expire after this duration, enabling recovery by another node. |
 | `maestro.lock.cleanup-interval` | `Duration` | `10m`            | How often the lock cleaner deletes rows whose TTL expired more than a minute ago. Every node runs it (the delete is idempotent). Expired rows never block an acquire — `tryAcquire` treats an expired row as free — so the cleaner only bounds table growth. |
 
@@ -463,18 +548,43 @@ A run waiting for a slot holds its instance lock (so no other node adopts it)
 but has executed nothing; if the node begins shutting down before a slot frees,
 it stands down and stays recoverable. The same goes for a run waiting for an
 activity slot: the activity does not run. An activity slot is held from the
-activity's dedup lock through every retry attempt and backoff to its persisted
+activity's start through every retry attempt and backoff to its persisted
 outcome. Every listed limit must be `>= 1`, and naming a queue twice fails startup.
 
-Recovery does not wait for slots: it adopts every instance it can lock, and
-each adopted run then queues for its slot on its own thread, so startup is
-never held up by a backlog. Because every queue is now bounded by default,
-two consequences of that are on the default path (`docs/open-issues.md`
-Issues 29 and 30): a node that adopts more runs than its slots holds their
-instance locks while they queue, so other nodes cannot take that backlog over;
-and a run still queued for a slot when shutdown begins is not interrupted — it
-stands down, recoverable, once it gets a slot, or the shutdown drain times out
-around it. Nothing is written or lost either way.
+**Recovery adopts only what a node can run or queue.** Before the recovery
+poller locks an instance, it asks the instance's task queue for room on this
+node, without waiting. Per queue, a node adopts at most its free slots plus
+`concurrency` recovered runs that queue for a slot. Every other recoverable
+instance is left unlocked, for another node of the service or for this node
+once capacity frees, and the poller looks again as soon as a slot or a queued
+place frees here, not a whole `poll-interval` later. A node therefore holds at
+most 2 × `concurrency` instance locks per queue for recovered runs that are
+running or queued for a slot at the same time. A recovered run that parks
+(`sleep()`, `awaitSignal()`) gives its slot back and keeps its lock, like any
+parked run, so the node adopts more and its locks for parked runs are not
+bounded by this (traced, not tested). A restarted fleet shares a backlog
+instead of the first node locking all of it (`RecoveryCapacityTest`, `RecoveryPollerCapacityTest`,
+`MultiNodeRecoveryCapacityIT`). Queued recovered runs wait in the same
+first-in-first-out line as new starts, so neither starves the other: a
+recovered run waits as long as a new start submitted at the same moment, and
+a new start waits behind at most `concurrency` queued recovered runs
+(`RecoveryStarvationTest`). While a backlog drains, that costs a new start at
+most about one run's length of extra wait (arithmetic). With both defaults
+`0` and no listed queue, recovery is unbounded, as before
+(`RecoveryCapacityTest.anUnboundedNodeAdoptsEveryInstanceAsBefore`).
+
+A recovered run still queued for a slot when shutdown begins leaves at once: it
+stands down, recoverable, and normally hands its instance lock back before
+shutdown returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). Runs the
+recovery poller admitted are at most `concurrency` per queue; the ungated
+passes — the startup pass with `maestro.recovery.enabled=false`, and
+`WorkflowExecutor.recoverWorkflows(Map)` — can leave a whole backlog queued.
+That is not a guarantee: the drain
+waits for the run's unwind only for what is left of
+`maestro.shutdown.timeout`, so a run still unwinding when the deadline passes
+(for example behind a run that overran the drain) can release its lock after
+shutdown returns, and a lock it has not released by the time the JVM exits
+expires after `maestro.lock.ttl`. Nothing is written or lost either way.
 
 On a saturated queue, a parked run's periodic re-check (which picks up a
 terminate issued on another node and is the fallback for a missed wake) waits
@@ -493,7 +603,10 @@ waiting, because the children's activities cannot get a slot either. For
 unlisted queues both limits are 20 by default. Every `@DurableWorkflow` that
 names no `taskQueue` is on `default`, so a parent and a child of different
 types share these pools unless one of them names its own queue. The test kit
-(`TestWorkflowEnvironment`) is unbounded and will not show this. Remedies:
+(`TestWorkflowEnvironment`) is unbounded by default and will not show this;
+build it with `TestWorkflowEnvironment.builder().defaultConcurrency(20, 20)`
+(or `@MaestroTest(defaultConcurrency = 20, defaultActivityConcurrency = 20)`)
+and it does ([Testing](testing.md#concurrency-limits)). Remedies:
 
 - Put the child workflow type on a task queue of its own
   (`@DurableWorkflow(taskQueue = ...)`). It then gets its own pools.
@@ -535,15 +648,44 @@ Timer polling uses leader election via the distributed lock so that only one nod
 in the cluster polls at a time. The poll interval directly affects the maximum
 delay between a timer becoming due and the workflow resuming.
 
+Due timers are compared with the store's clock: on Postgres the poller selects `PENDING` rows with `fire_at <= now()`, so the poller leader's own clock no longer moves when a timer fires. A timer's `fire_at`, and an `awaitSignal` deadline, are still computed from the clock of the node that schedules them, so a node whose clock is off arms its deadlines off by the same amount ([Issue 51](open-issues.md#issue-51)). A store without a clock of its own (the in-memory test store, a custom store) is polled with the poller's clock, as before.
+
+**Timer accuracy is the difference between the database clock and the scheduling node's clock.** Before 3.7 a single node, or a fleet whose nodes agree with one another but not with the database, armed and compared a timer on the same clock, so it fired on time. Now:
+
+- a `sleep()` fires late by the skew on a node ahead of the database and early by up to the skew on a node behind it (a timer cannot fire before it is armed): a node 5 minutes ahead of Postgres fires `sleep(1s)` about 5 minutes late;
+- an `awaitSignal()` timeout expires early by up to the skew on a node behind the database, because the database-clock poll fires the row first; on a node ahead it still expires on time, because the await also compares its deadline with the clock of the node running it; after a recovery that is the adopting node's clock, so a run armed on one node and adopted by another expires by the difference between the two nodes' clocks as well (traced, not tested).
+
+The store comparison in both directions is pinned by `PostgresDatabaseClockTest` (`aSingleNodeAheadOfTheDatabase_sleepArmedOnItsClockFiresLateByTheSkew`, `aSingleNodeBehindTheDatabase_deadlineArmedOnItsClockFiresEarlyByTheSkew`); the end-to-end `sleep()` and `awaitSignal()` timings are traced, not tested. Arming deadlines on the database clock ([Issue 51](open-issues.md#issue-51)) is the full fix. Postgres-backed tests on a developer machine read the Docker VM's clock, which can drift from the host's; Linux CI shares the host clock.
+
+Each node compares its clock with the database's when its timer poller starts and every 10 minutes (one `SELECT now()`), and logs a `WARN` from `ClockSkewCheck` when the measured skew is more than 1 s. The measured skew is a lower bound: the database read its clock at some instant during the read, so the true offset lies between the measured skew and the measured skew plus the time the read took. The `WARN` names the direction and both bounds, and gives how far that node's timers can be off, as above, with the upper bound. A read slower than 1 s can hide a larger skew (the skew is zero when the database's time falls inside the read): no `WARN` means only that the offset is at most 1 s plus that read's time. Pinned by `ClockSkewCheckTest`. A store without a clock of its own is not checked.
+
 ---
 
 ## Recovery Configuration
 
-Properties under `maestro.recovery.*` control the periodic recovery poller. On
-top of the one-shot recovery at startup, every node re-runs recovery at this
-interval so that workflows owned by a node that has since died (its instance
-lock expired) or shut down are adopted without a restart. All nodes poll — the
-per-instance distributed lock guarantees only one of them wins each workflow.
+Properties under `maestro.recovery.*` control the recovery poller. It starts
+with the node: its first pass, the startup recovery of the workflows that were
+active when the service last stopped, runs at once on the poller's own thread,
+and every node then re-runs recovery every `poll-interval`, so that workflows
+owned by a node that has since died (its instance lock expired) or shut down
+are adopted without a restart. All nodes poll — the per-instance distributed
+lock guarantees only one of them wins each workflow. Startup does not wait for
+recovery: the application can report ready, and accept traffic, before every
+workflow is re-adopted (`StartupRecoveryRunnerTest`). That is safe: a signal
+for a workflow not yet adopted is stored and found by its replay, and a query
+reaches only the node that owns a run. A store failure in the startup pass is
+logged and retried; it does not fail startup.
+
+**Capacity.** Every pass of the poller admits per task queue only what this
+node can run or queue ([Worker Configuration](#worker-configuration)). The
+first pass is immediate (`RecoveryPollerCapacityTest.thePollersFirstPassRunsAtOnce`).
+A *full* pass reads from the first row and runs every `poll-interval`. After a
+pass that left instances for lack of capacity, a *capacity pass* runs as soon
+as capacity frees on this node, at most once per `min(1 s, poll-interval)`. It
+starts at the first instance it left on a queue that now has room and reads a
+page sized to that room (twice the free places, at least 20, at most 200); a
+wake with no free room reads nothing (`RecoveryCapacityTest`,
+`RecoveryPollerCapacityTest`).
 
 A recovery pass reads only the active instances (`RUNNING`, `WAITING_SIGNAL`,
 `WAITING_TIMER`, `COMPENSATING`) whose `service_name` is this node's
@@ -559,7 +701,7 @@ instances are never read or adopted, even when services share one table set:
 
 | Property                         | Type       | Default | Description                                                                 |
 |----------------------------------|------------|---------|-----------------------------------------------------------------------------|
-| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs.                                   |
+| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs. `false`: a one-shot startup pass still runs, without a capacity check, retried every `poll-interval` until it completes. |
 | `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
 
 Migration `V101__recovery_scan_index.sql` adds the partial index the paged scan
@@ -624,15 +766,15 @@ it replays a workflow against its recorded history.
 
 | Property                              | Type       | Default | Description                                                                                                    |
 |----------------------------------------|------------|---------|------------------------------------------------------------------------------------------------------------------|
-| `maestro.shutdown.timeout`            | `Duration` | `30s`   | How long graceful shutdown waits for in-flight workflows to drain before forcing through. |
+| `maestro.shutdown.timeout`            | `Duration` | `20s`   | The deadline for the whole engine shutdown: the drain of in-flight runs, the background loops, the instance-lock renewer and the lifecycle-event flush all share it. Runs still executing at the deadline are left running, never interrupted. Keep it at least 2 s below `spring.lifecycle.timeout-per-shutdown-phase`. See [Operations §15](operations.md#15-shutdown-one-deadline-and-the-grace-period). |
 | `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a wake it may have missed — a signal ingested elsewhere, or a timer fired/cancelled by a remote timer-poller leader. |
 | `maestro.signal.wake-notify.enabled`  | `boolean`  | `true`  | Whether the Postgres `LISTEN/NOTIFY` cross-node signal wake is active. Set `false` behind PgBouncer in transaction-pooling mode (`LISTEN` needs a session); wake then falls back to `wake-recheck-interval`. |
-| `maestro.signal.janitor-interval`     | `Duration` | `1h`    | How often unconsumed signals addressed to finished workflows are purged. Every node runs the janitor (the purge is idempotent; no leader election). |
+| `maestro.signal.janitor-interval`     | `Duration` | `1h`    | How often unconsumed signals addressed to finished workflows are purged. Every node runs the janitor, without leader election (the purge is idempotent). It deletes only this service's signals (those of workflows recorded under this node's `maestro.service-name`), in batches of 1,000, pausing between batches as long as the previous batch took (at most 5 s), and at most 1,000 batches (1,000,000 signals) per sweep; a larger backlog takes more than one interval (`SignalJanitorBatchingTest`, `PostgresStoreHygieneTest`). |
 | `maestro.signal.terminal-retention`   | `Duration` | `7d`    | How long after a workflow reaches `COMPLETED`/`TERMINATED` its unconsumed signals are kept; `FAILED` workflows keep theirs because they can be retried. Orphaned (pre-delivery) and consumed signals are never purged by the janitor. |
 
 The first two were previously hardcoded 30-second constants with no
-configuration seam; they now bind under `maestro.*` like every other property,
-with the same 30s defaults, so unset deployments are unaffected.
+configuration seam; they now bind under `maestro.*` like every other property.
+`maestro.shutdown.timeout` now defaults to 20 s (see the release notes).
 
 Since migration `V5`, a signal's `received_at` — the order in which same-name
 signals are consumed — is assigned by the database clock (`DEFAULT now()`), not
@@ -656,7 +798,17 @@ own, or the `@MaestroDataSource` one — see
 [A dedicated connection pool](#a-dedicated-connection-pool)), and each `NOTIFY`
 borrows another briefly — budget for it (effective pool capacity is one less; a configured Hikari
 `leakDetectionThreshold` logs one false positive for this connection) — and
-reconnects with 1 s → 30 s backoff if it drops.
+reconnects with 1 s → 30 s backoff if it drops. At shutdown the listener stops
+polling within one poll (500 ms; bounded at 2 s), issues `UNLISTEN *` and
+returns its connection to the pool intact: it is closed with the application
+context's beans, after the engine has drained (traced, not tested) and before
+the `DataSource` is shut down. If a poll is stuck in a database call past the
+2 s bound, the close returns anyway and the connection is released when that
+call returns, which can be after the pool has begun shutting down. Those up to
+2 s come after
+`maestro.shutdown.timeout`, not out of it. A pooled connection is never
+returned still listening: on a clean stop it is unlistened first; a session
+that failed is handed back broken, for the pool to discard (traced).
 
 `maestro.signal.wake-recheck-interval` is a real operational knob, not just a
 test seam: it is the correctness fallback for that wake. A notification lost
@@ -670,10 +822,6 @@ by a node that does not own the parked `workflow.sleep()` thread is observed
 via the sleeping node's periodic re-read of the durable timer row
 (`docs/open-issues.md` Issue 17).
 
-`maestro.lock.key-prefix` (see [Lock Configuration](#lock-configuration))
-now also applies to the activity execution lock, not just the instance
-lock — both honour the same configured prefix.
-
 ---
 
 ## Retention Configuration
@@ -684,7 +832,17 @@ retention — the instance row *and its whole history*: events, signals (consume
 or not) and timers, so the four `maestro_*` tables stop growing without bound.
 One node per service sweeps at a time, elected on
 `maestro:leader:retention:{service}` (15 s TTL, re-checked before every batch);
-each batch is one transaction, children deleted before the parent. See
+each batch is one transaction, children deleted before the parent. Between two
+batches the sweeper waits as long as the previous batch took, at most 5 s (a
+third of the leader TTL), so a sweep keeps the database busy about half of the
+time it runs; a sweep of B batches of t each takes about B·t + (B−1)·min(t, 5 s)
+(arithmetic; the pause rule is `RetentionSweeperPacingTest`). A sweep purges
+only workflows recorded under this node's `maestro.service-name`
+(`RetentionSweeperScopeTest`, `PostgresStoreHygieneTest`): services sharing the
+tables each purge their own rows with their own retentions, and rows recorded
+under a name no node runs any more are purged by nobody — see
+[Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name)
+for how to find and remove them. See
 [Operations § Retention and table growth](operations.md#11-retention-and-table-growth)
 for what a purge means for the dashboard, for workflow-ID reuse and for late
 signals.
@@ -697,7 +855,7 @@ signals.
 | `maestro.retention.terminated-retention` | `Duration` | `30d`   | How long a `TERMINATED` workflow is kept after it was terminated. Its leftover `PENDING` timers go with it. |
 | `maestro.retention.failed-retention`     | `Duration` | `90d`   | How long a `FAILED` workflow is kept after it failed. Longer by default because an operator may still retry it; once purged, a retry reports the workflow not found. |
 | `maestro.retention.batch-size`           | `int`      | `500`   | Instances deleted per transaction (plus all of their child rows). 1 to 10 000; each candidate is one JDBC bind parameter in the batch's deletes and pgjdbc allows 32 767 per statement, so a larger value is rejected at startup rather than failing every batch. |
-| `maestro.retention.max-batches-per-sweep`| `int`      | `100`   | Batches per status per sweep. Bounds one sweep's work on a large backlog: at the defaults, at most 50 000 instances per status per hour; the rest waits for the next interval. |
+| `maestro.retention.max-batches-per-sweep`| `int`      | `100`   | Batches per status per sweep. Bounds one sweep's work on a large backlog: at the defaults, at most 50 000 instances per status per hour; the rest waits for the next interval. The pause between batches adds no batch. |
 
 `maestro.signal.terminal-retention` (above) is independent and narrower: it
 purges only the *unconsumed signals* of `COMPLETED`/`TERMINATED` workflows,
@@ -767,15 +925,25 @@ the Maestro admin dashboard.
 
 | Property                      | Type      | Default                  | Description                                                                     |
 |-------------------------------|-----------|--------------------------|---------------------------------------------------------------------------------|
-| `maestro.admin.events.enabled`| `boolean` | `true`                   | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
+| `maestro.admin.events.enabled`| `boolean` | `false`                  | Whether to publish workflow lifecycle events (started, completed, failed, etc.) — all event families (workflow, activity, signal, timer, and compensation). |
 | `maestro.admin.events.topic`  | `String`  | `"maestro.admin.events"` | Kafka topic where lifecycle events are published.                               |
 
 When enabled, Maestro publishes lifecycle events for every workflow state
 transition. The admin dashboard (`maestro-admin` module) consumes these events to
 provide real-time visibility into workflow execution across all services.
 
-Set `enabled` to `false` if you are not running the admin dashboard and want to
-eliminate the publishing overhead.
+Publishing is **off by default** (since WP7; pinned by
+`MaestroPropertiesBindingTest.adminEventsAreOffByDefault` and
+`MaestroAutoConfigurationLifecycleEventsTest.byDefault_noLifecycleEventIsPublished`).
+When on, it costs two producer sends per live activity (started, then completed
+or failed) on top of the workflow, signal, timer and compensation events
+(traced, not tested), and the admin-events topic
+(`maestro.messaging.topics.admin-events`) must exist at startup: the topic
+verification requires it only while this property is `true`
+(`KafkaTopicVerificationStartupTest.failMode_adminTopicIsNotRequiredByDefault`).
+Set `maestro.admin.events.enabled: true` on every service the dashboard should
+show; a service that leaves it unset publishes nothing, and the dashboard shows
+nothing from it.
 
 ---
 
@@ -797,6 +965,8 @@ wire format reverts to byte-identical to a pre-tracing build.
 
 The whole block is additionally gated by `maestro.enabled`.
 
+`/actuator/health`'s `maestro` component is described in [Operations §14](operations.md#14-health-checks-and-kubernetes-probes): it is a readiness signal at most, and a probe timeout reads `UNKNOWN`.
+
 ```yaml
 maestro:
   observability:
@@ -806,11 +976,16 @@ maestro:
       enabled: true
 ```
 
-Meters registered: counters `maestro.workflow.started|completed|failed|compensated|terminated`,
-`maestro.signal.consumed`, `maestro.timer.fired`, `maestro.recovery.scanned`,
-`maestro.recovery.adopted`, `maestro.lock.renew.failures`, `maestro.standdown`;
-timer `maestro.activity.duration`; gauges `maestro.workflows.running` and
-`maestro.workflows.parked` (node-local — sum across pods for a cluster total).
+Meters registered (24): counters `maestro.workflow.started|completed|failed|compensated|terminated`,
+`maestro.activity.result.unreadable`, `maestro.signal.consumed`, `maestro.signal.duplicates`,
+`maestro.timer.fired`, `maestro.recovery.scanned`, `maestro.recovery.adopted`,
+`maestro.retention.sweeps`, `maestro.retention.purged`, `maestro.lock.renew.failures`,
+`maestro.loop.errors`, `maestro.standdown`, `maestro.run.abandoned` (17);
+timers `maestro.activity.duration` and `maestro.workflow.duration` (2); gauges
+`maestro.workflows.running`, `maestro.workflows.parked`, `maestro.wake.permits`
+and `maestro.taskqueue.slots.used` (node-local — sum across pods for a cluster
+total) and `maestro.recovery.deferred` (node-local, but not to be summed: every
+node sees the same unadopted rows) (5).
 See [`docs/observability.md`](observability.md) for tags, tag values, span
 topology, and the Kafka propagation header contract.
 
@@ -857,7 +1032,7 @@ maestro:
     verify-arguments: true
   admin:
     events:
-      enabled: true
+      enabled: true   # off by default; on here for the dashboard
       topic: maestro.admin.events
   retention:
     enabled: true
@@ -951,56 +1126,264 @@ Override with `spring.kafka.consumer.auto-offset-reset`,
 `spring.kafka.consumer.properties.allow.auto.create.topics` and
 `spring.kafka.producer.properties.max.block.ms` respectively.
 
-Boot's own `kafkaTemplate` / `kafkaProducerFactory` / `kafkaConsumerFactory`
-beans are **deliberately suppressed**: `KafkaMessagingAutoConfiguration`
-registers before `KafkaAutoConfiguration` and satisfies
-`ConditionalOnMissingBean(KafkaTemplate.class)`, so Boot's typed,
-`Object`-valued beans never get created. This is intentional, not a bug —
-Maestro needs exactly one `String`/`byte[]`-typed producer/consumer pair for
-its own topics, and letting Boot's beans coexist would leave two
-`KafkaTemplate`s of overlapping type in the context.
+**Your own Kafka traffic uses Spring Boot's beans.** Maestro's three Kafka
+beans (`maestroKafkaTemplate`, `maestroKafkaProducerFactory`,
+`maestroKafkaConsumerFactory`) are not default candidates
+(`@Bean(defaultCandidate = false)`). Spring Boot's `kafkaTemplate`,
+`kafkaProducerFactory` and `kafkaConsumerFactory` therefore exist beside them,
+built from the same `spring.kafka.*` properties, and an injection point that
+names only a type gets Boot's bean. Pinned by
+`KafkaCoexistenceContextTest` (`maestro-messaging-kafka`).
 
-A service that also needs Kafka for its own application traffic has two
-options:
+- **Your own traffic.** Inject Boot's `KafkaTemplate<String, YourDto>` (set
+  `spring.kafka.producer.value-serializer` for it), or declare your own
+  `ProducerFactory` / `KafkaTemplate` / `ConsumerFactory` beans, exactly as in
+  a service without Maestro. Boot's beans back off for yours as they always
+  do; the engine is unaffected. One exception: a typed `ProducerFactory` of
+  your own (such as `ProducerFactory<String, YourDto>`) **without** a
+  `KafkaTemplate` of your own fails startup, because Boot's `kafkaTemplate`
+  (no longer backing off for Maestro's) cannot use a factory whose declared
+  generics its `ProducerFactory<Object, Object>` parameter does not match
+  (`NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+  raised while creating `kafkaTemplate`). Declare your own `KafkaTemplate`
+  over it too, or declare the factory `@Bean(defaultCandidate = false)` and
+  inject it by name, so Boot's `kafkaProducerFactory` and `kafkaTemplate`
+  register beside it. A factory declared `ProducerFactory<?, ?>` is used by
+  Boot's `kafkaTemplate` and starts; a raw or `<Object, Object>` one should
+  behave the same (traced, not tested). Pinned by
+  `KafkaCoexistenceContextTest`.
+- **Reusing the engine's `byte[]` template.** Inject it with its qualifier:
+  `@Qualifier(MaestroKafkaBeans.TEMPLATE) KafkaTemplate<String, byte[]>`
+  (`io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans`; also
+  `PRODUCER_FACTORY` and `CONSUMER_FACTORY`). Without the qualifier, what
+  the point receives depends on your own beans:
+  - **You declare no `KafkaTemplate` of your own:** the point receives
+    Boot's template, whose default value serializer is `StringSerializer`
+    (see the check below).
+  - **You declare a `KafkaTemplate` of your own that the point does not
+    match** (one for another value type, such as
+    `KafkaTemplate<String, String>`): Boot's `kafkaTemplate` backs off,
+    Maestro's is not a default candidate, and the point receives nothing.
+    Startup fails with
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.KafkaTemplate<java.lang.String, byte[]>'`,
+    which a Spring Boot application reports as
+    `Bean '<bean>' injects a KafkaTemplate<…, byte[]> without a qualifier (<injection point>), and no Kafka template can be injected there by type. Maestro's 'maestroKafkaTemplate' is not a default candidate: …`,
+    with the qualifier as the action (`ByteArrayTemplateMissingFailureAnalyzer`;
+    pinned by `ByteArrayTemplateMissingFailureAnalyzerTest`). An unqualified
+    `ProducerFactory<String, byte[]>` or `ConsumerFactory<String, byte[]>`
+    beside a host factory of that kind should fail the same way, without
+    that analysis (traced, not tested).
 
-- **Different value type (the common case).** Define your own `KafkaTemplate`
-  bean under a bean name other than `maestroKafkaTemplate` — e.g. one typed
-  `KafkaTemplate<String, YourDto>` with its own `ProducerFactory`. It still
-  reads `spring.kafka.producer.*` for its own settings; only the engine's
-  forced invariants above are specific to `maestroKafkaTemplate`.
-- **Same `byte[]` traffic.** Inject and reuse `maestroKafkaTemplate` /
-  `maestroKafkaProducerFactory` directly rather than standing up a second
-  client.
+  A service whose point received Boot's template fails at startup rather
+  than on its first send, with one `IllegalStateException` that lists every
+  offending injection point, one block each, e.g.:
 
-**Plain `@KafkaListener` consumers.** The suppression above only removes
-Boot's *typed* `String`/`byte[]` beans — it does not touch Boot's own
-`kafkaListenerContainerFactory`, which stays name-conditioned and is never
-suppressed. A plain `@KafkaListener` method with no explicit
-`containerFactory` rides that factory, built from `spring.kafka.consumer.*`
-the ordinary Boot way. Maestro's engine-forced invariants (key/value
-(de)serializer, `group.id`) apply **only** to `maestroKafkaConsumerFactory`
-and never reach this factory — so a plain `@KafkaListener` must declare its
-own `spring.kafka.consumer.key-deserializer` /
-`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in
-a Maestro-free Boot application. Injecting `ConsumerFactory` by type resolves
-Maestro's `byte[]` factory instead; inject by bean name
-(`maestroKafkaConsumerFactory`) or define your own if that is not what you
-want. This is the rule the `sample-payment-gateway`, `underwriting-service`,
-and `verification-gateway-service` samples follow — each keeps its plain
+  ```text
+  Bean 'legacyBytesSender' injects a KafkaTemplate<…, byte[]> without a qualifier (constructor parameter 0 of com.example.LegacyBytesSender) and received 'kafkaTemplate', whose value serializer org.apache.kafka.common.serialization.StringSerializer cannot serialize byte[]: every send through it would fail.
+  ```
+
+  The message goes on to name both fixes: the qualifier, or
+  `spring.kafka.producer.value-serializer=org.apache.kafka.common.serialization.ByteArraySerializer`
+  to send `byte[]` through Boot's template (a service that sets it starts and
+  uses Boot's template), and then `maestro.messaging.template-injection-check`
+  as the way out of last resort (below).
+
+  Spring Kafka's JSON serializers are violations too: `JacksonJsonSerializer`,
+  the deprecated `JsonSerializer` (matched by class name; traced, not tested)
+  and their subclasses, even one declared for `byte[]`, write a `byte[]`
+  value as a base64-encoded JSON string (`hello` becomes `"aGVsbG8="`,
+  pinned by `aJsonSerializerWritesByteArrayAsABase64String`), so every send
+  succeeds and every record carries a different payload (traced). The
+  block for one says `whose value serializer
+  org.springframework.kafka.support.serializer.JacksonJsonSerializer writes
+  byte[] as a base64-encoded JSON string, not the bytes themselves`, and adds
+  a third way out for a template that is meant to send JSON: qualify the
+  point with that template's own bean name, e.g. `@Qualifier("kafkaTemplate")`,
+  which takes the point out of the check (pinned by
+  `aPointQualifiedWithTheJsonTemplatesOwnName_startsAndHoldsIt`). A JSON
+  subclass that you made pass `byte[]` through unchanged is still a
+  violation, because the check goes by class: give its points that
+  qualifier, or set `maestro.messaging.template-injection-check=warn`.
+
+  The check runs once, after every singleton is created and before
+  `MaestroSignalListenerBeanPostProcessor` verifies the topics or starts any
+  `@MaestroSignalListener` consumer (pinned). The check
+  (`ByteArrayTemplateInjectionCheck`) sees
+  constructor parameters that Spring autowired, and field, `@Bean`-method and
+  `@Autowired`-method parameters, of beans created at startup, typed
+  `KafkaTemplate<…, byte[]>`, `KafkaOperations<…, byte[]>` or a subclass. It
+  counts a point against a template only when that template is the one
+  template of the point's declared type that the point could have received,
+  so a bean that uses a `String` template and a separate `byte[]` template of
+  yours is not blamed for the wrong one, and a point typed with your own
+  `KafkaTemplate` subclass is checked against beans of that subclass only. A
+  point that several of your templates match (Spring chose by `@Primary`,
+  `@Priority` or the parameter or field name) never fails startup. It gets
+  one `WARN` when a matching template the bean depends on cannot serialize
+  `byte[]` or has a serializer the check cannot classify; when that
+  template's serializer is not visible to the check at all (a
+  `KafkaOperations` that is not a `KafkaTemplate`, or a factory with no
+  value serializer), only a `DEBUG` line (traced, not tested).
+  - **Not points, because Spring did not autowire them:** the constructor of
+    a bean built by an instance supplier (a `BeanRegistrar` supplier, or
+    `registerBean(…, Supplier)`, which may call `getBean` itself), and
+    constructor parameters given explicit indexed argument values. For a
+    `FactoryBean`, the FactoryBean's own class is checked, never its
+    product's. For a bean wrapped in a JDK dynamic proxy, the class its bean
+    definition names is checked (when that is a class, not an interface), and
+    a `@Bean` method's parameters are checked either way. A
+    definition with generic (unindexed) argument values exempts every
+    constructor parameter (traced, not tested).
+  - **A `@Qualifier` takes a point out of the check.** A point with Spring's
+    `@Qualifier` (or a `jakarta.inject` qualifier) is not checked, whichever
+    template the qualifier names; `@Qualifier("kafkaTemplate")` on a
+    `KafkaTemplate<String, byte[]>` starts and receives Boot's
+    `StringSerializer` template.
+  - **Shapes it does not see**, each of which starts and receives Boot's
+    template: raw or wildcard generics (`KafkaTemplate`,
+    `KafkaTemplate<String, ?>`), `ObjectProvider`, `Optional` and collection
+    points, and a `@Lazy` point (a proxy; no dependency is recorded at
+    startup). Nor does it see a class with several constructors none of
+    which is `@Autowired`, or (traced) a `getBean` call or a lazy bean or
+    prototype not created at startup.
+
+  Any other value serializer it cannot classify (a generic one whose type
+  it cannot resolve) does not fail startup; the check logs a `WARN` naming
+  the bean and the fix instead. A serializer declared for `Object` passes
+  without a `WARN`, Spring Kafka's `DelegatingSerializer`,
+  `DelegatingByTypeSerializer` and `DelegatingByTopicSerializer` among them
+  (pinned), although what it writes for `byte[]` depends on delegates the
+  check cannot see. A serializer named only in the producer
+  configuration (`spring.kafka.producer.value-serializer`) is classified
+  from its class, without being instantiated; a serializer instance or
+  supplier set on the factory in code is asked for once (it wins over the
+  configuration, as in Kafka). Pinned by
+  `ByteArrayTemplateInjectionCheckTest` (`maestro-messaging-kafka`).
+
+  **When the point is in code you cannot change**, and neither fix is open
+  to you, `maestro.messaging.template-injection-check` is the way out of
+  last resort: `warn` logs each violation at `WARN`, with the text above
+  less its last-resort sentence and ending `(Logged, not fatal, because
+  maestro.messaging.template-injection-check=warn.)`, and starts; `off` turns the check off, its other `WARN`s included. The
+  default is `fail`; an unknown value fails startup. Either setting leaves
+  the point holding the template it received, so its sends still fail or
+  still carry a different payload (traced). Pinned by `ByteArrayTemplateInjectionCheckTest`
+  (`failMode_*`, `warnMode_*`, `offMode_*`) and `MaestroPropertiesBindingTest`.
+- **Replacing an engine bean.** Declare a bean with its name and
+  `defaultCandidate = false`, e.g.
+  `@Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)`; the
+  engine uses it and Boot's three Kafka beans still exist.
+  - For `maestroKafkaProducerFactory`, `defaultCandidate = false` is
+    **required**. A plain `@Bean` of that name makes Boot's
+    `kafkaProducerFactory` back off while Boot's `kafkaTemplate` still
+    registers, and startup fails with
+    `NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+    raised while creating `kafkaTemplate`. A Spring Boot application reports
+    it as:
+
+    ```text
+    ***************************
+    APPLICATION FAILED TO START
+    ***************************
+
+    Description:
+
+    The bean 'maestroKafkaProducerFactory' replaces Maestro's engine producer factory but is a default candidate, so Spring Boot's kafkaProducerFactory backed off. Spring Boot's kafkaTemplate (parameter 0 of method kafkaTemplate in org.springframework.boot.kafka.autoconfigure.KafkaAutoConfiguration) then found no ProducerFactory<Object, Object> to use.
+
+    Action:
+
+    Declare the replacement with @Bean(name = MaestroKafkaBeans.PRODUCER_FACTORY, defaultCandidate = false), so Spring Boot's kafkaProducerFactory registers beside it, or define your own KafkaTemplate bean, so Spring Boot's kafkaTemplate backs off. See docs/configuration.md § Kafka Client Configuration.
+    ```
+
+    Either fix starts. The analysis (`ProducerFactoryReplacementFailureAnalyzer`)
+    appears only for this failure; any other missing `ProducerFactory` is
+    left to Spring Boot's own failure reporting. Pinned by
+    `ProducerFactoryReplacementFailureAnalyzerTest`.
+  - For `maestroKafkaTemplate` and `maestroKafkaConsumerFactory` it is
+    recommended. A plain `@Bean` of that name also replaces the engine's, but
+    Boot's `kafkaTemplate` (respectively `kafkaConsumerFactory`) then backs
+    off and your unqualified injection points of that type get yours; plain
+    `@KafkaListener`s change too (see **After a plain-`@Bean` replacement**
+    below).
+
+  Each combination is pinned by
+  `KafkaCoexistenceContextTest.replacingAnEngineBeanByName_matrix`.
+- **`spring.kafka.producer.*` now configures two producer factories**, Boot's
+  and the engine's (which then forces its invariants above). Each creates its
+  Kafka producer on first send, so Boot's opens no connection unless you send
+  through it (traced).
+
+**Plain `@KafkaListener` consumers.** A plain `@KafkaListener` is Spring
+Boot's, configured exactly as in a service without Maestro; a
+`@MaestroSignalListener` is Maestro's. Neither sees the other's settings.
+The table holds while Maestro's consumer factory and template are not
+replaced by plain `@Bean`s (replacements declared `defaultCandidate = false`
+keep it; see below for plain ones):
+
+| | Plain `@KafkaListener` | `@MaestroSignalListener` |
+|---|---|---|
+| Container factory | Boot's `kafkaListenerContainerFactory` (or the one its `containerFactory` names) | None: Maestro builds each container itself; it is not in the `KafkaListenerEndpointRegistry` |
+| Consumer factory | Boot's `kafkaConsumerFactory` bean | `maestroKafkaConsumerFactory` |
+| Deserializers | `spring.kafka.consumer.key-deserializer` / `value-deserializer` | Always `StringDeserializer` / `ByteArrayDeserializer`, whatever `spring.kafka.consumer.*` says |
+| Group id | Its own (`groupId`, or `spring.kafka.consumer.group-id`) | `maestro-<service>` (or `maestro.messaging.consumer-group`), plus `-<groupIdSuffix>` when set |
+| `spring.kafka.listener.*` | Applies (e.g. `ack-mode`, `auto-startup`) | Does not apply, except `observation-enabled`; always `AckMode.RECORD`, always started |
+| Error handler and DLT | Your `CommonErrorHandler` bean if it is the only one; among several, the `@Primary` one, else the highest `@Priority` (traced, not tested), else the one named `commonErrorHandler` (Boot resolves it through a parameter of that name); with none of these, no handler is set and Spring Kafka's default `DefaultErrorHandler` applies. **No dead-letter topic unless you configure one.** | Maestro's own: retries, then `<topic>.DLT` through `maestroKafkaTemplate` (`maestro.messaging.redelivery.*`). Never your error handler |
+| Reply template | Boot's `kafkaTemplate` | None (a `@MaestroSignalListener` returns a `SignalRouting`, not a reply) |
+| `KafkaConnectionDetails` | Applies (bootstrap servers) | Applies (bootstrap servers) |
+
+Pinned by `KafkaListenerBoundaryTest` (`maestro-messaging-kafka`), with both
+kinds in one application; `KafkaCoexistenceRoundTripTest` runs them against a
+real broker, including the dead-letter record's `kafka_dlt-*` headers.
+
+**After a plain-`@Bean` replacement** of `maestroKafkaConsumerFactory` and
+`maestroKafkaTemplate`, Boot's `kafkaConsumerFactory` and `kafkaTemplate` back
+off, and what a plain `@KafkaListener` gets depends on how the replacement is
+declared. Boot's container factory asks for a `ConsumerFactory<Object, Object>`
+and a `KafkaTemplate<Object, Object>`:
+
+- Declared `ConsumerFactory<String, byte[]>` / `KafkaTemplate<String, byte[]>`:
+  neither matches, so a plain `@KafkaListener` rides an inline consumer
+  factory built from `spring.kafka.consumer.*` alone, which ignores
+  `KafkaConnectionDetails`, and has no reply template.
+- Declared with wildcards (`ConsumerFactory<?, ?>`, `KafkaTemplate<?, ?>`):
+  both match, so a plain `@KafkaListener` rides your `byte[]` factory and its
+  deserializers instead of `spring.kafka.consumer.*`, and replies through
+  your `byte[]` template.
+
+`@MaestroSignalListener` uses the replacement either way. Pinned by
+`KafkaListenerBoundaryTest`.
+
+Before this release a plain `@KafkaListener` ignored
+`KafkaConnectionDetails`: Boot's container factory found no consumer factory
+bean it could use and built an inline one from `spring.kafka.*` alone, so a
+Testcontainers `@ServiceConnection` user's plain listeners connected to
+`spring.kafka.bootstrap-servers` instead. The same inline factory skipped every
+`DefaultKafkaConsumerFactoryCustomizer` bean (traced).
+
+Maestro's forced deserializers never reach a plain `@KafkaListener`, so it must
+declare its own `spring.kafka.consumer.key-deserializer` /
+`spring.kafka.consumer.value-deserializer` explicitly, exactly as it would in a
+Maestro-free Boot application. This is the rule the `sample-payment-gateway`,
+`underwriting-service`, and `verification-gateway-service` samples follow — each keeps its plain
 `@KafkaListener`'s `spring.kafka.consumer.*-deserializer` properties in its
 `application.yml`, with a comment explaining why removing them (on the
 mistaken belief that Maestro's invariants cover them) breaks that listener.
 
-**Two `spring.kafka.template.*` properties that read but do nothing for
-Maestro's own template.** `spring.kafka.template.default-topic` binds and
-appears in `/actuator/configprops`, but `maestroKafkaTemplate`'s send calls
-always name an explicit topic, so it is never consulted. Kafka producer
-transactions (`spring.kafka.producer.transaction-id-prefix` and friends) are
-also quietly unsupported — Boot's `kafkaTransactionManager` never exists in a
-Maestro context, since `maestroKafkaProducerFactory` is not
-transaction-capable. Both are ordinary, honoured settings for a *second*,
-user-defined `KafkaTemplate` (the "different value type" option above); only
-`maestroKafkaTemplate` ignores them.
+**`spring.kafka.template.default-topic` does nothing for Maestro's own
+template.** `maestroKafkaTemplate`'s send calls always name an explicit topic,
+so it is never consulted. Boot's `kafkaTemplate`, which now exists, honours
+it (traced).
+
+**Kafka producer transactions.** Before this release, setting
+`spring.kafka.producer.transaction-id-prefix` failed startup: Boot built its
+`kafkaTransactionManager` over `maestroKafkaProducerFactory`, which is not
+transaction-capable, and the context failed with
+`java.lang.IllegalArgumentException: The 'ProducerFactory' must support transactions`.
+Now `kafkaTransactionManager` is built over Boot's transactional
+`kafkaProducerFactory`, for your own traffic. The engine's producer is never
+transactional (`maestroKafkaProducerFactory.transactionCapable()` and
+`maestroKafkaTemplate.isTransactional()` are `false`). Pinned by
+`KafkaCoexistenceContextTest.aTransactionIdPrefix_givesBootsTransactionManagerOverBootsFactory`.
 
 Observation (Micrometer spans on send/receive) on `maestroKafkaTemplate` and
 the `@MaestroSignalListener` consumer containers defaults **on** when
@@ -1021,7 +1404,7 @@ Create topics before starting your service — with the default
 otherwise, and prints exactly these commands for whatever is missing (see
 [Kafka Topic Verification](#kafka-topic-verification)). For a service named
 `order-service` with one `@MaestroSignalListener(topic = "payments.results")`,
-redelivery on (default) and lifecycle events on (default):
+redelivery on (default) and lifecycle events enabled:
 
 ```bash
 # The engine's inbound signal topic and its dead-letter companion
@@ -1038,7 +1421,7 @@ kafka-topics.sh --create --topic payments.results.DLT \
   --bootstrap-server localhost:9092
 # (payments.results itself is usually created by the service that publishes it)
 
-# Lifecycle events for the admin dashboard (skip with maestro.admin.events.enabled=false)
+# Lifecycle events for the admin dashboard (only with maestro.admin.events.enabled: true)
 kafka-topics.sh --create --topic maestro.admin.events \
   --partitions 3 --replication-factor 3 \
   --bootstrap-server localhost:9092
@@ -1052,14 +1435,13 @@ source so a dead-lettered record keeps its partition. With
 
 ## Lock Keys
 
-Maestro uses PostgreSQL tables for distributed locking, activity deduplication
-and leader election. The keys below are the `lock_key` values stored in
-`maestro_distributed_lock` and `maestro_leader_election`:
+Maestro uses PostgreSQL tables for distributed locking and leader election.
+The keys below are the `lock_key` values stored in `maestro_distributed_lock`
+and `maestro_leader_election`:
 
 | Key Pattern                                   | Table                       | Purpose                         | TTL               |
 |-----------------------------------------------|-----------------------------|-------------------------------- |--------------------|
 | `maestro:lock:workflow:{workflowId}`          | `maestro_distributed_lock`  | Workflow instance lock          | 30s (renewed every 10s) |
-| `maestro:lock:activity:{workflowId}:{seq}`    | `maestro_distributed_lock`  | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro:leader:timer-poller:{service}`       | `maestro_leader_election`   | Timer poller leader election    | 15s                |
 | `maestro:leader:retention:{service}`          | `maestro_leader_election`   | Retention sweeper leader election | 15s              |
 
@@ -1073,12 +1455,21 @@ including parked waits — and renewed every 10 seconds. If a node crashes, the
 lock expires after 30 seconds, allowing another node's recovery poller to pick
 up the workflow.
 
-The activity lock is a best-effort guard against concurrent duplicate execution
-and doubles as the fast-path dedup key. The authoritative dedup is the Postgres
-unique index on `(workflow_instance_id, sequence_number)` — but note that this
-deduplicates *persisted results*, not external side effects. If a lock expires
-or is lost mid-execution, an activity can run more than once, so activities
-must be idempotent (or use fencing/idempotency keys with external systems).
+There is no per-activity lock. With a lock backend, two runners execute a
+step concurrently only when both hold the same workflow: the window after a
+node lost its instance lock, or after a node's instance-lock acquire failed
+and it proceeded unlocked (traced, not tested). Lease fencing (V6) rejects
+the stale runner's outcome append, so the stale runner records nothing; the
+adopting node, finding no recorded outcome, runs the step again. That holds
+for a store that overrides `WorkflowStore`'s fenced overloads, as the shipped
+JDBC store does. A custom store that keeps the SPI defaults is unfenced (the
+defaults delegate to the unfenced writes; `WorkflowStore` Javadoc, "Lease
+fencing"): only the unique event index separates the two runners, so the
+outcome that lands first at a sequence is kept, possibly the stale runner's,
+and the other runner's append collides and stands it down (traced, not
+tested). Fencing bounds *persisted progress*, not external side effects. Activities must be
+idempotent. A duplicate Kafka delivery is deduplicated by the signal's message
+id (V9), not by a lock.
 
 The leader election keys ensure that only one node in the cluster runs the timer
 poller, and only one runs the retention sweeper's purge batches. They use a

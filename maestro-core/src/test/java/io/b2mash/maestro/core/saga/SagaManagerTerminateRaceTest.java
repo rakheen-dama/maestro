@@ -26,7 +26,9 @@ import tools.jackson.databind.ObjectMapper;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -418,6 +420,10 @@ class SagaManagerTerminateRaceTest {
         }
         @Override public List<WorkflowEvent> getEvents(UUID instanceId) { return delegate.getEvents(instanceId); }
         @Override public int deleteFailureEvents(UUID instanceId) { return delegate.deleteFailureEvents(instanceId); }
+        @Override public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                                   Set<String> deleteTimerIds) {
+            delegate.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
+        }
         @Override public void saveSignal(WorkflowSignal signal) { delegate.saveSignal(signal); }
         @Override public List<WorkflowSignal> getUnconsumedSignals(String wfId, String name) {
             return delegate.getUnconsumedSignals(wfId, name);
@@ -434,10 +440,31 @@ class SagaManagerTerminateRaceTest {
         public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
             return delegate.purgeTerminalInstancesBefore(status, cutoff, batchSize);
         }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(serviceName, cutoff, limit);
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                        int batchSize) {
+            return delegate.purgeTerminalInstancesBefore(serviceName, status, cutoff, batchSize);
+        }
+
+        @Override
+        public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+                String serviceName, Set<String> workflowTypes, int limit) {
+            return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, workflowTypes, limit);
+        }
         @Override public void saveTimer(WorkflowTimer timer) { delegate.saveTimer(timer); }
         @Override public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
             return delegate.getDueTimers(now, batchSize);
         }
+        @Override public List<WorkflowTimer> getDueTimers(int batchSize) {
+            return delegate.getDueTimers(batchSize);
+        }
+        @Override public Optional<Instant> storeTime() { return delegate.storeTime(); }
         @Override public Optional<WorkflowTimer> findTimer(UUID workflowInstanceId, String timerId) {
             return delegate.findTimer(workflowInstanceId, timerId);
         }

@@ -28,7 +28,9 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
@@ -477,6 +479,12 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public tools.jackson.databind.@Nullable JsonNode appendEventReturningPayload(
+                WorkflowEvent event, io.b2mash.maestro.core.spi.RunLease lease) {
+            return delegate.appendEventReturningPayload(event, lease);
+        }
+
+        @Override
         public boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent) {
             return delegate.completeInstance(terminal, terminalEvent);
         }
@@ -524,6 +532,12 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                         Set<String> deleteTimerIds) {
+            delegate.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
+        }
+
+        @Override
         public void saveSignal(WorkflowSignal signal) {
             delegate.saveSignal(signal);
         }
@@ -549,6 +563,23 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         }
 
         @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+            return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(serviceName, cutoff, limit);
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                        int batchSize) {
+            return delegate.purgeTerminalInstancesBefore(serviceName, status, cutoff, batchSize);
+        }
+
+        @Override
+        public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+                String serviceName, Set<String> workflowTypes, int limit) {
+            return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, workflowTypes, limit);
+        }
+
+        @Override
         public void saveTimer(WorkflowTimer timer) {
             delegate.saveTimer(timer);
         }
@@ -556,6 +587,16 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         @Override
         public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
             return delegate.getDueTimers(now, batchSize);
+        }
+
+        @Override
+        public List<WorkflowTimer> getDueTimers(int batchSize) {
+            return delegate.getDueTimers(batchSize);
+        }
+
+        @Override
+        public Optional<Instant> storeTime() {
+            return delegate.storeTime();
         }
 
         @Override

@@ -53,15 +53,20 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -95,6 +100,16 @@ import java.util.function.Supplier;
  *       stop is never a workflow failure.</li>
  * </ul>
  *
+ * <h2>Construction</h2>
+ * <p>Build an executor with {@link #builder(WorkflowStore, PayloadSerializer, String)}:
+ * the store, serializer and service name are required, and every other
+ * setting has a default documented on its {@link Builder} setter.
+ * <pre>{@code
+ * WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "order-service")
+ *         .distributedLock(lock)
+ *         .build();
+ * }</pre>
+ *
  * <h2>Virtual Thread Model</h2>
  * <p>Each workflow runs on its own virtual thread, named
  * {@code maestro-workflow-{type}-{workflowId}}. The thread is cheap —
@@ -113,12 +128,14 @@ public final class WorkflowExecutor {
     private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
 
     /**
-     * Default wait for in-flight workflows to drain during {@link #shutdown()},
-     * used when no explicit {@code shutdownTimeout} is passed to the
-     * constructor. Corresponds to {@code maestro.shutdown.timeout} in the
-     * Spring Boot starter.
+     * Default deadline for the whole of {@link #shutdown()} — 20 seconds,
+     * below Spring Boot's 30 s {@code spring.lifecycle.timeout-per-shutdown-phase}
+     * and Kubernetes' 30 s grace period, so the rest of a host's shutdown
+     * still fits — used when no explicit {@code shutdownTimeout} is set with
+     * {@link Builder#shutdownTimeout}. Corresponds to
+     * {@code maestro.shutdown.timeout} in the Spring Boot starter.
      */
-    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(20);
 
     /**
      * How many times a terminal-status write is retried against a fresh read
@@ -148,9 +165,47 @@ public final class WorkflowExecutor {
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final LifecycleEventSink lifecycleEventSink;
     private final ConcurrentHashMap<String, RunningWorkflow> runningWorkflows;
+
+    /**
+     * Test seam: runs on the launching thread once a launch has been admitted
+     * — the instance lock acquired and, on a resume, the instance adopted —
+     * before the run is set up. A test makes it throw to show that a failure
+     * between admission and the run's thread start still releases the lock.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable afterLaunchAdmission = () -> { };
+
+    /**
+     * Test seam: runs on the run's own thread before the run body — after
+     * the thread started, before {@code executeWorkflow} is entered. A test
+     * makes it throw to show that a run whose thread dies there still
+     * releases its instance lock, its running entry and its slot reservation.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRunBody = () -> { };
+
+    /** What the most recent full gated recovery pass deferred; see {@link #recoveryDeferredCount()}. */
+    private volatile int recoveryDeferred;
+
+    /**
+     * Test seam: runs on the shutting-down thread just before the drain
+     * (D-2's step 5). A test makes it throw to show that a second
+     * {@link #shutdown()} caller is released when the first call fails.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeShutdownDrain = () -> { };
+
+    /**
+     * Test seam: runs on the launching thread after a run has been registered
+     * in {@code runningWorkflows} and before its thread is started. A test
+     * holds it to put a registered-but-unstarted run in front of a shutdown.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRunThreadStart = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
+    private final AtomicReference<OneShotRecovery> oneShotRecovery = new AtomicReference<>();
     private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
     private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
@@ -159,465 +214,48 @@ public final class WorkflowExecutor {
     private volatile @Nullable RetentionSettings retentionSettings;
 
     /**
-     * Creates a new workflow executor with the default lock key prefix
-     * ({@code maestro:lock:}) and instance-lock TTL (30s).
-     *
-     * @param store           workflow store for persistence
-     * @param distributedLock optional distributed lock backend
-     * @param messaging       optional messaging for lifecycle events
-     * @param signalNotifier  optional cross-instance signal notification
-     * @param serializer      Jackson serializer for payloads
-     * @param serviceName     the name of the owning service
+     * How long a second {@link #shutdown()} caller waits beyond what is left
+     * of the first call's deadline (D-5): the first call's last steps and its
+     * summary line run after the deadline's last bounded wait.
      */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL);
-    }
+    static final Duration SECOND_CALLER_GRACE = Duration.ofSeconds(2);
+
+    /** The running shutdown's deadline, published for a second caller; {@code null} until then. */
+    private volatile @Nullable ShutdownDeadline shutdownDeadline;
+    /** Counted down when the first {@link #shutdown()} call has finished, however it ended. */
+    private final CountDownLatch shutdownFinished = new CountDownLatch(1);
+    private final Duration instanceLockTtl;
 
     /**
-     * Creates a new workflow executor with explicit lock configuration and
-     * lifecycle event publishing enabled.
+     * The single build path: {@link Builder#build()} ends here, and it is
+     * the only way to obtain an executor. Validates the builder's values — the three
+     * durations first, then the reference options — before building any
+     * component from them.
      *
-     * @param store           workflow store for persistence
-     * @param distributedLock optional distributed lock backend
-     * @param messaging       optional messaging for lifecycle events
-     * @param signalNotifier  optional cross-instance signal notification
-     * @param serializer      Jackson serializer for payloads
-     * @param serviceName     the name of the owning service
-     * @param lockKeyPrefix   prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl TTL for the per-workflow instance lock; renewed
-     *                        at one third of this interval — must be strictly
-     *                        positive
-     * @throws IllegalArgumentException if {@code instanceLockTtl} is
-     *                                  {@code null}, zero, or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, true);
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration and
-     * explicit control over lifecycle event publishing.
-     *
-     * @param store                   workflow store for persistence
-     * @param distributedLock         optional distributed lock backend
-     * @param messaging               optional messaging for lifecycle events
-     * @param signalNotifier          optional cross-instance signal notification
-     * @param serializer              Jackson serializer for payloads
-     * @param serviceName             the name of the owning service
-     * @param lockKeyPrefix           prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl         TTL for the per-workflow instance lock; renewed
-     *                                at one third of this interval — must be strictly
-     *                                positive
-     * @param lifecycleEventsEnabled  whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
-     *                                {@code _FAILED} lifecycle events are published at all
-     *                                (independent of whether {@code messaging} is configured).
-     *                                Corresponds to {@code maestro.admin.events.enabled} in the
-     *                                Spring Boot starter.
-     * @throws IllegalArgumentException if {@code instanceLockTtl} is
-     *                                  {@code null}, zero, or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
-                DEFAULT_SHUTDOWN_TIMEOUT, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration,
-     * explicit control over lifecycle event publishing, and explicit
-     * shutdown/signal timing.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
-     *                               at one third of this interval — must be strictly
-     *                               positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
-     *                               {@code _FAILED} lifecycle events are published at all
-     *                               (independent of whether {@code messaging} is configured).
-     *                               Corresponds to {@code maestro.admin.events.enabled} in the
-     *                               Spring Boot starter.
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain before returning — must be strictly
-     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store for a wake that
-     *                               happened without a local unpark — a signal persisted
-     *                               on another node, or a timer fired/cancelled by a
-     *                               remote timer-poller leader — must be strictly
-     *                               positive. Bounds cross-node signal, timer-fire and
-     *                               timer-cancel latency for a parked workflow.
-     *                               Corresponds to {@code maestro.signal.wake-recheck-interval}.
+     * @param builder the settings; read once, here, and never retained
      * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
      *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
      *                                  or negative
+     * @throws NullPointerException     if {@code lockKeyPrefix}, {@code observer},
+     *                                  {@code taskQueueLimits} or {@code instantSource}
+     *                                  is {@code null}
      */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, EngineObserver.NOOP);
-    }
-
-    /**
-     * Creates a new workflow executor with explicit lock configuration,
-     * explicit control over lifecycle event publishing, explicit
-     * shutdown/signal timing, and an {@link EngineObserver}.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
-     *                               at one third of this interval — must be strictly
-     *                               positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/
-     *                               {@code _FAILED} lifecycle events are published at all
-     *                               (independent of whether {@code messaging} is configured).
-     *                               Corresponds to {@code maestro.admin.events.enabled} in the
-     *                               Spring Boot starter.
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain before returning — must be strictly
-     *                               positive. Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store for a wake that
-     *                               happened without a local unpark — must be strictly
-     *                               positive. Corresponds to
-     *                               {@code maestro.signal.wake-recheck-interval}.
-     * @param observer               engine observation seam invoked synchronously at
-     *                               execution boundaries and handed to every component
-     *                               this executor builds; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     *                               when no observation is wanted — see
-     *                               {@link EngineObserver} for the callback and
-     *                               thread-safety contract
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer, Map.of());
-    }
-
-    /**
-     * Creates a new workflow executor with every setting of the 12-argument
-     * constructor plus per-task-queue concurrency limits (F8 / Issue 25).
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock; renewed
-     *                               at one third of this interval — must be strictly
-     *                               positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all. Corresponds to
-     *                               {@code maestro.admin.events.enabled}.
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive.
-     *                               Corresponds to {@code maestro.shutdown.timeout}.
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store — must be
-     *                               strictly positive. Corresponds to
-     *                               {@code maestro.signal.wake-recheck-interval}.
-     * @param observer               engine observation seam; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     *                               when no observation is wanted
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue
-     *                               name, enforced by this executor's
-     *                               {@link #taskQueueGovernor()}; queues not listed
-     *                               are unbounded. Corresponds to
-     *                               {@code maestro.worker.task-queues}.
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer, taskQueueLimits, InstantSource.system());
-    }
-
-    /**
-     * Creates a new workflow executor with every setting of the 13-argument
-     * constructor plus the limits of every task queue not listed in
-     * {@code taskQueueLimits}. Every other constructor passes {@code null} —
-     * unlisted queues unbounded; the Spring Boot starter passes
-     * {@code maestro.worker.default-concurrency} /
-     * {@code default-activity-concurrency}.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
-     *                               strictly positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store — must be
-     *                               strictly positive
-     * @param observer               engine observation seam; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
-     * @param defaultTaskQueueLimits per-node limits of each task queue not in
-     *                               {@code taskQueueLimits} — each such queue gets
-     *                               its own pools of this size (see
-     *                               {@link TaskQueueGovernor#TaskQueueGovernor(Map, TaskQueueLimits)});
-     *                               {@code null} leaves them unbounded
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits,
-            @Nullable TaskQueueLimits defaultTaskQueueLimits
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer, taskQueueLimits, defaultTaskQueueLimits,
-                InstantSource.system());
-    }
-
-    /**
-     * Creates a workflow executor with the defaults of the six-argument
-     * constructor but an explicit {@link InstantSource} for arming durable
-     * deadlines — the seam {@code TestWorkflowEnvironment} uses to put
-     * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
-     * controllable test clock (R59). Production code has no reason to call
-     * this: every other constructor uses {@link InstantSource#system()}.
-     *
-     * @param store           workflow store for persistence
-     * @param distributedLock optional distributed lock backend
-     * @param messaging       optional messaging for lifecycle events
-     * @param signalNotifier  optional cross-instance signal notification
-     * @param serializer      Jackson serializer for payloads
-     * @param serviceName     the name of the owning service
-     * @param instantSource   the clock deadlines are armed on — see
-     *                        {@link #instantSource()}
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            InstantSource instantSource
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL, true,
-                DEFAULT_SHUTDOWN_TIMEOUT, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL,
-                EngineObserver.NOOP, Map.of(), instantSource);
-    }
-
-    /**
-     * Creates a new workflow executor with every setting of the 13-argument
-     * constructor plus the {@link InstantSource} durable deadlines are armed
-     * on (R59).
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys (e.g. {@code maestro:lock:})
-     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
-     *                               strictly positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive
-     * @param wakeRecheckInterval    how often a parked {@code awaitSignal()} or
-     *                               {@code sleep()} re-checks the store — must be
-     *                               strictly positive
-     * @param observer               engine observation seam; pass
-     *                               {@link EngineObserver#NOOP} (never {@code null})
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
-     * @param instantSource          the clock a live {@code sleep()} arms its timer's
-     *                               {@code fireAt} from, a live {@code awaitSignal()}
-     *                               arms and decides its deadline on, and
-     *                               {@code currentTime()} records — see
-     *                               {@link #instantSource()}. Pass
-     *                               {@link InstantSource#system()} in production:
-     *                               the timer poller ({@link #startTimerPoller})
-     *                               still compares due rows against the system
-     *                               clock, so a non-system source is only for a
-     *                               test harness that fires timers itself (as
-     *                               {@code TestWorkflowEnvironment.advanceTime}
-     *                               does) and never starts the poller.
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits,
-            InstantSource instantSource
-    ) {
-        this(store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lockKeyPrefix, instanceLockTtl, lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer, taskQueueLimits, null, instantSource);
-    }
-
-    /**
-     * The constructor every other one delegates to: every setting of the
-     * 14-argument {@link InstantSource} constructor plus the limits of every
-     * task queue not listed in {@code taskQueueLimits}.
-     *
-     * @param store                  workflow store for persistence
-     * @param distributedLock        optional distributed lock backend
-     * @param messaging              optional messaging for lifecycle events
-     * @param signalNotifier         optional cross-instance signal notification
-     * @param serializer             Jackson serializer for payloads
-     * @param serviceName            the name of the owning service
-     * @param lockKeyPrefix          prefix for distributed lock keys
-     * @param instanceLockTtl        TTL for the per-workflow instance lock — must be
-     *                               strictly positive
-     * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
-     *                               published at all
-     * @param shutdownTimeout        how long {@link #shutdown()} waits for in-flight
-     *                               workflows to drain — must be strictly positive
-     * @param wakeRecheckInterval    how often a parked run re-checks the store —
-     *                               must be strictly positive
-     * @param observer               engine observation seam; never {@code null}
-     * @param taskQueueLimits        per-node concurrency limits keyed by task-queue name
-     * @param defaultTaskQueueLimits per-node limits of each task queue not in
-     *                               {@code taskQueueLimits}; {@code null} leaves
-     *                               them unbounded
-     * @param instantSource          the clock durable deadlines are armed on — pass
-     *                               {@link InstantSource#system()} in production
-     * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
-     *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
-     *                                  or negative
-     */
-    public WorkflowExecutor(
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            @Nullable SignalNotifier signalNotifier,
-            PayloadSerializer serializer,
-            String serviceName,
-            String lockKeyPrefix,
-            Duration instanceLockTtl,
-            boolean lifecycleEventsEnabled,
-            Duration shutdownTimeout,
-            Duration wakeRecheckInterval,
-            EngineObserver observer,
-            Map<String, TaskQueueLimits> taskQueueLimits,
-            @Nullable TaskQueueLimits defaultTaskQueueLimits,
-            InstantSource instantSource
-    ) {
+    private WorkflowExecutor(Builder builder) {
+        var store = builder.store;
+        var distributedLock = builder.distributedLock;
+        var messaging = builder.messaging;
+        var signalNotifier = builder.signalNotifier;
+        var serializer = builder.serializer;
+        var serviceName = builder.serviceName;
+        var lockKeyPrefix = builder.lockKeyPrefix;
+        var instanceLockTtl = builder.instanceLockTtl;
+        var lifecycleEventsEnabled = builder.lifecycleEventsEnabled;
+        var shutdownTimeout = builder.shutdownTimeout;
+        var wakeRecheckInterval = builder.wakeRecheckInterval;
+        var observer = builder.observer;
+        var taskQueueLimits = builder.taskQueueLimits;
+        var defaultTaskQueueLimits = builder.defaultTaskQueueLimits;
+        var instantSource = builder.instantSource;
         if (instanceLockTtl == null || instanceLockTtl.isNegative() || instanceLockTtl.isZero()) {
             throw new IllegalArgumentException(
                     "instanceLockTtl must be positive, got " + instanceLockTtl);
@@ -630,6 +268,10 @@ public final class WorkflowExecutor {
             throw new IllegalArgumentException(
                     "wakeRecheckInterval must be positive, got " + wakeRecheckInterval);
         }
+        Objects.requireNonNull(lockKeyPrefix, "lockKeyPrefix");
+        Objects.requireNonNull(observer, "observer");
+        Objects.requireNonNull(taskQueueLimits, "taskQueueLimits");
+        this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
         // Guarded once, here, before any component below is built from it, so
         // every store call this executor and its components make on a run's
         // behalf — memo lookups, outcome appends, status writes, signal and
@@ -650,11 +292,13 @@ public final class WorkflowExecutor {
         this.signalNotifier = signalNotifier;
         this.serializer = serializer;
         this.serviceName = serviceName;
-        this.parkingLot = new ParkingLot();
+        // Assigned before the lot, which reads it: a wake that finds no parked
+        // waiter stores a permit only for a workflow running on this node (3.2).
+        this.runningWorkflows = new ConcurrentHashMap<>();
+        this.parkingLot = new ParkingLot(runningWorkflows::containsKey);
         this.taskQueueGovernor = taskQueueLimits.isEmpty() && defaultTaskQueueLimits == null
                 ? TaskQueueGovernor.UNBOUNDED
                 : new TaskQueueGovernor(taskQueueLimits, defaultTaskQueueLimits);
-        this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
         this.lifecycleEventsEnabled = lifecycleEventsEnabled;
         // Built before the components below so they can share the one off-thread
         // sink: every lifecycle event this executor or its components produce is
@@ -671,8 +315,8 @@ public final class WorkflowExecutor {
                 instanceLockTtl.dividedBy(3), observer);
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
+        this.instanceLockTtl = instanceLockTtl;
         this.wakeRecheckInterval = wakeRecheckInterval;
-        this.runningWorkflows = new ConcurrentHashMap<>();
         this.shuttingDown = new AtomicBoolean(false);
         // Proactive stand-down (Issue 11): a run whose instance lock was lost
         // is marked stale now, so it stops at its next stop point — live
@@ -688,16 +332,289 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Starts building a workflow executor. Every setting other than the three
+     * required here has a default, documented on its {@link Builder} setter.
+     *
+     * @param store       workflow store for persistence
+     * @param serializer  Jackson serializer for payloads
+     * @param serviceName the name of the owning service
+     * @return a new builder holding the defaults
+     * @throws NullPointerException if any argument is {@code null}
+     */
+    public static Builder builder(WorkflowStore store, PayloadSerializer serializer, String serviceName) {
+        return new Builder(store, serializer, serviceName);
+    }
+
+    /**
+     * Collects the settings of a {@link WorkflowExecutor}; obtain one from
+     * {@link WorkflowExecutor#builder(WorkflowStore, PayloadSerializer, String)}.
+     *
+     * <p>Each setter stores its value and nothing else; {@link #build()} runs
+     * every check, so an invalid value fails there, not at the setter.
+     *
+     * <h2>Thread Safety</h2>
+     * <p>A builder is <b>not</b> thread-safe: configure it and call
+     * {@link #build()} on one thread. It may be reused — each {@code build()}
+     * returns a new executor from the values set at that moment, and later
+     * changes to the builder do not reach an executor already built. The
+     * built {@link WorkflowExecutor} is thread-safe as its class documents.
+     */
+    public static final class Builder {
+
+        final WorkflowStore store;
+        final PayloadSerializer serializer;
+        final String serviceName;
+        @Nullable DistributedLock distributedLock;
+        @Nullable WorkflowMessaging messaging;
+        @Nullable SignalNotifier signalNotifier;
+        String lockKeyPrefix = WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX;
+        Duration instanceLockTtl = WorkflowInstanceLockManager.DEFAULT_LOCK_TTL;
+        boolean lifecycleEventsEnabled = true;
+        Duration shutdownTimeout = DEFAULT_SHUTDOWN_TIMEOUT;
+        Duration wakeRecheckInterval = SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL;
+        EngineObserver observer = EngineObserver.NOOP;
+        Map<String, TaskQueueLimits> taskQueueLimits = Map.of();
+        @Nullable TaskQueueLimits defaultTaskQueueLimits;
+        InstantSource instantSource = InstantSource.system();
+
+        private Builder(WorkflowStore store, PayloadSerializer serializer, String serviceName) {
+            this.store = Objects.requireNonNull(store, "store");
+            this.serializer = Objects.requireNonNull(serializer, "serializer");
+            this.serviceName = Objects.requireNonNull(serviceName, "serviceName");
+        }
+
+        /**
+         * Sets the distributed lock backend. Default: {@code null} — no
+         * distributed lock.
+         *
+         * @param distributedLock optional distributed lock backend
+         * @return this builder
+         */
+        public Builder distributedLock(@Nullable DistributedLock distributedLock) {
+            this.distributedLock = distributedLock;
+            return this;
+        }
+
+        /**
+         * Sets the messaging lifecycle events are published through. Default:
+         * {@code null} — no messaging.
+         *
+         * @param messaging optional messaging for lifecycle events
+         * @return this builder
+         */
+        public Builder messaging(@Nullable WorkflowMessaging messaging) {
+            this.messaging = messaging;
+            return this;
+        }
+
+        /**
+         * Sets the cross-instance signal notifier. Default: {@code null} — no
+         * cross-instance notification.
+         *
+         * @param signalNotifier optional cross-instance signal notification
+         * @return this builder
+         */
+        public Builder signalNotifier(@Nullable SignalNotifier signalNotifier) {
+            this.signalNotifier = signalNotifier;
+            return this;
+        }
+
+        /**
+         * Sets the prefix for distributed lock keys. Default:
+         * {@code maestro:lock:}. {@link #build()} rejects {@code null} with a
+         * {@link NullPointerException}.
+         *
+         * @param lockKeyPrefix prefix for distributed lock keys
+         * @return this builder
+         */
+        public Builder lockKeyPrefix(String lockKeyPrefix) {
+            this.lockKeyPrefix = lockKeyPrefix;
+            return this;
+        }
+
+        /**
+         * Sets the TTL for the per-workflow instance lock, renewed at one
+         * third of this interval. Default: 30 seconds. {@link #build()}
+         * rejects {@code null}, zero or negative with an
+         * {@link IllegalArgumentException}.
+         *
+         * @param instanceLockTtl TTL for the per-workflow instance lock — must be
+         *                        strictly positive
+         * @return this builder
+         */
+        public Builder instanceLockTtl(Duration instanceLockTtl) {
+            this.instanceLockTtl = instanceLockTtl;
+            return this;
+        }
+
+        /**
+         * Sets whether lifecycle events are published at all, independent of
+         * whether {@link #messaging(WorkflowMessaging)} is configured.
+         * Corresponds to {@code maestro.admin.events.enabled} in the Spring
+         * Boot starter. Default here: {@code true}. The starter's
+         * {@code maestro.admin.events.enabled} defaults to {@code false} and is
+         * passed in explicitly.
+         *
+         * @param lifecycleEventsEnabled whether {@code WORKFLOW_*} lifecycle events are
+         *                               published at all
+         * @return this builder
+         */
+        public Builder lifecycleEventsEnabled(boolean lifecycleEventsEnabled) {
+            this.lifecycleEventsEnabled = lifecycleEventsEnabled;
+            return this;
+        }
+
+        /**
+         * Sets the deadline for the whole engine shutdown — the drain, the
+         * background loops, the lock renewer and the lifecycle-event flush —
+         * not only the drain: {@link WorkflowExecutor#shutdown()} returns
+         * within it. Corresponds to {@code maestro.shutdown.timeout}.
+         * Default: 20 seconds. {@link #build()} rejects {@code null}, zero or
+         * negative with an {@link IllegalArgumentException}.
+         *
+         * @param shutdownTimeout the deadline for the whole of
+         *                        {@link WorkflowExecutor#shutdown()} — must be strictly positive
+         * @return this builder
+         */
+        public Builder shutdownTimeout(Duration shutdownTimeout) {
+            this.shutdownTimeout = shutdownTimeout;
+            return this;
+        }
+
+        /**
+         * Sets how often a parked {@code awaitSignal()} or {@code sleep()}
+         * re-checks the store for a wake that happened without a local
+         * unpark — a signal persisted on another node, or a timer
+         * fired/cancelled by a remote timer-poller leader. Bounds cross-node
+         * signal, timer-fire and timer-cancel latency for a parked workflow.
+         * Corresponds to {@code maestro.signal.wake-recheck-interval}.
+         * Default: 30 seconds.
+         * {@link #build()} rejects {@code null}, zero or negative with an
+         * {@link IllegalArgumentException}.
+         *
+         * @param wakeRecheckInterval how often a parked run re-checks the store —
+         *                            must be strictly positive
+         * @return this builder
+         */
+        public Builder wakeRecheckInterval(Duration wakeRecheckInterval) {
+            this.wakeRecheckInterval = wakeRecheckInterval;
+            return this;
+        }
+
+        /**
+         * Sets the engine observation seam, invoked synchronously at
+         * execution boundaries and handed to every component the executor
+         * builds — see {@link EngineObserver} for the callback and
+         * thread-safety contract. Default: {@link EngineObserver#NOOP}, which
+         * is also what to pass when no observation is wanted.
+         * {@link #build()} rejects {@code null} with a
+         * {@link NullPointerException}.
+         *
+         * @param observer engine observation seam; never {@code null}
+         * @return this builder
+         */
+        public Builder observer(EngineObserver observer) {
+            this.observer = observer;
+            return this;
+        }
+
+        /**
+         * Sets the per-node concurrency limits keyed by task-queue name,
+         * enforced by the executor's {@link WorkflowExecutor#taskQueueGovernor()}
+         * (F8 / Issue 25); a queue not listed gets
+         * {@link #defaultTaskQueueLimits(TaskQueueLimits)}. Corresponds to
+         * {@code maestro.worker.task-queues}.
+         * Default: an empty map. {@link #build()} rejects {@code null} with a
+         * {@link NullPointerException}.
+         *
+         * @param taskQueueLimits per-node concurrency limits keyed by task-queue name
+         * @return this builder
+         */
+        public Builder taskQueueLimits(Map<String, TaskQueueLimits> taskQueueLimits) {
+            this.taskQueueLimits = taskQueueLimits;
+            return this;
+        }
+
+        /**
+         * Sets the per-node limits of each task queue not in
+         * {@link #taskQueueLimits(Map)}: each such queue gets its own pools
+         * of this size (see
+         * {@link TaskQueueGovernor#TaskQueueGovernor(Map, TaskQueueLimits)}).
+         * The Spring Boot starter passes
+         * {@code maestro.worker.default-concurrency} /
+         * {@code default-activity-concurrency}. Default: {@code null} —
+         * unlisted queues are unbounded.
+         *
+         * @param defaultTaskQueueLimits per-node limits of each task queue not in
+         *                               {@code taskQueueLimits}; {@code null} leaves
+         *                               them unbounded
+         * @return this builder
+         */
+        public Builder defaultTaskQueueLimits(@Nullable TaskQueueLimits defaultTaskQueueLimits) {
+            this.defaultTaskQueueLimits = defaultTaskQueueLimits;
+            return this;
+        }
+
+        /**
+         * Sets the clock a live {@code sleep()} arms its timer's
+         * {@code fireAt} from, a live {@code awaitSignal()} arms and decides
+         * its deadline on, and {@code currentTime()} records — see
+         * {@link WorkflowExecutor#instantSource()} (R59). Default:
+         * {@link InstantSource#system()}. {@link #build()} rejects {@code null}
+         * with a {@link NullPointerException}.
+         *
+         * <p>This is the seam {@code TestWorkflowEnvironment} uses to put
+         * {@code sleep()} timers and {@code awaitSignal()} deadlines on its
+         * controllable test clock; production code has no reason to set it.
+         * Keep {@link InstantSource#system()} in production: the timer
+         * poller ({@link WorkflowExecutor#startTimerPoller}) never reads this
+         * source. It asks the store for the due rows
+         * ({@code WorkflowStore.getDueTimers(int)}), and the store decides
+         * against its own clock: on Postgres the database's {@code now()};
+         * a store that does not override {@code getDueTimers(int)}, the
+         * caller's system clock. So a non-system source is only for a test
+         * harness that fires timers itself (as
+         * {@code TestWorkflowEnvironment.advanceTime} does) and never starts
+         * the poller.
+         *
+         * @param instantSource the clock durable deadlines are armed on
+         * @return this builder
+         */
+        public Builder instantSource(InstantSource instantSource) {
+            this.instantSource = instantSource;
+            return this;
+        }
+
+        /**
+         * Builds a new executor from the values set at this moment.
+         *
+         * @return a new workflow executor
+         * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
+         *                                  or {@code wakeRecheckInterval} is {@code null}, zero,
+         *                                  or negative
+         * @throws NullPointerException     if {@code lockKeyPrefix}, {@code observer},
+         *                                  {@code taskQueueLimits} or {@code instantSource}
+         *                                  is {@code null}
+         */
+        public WorkflowExecutor build() {
+            return new WorkflowExecutor(this);
+        }
+    }
+
+    /**
      * Returns the clock this executor arms durable deadlines on: a live
      * {@code sleep()} timer's {@code fireAt}, a live {@code awaitSignal()}
      * deadline (armed {@code now + timeout} and decided against "now"), and
      * the value a live {@code currentTime()} records (R59).
      *
-     * <p>{@link InstantSource#system()} unless the seven- or 14-argument
-     * constructor was given another — the Spring starter never does, and the
-     * timer poller compares due rows against the system clock, so a
-     * non-system source is only coherent where the poller is not running and
-     * something else fires the rows ({@code TestWorkflowEnvironment.advanceTime}).
+     * <p>{@link InstantSource#system()} unless {@link Builder#instantSource}
+     * was given another — the Spring starter never does. The timer poller
+     * does not read this source: the store decides which rows are due
+     * ({@code WorkflowStore.getDueTimers(int)}), on Postgres by the database's
+     * {@code now()} and, in a store that does not override that method, by
+     * the caller's system clock. So a non-system source is only coherent where
+     * the poller is not running and something else fires the rows
+     * ({@code TestWorkflowEnvironment.advanceTime}).
      * Replay never re-arms from it: a memoized deadline is read back.
      *
      * @return the instant source, never {@code null}
@@ -726,6 +643,14 @@ public final class WorkflowExecutor {
      * @return the workflow instance UUID
      * @throws IllegalStateException        if the executor is shutting down
      * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     * @throws RuntimeException             (or an {@code Error}) from the store
+     *         while the instance row is created or pre-delivered signals are
+     *         adopted, propagated unchanged, with the instance lock released
+     *         first. If it came after the row was created, the {@code RUNNING}
+     *         row remains: the recovery poller adopts and runs it on its next
+     *         pass, and a retry of the same start throws
+     *         {@link WorkflowAlreadyExistsException}
+     *         ({@code AdoptionLockLeakTest.startWorkflow_aFailureAfterTheRowIsCreated_…})
      * @throws WorkflowInstantiationException if the factory throws — the
      *         instance row already exists and is left {@code RUNNING} for the
      *         recovery poller to adopt; no {@code WORKFLOW_STARTED} event or
@@ -775,16 +700,23 @@ public final class WorkflowExecutor {
             // signals sent before workflow starts are stored with null instanceId)
             store.createInstance(instance);
             signalManager.adoptOrphanedSignals(workflowId, instanceId);
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | Error e) {
+            // An Error too (control-flow ones included): no run owns this lock yet, so
+            // keeping it would leave the handle renewed for ever and the workflow, whose
+            // RUNNING row may already be committed, unrecoverable until this node restarts.
             if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                instanceLockManager.release(workflowId);
+                try {
+                    instanceLockManager.release(workflowId);
+                } catch (RuntimeException | Error releaseFailure) {
+                    e.addSuppressed(releaseFailure);
+                }
             }
             throw e;
         }
 
         // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
         // the run's workflow object has been built)
-        launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition);
+        launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition, null);
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
         return instanceId;
@@ -803,8 +735,9 @@ public final class WorkflowExecutor {
      * @param instance       the workflow instance to resume
      * @param workflowFactory builds a fresh workflow implementation object for
      *                       this run; called exactly once if — and only if — the
-     *                       run is launched. A {@code RuntimeException} it throws
-     *                       propagates as {@link WorkflowInstantiationException}
+     *                       run is launched. A {@code RuntimeException} or
+     *                       {@code LinkageError} it throws propagates as
+     *                       {@link WorkflowInstantiationException}
      * @param workflowMethod the entry-point method
      * @return {@code true} if the workflow was launched; {@code false} if it
      *         was skipped (already running locally, instance lock held by
@@ -815,22 +748,53 @@ public final class WorkflowExecutor {
             Supplier<Object> workflowFactory,
             Method workflowMethod
     ) {
-        if (shuttingDown.get()) {
-            logger.debug("Executor shutting down — skipping resume of workflow '{}'",
-                    instance.workflowId());
-            return false;
-        }
-        if (runningWorkflows.containsKey(instance.workflowId())) {
-            logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
-            return false;
-        }
+        return resumeWorkflow(instance, workflowFactory, workflowMethod, null);
+    }
 
-        var launched = launchWorkflow(instance, workflowFactory, workflowMethod, instance.input(), true, null);
-        if (launched) {
-            logger.info("Resuming workflow '{}' (type={}, status={})",
-                    instance.workflowId(), instance.workflowType(), instance.status());
+    /**
+     * {@link #resumeWorkflow(WorkflowInstance, Supplier, Method)} for a run
+     * the recovery pass admitted with {@code reservation}. A launched run
+     * claims the reservation on its own thread; every path that does not
+     * launch it — skipped ({@code false}) or thrown, an {@code Error}
+     * included — releases it here, in a {@code finally}, exactly once.
+     *
+     * @param reservation the run's task-queue reservation; {@code null} for none
+     */
+    boolean resumeWorkflow(
+            WorkflowInstance instance,
+            Supplier<Object> workflowFactory,
+            Method workflowMethod,
+            TaskQueueGovernor.@Nullable SlotReservation reservation
+    ) {
+        var launched = false;
+        try {
+            if (shuttingDown.get()) {
+                logger.debug("Executor shutting down — skipping resume of workflow '{}'",
+                        instance.workflowId());
+                return false;
+            }
+            if (runningWorkflows.containsKey(instance.workflowId())) {
+                logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
+                return false;
+            }
+
+            launched = launchWorkflow(instance, workflowFactory, workflowMethod, instance.input(), true, null,
+                    reservation);
+            if (launched) {
+                logger.info("Resuming workflow '{}' (type={}, status={})",
+                        instance.workflowId(), instance.workflowType(), instance.status());
+            }
+            return launched;
+        } finally {
+            if (!launched && reservation != null) {
+                // Not launched (shutting down, already running here, lock held
+                // elsewhere or refused, turned terminal, adoption lost, a store
+                // fault, or a failure before the thread started): the run will
+                // never claim it. Never releaseWorkflowSlot here — before the
+                // claim that could free another run's slot.
+                reservation.release();
+            }
         }
-        return launched;
     }
 
     // ── Recovery ───────────────────────────────────────────────────────
@@ -847,6 +811,13 @@ public final class WorkflowExecutor {
      * one {@link DistributedLock#heldKeys} read drops the instances whose lock
      * another node holds, so only the rest cost a lock acquisition.
      *
+     * <p>This pass is <b>ungated</b>: it adopts every instance it can lock,
+     * whatever this node's task-queue capacity, and the runs beyond a queue's
+     * bound wait for their slots on their own threads. It is the startup pass
+     * when the recovery poller is disabled
+     * ({@link #startOneShotRecovery(Map, Duration)}). The recovery poller's passes are
+     * gated instead — see {@link #startRecoveryPoller(Map, Duration)}.
+     *
      * <p>An instance whose registration's factory throws
      * ({@link WorkflowInstantiationException}) is skipped, leaving it active
      * for a later pass; the pass continues with the remaining instances. Any
@@ -861,88 +832,308 @@ public final class WorkflowExecutor {
      * @return the number of workflows recovered
      */
     public int recoverWorkflows(Map<String, WorkflowRegistration> registrations) {
-        return recoveryPass(registrations).adopted();
+        return fullPass(registrations, RecoveryGate.UNGATED, NEVER).adopted();
     }
+
+    /**
+     * {@link #recoverWorkflows(Map)} that also ends at the next instance once
+     * {@code stop} answers {@code true} — the one-shot startup pass's own stop
+     * flag. Like every pass it also ends once the executor is shutting down.
+     *
+     * @return the number of workflows recovered
+     */
+    int recoverWorkflowsUntil(Map<String, WorkflowRegistration> registrations, BooleanSupplier stop) {
+        return fullPass(registrations, RecoveryGate.UNGATED, stop).adopted();
+    }
+
+    /** A pass that only the executor's shutdown ends. */
+    private static final BooleanSupplier NEVER = () -> false;
+
+    /**
+     * The recovery poller's passes end on its thread's interrupt (its stop),
+     * as well as on shutdown. The ungated passes ignore the interrupt: an
+     * interrupted caller of {@link #recoverWorkflows(Map)} still adopts.
+     */
+    private static final BooleanSupplier INTERRUPTED = () -> Thread.currentThread().isInterrupted();
 
     /** The most recoverable instances one recovery-pass store read returns. */
     static final int RECOVERY_PAGE_SIZE = 200;
 
     /**
+     * Whether a recovery pass asks the task-queue governor before it locks an
+     * instance (Issue 30).
+     */
+    enum RecoveryGate {
+        /** Admit only what this node can run or queue ({@link TaskQueueGovernor#admitRecovery}); defer the rest. */
+        GATED,
+        /** Adopt every instance this node can lock; runs beyond a bound wait on their own threads. */
+        UNGATED
+    }
+
+    /**
      * What one recovery pass did.
      *
-     * @param scanned       recoverable instances the store returned, over all pages
-     * @param adopted       instances launched on this node
-     * @param skippedByType instances skipped because their factory threw,
-     *                      counted per workflow type (in first-skip order)
+     * @param scanned         recoverable instances the store returned, over all pages
+     * @param adopted         instances launched on this node
+     * @param skippedByType   instances skipped because their factory threw,
+     *                        counted per workflow type (in first-skip order)
+     * @param deferredByQueue instances left unlocked because their task queue
+     *                        had no slot or recovery ticket free on this node,
+     *                        counted per task queue (in first-deferral order)
+     * @param resumeAfter     the keyset position just before the first deferred
+     *                        instance — where a capacity pass resumes;
+     *                        {@code null} means the first row (or nothing deferred).
+     *                        When a capacity pass ran out of headroom before
+     *                        deferring anything, the position after the last row
+     *                        it read
+     * @param outOfCapacity   a capacity pass stopped because its queues had no
+     *                        headroom left while rows after {@code resumeAfter}
+     *                        may remain unread; always {@code false} for a full pass
+     * @param resumeAfterByQueue per task queue that deferred, the keyset position
+     *                        just before its first deferred instance in this pass
+     *                        (a {@code null} value: the first row) — where a
+     *                        capacity pass for that queue resumes
+     * @param readTo          the position after the last row this pass read;
+     *                        {@code null} if it read nothing
+     * @param reachedEnd      the pass read to the last recoverable row (a short
+     *                        or empty page), rather than stopping early
      */
-    record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType) {
+    record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType,
+                        Map<String, Integer> deferredByQueue, @Nullable RecoveryCursor resumeAfter,
+                        boolean outOfCapacity, Map<String, @Nullable RecoveryCursor> resumeAfterByQueue,
+                        @Nullable RecoveryCursor readTo, boolean reachedEnd) {
         /** @return instances skipped because their factory threw, across all types */
         int skipped() {
             return skippedByType.values().stream().mapToInt(Integer::intValue).sum();
         }
+
+        /** @return instances deferred for lack of task-queue capacity, across all queues */
+        int deferred() {
+            return deferredByQueue.values().stream().mapToInt(Integer::intValue).sum();
+        }
+    }
+
+    /** One pass's running counts. Confined to the pass's thread. */
+    private static final class PassTally {
+        int scanned;
+        int adopted;
+        final Map<String, Integer> skippedByType = new LinkedHashMap<>();
+        final Map<String, Integer> deferredByQueue = new LinkedHashMap<>();
+        boolean deferredAny;
+        @Nullable RecoveryCursor resumeAfter;
+        /** Set when the pass must end now: the executor is shutting down or the thread was interrupted. */
+        boolean stopped;
+        /** Set when a capacity pass stops for lack of headroom; see {@link RecoveryPass#outOfCapacity()}. */
+        boolean outOfCapacity;
+        /** Per queue, the position before its first deferral; a {@code null} value is the first row. */
+        final Map<String, @Nullable RecoveryCursor> resumeAfterByQueue = new LinkedHashMap<>();
+        @Nullable RecoveryCursor readTo;
+        boolean reachedEnd;
+
+        RecoveryPass toPass() {
+            return new RecoveryPass(scanned, adopted, Collections.unmodifiableMap(skippedByType),
+                    Collections.unmodifiableMap(deferredByQueue), resumeAfter, outOfCapacity,
+                    Collections.unmodifiableMap(resumeAfterByQueue), readTo, reachedEnd);
+        }
     }
 
     /**
-     * {@link #recoverWorkflows}, returning the pass's full outcome rather than
-     * only the adopted count.
+     * How many instances the most recent full gated pass on this node
+     * deferred for lack of task-queue capacity: the recovery backlog this node
+     * can see but cannot run or queue yet. Only a pass that read to the last
+     * recoverable row sets it; one that threw or ended early (a stop, a
+     * shutdown) leaves the previous value.
+     *
+     * @return the count; {@code 0} before the first full gated pass
+     */
+    public int recoveryDeferredCount() {
+        return recoveryDeferred;
+    }
+
+    /**
+     * The recovery poller's <b>gated</b> full pass: from the first row, as
+     * {@link #recoverWorkflows}, but each instance is admitted by
+     * {@link TaskQueueGovernor#admitRecovery} before its lock is taken, and an
+     * instance its queue has no room for is deferred — no lock, no adoption,
+     * left for a peer or a later pass. Returns the pass's full outcome.
      */
     RecoveryPass recoveryPass(Map<String, WorkflowRegistration> registrations) {
-        var scanned = 0;
-        var count = 0;
-        var skippedByType = new LinkedHashMap<String, Integer>();
+        return fullPass(registrations, RecoveryGate.GATED, INTERRUPTED);
+    }
+
+    private RecoveryPass fullPass(Map<String, WorkflowRegistration> registrations, RecoveryGate gate,
+                                  BooleanSupplier stop) {
+        var tally = new PassTally();
 
         // Keyset paging: each page is read strictly after the last row of the
         // previous one, and a short page is the last. A store fault ends the
         // pass mid-way (the poller retries next cycle), exactly as one fault in
         // the old single read did.
         RecoveryCursor after = null;
-        while (!shuttingDown.get()) {
+        while (!shuttingDown.get() && !tally.stopped) {
             var page = store.getRecoverableInstances(serviceName, after, RECOVERY_PAGE_SIZE);
-            scanned += page.size();
+            tally.scanned += page.size();
             if (page.isEmpty()) {
+                tally.reachedEnd = true;
                 break;
             }
+            recoverPage(page, after, registrations, gate, stop, tally);
             after = RecoveryCursor.of(page.getLast());
-            count += recoverPage(page, registrations, skippedByType);
+            tally.readTo = after;
             if (page.size() < RECOVERY_PAGE_SIZE) {
+                tally.reachedEnd = !tally.stopped;
                 break;
             }
         }
 
-        var pass = new RecoveryPass(scanned, count, Collections.unmodifiableMap(skippedByType));
-        if (pass.skipped() > 0) {
-            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
-                    pass.skipped(), skippedByType.size(), skippedByType);
+        var pass = tally.toPass();
+        if (gate == RecoveryGate.GATED && pass.reachedEnd()) {
+            // A pass that ended early saw only part of the backlog.
+            recoveryDeferred = pass.deferred();
         }
-        if (count > 0) {
-            logger.info("Recovered {} workflow(s) from {} recoverable instance(s)", count, scanned);
-        } else {
-            logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)", scanned);
-        }
+        logPass(pass, true);
         emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
         return pass;
     }
 
-    /**
-     * Adopts what it can of one recovery page: drops the instances already
-     * running here, then — with one advisory {@code heldKeys} read — those
-     * whose instance lock another node holds, and resumes the rest. An
-     * instance not reported held still goes through {@link #resumeWorkflow}
-     * and its {@code tryAcquire}, which stays the authority on ownership.
-     *
-     * @return the number of instances launched
-     */
-    private int recoverPage(List<WorkflowInstance> page,
-                            Map<String, WorkflowRegistration> registrations,
-                            Map<String, Integer> skippedByType) {
-        var candidates = page.stream()
-                .filter(i -> !runningWorkflows.containsKey(i.workflowId()))
-                .toList();
-        var heldElsewhere = instanceLockManager.heldElsewhere(
-                candidates.stream().map(WorkflowInstance::workflowId).toList());
-        var count = 0;
+    /** The smallest page a capacity pass reads: one small statement even for one free place. */
+    static final int MIN_CAPACITY_PAGE = 20;
 
-        for (var instance : candidates) {
+    /**
+     * A capacity pass's page size for {@code headroom} free places on its
+     * queues: twice the headroom (two nodes interleaving one backlog find
+     * about half of it held elsewhere), at least {@value #MIN_CAPACITY_PAGE},
+     * at most {@value #RECOVERY_PAGE_SIZE}.
+     *
+     * @param headroom the summed {@link TaskQueueGovernor#recoveryHeadroom} of the deferred queues
+     * @return the page size
+     */
+    static int capacityPageSize(long headroom) {
+        return (int) Math.min(RECOVERY_PAGE_SIZE, Math.max(MIN_CAPACITY_PAGE, 2L * headroom));
+    }
+
+    /**
+     * A <b>capacity pass</b>: the gated pass the recovery poller runs as soon
+     * as capacity frees after a pass that deferred. It resumes strictly after
+     * {@code resumeAfter} — the rows before it were adopted, are running here,
+     * held elsewhere, unregistered, factory-failing or terminal, and the next
+     * full pass re-checks them — and reads pages sized to the free capacity of
+     * {@code deferredQueues} ({@link #capacityPageSize}). Before each page it
+     * re-reads that headroom and stops when it is 0, so a pass with nothing
+     * free makes no statement at all. A full page continues to the next while
+     * headroom remains; a short page ends the pass. It never sets
+     * {@link #recoveryDeferredCount()}, which is a full pass's count.
+     *
+     * @param registrations  workflow type → registration
+     * @param resumeAfter    where to resume; {@code null} for the first row
+     * @param deferredQueues the queues the previous pass deferred on
+     * @return what the pass did
+     */
+    RecoveryPass capacityPass(Map<String, WorkflowRegistration> registrations,
+                              @Nullable RecoveryCursor resumeAfter,
+                              Set<String> deferredQueues) {
+        var tally = new PassTally();
+        var after = resumeAfter;
+        while (!shuttingDown.get() && !tally.stopped) {
+            var headroom = recoveryHeadroom(deferredQueues);
+            if (headroom <= 0) {
+                tally.outOfCapacity = true;
+                if (!tally.deferredAny) {
+                    tally.resumeAfter = after;
+                }
+                break;
+            }
+            var size = capacityPageSize(headroom);
+            var page = store.getRecoverableInstances(serviceName, after, size);
+            tally.scanned += page.size();
+            if (page.isEmpty()) {
+                tally.reachedEnd = true;
+                break;
+            }
+            recoverPage(page, after, registrations, RecoveryGate.GATED, INTERRUPTED, tally);
+            after = RecoveryCursor.of(page.getLast());
+            tally.readTo = after;
+            if (page.size() < size) {
+                tally.reachedEnd = !tally.stopped;
+                break;
+            }
+        }
+        var pass = tally.toPass();
+        if (pass.scanned() > 0) {
+            logPass(pass, false);
+            emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        }
+        return pass;
+    }
+
+    /** The summed recovery headroom of {@code queues}; never overflows. */
+    long recoveryHeadroom(Set<String> queues) {
+        var sum = 0L;
+        for (var queue : queues) {
+            sum += taskQueueGovernor.recoveryHeadroom(queue);
+        }
+        return sum;
+    }
+
+    /** The pass's summary lines; a capacity pass ({@code full == false}) logs its deferral at {@code DEBUG}. */
+    private void logPass(RecoveryPass pass, boolean full) {
+        if (pass.skipped() > 0) {
+            logger.warn("Recovery pass skipped {} instance(s) of {} workflow type(s) whose factory threw: {}",
+                    pass.skipped(), pass.skippedByType().size(), pass.skippedByType());
+        }
+        if (pass.deferred() > 0) {
+            var line = "Recovery pass adopted {} and deferred {} instance(s) for lack of task-queue capacity on "
+                    + "this node {}; they are adopted as slots free";
+            if (full) {
+                logger.info(line, pass.adopted(), pass.deferred(), pass.deferredByQueue());
+            } else {
+                logger.debug(line, pass.adopted(), pass.deferred(), pass.deferredByQueue());
+            }
+        } else if (pass.adopted() > 0) {
+            logger.info("Recovered {} workflow(s) from {} recoverable instance(s)", pass.adopted(), pass.scanned());
+        } else {
+            logger.debug("Recovered 0 workflow(s) from {} recoverable instance(s)", pass.scanned());
+        }
+    }
+
+    /**
+     * Adopts what it can of one recovery page, in this order per instance:
+     * drop it if it is running here; drop it if — by one advisory
+     * {@code heldKeys} read for the page — another node holds its lock; drop
+     * it if no registration names its type; under {@link RecoveryGate#GATED},
+     * ask the governor for a slot and defer it when there is none; then
+     * resume it. An instance not reported held still goes through
+     * {@link #resumeWorkflow} and its {@code tryAcquire}, which stays the
+     * authority on ownership.
+     *
+     * <p>Ends the pass ({@link PassTally#stopped}) as soon as the executor is
+     * shutting down or {@code stop} answers {@code true}: the recovery
+     * poller's interrupt for a gated pass, the one-shot pass's own flag, or
+     * never for {@link #recoverWorkflows(Map)}.
+     *
+     * @param pageAfter the cursor this page was read after ({@code null}: the first row)
+     * @param stop      the caller's own stop condition
+     */
+    private void recoverPage(List<WorkflowInstance> page,
+                             @Nullable RecoveryCursor pageAfter,
+                             Map<String, WorkflowRegistration> registrations,
+                             RecoveryGate gate,
+                             BooleanSupplier stop,
+                             PassTally tally) {
+        var heldElsewhere = instanceLockManager.heldElsewhere(page.stream()
+                .map(WorkflowInstance::workflowId)
+                .filter(id -> !runningWorkflows.containsKey(id))
+                .toList());
+
+        for (var i = 0; i < page.size(); i++) {
+            if (shuttingDown.get() || stop.getAsBoolean()) {
+                tally.stopped = true;
+                return;
+            }
+            var instance = page.get(i);
+            if (runningWorkflows.containsKey(instance.workflowId())) {
+                continue;
+            }
             if (heldElsewhere.contains(instance.workflowId())) {
                 logger.debug("Workflow '{}' is locked by another node — skipping recovery this pass",
                         instance.workflowId());
@@ -954,9 +1145,32 @@ public final class WorkflowExecutor {
                         instance.workflowType(), instance.workflowId());
                 continue;
             }
+            // Reserve, then lock: a node never locks a run it can neither run nor queue.
+            var reservation = gate == RecoveryGate.GATED
+                    ? taskQueueGovernor.admitRecovery(instance.taskQueue())
+                    : TaskQueueGovernor.SlotReservation.UNBOUNDED;
+            if (reservation == null && stop.getAsBoolean()) {
+                // admitRecovery returns null on an interrupt (the poller's
+                // stop): that row was not deferred for capacity.
+                tally.stopped = true;
+                return;
+            }
+            if (reservation == null) {
+                tally.deferredByQueue.merge(instance.taskQueue(), 1, Integer::sum);
+                var before = i == 0 ? pageAfter : RecoveryCursor.of(page.get(i - 1));
+                if (!tally.deferredAny) {
+                    tally.deferredAny = true;
+                    tally.resumeAfter = before;
+                }
+                if (!tally.resumeAfterByQueue.containsKey(instance.taskQueue())) {
+                    tally.resumeAfterByQueue.put(instance.taskQueue(), before);
+                }
+                continue;
+            }
             try {
-                if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod())) {
-                    count++;
+                // Releases the reservation itself whenever the run is not launched.
+                if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod(), reservation)) {
+                    tally.adopted++;
                 }
             } catch (WorkflowInstantiationException e) {
                 // R44: only a factory failure is isolated per instance — one
@@ -964,7 +1178,7 @@ public final class WorkflowExecutor {
                 // other type's recovery. Anything else still ends the pass.
                 // One stack trace per type per pass: a broken bean fails every
                 // instance of its type identically, on every pass, on every node.
-                var firstOfType = skippedByType.merge(instance.workflowType(), 1, Integer::sum) == 1;
+                var firstOfType = tally.skippedByType.merge(instance.workflowType(), 1, Integer::sum) == 1;
                 if (firstOfType) {
                     logger.error("Skipping recovery of workflow '{}' (type={}) — its workflow object "
                                     + "could not be built; it stays active for a later pass. Further "
@@ -981,7 +1195,6 @@ public final class WorkflowExecutor {
                 }
             }
         }
-        return count;
     }
 
     // ── Signal delivery ────────────────────────────────────────────────
@@ -1044,7 +1257,8 @@ public final class WorkflowExecutor {
      * Fires a timer, resuming a sleeping workflow.
      *
      * <p>Called by the timer poller when a due timer is found. Marks the
-     * timer as fired in the store and unparks the workflow's virtual thread.
+     * timer as fired in the store and unparks the workflow's virtual thread,
+     * and stores a permit only when the workflow runs here.
      * The store transition is persisted before unparking to prevent the
      * timer poller from redelivering.
      *
@@ -1139,13 +1353,15 @@ public final class WorkflowExecutor {
      * await parks on its signal key and is woken through
      * {@link SignalManager#onTimerTransition}. Unparking the {@code :timer:}
      * key for an await would only store a one-shot permit nobody ever
-     * consumes, so it is skipped.
+     * consumes, so it is skipped. A sleep's wake stores a permit only when the
+     * workflow runs on this node (3.2): a sleep parked elsewhere re-reads its
+     * row every wake-recheck interval.
      */
     private void wakeTimerWaiter(String workflowId, String timerId) {
         if (timerId.startsWith(SignalManager.TIMER_ID_PREFIX)) {
             signalManager.onTimerTransition(workflowId, timerId);
         } else {
-            parkingLot.unpark(workflowId + ":timer:" + timerId, null);
+            parkingLot.wake(workflowId, workflowId + ":timer:" + timerId);
         }
     }
 
@@ -1293,7 +1509,11 @@ public final class WorkflowExecutor {
             // abandoned; a remote owner converges via the terminal-status guard.
             // Flag first, then parks: the flag stops the next live activity
             // attempt and abandons a retry backoff; abandoning the parks
-            // unblocks a thread waiting on a signal or timer.
+            // unblocks a thread waiting on a signal or timer. A run of this id
+            // that registers after this lookup adopted the row before the
+            // TERMINATED write above, so abandoning by workflowId (not by this
+            // RunningWorkflow) poisons only runs of the terminated workflow —
+            // see ParkingLot.abandonWorkflow (traced, not tested).
             var running = runningWorkflows.get(workflowId);
             if (running != null) {
                 running.cancellation().requestTermination(reason);
@@ -1363,7 +1583,16 @@ public final class WorkflowExecutor {
          * rebase) makes retrying a compensated saga safe; see the tracked
          * follow-up issue in {@code docs/open-issues.md}.
          */
-        COMPENSATED_NOT_RETRYABLE
+        COMPENSATED_NOT_RETRYABLE,
+
+        /**
+         * The workflow is {@code FAILED}, and the code that handled the
+         * failure consumed a signal before the run failed. Re-running that
+         * code would need the signal again, and Maestro cannot give back the
+         * exact signal row. Nothing was written. Terminate the workflow, or
+         * finish its business outcome by hand.
+         */
+        SIGNAL_CONSUMED_AFTER_FAILURE
     }
 
     /**
@@ -1379,55 +1608,102 @@ public final class WorkflowExecutor {
      * {@code ACTIVITY_FAILED} event rather than running again. Relaunching a
      * {@code FAILED} workflow without first clearing that memo would therefore
      * replay straight back into the same failure, even after the underlying
-     * fault is fixed — a Retry button that always "succeeds" at flipping the
-     * row to {@code RUNNING} and then silently fails again. So the very first
-     * step, before anything else, is {@link WorkflowStore#deleteFailureEvents}:
-     * it deletes exactly the instance's {@code ACTIVITY_FAILED} and
-     * {@code WORKFLOW_FAILED} events, leaving every success and compensation
-     * memo untouched. The freed sequence also lets the retried run's own
-     * terminal event land where {@code WORKFLOW_FAILED} used to sit, instead of
-     * colliding with it.
+     * fault is fixed. But a memo the workflow <em>caught</em> and recovered
+     * from (a fallback taken) must stay, or the retried run takes the other
+     * branch and meets the fallback's memo.
      *
-     * <p>When the failure was an uncaught {@code awaitSignal} timeout, the
-     * failing await's {@code SIGNAL_TIMEOUT} goes too (Issue 19) — and, if that
-     * await had parked, its {@code TIMER_SCHEDULED} memo and its
-     * {@code await-signal-<seq>} deadline row (R61). Their deadline is spent:
-     * kept, the retried await would resume past it and fail again at once. So
-     * the retried await runs live at the same sequence slots: it consumes a
-     * signal that arrived meanwhile, or else arms a fresh full timeout from
-     * the retry and parks.
+     * <h2>What a Retry deletes (WP3)</h2>
+     * <p>The plan is computed from the history alone (package-private
+     * {@code RetryPlanner}); the store applies it:
+     * <ul>
+     *   <li><b>Attributed.</b> The {@code WORKFLOW_FAILED} payload names, in
+     *       {@code failedSequences}, the failure memos the exception that
+     *       escaped the workflow method carried (itself, its cause chain, its
+     *       suppressed exceptions). For each, Retry deletes the memo (with a
+     *       parked await's {@code TIMER_SCHEDULED} just before it), everything
+     *       its lane recorded after it, everything every enclosing lane
+     *       recorded after the fork that led to it (with the whole subtree of
+     *       any fork in those slots), and the {@code WORKFLOW_FAILED}. A
+     *       caught failure followed by more work is kept and replays; a
+     *       failure that was handled (an alert) and rethrown is re-run with
+     *       its handling. A sibling branch, and anything before the failure,
+     *       is kept. A second branch's independent failure is kept too: the
+     *       run fails again naming it, and a second Retry clears it.</li>
+     *   <li><b>Matched by message</b>, for a {@code WORKFLOW_FAILED} an older
+     *       build wrote (no {@code failedSequences}): the one failure memo whose
+     *       rebuilt exception message equals the payload's is treated as
+     *       attributed.</li>
+     *   <li><b>Last in lane</b>, when nothing is attributed (a failure
+     *       rethrown without its cause): only a failure memo after which its
+     *       path recorded nothing but {@code WORKFLOW_FAILED}.</li>
+     *   <li><b>Legacy</b>, when the history holds a slot the lane walk cannot
+     *       place (a slot consumed without a memo and followed by more work, or
+     *       two lanes claiming one slot): the pre-WP3 delete-by-type set —
+     *       every {@code ACTIVITY_FAILED}, every {@code WORKFLOW_FAILED} and,
+     *       for an await-timeout failure, the highest {@code SIGNAL_TIMEOUT}
+     *       with its park memo.</li>
+     * </ul>
+     * <p>Every deleted timer slot takes its timer row with it (any status), so
+     * a retried await or sleep arms a fresh deadline instead of reusing a
+     * spent one (R61); timer rows of kept slots are untouched. A version
+     * marker recorded before the failure is never deleted. No signal row is
+     * ever deleted or un-consumed.
+     *
+     * <p><b>A refusal (MD-1).</b> When the delete set would hold a
+     * {@code SIGNAL_RECEIVED} memo — the failure's handling consumed a signal
+     * — re-running that handling would need the signal again, and the memo
+     * does not identify the exact signal row to give back. Retry then writes
+     * nothing and returns {@link RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE},
+     * logged at WARN with the signal's name, its sequence and the remedy
+     * (terminate the workflow or finish it by hand; the signal is not
+     * redelivered).
      *
      * <h2>Mechanics — "make it recoverable again, then recover it"</h2>
      * <ol>
      *   <li>Read the instance. Absent → {@link RetryOutcome#NOT_FOUND}. Status
      *       other than {@code FAILED} → {@link RetryOutcome#NOT_FAILED} — an
      *       idempotent no-op, since retry only makes sense for a failure.</li>
-     *   <li>Probe the event log for {@code COMPENSATION_STARTED} — if the
-     *       saga already ran compensations, return
+     *   <li>Read the event log. A {@code COMPENSATION_STARTED} — the saga
+     *       already ran compensations — returns
      *       {@link RetryOutcome#COMPENSATED_NOT_RETRYABLE} without touching
      *       anything; see that constant's Javadoc for why relaunching is
      *       unsafe on this path.</li>
-     *   <li>{@link WorkflowStore#deleteFailureEvents} — see above.</li>
-     *   <li>A single optimistic compare-and-set: {@code status = RUNNING},
-     *       {@code completedAt = null}, {@code version + 1}. Unlike
+     *   <li>Plan the deletes over that log (above). A refused plan returns
+     *       {@link RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE} without touching
+     *       anything.</li>
+     *   <li>{@link WorkflowStore#reopenFailedInstance}: the plan's event and
+     *       timer-row deletes and a single optimistic compare-and-set
+     *       ({@code status = RUNNING}, {@code completedAt = null},
+     *       {@code version + 1}, only while the row is still {@code FAILED})
+     *       in <b>one transaction</b> — all of it or none of it. Unlike
      *       {@link #terminateWorkflow}, this is <b>one</b> attempt, not a
-     *       converge-loop: a conflict here means another writer changed the row
+     *       converge-loop: a conflict means another writer changed the row
      *       between the read and the write, and
-     *       {@link OptimisticLockException} propagates so an at-least-once
-     *       transport redelivers the command against fresh state rather than
-     *       this call guessing what the fresh state now means.</li>
+     *       {@link OptimisticLockException} propagates, with nothing written,
+     *       so an at-least-once transport redelivers the command against fresh
+     *       state. A row purged meanwhile is {@link RetryOutcome#NOT_FOUND}.
+     *       The lease epoch is not bumped here; the relaunch's adoption bumps
+     *       it, as for any recovery. On every engine path nothing of the failed
+     *       run can still write at its epoch (traced): it wrote {@code FAILED}
+     *       through the fenced terminal write, after every {@code parallel()}
+     *       branch had joined. Two cases outside the engine's own paths can
+     *       append until that adoption fences them: a foreign
+     *       {@link Thread#interrupt()} of a {@code parallel()} join, and an
+     *       abandoned activity attempt that calls through its workflow context.
+     *       The retried run then replays that event or stands down; it never
+     *       records a failure for it.</li>
      *   <li>Relaunch via the same internal path
      *       {@link #resumeWorkflow(WorkflowInstance, Supplier, Method)} uses
      *       ({@code replaying = true}) — identical to crash recovery: every
-     *       memoized event before the failure point replays for free, and the
-     *       step that failed (now memo-free) executes live with a fresh
-     *       retry-policy budget.</li>
+     *       kept memo replays for free, and the run goes live at the first
+     *       deleted slot of each lane it reaches, with a fresh retry-policy
+     *       budget.</li>
      *   <li>If the local {@code runningWorkflows} guard or the instance lock
      *       refuses the launch ({@link RetryOutcome#ALREADY_RUNNING_LOCALLY} /
      *       {@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
      *       {@code RUNNING} — which is recoverable: the recovery poller (on any
      *       node) adopts it within one poll interval, the same as a crash
-     *       between steps 3 and 4 heals.</li>
+     *       between steps 4 and 5 heals.</li>
      * </ol>
      *
      * <h2>Semantics caveat — compensated sagas</h2>
@@ -1458,10 +1734,10 @@ public final class WorkflowExecutor {
      * @return what this call did — see {@link RetryOutcome}
      * @throws OptimisticLockException if another writer touched the instance
      *                                 row between the read and the
-     *                                 compare-and-set. Transient: the caller
-     *                                 should <em>not</em> acknowledge, so the
-     *                                 command is redelivered against fresh
-     *                                 state.
+     *                                 compare-and-set; nothing was written.
+     *                                 Transient: the caller should <em>not</em>
+     *                                 acknowledge, so the command is
+     *                                 redelivered against fresh state.
      * @throws WorkflowInstantiationException if the registration's factory
      *                                 throws while relaunching. The
      *                                 compare-and-set has already happened, so
@@ -1489,7 +1765,8 @@ public final class WorkflowExecutor {
         // Javadoc for the full failure mode. Guard it off rather than corrupt
         // the replay; getEvents is the cheapest correct read the store SPI
         // offers (no targeted "by event type" probe exists).
-        var alreadyCompensated = store.getEvents(latest.id()).stream()
+        var events = store.getEvents(latest.id());
+        var alreadyCompensated = events.stream()
                 .anyMatch(e -> e.eventType() == EventType.COMPENSATION_STARTED);
         if (alreadyCompensated) {
             logger.warn("Workflow '{}' already ran saga compensations — not retrying "
@@ -1498,13 +1775,16 @@ public final class WorkflowExecutor {
             return RetryOutcome.COMPENSATED_NOT_RETRYABLE;
         }
 
-        // Clear the memoized failure BEFORE the CAS: a crash between this line
-        // and the CAS leaves the instance FAILED with its failure memos already
-        // gone, which is harmless — deleteFailureEvents is idempotent, and a
-        // later retry of the still-FAILED instance simply deletes zero rows and
-        // proceeds normally.
-        var deleted = store.deleteFailureEvents(latest.id());
-        logger.debug("Deleted {} failure memo(s) for workflow '{}' before retry", deleted, workflowId);
+        // What to delete: the failure that ended the run and what the run
+        // recorded after it while handling it (WP3, D-3). Pure; no store call.
+        var plan = RetryPlanner.plan(workflowId, events);
+        if (plan.refused()) {
+            logger.warn("Workflow '{}' was not retried: the code that handled its failure consumed signal '{}' "
+                    + "(sequence {}), which a retry would need again. Terminate the workflow or finish it by "
+                    + "hand; the signal is not redelivered (RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE)",
+                    workflowId, consumedSignalName(events, plan.consumedSignalAt()), plan.consumedSignalAt());
+            return RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE;
+        }
 
         var now = Instant.now();
         var running = latest.toBuilder()
@@ -1513,9 +1793,20 @@ public final class WorkflowExecutor {
                 .updatedAt(now)
                 .version(latest.version() + 1)
                 .build();
-        // Single-attempt CAS — OptimisticLockException propagates rather than
-        // being retried here; see the Javadoc above.
-        store.updateInstance(running);
+        // The deletes and the single-attempt CAS are one transaction (D-7):
+        // a crash or a lost CAS leaves the history and the row untouched.
+        // OptimisticLockException (a stale version, or a row no longer
+        // FAILED) and every store fault propagate; see the Javadoc above.
+        try {
+            store.reopenFailedInstance(running, plan.deleteSequences(), plan.deleteTimerIds());
+        } catch (WorkflowNotFoundException e) {
+            logger.warn("Cannot retry workflow '{}' — no such instance in this service (purged?)", workflowId);
+            return RetryOutcome.NOT_FOUND;
+        }
+        logger.info("Workflow '{}' reopened for retry: {} event(s) deleted and {} timer id(s) named for deletion (basis {})",
+                workflowId, plan.deleteSequences().size(), plan.deleteTimerIds().size(), plan.basis());
+        logger.debug("Workflow '{}' retry deleted sequences {} and timer ids {}",
+                workflowId, plan.deleteSequences(), plan.deleteTimerIds());
 
         // Recheck the local running-workflow guard right before launching: the
         // CAS just made the instance RUNNING, and in the gap between that write
@@ -1529,7 +1820,7 @@ public final class WorkflowExecutor {
         }
 
         var launched = launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
-                running.input(), true, null);
+                running.input(), true, null, null);
         if (!launched) {
             logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
                     + "left for the recovery poller to adopt", workflowId);
@@ -1539,6 +1830,27 @@ public final class WorkflowExecutor {
         publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
         logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
         return RetryOutcome.RETRIED;
+    }
+
+    /**
+     * The name of the signal whose {@code SIGNAL_RECEIVED} memo sits at
+     * {@code sequence}: its step name without the
+     * {@code $maestro:awaitSignal:} prefix, or the step name as recorded if it
+     * has no such prefix. Only the name, never the payload, goes into a log line.
+     */
+    private static @Nullable String consumedSignalName(List<WorkflowEvent> events, @Nullable Integer sequence) {
+        if (sequence == null) {
+            return null;
+        }
+        for (var event : events) {
+            if (event.sequenceNumber() == sequence && event.eventType() == EventType.SIGNAL_RECEIVED) {
+                var step = event.stepName();
+                return step != null && step.startsWith(SignalManager.STEP_PREFIX)
+                        ? step.substring(SignalManager.STEP_PREFIX.length())
+                        : step;
+            }
+        }
+        return null;
     }
 
     // ── Timer poller ────────────────────────────────────────────────────
@@ -1563,7 +1875,8 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start timer poller");
         }
-        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
+        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize,
+                observer);
         installAndStart(timerPoller, poller, "Timer poller", poller::start, poller::stop);
         timerPollerStarted.set(true);
     }
@@ -1573,28 +1886,87 @@ public final class WorkflowExecutor {
     /**
      * Starts the background recovery poller.
      *
-     * <p>The poller periodically re-runs {@link #recoverWorkflows(Map)} so
-     * that workflows whose owning node has died (instance lock expired) or
-     * shut down are adopted without requiring a restart of this node. Every
-     * node polls — safety comes from the per-instance distributed lock and
-     * the in-JVM running-workflow check, not from leader election.
+     * <p>The poller periodically runs a recovery pass so that workflows whose
+     * owning node has died (instance lock expired) or shut down are adopted
+     * without requiring a restart of this node. Every node polls — safety
+     * comes from the per-instance distributed lock and the in-JVM
+     * running-workflow check, not from leader election.
      *
-     * <p>The Spring Boot starter calls this automatically after startup
-     * recovery (configurable via {@code maestro.recovery.*}).
+     * <p>Its passes are <b>gated</b> (Issue 30): an instance is locked only when
+     * its task queue has a free slot on this node, or room in the queue's
+     * bounded line of recovered runs; the rest are deferred, unlocked, for a
+     * peer or for later. Its first pass runs at once, and a pass that deferred
+     * for lack of capacity is followed by another as soon as capacity frees,
+     * at most once per {@code min(1 s, pollInterval)}. Full passes from the
+     * first row run every {@code pollInterval}.
+     *
+     * <p>The Spring Boot starter calls this automatically at startup
+     * (configurable via {@code maestro.recovery.*}).
      *
      * @param registrations map of workflow type → registration metadata
-     * @param pollInterval  interval between recovery cycles (e.g., 60 seconds)
+     * @param pollInterval  interval between full recovery passes (e.g., 60 seconds)
      * @throws IllegalStateException if the poller is already started or the
      *                               executor is shutting down
      */
     public void startRecoveryPoller(Map<String, WorkflowRegistration> registrations, Duration pollInterval) {
+        startRecoveryPoller(registrations, pollInterval, RecoveryPoller.defaultCapacitySpacing(pollInterval));
+    }
+
+    /**
+     * {@link #startRecoveryPoller(Map, Duration)} with an explicit spacing of
+     * capacity passes; a test seam.
+     *
+     * @param capacitySpacing the least time between the starts of two passes
+     *                        when the second is a capacity pass
+     */
+    void startRecoveryPoller(Map<String, WorkflowRegistration> registrations, Duration pollInterval,
+                             Duration capacitySpacing) {
         if (shuttingDown.get()) {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
-        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval);
+        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer,
+                taskQueueGovernor.capacitySignal(), capacitySpacing);
         installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
         recoveryPollerStarted.set(true);
+    }
+
+    /**
+     * Starts the startup recovery pass of a node whose recovery poller is
+     * disabled: one <b>ungated</b> pass ({@link #recoverWorkflows(Map)}) on its
+     * own virtual thread, {@code maestro-startup-recovery-<service>}, so the
+     * caller does not wait for it.
+     *
+     * <p>A pass that throws is logged like a recovery-poller failure (one
+     * {@code ERROR} with the stack trace, then an {@code ERROR} reminder every
+     * 5 minutes while it continues) and retried after {@code retryInterval},
+     * with no limit, until one pass completes; then the thread ends. Only an
+     * {@link Error} it contains is counted, on
+     * {@code maestro.loop.errors{loop=recovery-poller}}; a store fault is
+     * logged, not counted. No health detail or meter reports the pass itself.
+     * A {@code MaestroControlFlowError} ends it at once.
+     * {@link #shutdown()} stops it. It does not occupy the recovery poller's
+     * slot: {@link #startRecoveryPoller(Map, Duration)} may still be called,
+     * and {@link #isRecoveryPollerRunning()} does not report it.
+     *
+     * <p>The Spring Boot starter calls this at startup when
+     * {@code maestro.recovery.enabled=false}, with
+     * {@code maestro.recovery.poll-interval} as the retry interval.
+     *
+     * @param registrations map of workflow type → registration metadata
+     * @param retryInterval the wait after a failed pass before the next; must be positive
+     * @throws IllegalArgumentException if {@code retryInterval} is {@code null},
+     *                                  zero or negative
+     * @throws IllegalStateException    if it was already started on this
+     *                                  executor, or the executor is shutting down
+     */
+    public void startOneShotRecovery(Map<String, WorkflowRegistration> registrations, Duration retryInterval) {
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start the one-shot startup recovery");
+        }
+        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval, observer);
+        installAndStart(oneShotRecovery, recovery, "One-shot startup recovery", recovery::start, recovery::stop);
     }
 
     // ── Signal janitor ──────────────────────────────────────────────────
@@ -1616,11 +1988,13 @@ public final class WorkflowExecutor {
      * <p>Every {@code interval} the janitor purges the unconsumed signals of
      * workflows that reached {@code COMPLETED} or {@code TERMINATED} more than
      * {@code retention} ago, via
-     * {@link WorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}
+     * {@link WorkflowStore#deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)}
      * (see its Javadoc for what survives — notably {@code FAILED} workflows,
-     * which may still be retried). Every node runs one; the delete is
-     * idempotent, so no leader election is involved. A store failure is
-     * logged and retried on the next interval. {@link #shutdown()} stops it.
+     * which may still be retried). Every node runs one, without leader
+     * election; it deletes this service's signals only, in batches of 1,000,
+     * at most 1,000 batches per sweep.
+     * A store failure is logged and retried on the next interval.
+     * {@link #shutdown()} stops it.
      *
      * <p>If this method is never called, nothing is purged. The Spring Boot
      * starter calls it automatically ({@code maestro.signal.janitor-interval},
@@ -1630,7 +2004,8 @@ public final class WorkflowExecutor {
      * @param retention how long after a workflow finished its unconsumed
      *                  signals are kept; must be positive
      * @throws IllegalArgumentException if either duration is {@code null},
-     *                                  zero or negative
+     *                                  zero or negative, or this executor's
+     *                                  service name is blank
      * @throws IllegalStateException    if the janitor is already started or
      *                                  the executor is shutting down
      */
@@ -1639,7 +2014,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, interval, retention);
+        var janitor = new SignalJanitor(store, serviceName, interval, retention, observer);
         installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
     }
@@ -1713,10 +2088,11 @@ public final class WorkflowExecutor {
      * Starts the background retention sweeper.
      *
      * <p>Every {@code settings.interval()} the elected leader for this service
-     * purges workflows that reached {@code COMPLETED}, {@code TERMINATED} or
-     * {@code FAILED} longer ago than that status's retention — the instance
-     * row and its whole history (events, signals, timers) — via
-     * {@link WorkflowStore#purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
+     * purges this service's workflows that reached {@code COMPLETED},
+     * {@code TERMINATED} or {@code FAILED} longer ago than that status's
+     * retention — the instance row and its whole history (events, signals,
+     * timers) — via
+     * {@link WorkflowStore#purgeTerminalInstancesBefore(String, io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
      * in batches of {@code settings.batchSize()}. Leadership is held on
      * {@code maestro:leader:retention:<serviceName>} through the
      * {@link DistributedLock} (always held when there is none) and re-checked
@@ -1741,6 +2117,47 @@ public final class WorkflowExecutor {
         var sweeper = new RetentionSweeper(store, distributedLock, serviceName, settings, observer);
         installAndStart(retentionSweeper, sweeper, "Retention sweeper", sweeper::start, sweeper::stop);
         retentionSettings = settings;
+    }
+
+    // ── Service-name check ──────────────────────────────────────────────
+
+    /**
+     * Starts the once-per-start check for active workflows of this node's
+     * types recorded under another {@code maestro.service-name} (Issue 39),
+     * and returns at once.
+     *
+     * <p>Recovery adopts only instances recorded under this executor's own
+     * service name. The check asks the store once, through
+     * {@link WorkflowStore#getActiveInstanceCountsUnderOtherServices}, for
+     * every other service name holding active instances of a type in
+     * {@code registrations}, and logs one {@code WARN} per name (at most 20)
+     * with its count and the remedy. It runs on its own virtual thread,
+     * {@code maestro-foreign-service-check}, and ends after that one read.
+     *
+     * <p>Apart from a {@code null} argument (a programming error), it never
+     * throws, and it never writes: a failed read is logged once at
+     * {@code INFO}, and while the executor is shutting down this method logs
+     * at {@code DEBUG} and starts nothing. {@link #shutdown()} does not wait
+     * for it. A store that does not override the read reports nothing, so
+     * nothing is logged above {@code DEBUG}.
+     *
+     * <p>The Spring Boot starter calls this at startup, right after it has
+     * started recovery. An embedder without the starter calls it once after
+     * starting recovery.
+     *
+     * @param registrations map of workflow type → registration metadata; its
+     *                      keys are the types checked
+     * @throws NullPointerException if {@code registrations} is {@code null}
+     */
+    public void startForeignServiceCheck(Map<String, WorkflowRegistration> registrations) {
+        Objects.requireNonNull(registrations, "registrations");
+        if (shuttingDown.get()) {
+            logger.debug("WorkflowExecutor is shutting down — the service-name check is not started");
+            return;
+        }
+        var types = Set.copyOf(registrations.keySet());
+        Thread.ofVirtual().name(ForeignServiceCheck.THREAD_NAME)
+                .start(() -> ForeignServiceCheck.run(store, serviceName, types));
     }
 
     /**
@@ -1771,10 +2188,44 @@ public final class WorkflowExecutor {
     /**
      * Gracefully shuts down the executor.
      *
-     * <p>Stops accepting new workflows, abandons every parked waiter so those
-     * virtual threads exit, waits up to the configured shutdown timeout
-     * (default 30 seconds; {@code maestro.shutdown.timeout}) for in-flight
-     * workflows to drain, and then stops renewing instance locks.
+     * <h2>One deadline</h2>
+     * <p>The configured shutdown timeout (default 20 seconds;
+     * {@code maestro.shutdown.timeout}) is the deadline for the whole call,
+     * measured on the monotonic clock ({@link System#nanoTime()}, never the
+     * executor's {@code InstantSource}). Every step that waits takes what is
+     * left of it, so {@code shutdown()} returns within the timeout plus a few
+     * milliseconds of bookkeeping even when every step is stuck. In order:
+     * <ol>
+     *   <li>Stop taking work, without waiting: the timer poller, recovery
+     *       poller, one-shot startup recovery, signal janitor and retention
+     *       sweeper are asked to stop;
+     *       every park and retry backoff is abandoned; every run queued for a
+     *       task-queue slot is released.</li>
+     *   <li>Drain the runs in flight until the deadline, a run whose launch has
+     *       registered it but not yet started its thread included.</li>
+     *   <li>Join the background loops for what is left. A loop still inside
+     *       a store call at the deadline is named in a {@code WARN} and ends
+     *       after that call.</li>
+     *   <li>Stop the instance-lock renewer, waiting at most two seconds of
+     *       what is left.</li>
+     *   <li>Flush queued lifecycle events, for at most five seconds of what is
+     *       left; events still queued then are counted as dropped.</li>
+     * </ol>
+     * <p>One summary line follows: {@code INFO Maestro shutdown finished in …}
+     * when no run is left, otherwise {@code WARN Maestro shutdown hit its …
+     * deadline}, naming up to ten of the runs still running.
+     *
+     * <p>Shutdown never interrupts a workflow thread or the lock renewer. If
+     * the calling thread is interrupted, every remaining wait ends at once,
+     * the steps that do not wait still run, and the interrupt status is
+     * restored before the call returns.
+     *
+     * <h2>A second call</h2>
+     * <p>A call made while a shutdown is in progress — in a Spring context,
+     * the executor's inferred destroy method — waits for the first to finish,
+     * for at most what is left of its deadline plus two seconds, so the beans
+     * the engine was built on are not destroyed under a drain still in
+     * progress. A call after a shutdown has finished returns at once.
      *
      * <h2>What a parked workflow sees</h2>
      * <p>A workflow parked on {@code awaitSignal()} or {@code sleep()} has
@@ -1801,72 +2252,171 @@ public final class WorkflowExecutor {
      * progress is abandoned too, with {@link ExecutorShutdownException},
      * leaving the instance {@code RUNNING} and recoverable; the attempt counter
      * restarts on the next node.
+     *
+     * <p>A run waiting for a task-queue slot (a fresh start, an adopted run, a
+     * park's reacquire, an activity or a compensation) leaves at once with
+     * {@link ExecutorShutdownException}: it stands down recoverable and
+     * releases its instance lock before {@code shutdown()} returns.
      */
     public void shutdown() {
         if (!shuttingDown.compareAndSet(false, true)) {
-            logger.info("Shutdown already in progress");
+            awaitShutdownInProgress();
             return;
         }
+        // Step 1: one deadline for every step below, on the monotonic clock.
+        var deadline = ShutdownDeadline.start(shutdownTimeout);
+        shutdownDeadline = deadline;
+        try {
+            shutdown(deadline);
+        } finally {
+            shutdownFinished.countDown();
+        }
+    }
 
-        // Stop the pollers first — no new timers should fire and no new
-        // recoveries should launch during shutdown
-        var poller = timerPoller.getAndSet(null);
-        if (poller != null) {
-            poller.stop();
-        }
-        var recovery = recoveryPoller.getAndSet(null);
-        if (recovery != null) {
-            recovery.stop();
-        }
-        var janitor = signalJanitor.getAndSet(null);
-        if (janitor != null) {
-            janitor.stop();
-        }
-        var sweeper = retentionSweeper.getAndSet(null);
-        if (sweeper != null) {
-            sweeper.stop();
-        }
+    /** D-2's steps 2–10, each bounded step taking what is left of {@code deadline}. */
+    private void shutdown(ShutdownDeadline deadline) {
+        var inFlightAtStart = runningWorkflows.size();
+        logger.info("Maestro shutdown started: {} run(s) in flight; deadline {} ms (maestro.shutdown.timeout)",
+                inFlightAtStart, deadline.budget().toMillis());
 
-        logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
-                runningWorkflows.size());
-
-        // Abandon every park so those threads exit promptly. Their workflows
-        // keep the WAITING_* status they parked in and stay recoverable —
-        // a park abandoned this way is not a workflow failure.
+        // Steps 2–4 never wait, so their order does not matter. Step 2: ask
+        // the background loops to stop — no new timer fires and no new
+        // recovery launches — and join them only after the drain (step 6),
+        // so a loop stuck in a store call never delays it.
+        var loops = new ArrayList<StoppableLoop>(5);
+        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(
+                timerPoller, recoveryPoller, oneShotRecovery, signalJanitor, retentionSweeper)) {
+            var loop = slot.getAndSet(null);
+            if (loop != null) {
+                loop.requestStop();
+                loops.add(loop);
+            }
+        }
+        // Step 3: abandon every park so those threads exit promptly. Their
+        // workflows keep the WAITING_* status they parked in and stay
+        // recoverable — a park abandoned this way is not a workflow failure.
         parkingLot.shutdown();
         // Abandon every retry backoff the same way. Shutdown is not checked
         // before an activity attempt, so in-flight work still drains.
         runningWorkflows.values().forEach(r -> r.cancellation().requestShutdown());
+        // Step 4: release every run queued for a task-queue slot (Issue 29):
+        // the governor's poison permit wakes each waiter in turn, without an
+        // interrupt, and each stands down recoverable.
+        taskQueueGovernor.shutdown();
 
-        // Wait for in-flight workflows with a deadline
-        var deadline = Instant.now().plus(shutdownTimeout);
+        // Step 5: drain in-flight runs until the deadline. Never interrupted.
+        beforeShutdownDrain.run();
+        var drainStart = System.nanoTime();
         for (var entry : runningWorkflows.entrySet()) {
+            var run = entry.getValue();
             try {
-                var remaining = Duration.between(Instant.now(), deadline);
-                if (remaining.isPositive()) {
-                    entry.getValue().thread().join(remaining);
+                // A run registered before its thread is started (launchWorkflow
+                // registers, then starts) is waited for, not skipped: its
+                // cancellation was requested at step 3, so once started it
+                // stands down at its first stop point or completes, and the
+                // join below follows it. Thread.join(Duration) would throw
+                // IllegalThreadStateException on the still-NEW thread.
+                if (!run.launched().await(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)) {
+                    continue; // still not started at the deadline: reported as still running
                 }
+                if (run.thread().getState() == Thread.State.NEW) {
+                    continue; // the launch failed before start(): the launcher unregistered it and released its lock
+                }
+                run.thread().join(deadline.remaining());
             } catch (InterruptedException e) {
+                // Restored at once: every bounded wait below then ends at once
+                // too, and the non-blocking steps still run.
                 Thread.currentThread().interrupt();
                 logger.warn("Interrupted while waiting for workflow '{}' during shutdown", entry.getKey());
                 break;
             }
         }
+        var drainMs = millisSince(drainStart);
 
-        // Stop the lock renewer; locks of overrunning workflows expire via TTL
-        instanceLockManager.close();
-
-        // Give the lifecycle publisher a short, bounded window to flush events
-        // queued by workflows that just drained, then force it down — a stalled
-        // transport must not make shutdown hang.
-        lifecycleEventPublisher.shutdown();
-
-        var remaining = runningWorkflows.size();
-        if (remaining > 0) {
-            logger.warn("WorkflowExecutor shutdown complete with {} workflow(s) still running", remaining);
-        } else {
-            logger.info("WorkflowExecutor shutdown complete — all workflows finished");
+        // Step 6: join the loops asked to stop at step 2, against what is left.
+        var loopsStart = System.nanoTime();
+        for (var loop : loops) {
+            if (!loop.awaitStopped(deadline.remaining())) {
+                logger.warn("Background loop '{}' did not stop within the shutdown deadline; "
+                        + "it ends after its current store call", loop.loopName());
+            }
         }
+        var loopsMs = millisSince(loopsStart);
+
+        // Step 7: the poison has finished travelling: take the governor's
+        // loans back so its slot counts are exact again.
+        taskQueueGovernor.reclaimShutdownPermits();
+
+        // Step 8: stop the lock renewer (never interrupted). It renewed the
+        // locks of runs still draining until now; those still running when
+        // it stops expire by TTL.
+        var locksStart = System.nanoTime();
+        instanceLockManager.close(deadline.remainingAtMost(WorkflowInstanceLockManager.CLOSE_JOIN));
+        var locksMs = millisSince(locksStart);
+
+        // Step 9: last, so it carries the events of the runs that drained —
+        // a bounded flush, then the publisher is forced down: a stalled
+        // transport must not make shutdown hang.
+        var eventsStart = System.nanoTime();
+        lifecycleEventPublisher.shutdown(deadline.remainingAtMost(LifecycleEventPublisher.SHUTDOWN_TIMEOUT));
+        var eventsMs = millisSince(eventsStart);
+
+        // Step 10: the summary line.
+        var steps = "drain %d ms, background loops %d ms, instance locks %d ms, lifecycle events %d ms"
+                .formatted(drainMs, loopsMs, locksMs, eventsMs);
+        var stillRunning = List.copyOf(runningWorkflows.keySet());
+        if (stillRunning.isEmpty()) {
+            logger.info("Maestro shutdown finished in {} ms of its {} ms deadline: {} run(s) in flight at start, "
+                            + "0 still running ({})",
+                    deadline.elapsed().toMillis(), deadline.budget().toMillis(), inFlightAtStart, steps);
+        } else {
+            var recoveredBy = distributedLock != null
+                    ? "their instance locks expire after " + instanceLockTtl.toMillis()
+                            + " ms (maestro.lock.ttl) and a peer recovers them"
+                    : "a restarted node recovers them";
+            logger.warn("Maestro shutdown hit its {} ms deadline (maestro.shutdown.timeout): {} of {} run(s) still "
+                            + "running {}; shutdown does not interrupt them and records nothing for them; {} ({})",
+                    deadline.budget().toMillis(), stillRunning.size(), inFlightAtStart,
+                    workflowIdList(stillRunning), recoveredBy, steps);
+        }
+    }
+
+    /**
+     * D-5: a {@link #shutdown()} call made while another is in progress — in
+     * a Spring context, the executor's inferred destroy method — waits for
+     * the first to finish, for at most what is left of its deadline plus
+     * {@link #SECOND_CALLER_GRACE}. So bean destruction cannot take the
+     * {@code DataSource} and the other beans the engine was built on away
+     * under a drain that outlived Spring's phase timeout.
+     */
+    private void awaitShutdownInProgress() {
+        if (shutdownFinished.getCount() == 0) {
+            return;
+        }
+        var deadline = shutdownDeadline;
+        var bound = (deadline != null ? deadline.remaining() : shutdownTimeout).plus(SECOND_CALLER_GRACE);
+        logger.info("Shutdown already in progress — waiting up to {} ms for it to finish", bound.toMillis());
+        try {
+            if (!shutdownFinished.await(bound.toNanos(), TimeUnit.NANOSECONDS)) {
+                logger.warn("Shutdown still in progress after waiting {} ms — returning without waiting longer",
+                        bound.toMillis());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static long millisSince(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+    }
+
+    /** At most ten ids, then {@code and N more}: a deadline WARN stays one readable line. */
+    private static String workflowIdList(List<String> ids) {
+        var shown = 10;
+        if (ids.size() <= shown) {
+            return ids.toString();
+        }
+        return ids.subList(0, shown) + " and " + (ids.size() - shown) + " more";
     }
 
     // ── Query registration ─────────────────────────────────────────────
@@ -1982,6 +2532,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns the number of wake permits this node holds — wakes that arrived
+     * for a workflow before it parked. A node-local gauge source, like
+     * {@link #parkedCount()}.
+     *
+     * <p><b>Thread safety:</b> thread-safe; reads a concurrent map's size.
+     *
+     * @return the number of wake permits in this executor's parking lot
+     */
+    public int wakePermitCount() {
+        return parkingLot.pendingWakeCount();
+    }
+
+    /**
      * Returns the governor that enforces this executor's per-task-queue
      * concurrency limits ({@code maestro.worker.task-queues}).
      *
@@ -2044,6 +2607,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Returns whether the one-shot startup recovery
+     * ({@link #startOneShotRecovery(Map, Duration)}) is still in progress or
+     * waiting to retry a failed pass.
+     *
+     * @return {@code false} once a pass has completed, the executor has shut
+     *         it down, or it was never started
+     */
+    boolean isOneShotRecoveryRunning() {
+        var recovery = oneShotRecovery.get();
+        return recovery != null && recovery.isRunning();
+    }
+
+    /**
      * Returns whether {@link #startTimerPoller(Duration, int)} has ever been
      * called on this executor.
      *
@@ -2069,6 +2645,43 @@ public final class WorkflowExecutor {
      */
     public boolean hasRecoveryPollerStarted() {
         return recoveryPollerStarted.get();
+    }
+
+    /**
+     * Returns whether this node's instance-lock renewer thread is alive. It
+     * starts with the first instance lock this node acquires, so it is
+     * {@code false} before then, on a node without a {@code DistributedLock},
+     * and after {@link #shutdown()}.
+     *
+     * @return {@code true} while the instance-lock renewer thread runs
+     */
+    public boolean isInstanceLockRenewerRunning() {
+        return instanceLockManager.isRenewerRunning();
+    }
+
+    /**
+     * Returns whether this node's instance-lock renewer has been started.
+     * Monotonic in practice; see {@link #hasTimerPollerStarted()} for the
+     * startup-vs-fault rationale.
+     *
+     * @return {@code true} once the instance-lock renewer has been started
+     */
+    public boolean hasInstanceLockRenewerStarted() {
+        return instanceLockManager.hasRenewerStarted();
+    }
+
+    /**
+     * Returns the instance-lock renewer's current failure streak: consecutive
+     * renewal passes that failed (the lock backend's {@code renewAll} threw, or
+     * the pass threw an {@code Error}) since the last pass that did not.
+     * {@code 0} before the renewer starts. A renewer can be running with a
+     * positive streak: its thread is alive, but the locks it holds are not
+     * being renewed.
+     *
+     * @return the number of consecutive failed renewal passes
+     */
+    public int instanceLockRenewerFailureStreak() {
+        return instanceLockManager.renewFailureStreak();
     }
 
     /**
@@ -2146,7 +2759,8 @@ public final class WorkflowExecutor {
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             boolean replaying,
-            WorkflowInstanceLockManager.@Nullable Acquisition preAcquired
+            WorkflowInstanceLockManager.@Nullable Acquisition preAcquired,
+            TaskQueueGovernor.@Nullable SlotReservation reservation
     ) {
         // The per-instance distributed lock is the admission guard: it stops a
         // second node from starting a redundant run while this one is live.
@@ -2220,39 +2834,48 @@ public final class WorkflowExecutor {
             instance = snapshot;
         }
 
-        var compensationStack = new CompensationStack();
-        var operations = new DefaultWorkflowOperations(
-                store, distributedLock, serializer, parkingLot, compensationStack,
-                signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
-
-        var cancellation = new RunCancellation();
-        var ctx = new WorkflowContext(
-                instance.id(),
-                instance.workflowId(),
-                instance.runId(),
-                instance.workflowType(),
-                instance.taskQueue(),
-                serviceName,
-                0,
-                replaying,
-                operations,
-                cancellation,
-                instance.leaseEpoch()
-        );
-
-        // Detect @Saga on the workflow method
-        var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
-        var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
-
+        // From here to thread.start() the lock is held but no run owns it yet:
+        // anything thrown in between — an Error included — must release it, or
+        // the handle is renewed forever and the workflow is unrecoverable on
+        // every node until this one restarts.
         RunningWorkflow running = null;
         try {
+            afterLaunchAdmission.run();
+            var compensationStack = new CompensationStack();
+            var operations = new DefaultWorkflowOperations(
+                    store, distributedLock, serializer, parkingLot, compensationStack,
+                    signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
+
+            var cancellation = new RunCancellation();
+            var ctx = new WorkflowContext(
+                    instance.id(),
+                    instance.workflowId(),
+                    instance.runId(),
+                    instance.workflowType(),
+                    instance.taskQueue(),
+                    serviceName,
+                    0,
+                    replaying,
+                    operations,
+                    cancellation,
+                    instance.leaseEpoch()
+            );
+
+            // Detect @Saga on the workflow method
+            var sagaAnnotation = workflowMethod.getAnnotation(Saga.class);
+            var parallelCompensation = sagaAnnotation != null && sagaAnnotation.parallelCompensation();
+
             // F1: one workflow object per run, built on the launching thread
             // before the run's virtual thread exists — a throwing factory
             // surfaces to the caller and releases the lock in the catch below.
             Object workflowImpl;
             try {
                 workflowImpl = workflowFactory.get();
-            } catch (RuntimeException e) {
+            } catch (RuntimeException | LinkageError e) {
+                // A LinkageError (NoClassDefFoundError, ExceptionInInitializerError)
+                // is a bean that cannot be built, like a RuntimeException — and
+                // recovery isolates only this wrapper per instance, so unwrapped
+                // it would end every pass at the same keyset position.
                 throw new WorkflowInstantiationException(instance.workflowId(), instance.workflowType(), e);
             }
             if (!replaying) {
@@ -2262,14 +2885,29 @@ public final class WorkflowExecutor {
                 emit("workflowStarted", instance.workflowId(),
                         () -> observer.workflowStarted(observed(instance)));
             }
+            // Set as executeWorkflow is entered. Until then no finally of the
+            // run owns the lock, the entry or the reservation, so a Throwable
+            // before it is cleaned up in the run's catch below. Allocated here,
+            // on the launching thread, so nothing on the run's thread runs
+            // before that catch can see it.
+            var entered = new boolean[1];
             var thread = Thread.ofVirtual()
                     .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                     .unstarted(() -> {
-                        WorkflowMDC.populate(ctx);
                         try {
+                            WorkflowMDC.populate(ctx);
+                            beforeRunBody.run();
                             ScopedValue.where(WorkflowContext.scopedValue(), ctx)
-                                    .run(() -> executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                                            inputPayload, compensationStack, parallelCompensation));
+                                    .run(() -> {
+                                        entered[0] = true;
+                                        executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
+                                                inputPayload, compensationStack, parallelCompensation, reservation);
+                                    });
+                        } catch (Throwable t) {
+                            if (!entered[0]) {
+                                runThreadDiedBeforeItsBody(instance.workflowId(), reservation, t);
+                            }
+                            throw t; // control-flow Errors included: cleaned up, then rethrown unchanged
                         } finally {
                             WorkflowMDC.clear();
                         }
@@ -2278,7 +2916,7 @@ public final class WorkflowExecutor {
             // Register before starting to prevent the race where a fast workflow
             // finishes and removes itself before the put() below executes
             running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
-                    cancellation);
+                    cancellation, new CountDownLatch(1));
             runningWorkflows.put(instance.workflowId(), running);
             // R22(1): shutdown() requests a shutdown on every run it finds
             // registered. A launch that passed its shuttingDown check before
@@ -2289,12 +2927,29 @@ public final class WorkflowExecutor {
             if (shuttingDown.get()) {
                 cancellation.requestShutdown();
             }
+            beforeRunThreadStart.run();
             thread.start();
+            running.launched().countDown();
         } catch (RuntimeException | Error e) {
             if (running != null) {
                 runningWorkflows.remove(instance.workflowId(), running);
+                // A wake that saw this run registered may have stored a permit;
+                // no run will park on it now (3.2).
+                parkingLot.clearPending(instance.workflowId());
             }
-            instanceLockManager.release(instance.workflowId());
+            try {
+                instanceLockManager.release(instance.workflowId());
+            } catch (RuntimeException | Error releaseFailure) {
+                // The launch's own failure is what the caller must see.
+                e.addSuppressed(releaseFailure);
+            } finally {
+                if (running != null) {
+                    // Never started. Released only after the lock is given back, so a
+                    // drain waiting for this launch does not let shutdown finish (and
+                    // the store be torn down) under the release.
+                    running.launched().countDown();
+                }
+            }
             throw e;
         }
         if (replaying) {
@@ -2302,6 +2957,44 @@ public final class WorkflowExecutor {
                     () -> observer.workflowResumed(observed(instance)));
         }
         return true;
+    }
+
+    /**
+     * The run's thread is dying with {@code cause} before
+     * {@code executeWorkflow} was entered, so none of the run's own cleanup
+     * will run. Does what a launch failure does — drops this thread's running
+     * entry and any stored wake permit, gives the slot reservation back and
+     * releases the instance lock — so the workflow is not stranded with a
+     * lock renewed for ever. Every failure here is suppressed on {@code cause}.
+     */
+    private void runThreadDiedBeforeItsBody(String workflowId,
+                                            TaskQueueGovernor.@Nullable SlotReservation reservation,
+                                            Throwable cause) {
+        // Each step in its own guard, nothing allocated ahead of them: a
+        // failure in one step, or in setting it up, never skips the next.
+        var self = Thread.currentThread();
+        try {
+            runningWorkflows.computeIfPresent(workflowId, (_, r) -> r.thread() == self ? null : r);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            parkingLot.clearPending(workflowId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            if (reservation != null) {
+                reservation.release();
+            }
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            instanceLockManager.release(workflowId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
     }
 
     /** Releases the instance lock this launch acquired, if it did acquire one. */
@@ -2353,13 +3046,15 @@ public final class WorkflowExecutor {
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             CompensationStack compensationStack,
-            boolean parallelCompensation
+            boolean parallelCompensation,
+            TaskQueueGovernor.@Nullable SlotReservation reservation
     ) {
         try {
             // F8: take this run's workflow slot on its task queue — blocking
             // while the queue is at its maestro.worker concurrency limit (a
             // no-op for an unbounded queue). Released first in finally below.
-            taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId());
+            // A recovered run claims the slot or queue place its pass reserved.
+            taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId(), reservation);
             if (taskQueueGovernor.availableWorkflowSlots(ctx.taskQueue()).isPresent()) {
                 // A bounded run may have waited for its slot while this node
                 // began shutting down, or while the workflow was terminated.
@@ -2439,6 +3134,9 @@ public final class WorkflowExecutor {
                 // would compensate a workflow that just succeeded.
                 emit("workflowCompleted", ctx.workflowId(),
                         () -> observer.workflowCompleted(observed(instance)));
+                emit("workflowFinished", ctx.workflowId(),
+                        () -> observer.workflowFinished(observed(instance), WorkflowStatus.COMPLETED,
+                                elapsedSince(instance)));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
@@ -2561,10 +3259,26 @@ public final class WorkflowExecutor {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll
             runningWorkflows.remove(ctx.workflowId());
-            instanceLockManager.release(ctx.workflowId());
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
-            // that arrived after the last await) now that the run is over
+            // that arrived after the last await) now that the run is over —
+            // BEFORE the release: once the lock is free a new run of this id
+            // can launch and be given a permit, which a later clearPending
+            // would erase. Here, after the removal above, any wake that stores
+            // a permit fails its re-check (the run is gone) and drops it, and
+            // no new run can be registered until the release below. That last
+            // step relies on the instance lock: a new run of this id is
+            // registered only by a node that acquired the lock. It does not
+            // hold when the new run's launch proceeded unlocked — with no lock
+            // backend, or when the lock backend threw during that launch's
+            // acquire (tryAcquire answers NO_BACKEND and the run launches
+            // anyway). Then a new run of the id (a recovery or a retry) can
+            // register here between the removal and clearPending, and a permit
+            // stored for it can be erased. The cost is latency, never a lost
+            // wake: that run's park finds no permit and wakes at its next
+            // re-check, at most one wake-recheck interval later
+            // (traced, not tested).
             parkingLot.clearPending(ctx.workflowId());
+            instanceLockManager.release(ctx.workflowId());
             // Drop the sticky terminate poison: this run is over, so a future
             // run of the same workflowId must be able to park again
             parkingLot.clearTerminated(ctx.workflowId());
@@ -2589,12 +3303,17 @@ public final class WorkflowExecutor {
                 // is a workflow that never ran a single step being marked
                 // failed. Sequence 0 names the instance's own input rather than
                 // any event.
+                //
+                // A null input always goes through the serializer too: the live
+                // start holds the NullNode that Optional.empty() serializes to,
+                // while a JDBC store hands recovery a Java null (SQL NULL). The
+                // serializer reads both alike — Optional.empty() for an
+                // Optional parameter, null for any other — so the live run and
+                // every recovery receive the same argument.
                 var paramType = workflowMethod.getParameterTypes()[0];
-                var input = inputPayload != null
-                        ? UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
-                                "persisted workflow input",
-                                () -> serializer.deserialize(inputPayload, paramType))
-                        : null;
+                var input = UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
+                        "persisted workflow input",
+                        () -> serializer.deserialize(inputPayload, paramType));
                 return workflowMethod.invoke(workflowImpl, input);
             }
         } catch (InvocationTargetException e) {
@@ -2997,7 +3716,8 @@ public final class WorkflowExecutor {
         try {
             var errorPayload = serializer.serialize(new WorkflowFailureDetail(
                     failure.getClass().getName(),
-                    failure.getMessage()
+                    failure.getMessage(),
+                    FailureAttribution.sequences(ctx, failure)
             ));
             if (transitionToTerminal(ctx, instance, WorkflowStatus.FAILED,
                     EventType.WORKFLOW_FAILED, errorPayload)) {
@@ -3008,6 +3728,9 @@ public final class WorkflowExecutor {
                 // observed.
                 emit("workflowFailed", ctx.workflowId(), () ->
                         observer.workflowFailed(observed(instance), failure.getClass().getName()));
+                emit("workflowFinished", ctx.workflowId(), () ->
+                        observer.workflowFinished(observed(instance), WorkflowStatus.FAILED,
+                                elapsedSince(instance)));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
             } else {
@@ -3161,6 +3884,18 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Wall time from the instance row's {@code startedAt} to now, for
+     * {@link EngineObserver#workflowFinished}. Uses {@link Instant#now()}
+     * because {@link #transitionToTerminal} stamps {@code completedAt} with it;
+     * floored at {@link Duration#ZERO} so a clock step backwards cannot report a
+     * negative duration.
+     */
+    private static Duration elapsedSince(WorkflowInstance instance) {
+        var elapsed = Duration.between(instance.startedAt(), Instant.now());
+        return elapsed.isNegative() ? Duration.ZERO : elapsed;
+    }
+
+    /**
      * Builds the identity-only observation record for the run currently
      * executing on this thread. Used by the abandonment emissions, which run
      * after the instance row may already have been rewritten by another node —
@@ -3189,7 +3924,7 @@ public final class WorkflowExecutor {
      * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
      * wraps, so a registered adapter's {@code RuntimeException} is contained
      * before it ever reaches here. This guard stays as depth — the
-     * constructors accept <em>any</em> {@code EngineObserver}, so nothing
+     * builder accepts <em>any</em> {@code EngineObserver}, so nothing
      * forces an embedder or a test wiring the engine by hand through
      * {@code of(...)} — and because every emission in this class sits on a
      * durable path where an escaping {@code RuntimeException} would be read as
@@ -3324,7 +4059,10 @@ public final class WorkflowExecutor {
      * {@link WorkflowContext} holds — terminate/shutdown requests to the run.
      * {@code workflowImpl} is the object the registration's factory built for
      * this run alone; queries against the run are invoked on it.
+     * {@code launched} is counted down once the launch has started
+     * {@code thread}, or has failed to and unregistered the run — so a
+     * shutdown drain never joins a thread that is not started yet.
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
-                           Object workflowImpl, RunCancellation cancellation) {}
+                           Object workflowImpl, RunCancellation cancellation, CountDownLatch launched) {}
 }

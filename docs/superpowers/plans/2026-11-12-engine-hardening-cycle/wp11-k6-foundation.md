@@ -586,17 +586,19 @@ Measurements record each window's `{P, windowSecs, maestroCalls, cps, perParkedC
 
 ## Review (filled by the Task 9 implementer)
 
-**Machine:** `identity.host` of the cited runs (CPUs, memory, Docker version). **Commits:** engine `…`, harness `…`.
+**Machine:** MacBook Pro, arm64, 10 CPUs, 32768 MiB; Docker 28.5.1 (7837 MiB), compose 2.40.3 — a shared host, host load recorded per run. **Commits:** engine 9eb7ca6 (merge of `main` 525b287), harness a1dca1a (S1 baseline) / 9a7d381 (S3 baseline) / c0ab619 (gate re-runs and full runs). Evidence: `perf/.evidence/wp11/<runId>.result.json`.
 
 | Run | runId | Profile / replicas | adminEvents req/eff | Verdict | Key numbers |
 |---|---|---|---|---|---|
-| smoke ×2 (+2 replicas) | | local / 1, 1, 2 | | | statements/workflow; foreignRows |
-| S1 baseline record | | local / 1 | | | statementsPerWorkflow; ceilingPerSec; kneeLevel |
-| S1 gate re-run | | local / 1 | | | gate value vs baseline |
-| S3 baseline record | | local / 1 | | | perParkedCallsPer30s @1000/@2000; linearity ratio |
-| S3 gate re-run | | local / 1 | | | |
-| S1 full | | full / 1 | | | levels table (arrivals/s, completions/s, p95) |
-| S3 full | | full / 1 | | | perParked @1k/5k/10k; probe p95 ratio; heap/parked |
-| Cherry-pick @ cbf5a2a | | local / 1 | | | engineCommit, harnessCommit, emptyQueries |
+| smoke ×2 (+2 replicas) | r20261116t230707z, r20261116t230851z, r20261116t231624z | local / 1, 1, 2 | false / false | PASS ×3 | 16.98, 16.97, 17.06 net statements/workflow; foreignRows 0; second run's resetAt 23:10:21 after its startedAt 23:08:52; 2 distinct hostnames at 2 replicas |
+| S1 baseline record | r20261116t231034z | local / 1 | false / false | PASS | statementsPerWorkflow 26; ceilingPerSec 71.60; kneeLevel (sustainedLevel) 40; contended |
+| S1 gate re-run | r20261116t232948z | local / 1 | false / false | PASS | gate 26 vs 26 ± 0.52; ceiling 73.43; quiet |
+| S3 baseline record | r20261116t231822z | local / 1 | false / false | PASS | perParkedCallsPer30s 3.0077 @1000 / 3.0068 @2000; linearity ratio 0.9997 |
+| S3 gate re-run | r20261116t233507z | local / 1 | false / false | PASS | 6.0161 vs 6.0137 ± 0.121 (baseline PASS); linear 0.9999; arithmetic PASS; quiet |
+| S1 full | r20261116t234614z | full / 1 | false / false | PASS (gate NO_BASELINE: baseline is local) | 26.01 net over 42972; arrivals/s 5.01 / 9.82 / 19.62 / 39.24 / 59.24 / 79.24 / 118.43, completions/s 4.99 / 9.80 / 19.57 / 39.21 / 59.19 / 74.26 / 75.61, p95 ms 309.2 / 321.4 / 397.7 / 417.8 / 395.3 / 8379.0 / 82102.9 |
+| S3 full | r20261117t000526z | full / 1 | false / false | **INVALID** | generator saturated seeding P = 5000 (723 dropped, start p95 4 s, host load up to 14.48 per CPU): 4278 parked, plateau not reached; P = 1000: 6.0151 per parked per minute; probe p95 94.1 ms @1000 vs 258.1 ms @0; heap about 30923 bytes per parked run. Re-run on a quiet host |
+| Cherry-pick @ cbf5a2a | r20261117t002705z (smoke), r20261117t002853z (S1) | local / 1 | false / false | PASS; FAIL on the baseline gate only | engineCommit fe7e548 (the last engine-path commit at cbf5a2a; identical engine tree), harnessCommit 64416c3; emptyQueries: the three WP11 meters + maestro_wake_permits; S1 36 net vs baseline 26 |
+
+Also measured (Task 8/9 implementer, A.2/A.4): admin events on, S1 local r20261116t222331z / r20261116t225610z: 26 / 26 net, offset 85644; S3 sleep mode r20261116t224549z: 4.0173 / 4.0169 per parked per minute (arithmetic 4.017).
 
 **Post-merge:** dispatch `Perf (k6)` once with `scenario=smoke` and record the run URL. Spec C4 also requires re-running S1 and S3 after WP7 with `PERF_ADMIN_EVENTS=false` (see the note to the coordinator in the hand-off).

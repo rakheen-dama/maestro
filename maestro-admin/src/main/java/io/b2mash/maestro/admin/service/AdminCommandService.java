@@ -29,7 +29,8 @@ import java.util.UUID;
  * <p>Internal command signals use the {@code $maestro:} prefix to distinguish
  * them from application-level signals:
  * <ul>
- *   <li>{@code $maestro:retry} — triggers workflow retry from the last failed step.</li>
+ *   <li>{@code $maestro:retry} — asks the service to retry a FAILED workflow: it removes the
+ *       failure that ended the run and what handled it, then re-runs; it may refuse.</li>
  *   <li>{@code $maestro:terminate} — terminates the workflow immediately.</li>
  * </ul>
  *
@@ -79,7 +80,8 @@ public class AdminCommandService {
     /**
      * Sends a retry command to the service that owns the given workflow.
      *
-     * <p>The workflow will resume execution from its last failed step.
+     * <p>The service removes the failure that ended the run and what handled it,
+     * then re-runs the workflow. It may refuse (the row then stays FAILED).
      *
      * @param workflowId the business workflow ID to retry
      * @throws IllegalArgumentException if the workflow is not found in the admin database
@@ -128,8 +130,11 @@ public class AdminCommandService {
 
         var topic = adminProperties.getSignalTopicPrefix() + workflow.serviceName();
         // One fresh id per dashboard request: a Kafka redelivery of this record
-        // is then suppressed by the workflow service, while a second click is
-        // (deliberately) a second signal.
+        // of an ordinary signal is then suppressed by the workflow service, while
+        // a second click is (deliberately) a second signal. A `$maestro:*`
+        // command is not deduplicated by id: the service acts on the row's
+        // status, so a redelivered retry finds the row no longer FAILED and
+        // does nothing.
         var messageId = "admin:" + UUID.randomUUID();
         var message = new SignalMessage(workflowId, signalName, payload, messageId);
 

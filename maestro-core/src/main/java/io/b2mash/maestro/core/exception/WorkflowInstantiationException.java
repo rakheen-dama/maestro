@@ -12,8 +12,11 @@ package io.b2mash.maestro.core.exception;
  * the factory throws — for example a Spring {@code BeanCreationException}
  * from a prototype bean whose wiring is broken, which surfaces only at the
  * first {@code getBean}, not at context start — is wrapped in this exception
- * with the original as its {@linkplain #getCause() cause}. An {@link Error}
- * the factory throws is not wrapped; it propagates unchanged.
+ * with the original as its {@linkplain #getCause() cause}. So is a
+ * {@link LinkageError} ({@link NoClassDefFoundError},
+ * {@link ExceptionInInitializerError}): a bean whose class cannot be loaded or
+ * initialised is a broken bean too. Any other {@link Error} the factory throws
+ * is not wrapped; it propagates unchanged.
  *
  * <h2>How it is handled</h2>
  * <ul>

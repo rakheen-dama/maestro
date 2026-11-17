@@ -14,7 +14,9 @@ import io.b2mash.maestro.test.InMemoryWorkflowStore;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -48,6 +50,12 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, workflowTypes, limit);
+    }
+
+    @Override
     public void updateInstance(WorkflowInstance instance) {
         delegate.updateInstance(instance);
     }
@@ -78,6 +86,12 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                     Set<String> deleteTimerIds) {
+        delegate.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
+    }
+
+    @Override
     public void saveSignal(WorkflowSignal signal) {
         delegate.saveSignal(signal);
     }
@@ -103,8 +117,19 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(serviceName, cutoff, limit);
+    }
+
+    @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
         return delegate.purgeTerminalInstancesBefore(status, cutoff, batchSize);
+    }
+
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        return delegate.purgeTerminalInstancesBefore(serviceName, status, cutoff, batchSize);
     }
 
     @Override
@@ -115,6 +140,16 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     @Override
     public List<WorkflowTimer> getDueTimers(Instant now, int batchSize) {
         return delegate.getDueTimers(now, batchSize);
+    }
+
+    @Override
+    public List<WorkflowTimer> getDueTimers(int batchSize) {
+        return delegate.getDueTimers(batchSize);
+    }
+
+    @Override
+    public Optional<Instant> storeTime() {
+        return delegate.storeTime();
     }
 
     @Override
@@ -137,6 +172,11 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     @Override
     public void appendEvent(WorkflowEvent event, RunLease lease) {
         delegate.appendEvent(event, lease);
+    }
+
+    @Override
+    public tools.jackson.databind.@Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        return delegate.appendEventReturningPayload(event, lease);
     }
 
     @Override

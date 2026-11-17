@@ -19,7 +19,6 @@ import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
-import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -32,12 +31,20 @@ import tools.jackson.databind.JsonNode;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Queue;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.Callable;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Future;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -53,7 +60,8 @@ import java.util.concurrent.TimeoutException;
  *   <li>Checks the {@link WorkflowStore} for a stored result at that sequence.</li>
  *   <li><b>Replay path:</b> If found, deserializes and returns the stored result.</li>
  *   <li><b>Live path:</b> If not found, executes the activity with retries,
- *       persists the result, and returns it.</li>
+ *       persists the result, and returns it as read back from the persisted
+ *       payload.</li>
  * </ol>
  *
  * <h2>Argument verification</h2>
@@ -72,6 +80,46 @@ import java.util.concurrent.TimeoutException;
  * arguments the mapper cannot serialize) is <em>unverified</em>, never a
  * mismatch. {@code verifyArguments=false} skips the comparison but still
  * writes fingerprints on live outcomes.
+ *
+ * <h2>Live results are read back</h2>
+ * <p>Once a live outcome's append has succeeded, the handler deserializes the
+ * payload as the store returned it
+ * ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload}:
+ * on Postgres the {@code jsonb} form, keys reordered and numbers normalised —
+ * exactly what a replay reads) with the function and generic return type a
+ * replay uses, and returns that value instead of the activity's own object, so
+ * workflow code — and a {@code @Compensate} method that takes the result —
+ * sees on the live run exactly what it sees after any recovery. What is
+ * written does not change: the payload is still the serialized result, and a
+ * later call's argument fingerprint moves only where the result did not
+ * round-trip, to what a replay computes. A store fault, a fenced write or
+ * a lost append race on the outcome append keeps its own handling and never
+ * reaches the read-back, whose {@code try} holds no store call and catches
+ * {@link SerializationException} only.
+ *
+ * <p>Three cases return the activity's own object instead:
+ * <ul>
+ *   <li><b>Unreadable.</b> A result that was written but cannot be read back
+ *       never fails the run: the observer's
+ *       {@link EngineObserver#activityResultUnreadable} fires with the root
+ *       cause's class, a WARN names the step and the redacted cause, and a
+ *       replay of that step will stand the run down as
+ *       {@code UNKNOWN_EVENT_PAYLOAD}.</li>
+ *   <li><b>Another class (the type valve).</b> A read-back that is not an
+ *       instance of the returned object's class — unless both are the same
+ *       kind of container: both a {@code List}, a {@code Set}, a
+ *       {@code Queue} or a {@code Map}
+ *       ({@link #readsBackAsAnotherClass}) — would hand workflow code a
+ *       {@code ClassCastException} on a run that never crashed. The live run
+ *       keeps the activity's object, as the released build did; the callback
+ *       fires with {@link EngineObserver#READ_BACK_TYPE_MISMATCH} and a WARN
+ *       names both classes. A replay still reads the other class: for this
+ *       shape live and replay still differ.</li>
+ *   <li><b>A future.</b> A method declared to return a {@code Future} or a
+ *       {@code CompletionStage} is not read back live (its payload is the
+ *       future's bean properties, never its value); no callback, no WARN.</li>
+ * </ul>
+ * The WARNs share one once-per-activity-method set per handler.
  *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
@@ -95,9 +143,9 @@ import java.util.concurrent.TimeoutException;
  * <p>The stand-down is <b>sticky</b>: before rethrowing, the handler sets the
  * run's {@code RunCancellation} to {@code STALE}. Should workflow code catch
  * and swallow the {@link DuplicateEventException}, the run's next live
- * activity throws {@code StaleRunException} before it acquires a lock,
- * publishes a start or executes anything (R29). Replayed activities are not
- * affected — they execute nothing.
+ * activity throws {@code StaleRunException} before it publishes a start or
+ * executes anything (R29). Replayed activities are not affected — they
+ * execute nothing.
  *
  * <p><b>Why not adopt the winner's value.</b> This handler used to return the
  * winner's stored payload and let the workflow carry on. But the winner is
@@ -119,10 +167,15 @@ import java.util.concurrent.TimeoutException;
  * makes on its own account (a {@code MaestroClient} call for another workflow)
  * is the activity's own failure, retried under its {@code RetryPolicy}.
  *
- * <h2>Lock Strategy</h2>
- * <p>The distributed lock is an optimization to prevent duplicate execution, not
- * a correctness requirement. If the lock backend is unavailable, the handler
- * proceeds without the lock — the Postgres unique constraint prevents corruption.
+ * <h2>Duplicate execution</h2>
+ * <p>There is no per-activity lock. With a lock backend, two runners execute
+ * a step concurrently only when both hold the same workflow: the window after
+ * a node lost its instance lock, or after a node's instance-lock acquire
+ * failed and it proceeded unlocked (traced, not tested). Lease fencing (V6)
+ * rejects the stale runner's outcome append, so the stale runner records
+ * nothing; the adopting node, finding no recorded outcome, runs the step
+ * again. Activities must be idempotent. A duplicate Kafka delivery is
+ * deduplicated by the signal's message id (V9), not by a lock.
  *
  * <h2>Timeouts</h2>
  * <p>{@code startToCloseTimeout} bounds each live <em>attempt</em> on the wall
@@ -154,8 +207,10 @@ import java.util.concurrent.TimeoutException;
  * <h2>Thread Safety</h2>
  * <p>Each handler instance is associated with one activity interface but may be
  * shared across workflow instances (the per-instance state comes from
- * {@link WorkflowContext} on the current thread). All mutable state is
- * thread-local via the context.
+ * {@link WorkflowContext} on the current thread). All per-run mutable state is
+ * thread-local via the context; the only handler-level state, the set of
+ * methods whose unreadable or other-class result has been WARNed, is a
+ * concurrent set.
  *
  * @see ActivityProxyFactory
  * @see WorkflowContext
@@ -164,32 +219,38 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(ActivityInvocationHandler.class);
 
+    /**
+     * The cause message a replayed failure gets when its {@code ACTIVITY_FAILED}
+     * memo has no (or an empty) message ({@link #reconstructFailure}). The
+     * Retry planner's legacy message match rebuilds it.
+     */
+    static final String REPLAYED_FAILURE_MESSAGE = "Replayed failure";
+
     private final Object activityImpl;
     private final String activityName;
     private final WorkflowStore store;
-    private final @Nullable DistributedLock distributedLock;
     private final LifecycleEventSink lifecycleEventSink;
     private final boolean verifyArguments;
     private final RetryPolicy retryPolicy;
     private final Duration startToCloseTimeout;
     private final PayloadSerializer serializer;
     private final RetryExecutor retryExecutor;
-    private final String lockKeyPrefix;
     private final EngineObserver observer;
     private final TaskQueueGovernor governor;
+    /** Activity methods whose unreadable or other-class result has already been WARNed by this handler. */
+    private final Set<Method> warnedUnreadable = ConcurrentHashMap.newKeySet();
 
     /**
-     * Creates a new handler with the default lock key prefix
-     * ({@code maestro:lock:}) — the same default the instance lock uses.
+     * Creates a new handler.
      *
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
      */
@@ -210,22 +271,20 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Creates a new handler with an explicit lock key prefix.
+     * Creates a new handler that takes a (now ignored) lock key prefix.
      *
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
-     *                            (e.g. {@code maestro:lock:}) — the same prefix
-     *                            configured for the instance lock via
-     *                            {@code maestro.lock.key-prefix}
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      */
     public ActivityInvocationHandler(
             Object activityImpl,
@@ -245,21 +304,20 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Creates a new handler with an explicit lock key prefix and an
-     * {@link EngineObserver}.
+     * Creates a new handler with an {@link EngineObserver}.
      *
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
-     *                            (e.g. {@code maestro:lock:})
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam — fires
      *                            {@code activityStarted} (live only) and
      *                            {@code activityCompleted}/{@code activityFailed}
@@ -291,26 +349,26 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Creates a new handler with an explicit lock key prefix, an
-     * {@link EngineObserver} and a {@link TaskQueueGovernor}.
+     * Creates a new handler with an {@link EngineObserver} and a
+     * {@link TaskQueueGovernor}.
      *
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
-     *                            (e.g. {@code maestro:lock:})
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      *                            (pass {@link EngineObserver#NOOP})
      * @param governor            bounds live executions per task queue: a live
      *                            execution holds one activity slot of its run's
-     *                            queue from the dedup lock through every retry
+     *                            queue from the activity's start through every retry
      *                            attempt to its persisted outcome; a replay takes
      *                            none. Pass {@link TaskQueueGovernor#UNBOUNDED} for none.
      * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or
@@ -348,13 +406,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -387,13 +446,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     optional distributed lock for dedup optimization
+     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced); also the
-     *                            base of the per-activity lock TTL
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       prefix for the per-activity distributed lock key
+     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
+     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -432,13 +492,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.activityImpl = activityImpl;
         this.activityName = activityName;
         this.store = store;
-        this.distributedLock = distributedLock;
         this.lifecycleEventSink = lifecycleEventSink;
         this.retryPolicy = retryPolicy;
         this.startToCloseTimeout = startToCloseTimeout;
         this.serializer = serializer;
         this.retryExecutor = retryExecutor;
-        this.lockKeyPrefix = lockKeyPrefix;
         this.observer = observer;
         this.governor = governor;
         this.verifyArguments = verifyArguments;
@@ -545,7 +603,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
             case ACTIVITY_FAILED -> {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
-                throw reconstructFailure(event, stepName, ctx.workflowId());
+                var replayed = reconstructFailure(event, stepName, ctx.workflowId());
+                WorkflowContextInternals.recordFailureMemo(ctx, replayed, seq);
+                throw replayed;
             }
             // Unreachable: ReplayGuard.requireMatch admits only ACTIVITY_COMPLETED
             // and ACTIVITY_FAILED before handleReplay is called. Kept so the
@@ -568,6 +628,165 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
+     * The value a live call returns once its outcome is durable: {@code stored}
+     * read back by {@link #deserializeResult}, exactly as a replay of the step
+     * reads it.
+     *
+     * <p>A result the mapper wrote but cannot read back never fails the run
+     * (D9): the observer's {@link EngineObserver#activityResultUnreadable} fires,
+     * {@link #unreadableResultWarning} is logged — at WARN the first time per
+     * activity method of this handler, at DEBUG after that — and the activity's
+     * own object is returned. The event stays durable as written; a replay of
+     * the step stands the run down as {@code UNKNOWN_EVENT_PAYLOAD}.
+     *
+     * <p>A read-back of another class ({@link #readsBackAsAnotherClass}) is
+     * reported the same way, with {@link EngineObserver#READ_BACK_TYPE_MISMATCH}
+     * and {@link #typeMismatchWarning}, and the activity's own object is
+     * returned. A method declared to return a {@code Future} or
+     * {@code CompletionStage} is not read back at all.
+     *
+     * <p>The read goes through {@link ReadBack#orLive}, whose {@code try}
+     * holds no store call and catches {@link SerializationException} only, so
+     * an {@link Error} (a control-flow signal included) and a store fault are
+     * never swallowed here.
+     *
+     * @param stored   the payload as the outcome append returned it — what the
+     *                 store will hand a replay of this step
+     * @param raw      the object the activity returned
+     * @return the read-back value, or {@code raw} if it cannot be read back,
+     *         reads back as another class, or is a future
+     */
+    private @Nullable Object readBack(@Nullable JsonNode stored, Method method, @Nullable Object raw,
+                                      ActivityInfo info, WorkflowContext ctx, int seq, String stepName) {
+        if (returnsAFuture(method)) {
+            // An activity call is synchronous and what is recorded is JSON: a
+            // future's bean properties, never its value. Reading that back
+            // makes a new future nothing completes (join() would hang on the
+            // first run), or fails outright for Future/CompletionStage. Hand
+            // workflow code the activity's own future; a replay of this step
+            // still reads the payload (unsupported return type, Issue 49).
+            return raw;
+        }
+        var value = ReadBack.orLive(raw, () -> deserializeResult(stored, method), root -> {
+            observer.activityResultUnreadable(info, root.getClass().getName());
+            warnOnce(method, unreadableResultWarning(ctx.workflowId(), stepName, seq,
+                    method.getGenericReturnType(), root));
+        });
+        // (After the fallback value IS raw, which never reads as another class.)
+        if (raw != null && value != null && readsBackAsAnotherClass(raw, value)) {
+            // The type valve: the read-back is not an instance of what the
+            // activity returned (a subtype under its declared supertype, a
+            // record under Object, a Long under Number). Workflow code that
+            // casts to the class it built must not meet a ClassCastException
+            // on a run that never crashed, so the live run keeps the
+            // activity's own object — as the released build did — and the
+            // run reports that its replay will read the other class.
+            observer.activityResultUnreadable(info, EngineObserver.READ_BACK_TYPE_MISMATCH);
+            warnOnce(method, typeMismatchWarning(ctx.workflowId(), stepName, seq,
+                    method.getGenericReturnType(), value.getClass(), raw.getClass()));
+            return raw;
+        }
+        return value;
+    }
+
+    /** {@code warning} at WARN the first time per activity method of this handler, at DEBUG after that. */
+    private void warnOnce(Method method, String warning) {
+        if (warnedUnreadable.add(method)) {
+            logger.warn("{}", warning);
+        } else {
+            logger.debug("{}", warning);
+        }
+    }
+
+    /**
+     * Whether the method's declared raw return type is a {@link Future} or a
+     * {@link CompletionStage} — a result the live run never reads back.
+     */
+    private static boolean returnsAFuture(Method method) {
+        var declared = method.getReturnType();
+        return Future.class.isAssignableFrom(declared) || CompletionStage.class.isAssignableFrom(declared);
+    }
+
+    /**
+     * The type valve's test: {@code readBack} is not an instance of
+     * {@code raw}'s class, and the two are not the same kind of container —
+     * both a {@link List}, both a {@link Set}, both a {@link Queue} (a
+     * {@code Deque} included) or both a {@link Map}. A container of the same
+     * kind legitimately reads back as another implementation
+     * ({@code List.of(..)} as an {@code ArrayList}, a {@code TreeSet} declared
+     * as a {@code Set} as a {@code HashSet}, a {@code TreeMap} declared as a
+     * {@code Map} as a {@code LinkedHashMap}); a container read back as
+     * another kind (a {@code TreeSet} declared as {@code Object} or
+     * {@code Collection}, read back as an {@code ArrayList}) does not. Only
+     * the top-level class is compared, never the elements. A {@code null} on
+     * either side is never a mismatch.
+     *
+     * @param raw      the object the activity returned
+     * @param readBack the stored result as read back into the declared type
+     * @return whether the live run must keep {@code raw}
+     */
+    static boolean readsBackAsAnotherClass(@Nullable Object raw, @Nullable Object readBack) {
+        if (raw == null || readBack == null || raw.getClass().isInstance(readBack)) {
+            return false;
+        }
+        return !sameKindOfContainer(raw, readBack);
+    }
+
+    /** Both a {@link List}, both a {@link Set}, both a {@link Queue} or both a {@link Map}. */
+    private static boolean sameKindOfContainer(Object a, Object b) {
+        return (a instanceof List<?> && b instanceof List<?>)
+                || (a instanceof Set<?> && b instanceof Set<?>)
+                || (a instanceof Queue<?> && b instanceof Queue<?>)
+                || (a instanceof Map<?, ?> && b instanceof Map<?, ?>);
+    }
+
+    /**
+     * The fixed WARN copy for a live result that cannot be read back. It names
+     * the cause by class and structural JSON path only
+     * ({@link UnknownHistoryGuard#redactedCause}) — never Jackson's message,
+     * which quotes stored values — and never includes a payload value.
+     *
+     * @param workflowId the run's workflow id
+     * @param stepName   {@code <ActivityName>.<method>}
+     * @param seq        the step's sequence number
+     * @param declared   the method's generic return type
+     * @param cause      the deserialization root cause
+     * @return the log line
+     */
+    static String unreadableResultWarning(String workflowId, String stepName, int seq,
+                                          Type declared, Throwable cause) {
+        return ("Workflow '%s': the result of activity '%s' at sequence %d is recorded but cannot be read back "
+                + "as %s (%s); this run continues with the object the activity returned, and a replay of this "
+                + "step will stand the run down as unknown_event_payload — make the type deserializable "
+                + "(docs/pitfalls.md, rule 12)")
+                .formatted(workflowId, stepName, seq, declared.getTypeName(),
+                        UnknownHistoryGuard.redactedCause(cause));
+    }
+
+    /**
+     * The fixed WARN copy for a live result that reads back as another class
+     * than the object the activity returned (the type valve). Class names
+     * only — never a payload value.
+     *
+     * @param workflowId the run's workflow id
+     * @param stepName   {@code <ActivityName>.<method>}
+     * @param seq        the step's sequence number
+     * @param declared   the method's generic return type
+     * @param readBack   the class the stored result reads back as
+     * @param returned   the class of the object the activity returned
+     * @return the log line
+     */
+    static String typeMismatchWarning(String workflowId, String stepName, int seq,
+                                      Type declared, Class<?> readBack, Class<?> returned) {
+        return ("Workflow '%s': the result of activity '%s' at sequence %d (declared %s) reads back from the store "
+                + "as %s rather than %s; this run continues with the object the activity returned, and a replay of "
+                + "this step after a recovery will hand workflow code a %s instead — declare the concrete type the "
+                + "activity returns, one that reads back as itself (docs/pitfalls.md, rule 12)")
+                .formatted(workflowId, stepName, seq, declared.getTypeName(), readBack.getName(),
+                        returned.getName(), readBack.getName());
+    }
+
+    /**
      * Reconstructs an {@link ActivityExecutionException} from a stored failure event.
      *
      * <p>The cause is rebuilt by {@link FailureReconstruction#reconstruct}: the
@@ -577,7 +796,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private ActivityExecutionException reconstructFailure(
             WorkflowEvent event, String stepName, String workflowId
     ) {
-        var message = "Replayed failure";
+        var message = REPLAYED_FAILURE_MESSAGE;
         var exceptionType = (String) null;
 
         if (event.payload() != null) {
@@ -599,8 +818,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     // ── Live execution path ───────────────────────────────────────────
 
     /**
-     * Executes the activity live — with optional locking, retries, persistence,
-     * and lifecycle event publishing.
+     * Executes the activity live — with retries, persistence and lifecycle
+     * event publishing.
      */
     private @Nullable Object executeLive(
             Method method, @Nullable Object @Nullable [] args,
@@ -608,7 +827,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     ) throws Throwable {
         // F8: a live execution holds one activity slot of its run's task queue
         // — blocking while the queue is at its activity-concurrency limit —
-        // from here through the lock, every retry attempt and backoff, to the
+        // from here through every retry attempt and backoff, to the
         // persisted outcome. Replays never reach this method, so never take one.
         var waited = governor.acquireActivitySlot(ctx.taskQueue());
         try {
@@ -637,8 +856,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             WorkflowContext ctx, int seq, String stepName, @Nullable String argsHash
     ) throws Throwable {
         // A terminated run stops here (checked after the slot wait, so one
-        // terminated while it waited for a slot stops too) — before the lock,
-        // the ACTIVITY_STARTED lifecycle event and observer.activityStarted —
+        // terminated while it waited for a slot stops too) — before the
+        // ACTIVITY_STARTED lifecycle event and observer.activityStarted —
         // so it never opens an
         // activity span (or publishes a start) that no completion would close.
         // So does a run already known to be stale (R29): one of its appends
@@ -655,78 +874,82 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         ctx.cancellation().throwIfStale(ctx.workflowId());
         ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
 
-        LockHandle lockHandle = null;
         var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
 
+        // Publish ACTIVITY_STARTED lifecycle event (best-effort)
+        publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_STARTED);
+        observer.activityStarted(info);
+
+        // Execute activity with retry, measuring the wall time of the
+        // live execution (including its retry attempts) for the observer.
+        Object result;
+        var startNanos = System.nanoTime();
         try {
-            // Acquire distributed lock (optional — Postgres unique constraint is the real guard)
-            lockHandle = acquireLock(ctx, seq, stepName);
-
-            // Publish ACTIVITY_STARTED lifecycle event (best-effort)
-            publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_STARTED);
-            observer.activityStarted(info);
-
-            // Execute activity with retry, measuring the wall time of the
-            // live execution (including its retry attempts) for the observer.
-            Object result;
-            var startNanos = System.nanoTime();
-            try {
-                result = retryExecutor.executeWithRetry(
-                        retryPolicy,
-                        () -> invokeActivityBounded(method, args, ctx, stepName, info),
-                        stepName,
-                        ctx.workflowId(),
-                        ctx.cancellation()
-                );
-            } catch (ActivityExecutionException e) {
-                var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-                // Retries exhausted — persist the failure.
-                try {
-                    persistFailure(ctx, seq, stepName, argsHash, e);
-                } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
-                    // A concurrent runner already recorded an outcome at this
-                    // sequence (Review Focus 4), or the store could not take
-                    // the failure memo (the guard has latched the run). Either
-                    // propagates INSTEAD of e: this run neither publishes
-                    // ACTIVITY_FAILED nor surfaces a failure that is not
-                    // durably recorded — it stands down / is abandoned. The
-                    // observer still sees the failure this node genuinely
-                    // executed: it measures this node's executions, not the
-                    // durable record.
-                    observer.activityFailed(info, elapsed, failureExceptionType(e), false);
-                    throw notRecorded;
-                }
-                publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
-                // (An Error — e.g. a shutdown signal — never reaches this catch
-                // and is never observed as a failure.)
-                observer.activityFailed(info, elapsed, failureExceptionType(e), false);
-                throw e;
-            }
+            result = retryExecutor.executeWithRetry(
+                    retryPolicy,
+                    () -> invokeActivityBounded(method, args, ctx, stepName, info),
+                    stepName,
+                    ctx.workflowId(),
+                    ctx.cancellation()
+            );
+        } catch (ActivityExecutionException e) {
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-
-            // Persist success.
+            // Retries exhausted — persist the failure.
             try {
-                appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName,
-                        serializer.serialize(result), argsHash);
-            } catch (DuplicateEventException | StoreUnavailableException notRecorded) {
-                // The winner is alive and ahead: stand down rather than adopt
-                // its value (class Javadoc, "Idempotency"). Or the store could
-                // not take the outcome even after the guard's retries (R3): the
-                // run is latched and is abandoned, and recovery re-runs this
-                // step. No ACTIVITY_COMPLETED lifecycle event — this run did not
-                // persist one — but the observer sees the attempt this node
-                // genuinely executed (and a tracing adapter closes its span).
-                observer.activityCompleted(info, elapsed, false);
+                persistFailure(ctx, seq, stepName, argsHash, e);
+            } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException notRecorded) {
+                // A concurrent runner already recorded an outcome at this
+                // sequence (Review Focus 4), another node adopted the
+                // workflow and the store fenced the append, or the store
+                // could not take the failure memo (the guard has latched
+                // the run). Each propagates INSTEAD of e: this run neither
+                // publishes ACTIVITY_FAILED nor surfaces a failure that is
+                // not durably recorded — it stands down / is abandoned. The
+                // observer still sees the failure this node genuinely
+                // executed: it measures this node's executions, not the
+                // durable record.
+                observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw notRecorded;
             }
-
-            publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
-            observer.activityCompleted(info, elapsed, false);
-            return result;
-
-        } finally {
-            releaseLock(lockHandle, stepName, seq);
+            // WP3: the memo at seq is durable — remember which object carries
+            // it, so WORKFLOW_FAILED can name it (failedSequences). First, so
+            // nothing below can skip it.
+            WorkflowContextInternals.recordFailureMemo(ctx, e, seq);
+            publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
+            // (An Error — e.g. a shutdown signal — never reaches this catch
+            // and is never observed as a failure.)
+            observer.activityFailed(info, elapsed, failureExceptionType(e), false);
+            throw e;
         }
+        var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
+
+        // Persist success. A result the mapper cannot write is an ordinary
+        // live failure, as it always was: it propagates from here.
+        var payload = serializer.serialize(result);
+        JsonNode stored;
+        try {
+            stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash, true);
+        } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException notRecorded) {
+            // The winner is alive and ahead: stand down rather than adopt
+            // its value (class Javadoc, "Idempotency"). Or another node
+            // adopted the workflow and the store fenced the append: stand
+            // down as LEASE_FENCED, nothing written. Or the store could
+            // not take the outcome even after the guard's retries (R3): the
+            // run is latched and is abandoned, and recovery re-runs this
+            // step. No ACTIVITY_COMPLETED lifecycle event — this run did not
+            // persist one — but the observer sees the attempt this node
+            // genuinely executed (and a tracing adapter closes its span).
+            observer.activityCompleted(info, elapsed, false);
+            throw notRecorded;
+        }
+
+        // The outcome is durable: hand workflow code what a replay of this
+        // step will hand it (class Javadoc, "Live results are read back") —
+        // the payload as the store returned it, which is what replay reads.
+        var value = readBack(stored, method, result, info, ctx, seq, stepName);
+        publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_COMPLETED);
+        observer.activityCompleted(info, elapsed, false);
+        return value;
     }
 
     /**
@@ -772,7 +995,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         // here on the attempt thread: a store call it makes on its own account
         // (a MaestroClient start or signal of another workflow) must fail this
         // attempt under the retry policy, not latch the calling run. The
-        // handler's own memo lookup, outcome append and lock calls run outside
+        // handler's own memo lookup and outcome append run outside
         // this scope, on the workflow thread, and stay guarded.
         Callable<@Nullable Object> body = () -> ScopedValue.where(WorkflowContext.scopedValue(), ctx)
                 .call(() -> StoreFaultGuard.passThrough(() -> invokeActivity(method, args)));
@@ -884,6 +1107,19 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * Appends an event to the memoization log; a lost append race stands this
      * run down.
      *
+     * <p>Only the {@code ACTIVITY_COMPLETED} outcome reads back what it
+     * appended, so only it asks the store for the stored payload
+     * ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload});
+     * the {@code ACTIVITY_FAILED} memo uses
+     * {@link WorkflowStore#appendEvent(WorkflowEvent, io.b2mash.maestro.core.spi.RunLease)}.
+     * Either is the same write, with the same fencing and the same
+     * store-fault handling; only the method a store-fault message names
+     * differs.
+     *
+     * @param returnStoredPayload whether to return the payload as stored
+     * @return the payload as the store will read it back if
+     *         {@code returnStoredPayload}, else {@code null}
+     *
      * @throws FencedWriteException    if the instance's lease epoch has moved
      *                                 past this run's (another node adopted the
      *                                 workflow) — nothing written, the run stands
@@ -897,9 +1133,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      *                                 build does not define (RULING 9) — the
      *                                 run stands down as {@code UNKNOWN_EVENT_TYPE}
      */
-    private void appendEventSafe(
+    private @Nullable JsonNode appendEventSafe(
             WorkflowContext ctx, int seq, EventType type,
-            String stepName, @Nullable JsonNode payload, @Nullable String argsHash
+            String stepName, @Nullable JsonNode payload, @Nullable String argsHash,
+            boolean returnStoredPayload
     ) {
         var event = new WorkflowEvent(
                 UUID.randomUUID(),
@@ -913,7 +1150,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         );
 
         try {
+            if (returnStoredPayload) {
+                return store.appendEventReturningPayload(event, ctx.lease());
+            }
             store.appendEvent(event, ctx.lease());
+            return null;
         } catch (FencedWriteException fenced) {
             // Issue 11: the instance row's lease epoch has moved past this
             // run's — another node adopted the workflow (this node lost or
@@ -972,7 +1213,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             errorPayload = null;
         }
 
-        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload, argsHash);
+        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload, argsHash, false);
     }
 
     /**
@@ -1002,47 +1243,6 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
         }
         return "unknown";
-    }
-
-    // ── Lock management ───────────────────────────────────────────────
-
-    /**
-     * Attempts to acquire a distributed lock for this activity step.
-     * Returns null if the lock backend is unavailable or the lock is already held.
-     */
-    private @Nullable LockHandle acquireLock(WorkflowContext ctx, int seq, String stepName) {
-        if (distributedLock == null) {
-            return null;
-        }
-
-        var lockKey = lockKeyPrefix + "activity:%s:%d".formatted(ctx.workflowId(), seq);
-        var lockTtl = startToCloseTimeout.plusSeconds(10);
-
-        try {
-            var handle = distributedLock.tryAcquire(lockKey, lockTtl);
-            if (handle.isEmpty()) {
-                logger.warn("Could not acquire lock for activity '{}' at seq {}, proceeding with DB dedup only",
-                        stepName, seq);
-            }
-            return handle.orElse(null);
-        } catch (Exception e) {
-            logger.warn("Lock backend error for activity '{}' at seq {}, proceeding without lock",
-                    stepName, seq, e);
-            return null;
-        }
-    }
-
-    /**
-     * Releases a distributed lock, logging but not propagating any failure.
-     */
-    private void releaseLock(@Nullable LockHandle lockHandle, String stepName, int seq) {
-        if (lockHandle != null && distributedLock != null) {
-            try {
-                distributedLock.release(lockHandle);
-            } catch (Exception e) {
-                logger.warn("Failed to release lock for activity '{}' at seq {}", stepName, seq, e);
-            }
-        }
     }
 
     // ── Lifecycle event publishing ────────────────────────────────────

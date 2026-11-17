@@ -130,12 +130,19 @@ public class MaestroAutoConfiguration {
         var queueLimits = taskQueueLimits(worker);
         var defaultLimits = defaultTaskQueueLimits(worker);
         log.info("Maestro worker limits: {}", describeWorkerLimits(queueLimits, defaultLimits));
-        return new WorkflowExecutor(
-                store, distributedLock, messaging, signalNotifier, serializer, serviceName,
-                lock.keyPrefix(), lock.ttl(), lifecycleEventsEnabled,
-                shutdownTimeout, wakeRecheckInterval, observer,
-                queueLimits, defaultLimits
-        );
+        return WorkflowExecutor.builder(store, serializer, serviceName)
+                .distributedLock(distributedLock)
+                .messaging(messaging)
+                .signalNotifier(signalNotifier)
+                .lockKeyPrefix(lock.keyPrefix())
+                .instanceLockTtl(lock.ttl())
+                .lifecycleEventsEnabled(lifecycleEventsEnabled)
+                .shutdownTimeout(shutdownTimeout)
+                .wakeRecheckInterval(wakeRecheckInterval)
+                .observer(observer)
+                .taskQueueLimits(queueLimits)
+                .defaultTaskQueueLimits(defaultLimits)
+                .build();
     }
 
     /**

@@ -24,6 +24,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.cfg.JsonNodeFeature;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -33,11 +35,16 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -49,20 +56,89 @@ import java.util.stream.Collectors;
  * ({@code tools.jackson}). Database-specific subclasses override protected
  * hook methods to provide optimized SQL where needed.
  *
+ * <h2>Exact decimals</h2>
+ * <p>Every payload column — event {@code payload}, instance {@code input} and
+ * {@code output}, signal {@code payload} — is parsed into a tree whose
+ * decimals are {@code DecimalNode}s holding the column's digits and scale,
+ * never the nearest {@code double}.
+ * <ul>
+ *   <li><b>Typed decimal targets are exact.</b> A {@code BigDecimal} (top level,
+ *       field, element or typed map value), and a {@code java.time} value read
+ *       from a number ({@code Instant}, {@code OffsetDateTime},
+ *       {@code ZonedDateTime}, {@code Duration}), gets the stored value. Before,
+ *       it read the {@code double} the column was parsed into: rounded when the
+ *       decimal has more digits than a {@code double} holds
+ *       ({@code 9.000000000000001} read as {@code 9.000000000000002}), and with
+ *       its trailing zeros dropped at any length ({@code 10.50} read as
+ *       {@code 10.5}).</li>
+ *   <li><b>What is written.</b> The bytes written for a payload the caller hands
+ *       the store are unchanged: the configured mapper renders it exactly as
+ *       before. What changed is a row the store's caller re-writes after reading
+ *       it: every instance status write (park, resume, adoption, retry,
+ *       {@code COMPENSATING}, completion, termination) re-reads the instance and
+ *       writes its {@code input} and {@code output} back from the parsed tree, so
+ *       those columns now keep their decimals exactly where they used to be
+ *       rounded through {@code double} on the first such write. Two caveats: an
+ *       input an older build already rewrote stays rounded, and reads and
+ *       replays as the rounded value it holds, as before; and in a mixed fleet
+ *       an older node rounds the row again whenever it writes it.</li>
+ *   <li><b>Everything else reads as before.</b> {@code PayloadSerializer} reads
+ *       the tree with the mapper's own features, so under a default mapper an
+ *       untyped {@code Object}, {@code Map<String, Object>} or
+ *       {@code List<Object>} position still gets a {@code Double}, a
+ *       {@code JsonNode} target still gets a {@code DoubleNode}, and
+ *       {@code double}, {@code float} and integer targets get the same values,
+ *       except a {@code float} target reading a stored {@code double} that lies
+ *       exactly halfway between two floats (now rounded once, from the text).
+ *       A mapper whose own trees already hold decimals (either
+ *       {@code USE_BIG_DECIMAL_FOR_FLOATS} feature) is used unchanged, except
+ *       that with {@code STRIP_TRAILING_BIGDECIMAL_ZEROES} also on an untyped
+ *       integral decimal such as {@code 2.0} reads as an {@code Integer}.</li>
+ *   <li><b>Mixed versions.</b> An older node replays these decimals, and
+ *       {@code java.time} values read from numbers, lossily, as it always has; a
+ *       node of this build replays them exactly. Scale alone does not change an
+ *       activity's argument fingerprint (it hashes a decimal's
+ *       {@code stripTrailingZeros().toPlainString()}), but a run whose later
+ *       recorded step consumed a lossily replayed decimal or {@code java.time}
+ *       value in a precision- or scale-sensitive way ({@code toString()},
+ *       {@code equals}, {@code scale()}, {@code divide} with rounding, a
+ *       sub-microsecond comparison) stands down on this build as
+ *       {@code nondeterministic_history};
+ *       {@code maestro.replay.verify-arguments=false} lets it continue. A
+ *       replayed value that differs can also steer workflow code into a
+ *       {@code throw} or another branch before the next recorded step, which
+ *       fails or completes the run differently with no stand-down. A
+ *       {@code SIGNAL_RECEIVED} memo copies the signal row as read, so it now
+ *       records the exact decimal.</li>
+ * </ul>
+ *
  * <h2>Subclass Hooks</h2>
  * <ul>
  *   <li>{@link #getDueTimersSql()} — <b>abstract</b>, must provide row-level
  *       locking SQL (e.g., {@code FOR UPDATE SKIP LOCKED} in Postgres).</li>
+ *   <li>{@link #getDueTimersByStoreClockSql()} — override to compare
+ *       {@code fire_at} with the database's clock in
+ *       {@link #getDueTimers(int)} (Postgres: {@code fire_at <= now()}); the
+ *       default {@code null} compares with this JVM's clock instead.</li>
+ *   <li>{@link #storeTimeSql()} — override to read the database's clock in
+ *       {@link #storeTime()} (Postgres: {@code SELECT now()}); the default
+ *       {@code null} reports no clock, and the clock-skew check stays off.</li>
  *   <li>{@link #getPurgeCandidatesSql()} — override to lock the retention
  *       purge's candidate rows (Postgres: {@code LIMIT ? FOR UPDATE SKIP
  *       LOCKED}); the portable default uses {@code FETCH FIRST ? ROWS ONLY}
  *       and relies on the batch's count check instead.</li>
+ *   <li>{@link #getServicePurgeCandidatesSql()} — the same for the
+ *       service-scoped retention purge, which the engine's sweeper uses;
+ *       override it alongside {@link #getPurgeCandidatesSql()}.</li>
  *   <li>{@link #setJsonParameter(PreparedStatement, int, JsonNode)} — override
  *       to use database-native JSON types (e.g., Postgres JSONB via PGobject).</li>
  *   <li>{@link #getJsonValue(ResultSet, String)} — override if the database
  *       returns JSON in a non-string format.</li>
  *   <li>{@link #fenceRowLockClause()} — override to lock the instance row the
  *       fenced {@code INSERT ... SELECT} checked (Postgres: {@code FOR SHARE}).</li>
+ *   <li>{@link #returnsInsertedPayload()} — override to {@code true} when the
+ *       database normalises what it stores and can return it from the insert
+ *       ({@code INSERT ... RETURNING payload}; Postgres {@code jsonb}).</li>
  * </ul>
  *
  * <h2>Lease fencing</h2>
@@ -84,6 +160,15 @@ import java.util.stream.Collectors;
  * {@code idx_wf_signal_message_id} (migration V9) and
  * {@link #appendEventAndConsumeSignal} writes the fenced {@code SIGNAL_RECEIVED}
  * memo and the consumed flip in one transaction — see each method.
+ *
+ * <h2>Operator retry</h2>
+ * <ul>
+ *   <li>{@link #reopenFailedInstance} is one transaction: the version- and
+ *       {@code FAILED}-checked instance {@code UPDATE} (which takes the row lock
+ *       first), the exact-sequence event deletes and the exact-id timer deletes
+ *       commit together or roll back together. It never touches a signal row
+ *       and does not bump {@code lease_epoch}.</li>
+ * </ul>
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. All state is immutable after construction.
@@ -115,6 +200,14 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     static final int MAX_PURGE_BATCH_SIZE = 10_000;
 
     /**
+     * Most keys bound in one {@code DELETE ... IN (...)} of
+     * {@link #reopenFailedInstance}: a retry's delete set is bounded by the
+     * history, not by a parameter, so it is split to stay far below pgjdbc's
+     * 32 767 binds per statement.
+     */
+    private static final int REOPEN_DELETE_CHUNK = 500;
+
+    /**
      * Logical-ID prefix of an {@code awaitSignal} deadline row; the suffix is
      * the sequence of the await's {@code TIMER_SCHEDULED} memo (the layout the
      * {@link WorkflowStore#deleteFailureEvents} contract names).
@@ -130,6 +223,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     private final DataSource dataSource;
     private final JdbcStoreConfiguration config;
 
+    /** Parses every payload column ({@link #payloadReader(ObjectMapper)}); writing uses the mapper itself. */
+    private final ObjectReader payloadReader;
+
     /**
      * Creates a new JDBC workflow store.
      *
@@ -140,6 +236,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     protected AbstractJdbcWorkflowStore(DataSource dataSource, JdbcStoreConfiguration config) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource");
         this.config = Objects.requireNonNull(config, "config");
+        this.payloadReader = payloadReader(config.objectMapper());
     }
 
     // ── Subclass hooks ────────────────────────────────────────────────────
@@ -159,6 +256,35 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * @return the parameterized SQL string
      */
     protected abstract String getDueTimersSql();
+
+    /**
+     * Returns the SQL for polling the timers due by the <em>database's</em>
+     * clock, used by {@link #getDueTimers(int)} — or {@code null} (the
+     * default) when this database has none to offer, in which case
+     * {@link #getDueTimers(int)} compares with this JVM's clock through
+     * {@link #getDueTimersSql()}.
+     *
+     * <p>The SQL is {@link #getDueTimersSql()} with the {@code fire_at}
+     * parameter replaced by the database's current time (Postgres:
+     * {@code fire_at <= now()}); its single parameter is the row limit.
+     *
+     * @return the parameterized SQL string, or {@code null}
+     */
+    protected @Nullable String getDueTimersByStoreClockSql() {
+        return null;
+    }
+
+    /**
+     * Returns the SQL that reads the database's current time as one row of one
+     * column, read as {@link OffsetDateTime} by {@link #storeTime()} — or
+     * {@code null} (the default) when this database has no clock to offer, in
+     * which case {@link #storeTime()} returns empty without running any SQL.
+     *
+     * @return the SQL string, or {@code null}
+     */
+    protected @Nullable String storeTimeSql() {
+        return null;
+    }
 
     /**
      * Returns the row-locking clause appended to the fenced
@@ -192,7 +318,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * lock the selected rows for the transaction (Postgres
      * {@code LIMIT ? FOR UPDATE SKIP LOCKED}) should override this: it rules
      * that race out and lets two sweepers running at once take disjoint
-     * batches.
+     * batches. It also orders a purge against a concurrent
+     * {@link #reopenFailedInstance}, which locks the instance row before its
+     * children: under the default, which locks the children first, the two
+     * can deadlock, and the database's deadlock detector aborts one of them
+     * whole (traced, not tested).
      *
      * @return the parameterized SQL string
      * @see #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)
@@ -200,6 +330,32 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     protected String getPurgeCandidatesSql() {
         return "SELECT id FROM " + tableName("workflow_instance")
                 + " WHERE status = ? AND completed_at < ?"
+                + " ORDER BY completed_at ASC"
+                + " FETCH FIRST ? ROWS ONLY";
+    }
+
+    /**
+     * Returns the SQL selecting one batch of one service's retention-purge
+     * candidates: {@link #getPurgeCandidatesSql()} restricted to the instances
+     * whose {@code service_name} equals a parameter.
+     *
+     * <p>The SQL must take exactly four parameters, in order: the status name
+     * ({@code VARCHAR}), the cutoff ({@code TIMESTAMP}), the service name
+     * ({@code VARCHAR}), and the batch size ({@code INT}); select {@code id}
+     * only; filter on {@code status = ? AND completed_at < ? AND
+     * service_name = ?}; and order by {@code completed_at} ascending. The
+     * default is the portable {@code ORDER BY completed_at ASC FETCH FIRST ?
+     * ROWS ONLY}, which locks nothing; the locking trade-offs of
+     * {@link #getPurgeCandidatesSql()} apply unchanged, and a dialect that
+     * overrides one should override both (Postgres:
+     * {@code LIMIT ? FOR UPDATE SKIP LOCKED}).
+     *
+     * @return the parameterized SQL string
+     * @see #purgeTerminalInstancesBefore(String, WorkflowStatus, Instant, int)
+     */
+    protected String getServicePurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ? AND service_name = ?"
                 + " ORDER BY completed_at ASC"
                 + " FETCH FIRST ? ROWS ONLY";
     }
@@ -227,8 +383,10 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     /**
      * Reads a JSON value from a {@link ResultSet} column.
      *
-     * <p>Default implementation reads a string and parses it with Jackson.
-     * Override if the database returns JSON in a non-string format.
+     * <p>Default implementation reads a string and parses it with Jackson,
+     * keeping decimals exact (class Javadoc, "Exact decimals"). Override if the
+     * database returns JSON in a non-string format; an override that parses
+     * the value itself must keep decimals exact too.
      *
      * @param rs     the result set
      * @param column the column name
@@ -357,6 +515,49 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             }
             ps.setInt(index, limit);
         }, this::mapInstance);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One read: {@code SELECT service_name, count(*)} over the active
+     * statuses, {@code service_name <> ?} and {@code workflow_type IN (...)}
+     * (one bind per type), {@code GROUP BY service_name ORDER BY 2 DESC, 1
+     * FETCH FIRST ? ROWS ONLY}. The status list is the one the partial
+     * active-instance indexes are built on, so its cost follows the active
+     * rows of every service, never the terminal ones. An empty
+     * {@code workflowTypes} returns before a connection is borrowed.
+     */
+    @Override
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        if (workflowTypes.isEmpty()) {
+            return Map.of();
+        }
+        var types = List.copyOf(workflowTypes);
+        String sql = "SELECT service_name, count(*) FROM " + tableName("workflow_instance")
+                + " WHERE status IN (" + ACTIVE_STATUS_SQL + ")"
+                + " AND service_name <> ? AND workflow_type IN ("
+                + String.join(", ", Collections.nCopies(types.size(), "?")) + ")"
+                + " GROUP BY service_name ORDER BY 2 DESC, 1 FETCH FIRST ? ROWS ONLY";
+
+        var counts = new LinkedHashMap<String, Long>();
+        for (var row : queryList(sql, ps -> {
+            int index = 1;
+            ps.setString(index++, serviceName);
+            for (var type : types) {
+                ps.setString(index++, type);
+            }
+            ps.setInt(index, limit);
+        }, rs -> Map.entry(rs.getString(1), rs.getLong(2)))) {
+            counts.put(row.getKey(), row.getValue());
+        }
+        return counts;
     }
 
     @Override
@@ -569,26 +770,34 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     private int updateInstanceRow(Connection conn, WorkflowInstance instance,
                                   @Nullable RunLease lease) throws SQLException {
         try (var ps = conn.prepareStatement(updateInstanceSql(lease != null))) {
-            ps.setObject(1, instance.runId());
-            ps.setString(2, instance.workflowType());
-            ps.setString(3, instance.taskQueue());
-            ps.setString(4, instance.status().name());
-            setJsonParameter(ps, 5, instance.input());
-            setJsonParameter(ps, 6, instance.output());
-            ps.setString(7, instance.serviceName());
-            ps.setInt(8, instance.eventSequence());
-            ps.setTimestamp(9, Timestamp.from(instance.startedAt()));
-            setNullableTimestamp(ps, 10, instance.completedAt());
-            ps.setTimestamp(11, Timestamp.from(instance.updatedAt()));
-            ps.setInt(12, instance.version());
-            ps.setLong(13, instance.leaseEpoch());
-            ps.setObject(14, instance.id());
-            ps.setInt(15, instance.version() - 1);
+            bindInstanceRow(ps, instance);
             if (lease != null) {
                 ps.setLong(16, lease.epoch());
             }
             return ps.executeUpdate();
         }
+    }
+
+    /**
+     * Binds parameters 1–15 of {@link #updateInstanceSql}: the new column
+     * values, then the {@code WHERE id = ? AND version = ?} pair.
+     */
+    private void bindInstanceRow(PreparedStatement ps, WorkflowInstance instance) throws SQLException {
+        ps.setObject(1, instance.runId());
+        ps.setString(2, instance.workflowType());
+        ps.setString(3, instance.taskQueue());
+        ps.setString(4, instance.status().name());
+        setJsonParameter(ps, 5, instance.input());
+        setJsonParameter(ps, 6, instance.output());
+        ps.setString(7, instance.serviceName());
+        ps.setInt(8, instance.eventSequence());
+        ps.setTimestamp(9, Timestamp.from(instance.startedAt()));
+        setNullableTimestamp(ps, 10, instance.completedAt());
+        ps.setTimestamp(11, Timestamp.from(instance.updatedAt()));
+        ps.setInt(12, instance.version());
+        ps.setLong(13, instance.leaseEpoch());
+        ps.setObject(14, instance.id());
+        ps.setInt(15, instance.version() - 1);
     }
 
     // ── Event operations ──────────────────────────────────────────────────
@@ -642,6 +851,136 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The write is the one {@link #appendEvent(WorkflowEvent, RunLease)}
+     * makes: one fenced {@code INSERT ... SELECT}, the same parameters, the
+     * same conflict and fence handling — zero rows is a
+     * {@link FencedWriteException}, a unique violation a
+     * {@link DuplicateEventException}, any other {@link SQLException}
+     * {@link #storeFault classified} exactly as there. What is returned:
+     * <ul>
+     *   <li>With {@link #returnsInsertedPayload()} on, the statement carries
+     *       {@code " RETURNING payload"} and runs with {@code executeQuery} —
+     *       still one statement — and the returned column is parsed by
+     *       {@link #getJsonValue}, the very parse {@code getEventBySequence}
+     *       applies to that column, so this and a later read are equal by
+     *       construction.</li>
+     *   <li>With the hook off, the payload's text round trip: the text
+     *       {@link #setJsonParameter} writes, parsed by the reader
+     *       {@link #getJsonValue} uses — what a text column hands back.</li>
+     * </ul>
+     * A stored form the parser rejects ({@link SerializationException})
+     * returns {@code event.payload()} and is logged at DEBUG: the row is
+     * written, and a later read of it fails exactly as it would have anyway.
+     */
+    @Override
+    public @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        Objects.requireNonNull(event, "event");
+        Objects.requireNonNull(lease, "lease");
+        if (!returnsInsertedPayload()) {
+            appendEvent(event, lease);
+            return textRoundTrip(event);
+        }
+        requireNotUnknown(event);
+
+        Inserted inserted;
+        try (var conn = dataSource.getConnection()) {
+            inserted = insertEventReturningPayload(conn, event, lease);
+        } catch (SQLException e) {
+            if (UNIQUE_VIOLATION.equals(e.getSQLState())) {
+                var ex = new DuplicateEventException(event.workflowInstanceId(),
+                        event.sequenceNumber());
+                ex.initCause(e);
+                throw ex;
+            }
+            throw storeFault("Update failed: " + insertEventSql(true) + RETURNING_PAYLOAD, e);
+        }
+        if (inserted == null) {
+            throw new FencedWriteException(lease.instanceId(), lease.epoch(), "appendEvent");
+        }
+        return inserted.payload();
+    }
+
+    /**
+     * Whether the database can return the inserted {@code payload} from the
+     * event {@code INSERT} itself ({@code INSERT ... RETURNING payload}), so
+     * {@link #appendEventReturningPayload} returns the stored form rather than
+     * a text round trip of the payload it sent. The default is {@code false}:
+     * correct for a store that keeps payloads as text, because a text column
+     * reads back exactly the text written. A store that normalises what it
+     * stores — Postgres {@code jsonb} reorders keys and rewrites numbers —
+     * must return {@code true}, as must one that overrides
+     * {@link #getJsonValue} to read a non-text form.
+     *
+     * <p>Return {@code true} only for a database and driver that run the
+     * fenced {@code INSERT ... SELECT ... RETURNING payload} through
+     * {@code executeQuery} and hand back a result set holding one row when the
+     * row was inserted and <em>zero rows</em> when the lease predicate
+     * rejected the write (zero rows is how the fence is detected). Without
+     * that, the engine's event appends break, never silently: a database that
+     * rejects the clause fails every one as a store fault (the run latches
+     * {@code STORE_UNAVAILABLE} and is abandoned for recovery, which meets the
+     * same fault); a driver that runs the insert but returns no result set
+     * fails it as a store fault <em>after</em> the row committed, so the
+     * engine's retry meets that row as a {@link DuplicateEventException} and
+     * the run stands down.
+     *
+     * @return {@code true} to append {@code " RETURNING payload"} to the
+     *         fenced event insert
+     */
+    protected boolean returnsInsertedPayload() {
+        return false;
+    }
+
+    private static final String RETURNING_PAYLOAD = " RETURNING payload";
+
+    /** A row the {@code RETURNING} insert wrote, with its payload as the store reads it. */
+    private record Inserted(@Nullable JsonNode payload) {}
+
+    /**
+     * The fenced event insert with {@code RETURNING payload}, as one
+     * {@code executeQuery}.
+     *
+     * @return the inserted row, or {@code null} when the lease is stale (no row)
+     */
+    private @Nullable Inserted insertEventReturningPayload(Connection conn, WorkflowEvent event, RunLease lease)
+            throws SQLException {
+        try (var ps = conn.prepareStatement(insertEventSql(true) + RETURNING_PAYLOAD)) {
+            bindEvent(ps, event, lease);
+            try (var rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;
+                }
+                try {
+                    return new Inserted(getJsonValue(rs, "payload"));
+                } catch (SerializationException unparseable) {
+                    log.debug("Stored payload of (instance={}, seq={}) cannot be parsed back; returning the "
+                                    + "payload that was sent: {}", event.workflowInstanceId(),
+                            event.sequenceNumber(), unparseable.toString());
+                    return new Inserted(event.payload());
+                }
+            }
+        }
+    }
+
+    /** What a text column hands back for {@code event}'s payload (see {@link #appendEventReturningPayload}). */
+    private @Nullable JsonNode textRoundTrip(WorkflowEvent event) {
+        var payload = event.payload();
+        if (payload == null || payload.isNull()) {
+            return null;            // written as SQL NULL, read back as null
+        }
+        try {
+            return parseJsonNode(toJsonString(payload));
+        } catch (SerializationException unparseable) {
+            log.debug("Payload of (instance={}, seq={}) does not survive a text round trip; returning the "
+                            + "payload that was sent: {}", event.workflowInstanceId(), event.sequenceNumber(),
+                    unparseable.toString());
+            return payload;
+        }
+    }
+
     private void requireNotUnknown(WorkflowEvent event) {
         if (event.eventType() == EventType.UNKNOWN) {
             // The sentinel is how the READ path represents a type this build
@@ -683,19 +1022,24 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     private int insertEvent(Connection conn, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
         try (var ps = conn.prepareStatement(insertEventSql(lease != null))) {
-            ps.setObject(1, event.id());
-            ps.setObject(2, event.workflowInstanceId());
-            ps.setInt(3, event.sequenceNumber());
-            ps.setString(4, event.eventType().name());
-            setNullableString(ps, 5, event.stepName());
-            setJsonParameter(ps, 6, event.payload());
-            ps.setTimestamp(7, Timestamp.from(event.createdAt()));
-            setNullableString(ps, 8, event.argsHash());
-            if (lease != null) {
-                ps.setObject(9, lease.instanceId());
-                ps.setLong(10, lease.epoch());
-            }
+            bindEvent(ps, event, lease);
             return ps.executeUpdate();
+        }
+    }
+
+    /** Binds the event insert's parameters — and, fenced, the lease's — in {@link #insertEventSql} order. */
+    private void bindEvent(PreparedStatement ps, WorkflowEvent event, @Nullable RunLease lease) throws SQLException {
+        ps.setObject(1, event.id());
+        ps.setObject(2, event.workflowInstanceId());
+        ps.setInt(3, event.sequenceNumber());
+        ps.setString(4, event.eventType().name());
+        setNullableString(ps, 5, event.stepName());
+        setJsonParameter(ps, 6, event.payload());
+        ps.setTimestamp(7, Timestamp.from(event.createdAt()));
+        setNullableString(ps, 8, event.argsHash());
+        if (lease != null) {
+            ps.setObject(9, lease.instanceId());
+            ps.setLong(10, lease.epoch());
         }
     }
 
@@ -763,6 +1107,132 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return deleted;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One connection, one transaction ({@code autoCommit=false}), in this
+     * order:
+     * <ol>
+     *   <li>the instance {@code UPDATE ... WHERE id = ? AND version = ? AND
+     *       status = 'FAILED'}. It runs first, so the row lock is taken before
+     *       anything is deleted: a concurrent retry, terminate or adoption
+     *       orders strictly before or after the whole reopen. So does a
+     *       retention purge on a dialect whose purge candidate select locks
+     *       the instance row ({@link #getPurgeCandidatesSql()}; Postgres:
+     *       {@code FOR UPDATE SKIP LOCKED}). On a dialect whose select locks
+     *       nothing (the portable default), the purge deletes the children
+     *       before the instance, the reverse order, so the two can deadlock;
+     *       the database's deadlock detector then aborts one of them, which
+     *       rolls back whole (traced, not tested). Zero rows rolls back, and
+     *       the row is probed once the connection is released: missing is
+     *       {@link WorkflowNotFoundException}, anything else
+     *       {@link OptimisticLockException};</li>
+     *   <li>{@code DELETE FROM maestro_workflow_event WHERE workflow_instance_id
+     *       = ? AND sequence_number IN (...)}, in chunks of
+     *       {@value #REOPEN_DELETE_CHUNK} sequences;</li>
+     *   <li>{@code DELETE FROM maestro_workflow_timer WHERE workflow_instance_id
+     *       = ? AND timer_id IN (...)}, in chunks of {@value #REOPEN_DELETE_CHUNK}
+     *       ids;</li>
+     *   <li>commit.</li>
+     * </ol>
+     * Any {@link SQLException} or {@link RuntimeException} rolls all of it back
+     * ({@code rollbackAfter}/{@code endTransaction}, as every transactional
+     * write here); an {@code SQLException} is then classified by
+     * {@link #storeFault}, so a database fault surfaces as
+     * {@link StoreUnavailableException}. No signal row is read or written.
+     */
+    @Override
+    public void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                     Set<String> deleteTimerIds) {
+        Objects.requireNonNull(reopened, "reopened");
+        requireReopened(reopened);
+        var sequences = deleteEventSequences.stream().sorted().toList();
+        var timerIds = deleteTimerIds.stream().sorted().toList();
+
+        boolean written;
+        int deletedEvents = 0;
+        int deletedTimers = 0;
+        try (var conn = dataSource.getConnection()) {
+            conn.setAutoCommit(false);
+            boolean settled = false; // committed or rolled back — see endTransaction
+            try {
+                written = executeUpdate(conn, updateInstanceSql(false) + " AND status = ?", ps -> {
+                    bindInstanceRow(ps, reopened);
+                    ps.setString(16, WorkflowStatus.FAILED.name());
+                }) > 0;
+                if (written) {
+                    deletedEvents = deleteInChunks(conn, "workflow_event", "sequence_number",
+                            reopened.id(), sequences);
+                    deletedTimers = deleteInChunks(conn, "workflow_timer", "timer_id",
+                            reopened.id(), timerIds);
+                    conn.commit();
+                } else {
+                    conn.rollback();
+                }
+                settled = true;
+            } catch (SQLException | RuntimeException e) {
+                settled = rollbackAfter(conn, e);
+                throw e;
+            } finally {
+                endTransaction(conn, settled);
+            }
+        } catch (SQLException e) {
+            throw storeFault("Failed to reopen workflow instance " + reopened.id() + " for retry", e);
+        }
+
+        if (!written) {
+            // Probed after the transaction's connection is released, so a
+            // single-connection pool cannot deadlock on the nested borrow.
+            // A row at the expected version that is no longer FAILED also
+            // lands here, with "expected version N but found N": unreachable
+            // while every instance write bumps the version.
+            resolveUpdateFailure(reopened, null);
+        }
+
+        log.debug("Reopened workflow instance for retry: workflowId={}, version={}→{}, "
+                        + "deletedEvents={}, deletedTimers={}", reopened.workflowId(), reopened.version() - 1,
+                reopened.version(), deletedEvents, deletedTimers);
+    }
+
+    /**
+     * The {@link WorkflowStore#reopenFailedInstance} precondition: the
+     * reopened row is {@code RUNNING} with no {@code completedAt}.
+     *
+     * @throws IllegalArgumentException if it is not; nothing was written
+     */
+    private static void requireReopened(WorkflowInstance reopened) {
+        if (reopened.status() != WorkflowStatus.RUNNING || reopened.completedAt() != null) {
+            throw new IllegalArgumentException("reopenFailedInstance needs the reopened row RUNNING with no "
+                    + "completedAt; got status=" + reopened.status() + ", completedAt=" + reopened.completedAt()
+                    + " for workflow '" + reopened.workflowId() + "'");
+        }
+    }
+
+    /**
+     * Deletes the rows of {@code table} that belong to {@code instanceId} and
+     * whose {@code keyColumn} equals one of {@code keys} exactly, on the
+     * caller's transaction, {@value #REOPEN_DELETE_CHUNK} keys per statement.
+     *
+     * @return the number of rows deleted
+     */
+    private int deleteInChunks(Connection conn, String table, String keyColumn, UUID instanceId,
+                               List<?> keys) throws SQLException {
+        int deleted = 0;
+        for (int from = 0; from < keys.size(); from += REOPEN_DELETE_CHUNK) {
+            var chunk = keys.subList(from, Math.min(keys.size(), from + REOPEN_DELETE_CHUNK));
+            deleted += executeUpdate(conn, "DELETE FROM " + tableName(table)
+                    + " WHERE workflow_instance_id = ? AND " + keyColumn + " IN (" + inClause(chunk.size()) + ")",
+                    ps -> {
+                        ps.setObject(1, instanceId);
+                        int index = 2;
+                        for (var key : chunk) {
+                            ps.setObject(index++, key);
+                        }
+                    });
+        }
+        return deleted;
+    }
+
     // ── Retention ─────────────────────────────────────────────────────────
 
     /**
@@ -782,6 +1252,55 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        return purge(status, cutoff, batchSize, null,
+                conn -> selectPurgeCandidates(conn, getPurgeCandidatesSql(), ps -> {
+                    ps.setString(1, status.name());
+                    ps.setTimestamp(2, Timestamp.from(cutoff));
+                    ps.setInt(3, batchSize);
+                }));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same single transaction as the unscoped form, with the candidate
+     * select {@link #getServicePurgeCandidatesSql()}. The instance delete
+     * re-checks {@code service_name} as well as status and cutoff: the engine
+     * never changes an instance's service name, but an operator may correct
+     * it by hand (docs/operations.md §11.5). Where the candidate select does
+     * not lock its rows (the portable SQL), a candidate renamed between the
+     * select and the delete makes the delete count fall short, and the whole
+     * batch, children included, rolls back, as for a retried candidate. A
+     * select that locks its rows (Postgres) excludes the race outright.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purge(status, cutoff, batchSize, serviceName,
+                conn -> selectPurgeCandidates(conn, getServicePurgeCandidatesSql(), ps -> {
+                    ps.setString(1, status.name());
+                    ps.setTimestamp(2, Timestamp.from(cutoff));
+                    ps.setString(3, serviceName);
+                    ps.setInt(4, batchSize);
+                }));
+    }
+
+    /** Selects one batch of purge candidate ids on the caller's transaction. */
+    @FunctionalInterface
+    private interface CandidateSelect {
+        List<UUID> select(Connection conn) throws SQLException;
+    }
+
+    /**
+     * One purge batch: validates the arguments, then selects the candidates
+     * with {@code select} and deletes them with their history in one
+     * transaction (see {@link #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)}).
+     * A non-null {@code serviceName} is re-checked in the instance delete with
+     * the status and the cutoff.
+     */
+    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize, @Nullable String serviceName,
+                              CandidateSelect select) {
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(cutoff, "cutoff");
         if (!status.isTerminal()) {
@@ -796,7 +1315,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             conn.setAutoCommit(false);
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
-                var ids = selectPurgeCandidates(conn, status, cutoff, batchSize);
+                var ids = select.select(conn);
                 if (ids.isEmpty()) {
                     conn.rollback();
                     settled = true;
@@ -810,20 +1329,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 int events = executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
                         + " WHERE workflow_instance_id IN (" + in + ")", ps -> setIds(ps, ids, 1));
                 int instances = executeUpdate(conn, "DELETE FROM " + tableName("workflow_instance")
-                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?", ps -> {
+                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?"
+                        + (serviceName == null ? "" : " AND service_name = ?"), ps -> {
                     int next = setIds(ps, ids, 1);
                     ps.setString(next, status.name());
                     ps.setTimestamp(next + 1, Timestamp.from(cutoff));
+                    if (serviceName != null) {
+                        ps.setString(next + 2, serviceName);
+                    }
                 });
                 if (instances != ids.size()) {
                     // A candidate stopped qualifying between select and delete
-                    // (a retry flipped it to RUNNING). Its memoization log is
-                    // in this transaction's delete set — roll everything back
-                    // rather than leave a live workflow with no history.
+                    // (a retry flipped it to RUNNING, or its service name was
+                    // corrected). Its history is in this transaction's delete
+                    // set — roll everything back rather than leave a workflow
+                    // with no history.
                     conn.rollback();
                     settled = true;
                     log.warn("Retention purge of {} {} instance(s) rolled back: only {} still qualified at delete "
-                            + "time — a candidate was retried concurrently; will retry next sweep",
+                            + "time — a candidate was retried or moved to another service concurrently; will "
+                            + "retry next sweep",
                             ids.size(), status, instances);
                     return PurgeResult.EMPTY;
                 }
@@ -845,13 +1370,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
-    /** The candidate select of {@link #purgeTerminalInstancesBefore}, on the caller's transaction. */
-    private List<UUID> selectPurgeCandidates(Connection conn, WorkflowStatus status, Instant cutoff,
-                                             int batchSize) throws SQLException {
-        try (var ps = conn.prepareStatement(getPurgeCandidatesSql())) {
-            ps.setString(1, status.name());
-            ps.setTimestamp(2, Timestamp.from(cutoff));
-            ps.setInt(3, batchSize);
+    /** Runs a purge candidate select on the caller's transaction and returns the selected ids. */
+    private List<UUID> selectPurgeCandidates(Connection conn, String sql, StatementSetter params)
+            throws SQLException {
+        try (var ps = conn.prepareStatement(sql)) {
+            params.set(ps);
             try (var rs = ps.executeQuery()) {
                 var ids = new ArrayList<UUID>();
                 while (rs.next()) {
@@ -1264,6 +1787,39 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         return update(sql, ps -> ps.setTimestamp(1, Timestamp.from(cutoff)));
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One dialect-neutral statement in autocommit: a {@code DELETE} whose
+     * {@code id IN (SELECT ...)} subquery joins the instance, filters on its
+     * status, {@code completed_at} and {@code service_name}, and takes the
+     * first {@code limit} rows with the portable {@code FETCH FIRST ? ROWS
+     * ONLY} (Postgres accepts it with a bind parameter). The join leaves
+     * orphans out, and the outer {@code consumed = FALSE} re-checks a row
+     * consumed after the subquery read it.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+
+        String sql = "DELETE FROM " + tableName("workflow_signal")
+                + " WHERE consumed = FALSE AND id IN (SELECT s.id FROM " + tableName("workflow_signal") + " s"
+                + " JOIN " + tableName("workflow_instance") + " i ON i.id = s.workflow_instance_id"
+                + " WHERE s.consumed = FALSE AND i.status IN ('" + WorkflowStatus.COMPLETED.name() + "', '"
+                + WorkflowStatus.TERMINATED.name() + "') AND i.completed_at < ? AND i.service_name = ?"
+                + " FETCH FIRST ? ROWS ONLY)";
+
+        return update(sql, ps -> {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            ps.setString(2, serviceName);
+            ps.setInt(3, limit);
+        });
+    }
+
     // ── Timer operations ──────────────────────────────────────────────────
 
     @Override
@@ -1334,6 +1890,41 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setTimestamp(1, Timestamp.from(now));
             ps.setInt(2, batchSize);
         }, this::mapTimer);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Runs {@link #getDueTimersByStoreClockSql()}, binding only the batch
+     * size; without that hook, {@code getDueTimers(Instant.now(), batchSize)}.
+     * The lock lifetime note on {@link #getDueTimers(Instant, int)} applies.
+     */
+    @Override
+    public List<WorkflowTimer> getDueTimers(int batchSize) {
+        var sql = getDueTimersByStoreClockSql();
+        if (sql == null) {
+            return getDueTimers(Instant.now(), batchSize);
+        }
+        return queryList(sql, ps -> ps.setInt(1, batchSize), this::mapTimer);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Runs {@link #storeTimeSql()} and reads its one value as
+     * {@link OffsetDateTime}; without that hook, empty and no SQL. A SQL error
+     * is translated as every other read's is.
+     */
+    @Override
+    public Optional<Instant> storeTime() {
+        var sql = storeTimeSql();
+        if (sql == null) {
+            return Optional.empty();
+        }
+        return querySingle(sql, ps -> {}, rs -> {
+            var now = rs.getObject(1, OffsetDateTime.class);
+            return now == null ? null : now.toInstant();
+        });
     }
 
     @Override
@@ -1678,10 +2269,32 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     private JsonNode parseJsonNode(String json) {
         try {
-            return objectMapper().readTree(json);
+            return payloadReader.readTree(json);
         } catch (Exception e) {
             throw new SerializationException("Failed to parse JSON", e);
         }
+    }
+
+    /**
+     * The reader every payload column is parsed with: the mapper's own, made to
+     * keep each decimal exact (class Javadoc, "Exact decimals"). A mapper whose
+     * own trees already hold {@code DecimalNode}s is used as it is, trailing-zero
+     * stripping included, so its trees do not change. Any other mapper gets
+     * {@link JsonNodeFeature#USE_BIG_DECIMAL_FOR_FLOATS} (which, unlike
+     * {@code DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS}, also overrides
+     * a mapper that turned the node feature off) with
+     * {@link JsonNodeFeature#STRIP_TRAILING_BIGDECIMAL_ZEROES} off: stripping
+     * {@code 2.0} to {@code 2} would turn an untyped {@code Double} into an
+     * {@code Integer}. Whether the mapper's trees hold decimals is asked of the
+     * mapper, not re-derived from its features.
+     */
+    private static ObjectReader payloadReader(ObjectMapper mapper) {
+        var own = mapper.reader();
+        if (own.readTree("0.10").isBigDecimal()) {
+            return own;
+        }
+        return own.with(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES);
     }
 
     // ── Parameter helpers ─────────────────────────────────────────────────

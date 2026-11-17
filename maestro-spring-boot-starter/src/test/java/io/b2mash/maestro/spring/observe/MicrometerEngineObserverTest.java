@@ -1,17 +1,24 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.TimerInfo;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Unit-level pin for the design doc §2.2 meter catalog: every row's name,
@@ -81,6 +88,29 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.workflow.duration — Timer, tags workflow/outcome=completed|failed; other statuses record nothing")
+    void workflowFinishedRecordsDurationByOutcome() {
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.COMPLETED, Duration.ofMillis(150));
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.FAILED, Duration.ofMillis(75));
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.TERMINATED, Duration.ofMillis(999));
+
+        var completed = registry.get("maestro.workflow.duration")
+                .tag("workflow", "OrderWorkflow").tag("outcome", "completed").timer();
+        assertThat(completed.count()).isEqualTo(1);
+        assertThat(completed.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+
+        var failed = registry.get("maestro.workflow.duration")
+                .tag("workflow", "OrderWorkflow").tag("outcome", "failed").timer();
+        assertThat(failed.count()).isEqualTo(1);
+        assertThat(failed.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(75.0);
+
+        assertThat(registry.get("maestro.workflow.duration").timers())
+                .as("TERMINATED must not mint a third outcome series")
+                .extracting(t -> t.getId().getTag("outcome"))
+                .containsExactlyInAnyOrder("completed", "failed");
+    }
+
+    @Test
     @DisplayName("maestro.activity.duration — Timer, tags workflow/activity/outcome=completed, live only")
     void activityDurationCompleted() {
         var activity = new ActivityInfo("wf-1", "OrderWorkflow", "PaymentActivities.charge", 3);
@@ -94,7 +124,7 @@ class MicrometerEngineObserverTest {
                 .tag("outcome", "completed")
                 .timer();
         assertThat(timer.count()).isEqualTo(1);
-        assertThat(timer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+        assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(150.0);
     }
 
     @Test
@@ -111,6 +141,24 @@ class MicrometerEngineObserverTest {
                 .tag("outcome", "failed")
                 .timer();
         assertThat(timer.count()).isEqualTo(1);
+    }
+
+    @Test
+    @DisplayName("maestro.activity.result.unreadable — Counter, tags exactly workflow/activity, never exceptionType")
+    void activityResultUnreadableCountsByWorkflowAndActivity() {
+        var activity = new ActivityInfo("wf-1", "OrderWorkflow", "Pay.card", 3);
+
+        observer.activityResultUnreadable(activity, "x.Y");
+        observer.activityResultUnreadable(activity, "x.Y");
+
+        var counter = registry.get("maestro.activity.result.unreadable")
+                .tag("workflow", "OrderWorkflow")
+                .tag("activity", "Pay.card")
+                .counter();
+        assertThat(counter.count()).isEqualTo(2.0);
+        assertThat(counter.getId().getTags())
+                .extracting(tag -> tag.getKey() + "=" + tag.getValue())
+                .containsExactlyInAnyOrder("workflow=OrderWorkflow", "activity=Pay.card");
     }
 
     @Test
@@ -228,6 +276,31 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.run.abandoned — Counter, tag reason=shutdown|terminated|converged"
+            + "|terminal_write_failed|node_error|store_unavailable, no workflow tag")
+    void runAbandonedCountsByReason() {
+        for (var reason : AbandonReason.values()) {
+            observer.runAbandoned(WORKFLOW, reason);
+        }
+        observer.runAbandoned(WORKFLOW, AbandonReason.STORE_UNAVAILABLE);
+
+        assertThat(registry.get("maestro.run.abandoned").tag("reason", "store_unavailable")
+                .counter().count()).isEqualTo(2.0);
+        for (var tag : new String[] {"shutdown", "terminated", "converged", "terminal_write_failed", "node_error"}) {
+            assertThat(registry.get("maestro.run.abandoned").tag("reason", tag).counter().count())
+                    .as("reason=%s", tag)
+                    .isEqualTo(1.0);
+        }
+        var counters = registry.get("maestro.run.abandoned").counters();
+        assertThat(counters).hasSize(6);
+        assertThat(counters).allSatisfy(counter -> {
+            var tags = counter.getId().getTags();
+            assertThat(tags).hasSize(1);
+            assertThat(tags.getFirst().getKey()).isEqualTo("reason");
+        });
+    }
+
+    @Test
     @DisplayName("a meter name/type conflict is contained locally and never thrown from the callback")
     void meterTypeConflictIsContainedDefensively() {
         // Pre-register a Gauge under the exact name this observer uses as a
@@ -256,5 +329,29 @@ class MicrometerEngineObserverTest {
 
         assertThat(registry.get("maestro.signal.consumed").tag("signal", "payment-approved")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    void backgroundLoopErrorCountsByLoop() {
+        observer.backgroundLoopError("instance-lock-renewer", "java.lang.OutOfMemoryError");
+        observer.backgroundLoopError("instance-lock-renewer", "java.lang.AssertionError");
+        var counter = registry.get("maestro.loop.errors").tag("loop", "instance-lock-renewer").counter();
+        assertEquals(2.0, counter.count());
+        assertEquals(List.of("loop"), counter.getId().getTags().stream().map(Tag::getKey).toList());
+    }
+
+    /**
+     * Fix wave e6: the five engine loops' series exist at zero as soon as the
+     * observer is created, so {@code increase(maestro_loop_errors_total[15m])}
+     * sees the first Error instead of a series that starts at 1.
+     */
+    @Test
+    void loopErrorSeriesExistAtZeroBeforeAnyFailure() {
+        var fresh = new SimpleMeterRegistry();
+        new MicrometerEngineObserver(fresh);
+        var series = fresh.find("maestro.loop.errors").counters().stream()
+                .collect(java.util.stream.Collectors.toMap(c -> c.getId().getTag("loop"), Counter::count));
+        assertEquals(java.util.Map.of("timer-poller", 0.0, "recovery-poller", 0.0, "signal-janitor", 0.0,
+                "retention-sweeper", 0.0, "instance-lock-renewer", 0.0), series);
     }
 }

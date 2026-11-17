@@ -1,18 +1,27 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.engine.TaskQueueGovernor.SlotReservation;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import org.jspecify.annotations.Nullable;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.OptionalInt;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Stream;
 
 import static io.b2mash.maestro.core.engine.TaskQueueGovernor.UNBOUNDED;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -20,6 +29,9 @@ import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -377,6 +389,509 @@ class TaskQueueGovernorTest {
         waiter.join(5_000);
         assertInstanceOf(ExecutorShutdownException.class, thrown.get());
         assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"), "the waiter took nothing");
+    }
+
+    /**
+     * Issue 29 / WP5 D-3: {@link TaskQueueGovernor#shutdown} lends one permit
+     * to every pool. A waiter that wakes and finds the governor shut down
+     * hands the permit straight back and throws the shutdown signal, which
+     * wakes the next waiter — nobody is interrupted. After the drain the
+     * loans are reclaimed and the counts are exact again.
+     */
+    @Nested
+    @DisplayName("shutdown")
+    class Shutdown {
+
+        private final List<Waiter> waiters = new CopyOnWriteArrayList<>();
+        private final List<Runnable> holderReleases = new CopyOnWriteArrayList<>();
+        private final List<Thread> otherThreads = new CopyOnWriteArrayList<>();
+
+        /** Releases the holders and unsticks every waiter, so a red run leaks no thread. */
+        @AfterEach
+        void releaseStuckThreads() throws InterruptedException {
+            holderReleases.forEach(Runnable::run);
+            for (var t : otherThreads) {
+                t.interrupt();
+                t.join(Duration.ofSeconds(5));
+            }
+            for (var w : waiters) {
+                w.thread().interrupt();
+                w.thread().join(Duration.ofSeconds(5));
+            }
+        }
+
+        @Test
+        void aWorkflowSlotWaiterLeavesWhenTheGovernorShutsDown() throws Exception {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+            g.acquireWorkflowSlot("q", "holder");
+            holderReleases.add(() -> g.releaseWorkflowSlot("holder"));
+            var w = waitFor("w", () -> g.acquireWorkflowSlot("q", "w"));
+            awaitParked(w);
+            g.shutdown();
+            assertTrue(w.left().await(2, SECONDS), "the waiter left");
+            assertInstanceOf(ExecutorShutdownException.class, w.thrown());
+            assertFalse(w.interruptFlag(), "no interrupt: its own lock release must not see one");
+        }
+
+        @Test
+        void anActivitySlotWaiterLeavesWhenTheGovernorShutsDown() throws Exception {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+            g.acquireActivitySlot("q");
+            holderReleases.add(() -> g.releaseActivitySlot("q"));
+            var w = waitFor("w", () -> g.acquireActivitySlot("q"));
+            awaitParked(w);
+            g.shutdown();
+            assertTrue(w.left().await(2, SECONDS), "the waiter left");
+            assertInstanceOf(ExecutorShutdownException.class, w.thrown());
+            assertFalse(w.interruptFlag(), "no interrupt: its own lock release must not see one");
+        }
+
+        @Test
+        void everyQueuedWaiterLeavesAndNoneIsInterrupted() throws Exception {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+            g.acquireWorkflowSlot("q", "holder");
+            g.acquireActivitySlot("q");
+            holderReleases.add(() -> g.releaseWorkflowSlot("holder"));
+            holderReleases.add(() -> g.releaseActivitySlot("q"));
+            var queued = new ArrayList<Waiter>();
+            for (var i = 0; i < 5; i++) {
+                var id = "w" + i;
+                var w = waitFor(id, () -> g.acquireWorkflowSlot("q", id));
+                awaitParked(w);
+                queued.add(w);
+            }
+            for (var i = 0; i < 5; i++) {
+                var w = waitFor("a" + i, () -> g.acquireActivitySlot("q"));
+                awaitParked(w);
+                queued.add(w);
+            }
+
+            g.shutdown();
+
+            for (var w : queued) {
+                assertTrue(w.left().await(2, SECONDS), "the waiter " + w.thread().getName() + " left");
+            }
+            for (var w : queued) {
+                assertInstanceOf(ExecutorShutdownException.class, w.thrown(), w.thread().getName());
+                assertFalse(w.interruptFlag(), w.thread().getName() + " was not interrupted");
+            }
+        }
+
+        @Test
+        void twoBranchesOfOneRunWaitingBehindAnotherRunBothLeave() throws Exception {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 10)));
+            var thrown = new ConcurrentLinkedQueue<Throwable>();
+            var branches = parkTwoBranchesBehindAnotherRun(g, thrown);
+            holderReleases.add(() -> g.releaseWorkflowSlot("other"));
+            otherThreads.addAll(List.of(branches));
+            g.shutdown();
+            assertTrue(branches[0].join(Duration.ofSeconds(2)) && branches[1].join(Duration.ofSeconds(2)),
+                    "both branches left");
+            assertEquals(2, thrown.size(), thrown.toString());
+            thrown.forEach(t -> assertInstanceOf(ExecutorShutdownException.class, t));
+        }
+
+        @Test
+        void aWaitThatStartsAfterShutdownLeavesWithTheShutdownSignal() throws Exception {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+            g.acquireWorkflowSlot("q", "holder");
+            holderReleases.add(() -> g.releaseWorkflowSlot("holder"));
+            g.shutdown();
+            var late = waitFor("late", () -> g.acquireWorkflowSlot("q", "late"));
+            assertTrue(late.left().await(1, SECONDS), "the waiter left");
+            assertInstanceOf(ExecutorShutdownException.class, late.thrown());
+        }
+
+        /** MD-3: in-flight work drains, so a free activity slot is still admitted. */
+        @Test
+        void aFreeActivitySlotIsStillAdmittedAfterShutdown() {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 2)));
+            g.shutdown();
+            assertFalse(g.acquireActivitySlot("q"), "a free slot is taken without waiting");
+            g.releaseActivitySlot("q");
+        }
+
+        @Test
+        void noPermitIsLostOrGainedOnceTheLoanIsReclaimed() throws Exception {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)));
+            g.acquireWorkflowSlot("q", "h1");
+            g.acquireWorkflowSlot("q", "h2");
+            g.acquireActivitySlot("q");
+            g.acquireActivitySlot("q");
+            var queued = new ArrayList<Waiter>();
+            for (var i = 0; i < 3; i++) {
+                var id = "w" + i;
+                var w = waitFor(id, () -> g.acquireWorkflowSlot("q", id));
+                awaitParked(w);
+                queued.add(w);
+            }
+            for (var i = 0; i < 3; i++) {
+                var w = waitFor("a" + i, () -> g.acquireActivitySlot("q"));
+                awaitParked(w);
+                queued.add(w);
+            }
+
+            g.shutdown();
+            for (var w : queued) {
+                assertTrue(w.left().await(2, SECONDS), "the waiter " + w.thread().getName() + " left");
+            }
+            g.reclaimShutdownPermits();
+            g.releaseWorkflowSlot("h1");
+            g.releaseWorkflowSlot("h2");
+            g.releaseActivitySlot("q");
+            g.releaseActivitySlot("q");
+
+            assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q"));
+            assertEquals(OptionalInt.of(2), g.availableActivitySlots("q"));
+        }
+
+        /**
+         * Review c1: a reclaim that runs while the poison permit is still
+         * travelling — a deadline-hit drain, or here at once after
+         * {@code shutdown()}, before the woken head waiter has run — must not
+         * take the permit from under the waiters still queued.
+         */
+        @Test
+        void waitersStillQueuedWhenTheReclaimRunsAllLeave() throws Exception {
+            for (var round = 0; round < 20; round++) {
+                var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(1, 1)));
+                g.acquireWorkflowSlot("q", "holder");
+                holderReleases.add(() -> g.releaseWorkflowSlot("holder"));
+                var queued = new ArrayList<Waiter>();
+                for (var i = 0; i < 3; i++) {
+                    var id = "r" + round + "-w" + i;
+                    var w = waitFor(id, () -> g.acquireWorkflowSlot("q", id));
+                    awaitParked(w);
+                    queued.add(w);
+                }
+
+                g.shutdown();
+                g.reclaimShutdownPermits();
+
+                for (var w : queued) {
+                    assertTrue(w.left().await(2, SECONDS),
+                            "round " + round + ": the waiter " + w.thread().getName() + " left");
+                    assertInstanceOf(ExecutorShutdownException.class, w.thrown(), w.thread().getName());
+                }
+            }
+        }
+
+        @Test
+        void shutdownIsIdempotent() {
+            var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)));
+            g.shutdown();
+            g.shutdown();
+            g.reclaimShutdownPermits();
+            g.reclaimShutdownPermits();
+            assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q"));
+            assertEquals(OptionalInt.of(2), g.availableActivitySlots("q"));
+        }
+
+        /** Restart-safety: {@code UNBOUNDED} is JVM-wide and shared by every executor without limits. */
+        @Test
+        void shuttingDownAnUnboundedGovernorChangesNothing() {
+            TaskQueueGovernor.UNBOUNDED.shutdown();
+            new TaskQueueGovernor(Map.of()).shutdown();
+            assertFalse(TaskQueueGovernor.UNBOUNDED.isClosed(),
+                    "the JVM-wide UNBOUNDED must stay usable by the next executor");
+        }
+
+        @Test
+        void aDefaultQueueFirstNamedAfterShutdownRefusesWaits() throws Exception {
+            var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(1, 1));
+            g.shutdown();
+            var w = waitFor("w", () -> g.acquireWorkflowSlot("late", "w"));
+            assertTrue(w.left().await(1, SECONDS), "the waiter left");
+            assertInstanceOf(ExecutorShutdownException.class, w.thrown());
+
+            // The late queue's pools got no loan. Its free activity slot is still
+            // admitted (MD-3); a wait for a second one must throw before it
+            // touches the semaphore, because no permit will ever wake it.
+            assertFalse(g.acquireActivitySlot("late"), "a free slot is taken without waiting");
+            holderReleases.add(() -> g.releaseActivitySlot("late"));
+            var a = waitFor("a", () -> g.acquireActivitySlot("late"));
+            assertTrue(a.left().await(1, SECONDS), "the activity waiter left");
+            assertInstanceOf(ExecutorShutdownException.class, a.thrown());
+        }
+
+        private Waiter waitFor(String name, Runnable acquire) {
+            var left = new CountDownLatch(1);
+            var thrown = new AtomicReference<@Nullable Throwable>();
+            var flag = new AtomicBoolean();
+            var thread = Thread.ofVirtual().name(name).unstarted(() -> {
+                try {
+                    acquire.run();
+                } catch (Throwable t) {
+                    thrown.set(t);
+                } finally {
+                    flag.set(Thread.currentThread().isInterrupted());
+                    left.countDown();
+                }
+            });
+            var waiter = new Waiter(thread, left, thrown, flag);
+            waiters.add(waiter);
+            thread.start();
+            return waiter;
+        }
+
+        private static void awaitParked(Waiter waiter) {
+            await().atMost(5, SECONDS).until(() -> waiter.thread().getState() == Thread.State.WAITING);
+        }
+    }
+
+    /** A thread waiting for a slot: what it threw, and its interrupt flag once it left. */
+    private record Waiter(Thread thread, CountDownLatch left,
+                          AtomicReference<@Nullable Throwable> thrownRef, AtomicBoolean flag) {
+        @Nullable Throwable thrown() {
+            return thrownRef.get();
+        }
+
+        boolean interruptFlag() {
+            return flag.get();
+        }
+    }
+
+    /**
+     * WP6 / Issue 30: the recovery poller asks for a slot without blocking
+     * before it locks an instance (D-1), and C2's bounded queue of recovered
+     * runs (D-2), with the capacity signal it waits on (D-3).
+     */
+    @Nested
+    @DisplayName("Recovery admission")
+    class RecoveryAdmission {
+
+        private final TaskQueueGovernor g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)));
+
+        @Test
+        void admitRecoveryReservesAFreeSlotWithoutBlocking() {
+            var r = g.admitRecovery("q");
+            assertEquals(SlotReservation.Kind.RESERVED, r.kind());
+            assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+        }
+
+        @Test
+        void admitRecoveryQueuesAtMostTheQueuesConcurrencyThenDefers() {
+            var kinds = Stream.generate(() -> g.admitRecovery("q")).limit(5)
+                    .map(r -> r == null ? "DEFERRED" : r.kind().name()).toList();
+            assertEquals(List.of("RESERVED", "RESERVED", "QUEUED", "QUEUED", "DEFERRED"), kinds);
+        }
+
+        @Test
+        void admitRecoveryNeverOvertakesAWaitingRun() throws Exception {
+            g.acquireWorkflowSlot("q", "a");
+            g.acquireWorkflowSlot("q", "b"); // both slots held
+            var waiterGotIt = new CountDownLatch(1);
+            var waiter = Thread.ofVirtual().start(() -> {
+                g.acquireWorkflowSlot("q", "c");
+                waiterGotIt.countDown();
+            });
+            await().atMost(Duration.ofSeconds(5)).until(() -> waiter.getState() == Thread.State.WAITING); // c queued
+            g.releaseWorkflowSlot("a"); // a permit is free for an instant, but c is first in line
+            var r = g.admitRecovery("q"); // same thread, before c has been scheduled
+            assertEquals(SlotReservation.Kind.QUEUED, r.kind(), "never RESERVED past a waiting run");
+            assertTrue(waiterGotIt.await(5, SECONDS), "c got the permit");
+        }
+
+        @Test
+        void aReservationIsReleasedOrClaimedExactlyOnce() {
+            var r = g.admitRecovery("q");
+            r.release();
+            r.release();
+            assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q"), "one permit given back, not two");
+            g.acquireWorkflowSlot("q", "wf", r); // claim after release: falls back
+            assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"));
+            var s = g.admitRecovery("q");
+            g.acquireWorkflowSlot("q", "wf2", s);
+            s.release(); // release after claim: no-op
+            assertEquals(OptionalInt.of(0), g.availableWorkflowSlots("q"));
+        }
+
+        @Test
+        void aClaimedReservedSlotIsTheRunsSlot() {
+            var r = g.admitRecovery("q");
+            g.acquireWorkflowSlot("q", "wf", r);
+            assertEquals(OptionalInt.of(1), g.availableWorkflowSlots("q"), "no second permit taken");
+            g.releaseWorkflowSlot("wf");
+            assertEquals(OptionalInt.of(2), g.availableWorkflowSlots("q"));
+        }
+
+        @Test
+        void aQueuedRunTakesItsTurnAndReturnsItsTicket() throws Exception {
+            g.acquireWorkflowSlot("q", "a");
+            g.acquireWorkflowSlot("q", "b");
+            var r = g.admitRecovery("q"); // QUEUED
+            assertEquals(1, g.recoveryHeadroom("q"));
+            var got = new CountDownLatch(1);
+            Thread.ofVirtual().start(() -> {
+                g.acquireWorkflowSlot("q", "rec", r);
+                got.countDown();
+            });
+            g.releaseWorkflowSlot("a");
+            assertTrue(got.await(5, SECONDS));
+            assertEquals(2, g.recoveryHeadroom("q"), "the ticket is back once the run holds its slot");
+        }
+
+        @Test
+        void aQueuedRunInterruptedWhileWaitingReturnsItsTicket() throws Exception {
+            g.acquireWorkflowSlot("q", "a");
+            g.acquireWorkflowSlot("q", "b");
+            var r = g.admitRecovery("q"); // QUEUED
+            assertEquals(SlotReservation.Kind.QUEUED, r.kind());
+            var thrown = new AtomicReference<@Nullable Throwable>();
+            var claimer = Thread.ofVirtual().start(() -> {
+                try {
+                    g.acquireWorkflowSlot("q", "rec", r);
+                } catch (Throwable t) {
+                    thrown.set(t);
+                }
+            });
+            await().atMost(Duration.ofSeconds(5)).until(() -> claimer.getState() == Thread.State.WAITING);
+            claimer.interrupt();
+            claimer.join(5_000);
+            assertInstanceOf(ExecutorShutdownException.class, thrown.get());
+            assertEquals(2, g.recoveryHeadroom("q"), "the ticket came back although the wait ended in an interrupt");
+        }
+
+        @Test
+        void aClosedGovernorAdmitsNothingAndWakesTheWaiter() throws Exception {
+            var seen = g.capacitySignal().epoch();
+            var woke = new CompletableFuture<Boolean>();
+            Thread.ofVirtual().start(() -> {
+                try {
+                    woke.complete(g.capacitySignal().awaitChange(seen, Duration.ofMinutes(1)));
+                } catch (InterruptedException e) {
+                    woke.complete(false);
+                }
+            });
+            g.shutdown();
+            assertTrue(woke.get(5, SECONDS));
+            assertNull(g.admitRecovery("q"));
+            assertEquals(0, g.recoveryHeadroom("q"));
+        }
+
+        @Test
+        void anUnboundedQueueAdmitsWithTheSharedSingleton() {
+            assertSame(SlotReservation.UNBOUNDED, UNBOUNDED.admitRecovery("x"));
+            assertSame(SlotReservation.UNBOUNDED, UNBOUNDED.admitRecovery("y"));
+            assertEquals(Integer.MAX_VALUE, UNBOUNDED.recoveryHeadroom("x"));
+        }
+
+        @Test
+        void aDefaultBoundedQueueHasItsOwnTickets() {
+            var d = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(1, 1));
+            assertEquals(2, d.recoveryHeadroom("a"));
+            d.admitRecovery("a");
+            d.admitRecovery("a");
+            assertEquals(0, d.recoveryHeadroom("a"));
+            assertEquals(2, d.recoveryHeadroom("b"), "queue b has separate pools and tickets");
+        }
+
+        @Test
+        void aGiveSignalsCapacity() {
+            var seen = g.capacitySignal().epoch();
+            g.acquireWorkflowSlot("q", "a");
+            g.releaseWorkflowSlot("a");
+            assertNotEquals(seen, g.capacitySignal().epoch());
+        }
+
+        /**
+         * What {@code maestro.taskqueue.slots.used} reads during recovery: a
+         * slot the recovery poller reserved counts from the reservation, before
+         * its run claims it (the permit is taken), and the claim takes no
+         * second one; a recovered run queued on a ticket holds no slot, like
+         * any run waiting for one, so it does not count.
+         */
+        @Test
+        void slotsInUseCountsAReservedSlotButNotAQueuedRecoveredRun() {
+            var reserved = g.admitRecovery("q");
+            assertEquals(SlotReservation.Kind.RESERVED, reserved.kind());
+            assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "reserved, not yet claimed: in use");
+            g.acquireWorkflowSlot("q", "r1", reserved);
+            assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the claim takes no second permit");
+
+            g.acquireWorkflowSlot("q", "fresh");
+            var queued = g.admitRecovery("q");
+            assertEquals(SlotReservation.Kind.QUEUED, queued.kind());
+            assertEquals(OptionalInt.of(2), g.workflowSlotsInUse("q"), "a queued recovered run holds no slot");
+            queued.release();
+
+            g.releaseWorkflowSlot("r1");
+            var unclaimed = g.admitRecovery("q");
+            assertEquals(OptionalInt.of(2), g.workflowSlotsInUse("q"));
+            unclaimed.release();
+            assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "a released reservation gives its slot back");
+        }
+    }
+
+    // ── in-use accessors (WP11: maestro.taskqueue.slots.used) ─────────
+
+    @Test
+    void inUseTracksAcquireParkAndRelease() throws Exception {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 3)));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+
+        g.acquireWorkflowSlot("q", "a");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"));
+
+        var seenWhileParked = g.parked("a", () -> g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), seenWhileParked, "a parked run gives its slot back");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the run holds its slot again after the park");
+
+        g.acquireActivitySlot("q");
+        g.acquireActivitySlot("q");
+        assertEquals(OptionalInt.of(2), g.activitySlotsInUse("q"), "2 of 3 activity slots held");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"), "the two pools are independent");
+
+        g.releaseActivitySlot("q");
+        g.releaseActivitySlot("q");
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+
+        g.releaseWorkflowSlot("a");
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"));
+    }
+
+    @Test
+    void inUseIsEmptyForUnboundedQueues() {
+        assertEquals(OptionalInt.empty(), UNBOUNDED.workflowSlotsInUse("x"));
+        assertEquals(OptionalInt.empty(), UNBOUNDED.activitySlotsInUse("x"));
+    }
+
+    @Test
+    void inUseUsesDefaultLimitsForUnconfiguredQueue() {
+        var g = new TaskQueueGovernor(Map.of(), new TaskQueueLimits(20, 20));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("default"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("default"));
+        g.acquireWorkflowSlot("default", "a");
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("default"));
+        assertEquals(OptionalInt.of(19), g.availableWorkflowSlots("default"),
+                "the in-use read created the same pool the acquire then used");
+    }
+
+    /**
+     * The merge of WP5 and WP11: while {@link TaskQueueGovernor#shutdown}'s
+     * loan is out, a pool has one permit more than its limit, so the in-use
+     * reads one less than the slots held (-1 on an idle pool); the reclaim
+     * makes them exact again. A default pool first created by an in-use read
+     * before shutdown is one that gets a loan.
+     */
+    @Test
+    void inUseReadsOneLessWhileTheShutdownLoanIsOutAndIsExactAfterTheReclaim() {
+        var g = new TaskQueueGovernor(Map.of("q", new TaskQueueLimits(2, 2)), new TaskQueueLimits(3, 3));
+        g.acquireWorkflowSlot("q", "a");
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("lazy"), "the read creates the default pool");
+
+        g.shutdown();
+
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("q"), "1 held, read as 0 while the loan is out");
+        assertEquals(OptionalInt.of(-1), g.activitySlotsInUse("q"), "an idle pool reads -1 while the loan is out");
+        assertEquals(OptionalInt.of(-1), g.workflowSlotsInUse("lazy"), "the lazily created pool got a loan too");
+
+        g.reclaimShutdownPermits();
+
+        assertEquals(OptionalInt.of(1), g.workflowSlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.activitySlotsInUse("q"));
+        assertEquals(OptionalInt.of(0), g.workflowSlotsInUse("lazy"));
     }
 
     @Test

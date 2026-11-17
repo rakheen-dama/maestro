@@ -267,17 +267,50 @@ public class MaestroProperties {
      * @param consumerGroup Kafka consumer group; defaults to the service name at runtime
      * @param topics        topic name configuration
      * @param redelivery    handler-failure redelivery and dead-letter policy
+     * @param templateInjectionCheck what happens at startup when a bean injects a
+     *                      byte[] KafkaTemplate without a qualifier and received a
+     *                      template that cannot send byte[] unchanged — see
+     *                      {@link TemplateInjectionCheck}; default
+     *                      {@link TemplateInjectionCheck#FAIL}
      */
     public record MessagingProperties(
             @DefaultValue("kafka") String type,
             @Nullable String consumerGroup,
             @DefaultValue TopicsProperties topics,
-            @DefaultValue RedeliveryProperties redelivery
+            @DefaultValue RedeliveryProperties redelivery,
+            @DefaultValue("fail") TemplateInjectionCheck templateInjectionCheck
     ) {
         /** @return the defaults documented above */
         public static MessagingProperties defaults() {
             return new MessagingProperties("kafka", null,
-                    TopicsProperties.defaults(), RedeliveryProperties.defaults());
+                    TopicsProperties.defaults(), RedeliveryProperties.defaults(), TemplateInjectionCheck.FAIL);
+        }
+
+        /**
+         * Startup policy for an unqualified {@code KafkaTemplate<…, byte[]>}
+         * injection point that received a template whose value serializer
+         * cannot send {@code byte[]} unchanged
+         * ({@code maestro.messaging.template-injection-check}).
+         *
+         * <p>Maestro's Kafka beans are not default candidates, so such a point
+         * receives Spring Boot's template, not Maestro's. The Kafka transport's
+         * check ({@code ByteArrayTemplateInjectionCheck}) finds those points
+         * once, after every singleton is created. The two real fixes are a
+         * {@code @Qualifier(MaestroKafkaBeans.TEMPLATE)} on the point, or a
+         * {@code spring.kafka.producer.value-serializer} that writes
+         * {@code byte[]}; this policy is the way out of last resort, for a
+         * point in code the host cannot change.
+         */
+        public enum TemplateInjectionCheck {
+            /**
+             * Each such point is listed in one exception that fails startup.
+             * The default.
+             */
+            FAIL,
+            /** Each such point is logged at WARN, with the same text; startup continues. */
+            WARN,
+            /** The check does nothing. */
+            OFF
         }
     }
 
@@ -567,11 +600,18 @@ public class MaestroProperties {
     /**
      * Lifecycle event publishing to the admin dashboard.
      *
-     * @param enabled whether {@code WORKFLOW_STARTED}/{@code _COMPLETED}/{@code _FAILED}
-     *                lifecycle events are published at all. {@code false} disables
-     *                publishing entirely, independent of the messaging topic — a
-     *                legitimate choice for deployments that do not run the admin
-     *                dashboard and want no lifecycle traffic on the broker.
+     * <p>Off by default. When on, every live activity costs two producer sends
+     * (started, then completed or failed), on top of the workflow, signal,
+     * timer and compensation events, and the admin-events topic must exist at
+     * startup (the Kafka transport's topic verification requires it only while
+     * this is {@code true}). A deployment that runs the {@code maestro-admin}
+     * dashboard sets {@code maestro.admin.events.enabled=true} on every service
+     * the dashboard should show.
+     *
+     * @param enabled whether lifecycle events ({@code WORKFLOW_*}, {@code ACTIVITY_*}
+     *                and the rest) are published at all; default {@code false}.
+     *                {@code false} disables publishing entirely, independent of the
+     *                messaging topic.
      * @param topic   <b>Deprecated alias</b> for {@link TopicsProperties#adminEvents()}
      *                ({@code maestro.messaging.topics.admin-events}), kept for
      *                deployments that only disable the dashboard's own events and
@@ -580,29 +620,33 @@ public class MaestroProperties {
      *                logged at startup. Prefer configuring the topic there.
      */
     public record EventsProperties(
-            @DefaultValue("true") boolean enabled,
+            @DefaultValue("false") boolean enabled,
             @DefaultValue("maestro.admin.events") String topic
     ) {
         /** @return the defaults documented above */
         public static EventsProperties defaults() {
-            return new EventsProperties(true, "maestro.admin.events");
+            return new EventsProperties(false, "maestro.admin.events");
         }
     }
 
     /**
      * Graceful shutdown configuration.
      *
-     * @param timeout how long {@code WorkflowExecutor.shutdown()} waits for
-     *                in-flight workflows to drain before returning; workflows
-     *                that overrun it are left running and their instance
-     *                locks expire by TTL
+     * @param timeout the deadline for the whole engine shutdown (default 20 s;
+     *                below Spring Boot's 30 s
+     *                {@code spring.lifecycle.timeout-per-shutdown-phase} and
+     *                Kubernetes' 30 s grace — see Operations §15): the drain of
+     *                in-flight workflows, the background loops, the
+     *                instance-lock renewer and the lifecycle-event flush all
+     *                share it; workflows that overrun it are left running and
+     *                their instance locks expire by TTL
      */
     public record ShutdownProperties(
-            @DefaultValue("30s") Duration timeout
+            @DefaultValue("20s") Duration timeout
     ) {
         /** @return the defaults documented above */
         public static ShutdownProperties defaults() {
-            return new ShutdownProperties(Duration.ofSeconds(30));
+            return new ShutdownProperties(Duration.ofSeconds(20));
         }
     }
 

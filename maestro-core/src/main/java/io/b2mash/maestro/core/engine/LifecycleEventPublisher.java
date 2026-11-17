@@ -51,7 +51,8 @@ final class LifecycleEventPublisher {
      */
     private static final int QUEUE_CAPACITY = 1_000;
 
-    private static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
+    /** The longest the shutdown flush waits, even with time left on the shutdown deadline. */
+    static final Duration SHUTDOWN_TIMEOUT = Duration.ofSeconds(5);
     private static final long DROP_LOG_INTERVAL_SECONDS = 10;
 
     private final ThreadPoolExecutor executor;
@@ -109,20 +110,40 @@ final class LifecycleEventPublisher {
     }
 
     /**
-     * Shuts the publisher down, giving queued and in-flight publishes a short
-     * window to finish before forcing termination, then reports any
-     * backpressure drops the rate limiter was still holding. Called once from
-     * {@link WorkflowExecutor#shutdown()}.
+     * Shuts the publisher down with a flush window of {@link #SHUTDOWN_TIMEOUT}.
+     * Same as {@code shutdown(SHUTDOWN_TIMEOUT)}.
      */
     void shutdown() {
+        shutdown(SHUTDOWN_TIMEOUT);
+    }
+
+    /**
+     * Shuts the publisher down, giving queued and in-flight publishes at most
+     * {@code flush} to finish before forcing termination, then reports any
+     * backpressure drops the rate limiter was still holding. Events still
+     * queued when the window ends are never published: they are added to
+     * {@link #dropped()} and logged once. {@link WorkflowExecutor#shutdown()}
+     * passes what is left of its deadline, capped at {@link #SHUTDOWN_TIMEOUT}.
+     * If the calling thread is interrupted while it waits, its interrupt
+     * status is restored and the window ends at once.
+     *
+     * @param flush the longest to wait for queued and in-flight publishes;
+     *              zero or negative does not wait
+     */
+    void shutdown(Duration flush) {
         executor.shutdown();
+        var unpublished = 0;
         try {
-            if (!executor.awaitTermination(SHUTDOWN_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS)) {
-                executor.shutdownNow();
+            if (!executor.awaitTermination(Math.max(0, flush.toNanos()), TimeUnit.NANOSECONDS)) {
+                unpublished = executor.shutdownNow().size();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            executor.shutdownNow();
+            unpublished = executor.shutdownNow().size();
+        }
+        if (unpublished > 0) {
+            droppedTotal.addAndGet(unpublished);
+            logger.warn("Lifecycle event publisher stopped with {} queued event(s) unpublished", unpublished);
         }
         var unreported = droppedSinceLastLog.getAndSet(0);
         if (unreported > 0) {

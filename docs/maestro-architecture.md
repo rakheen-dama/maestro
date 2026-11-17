@@ -115,7 +115,7 @@ graph TB
 | `maestro-store-postgres` | Postgres `WorkflowStore`; table-backed `DistributedLock` + leader election (`io.b2mash.maestro.store.postgres.lock`); `LISTEN/NOTIFY` cross-node signal wake (`...store.postgres.notify`); Flyway 11 migrations (own history table). | Yes (auto-configuration only) |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
-| `maestro-admin-client` | Publishes lifecycle events to Kafka. Lightweight. | Minimal |
+| `maestro-admin-client` | A plain `AdminEventPublisher` class, not auto-configured; no service needs it. Services publish lifecycle events through `maestro-messaging-kafka`. Its future is [Issue 52](open-issues.md#issue-52). | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
 
 > **One implementation per SPI ships today.** `maestro-store-postgres` provides both the `WorkflowStore` and the `DistributedLock` (same database, same `DataSource`); `maestro-messaging-kafka` is the only `WorkflowMessaging`. The SPIs remain the seam — `maestro-test` provides in-memory implementations of all three — but there is no second production backend to choose between.
@@ -208,13 +208,11 @@ flowchart TD
     B --> C["Step key = activityName + seq"]
     C --> D{"Stored result<br/>exists?"}
     D -- "Yes (replay)" --> E["Return stored result"]
-    D -- "No (live)" --> F["Acquire activity lock<br/>(maestro_distributed_lock)"]
-    F --> G["Execute activity"]
+    D -- "No (live)" --> G["Execute activity"]
     G --> H{"Success?"}
-    H -- "Yes" --> I["Persist result<br/>(unique constraint)"]
+    H -- "Yes" --> I["Persist result<br/>(unique constraint, lease fence)"]
     I --> J["Publish lifecycle event"]
-    J --> K["Release lock"]
-    K --> L["Return result"]
+    J --> L["Return result"]
     H -- "No" --> M{"Retry<br/>allowed?"}
     M -- "Yes" --> N["Backoff wait"]
     N --> G
@@ -471,7 +469,6 @@ Coordination lives in the same Postgres database as the workflow state, in two t
 | Table | Key Pattern (`lock_key`) | Purpose | TTL |
 |---|---|---|---|
 | `maestro_distributed_lock` | `maestro:lock:workflow:{workflowId}` | Workflow instance lock | 30s (renewed every 10s) |
-| `maestro_distributed_lock` | `maestro:lock:activity:{workflowId}:{seq}` | Activity execution lock (fast-path dedup) | activity timeout + 10s |
 | `maestro_leader_election` | `maestro:leader:timer-poller:{service}` | Timer polling leader election | 15s |
 
 **CAS semantics.** `tryAcquire` is one statement: `INSERT ... ON CONFLICT (lock_key) DO UPDATE` whose update predicate requires the existing row's `expires_at` to be in the past (database clock). An unexpired row held by another node is never stolen; an expired one is taken over atomically. The handle carries a random owner token, and `release` and `renew` are conditioned on that token, so a holder whose lock expired and was re-acquired elsewhere cannot release or extend the new owner's row. `trySetLeader` applies the same predicate to `maestro_leader_election`. A cleaner on every node deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (default 10m); expired rows are already takeable, so this only bounds table growth.
@@ -595,6 +592,8 @@ graph TB
     R -->|"Retry / Signal / Terminate"| T
 ```
 
+Services publish to the topic through the engine's own `WorkflowMessaging` (`maestro-messaging-kafka`), and only when `maestro.admin.events.enabled=true`; it is off by default, so each service the dashboard should show sets it.
+
 | Page | Content |
 |---|---|
 | **Overview** | Counts by status per service. Sparklines. Alerts. |
@@ -629,7 +628,7 @@ flowchart TD
 
 ### Graceful Shutdown
 
-SIGTERM → stop accepting new workflows → stop Kafka consumers → wait for in-flight activities (30s by default, configurable via `maestro.shutdown.timeout`) → release instance locks → shutdown.
+SIGTERM → the web server's graceful drain and Maestro's shutdown run side by side (Spring phase `MAX-1024`) → Maestro: stop taking work (loops, parks, retry backoffs, task-queue waiters) → drain in-flight activities until `maestro.shutdown.timeout` (20 s) → stop renewing locks → flush lifecycle events → bean destruction (Maestro's Kafka consumers, the wake listener, the `DataSource`)
 
 A workflow parked mid-drain (awaiting a signal or timer, or mid-compensation)
 is abandoned rather than failed: shutdown raises `ExecutorShutdownException`
@@ -652,9 +651,9 @@ failed compensation step.
 | **External API down** | Activity retries with backoff (configurable: attempts, backoff, max interval). The attempt counter is in-memory: after a restart the activity restarts at attempt 1 with the full schedule; a completed attempt is never re-executed. |
 | **Kafka rebalance** | In-progress workflows continue. New tasks reroute. |
 | **Postgres lost** | Execution blocks until restored. No activity without persistence; locks and the wake channel live in the same database. |
-| **Lock expired / renewal lost** | The running workflow continues; the unique event index is the backstop. A peer may adopt the instance after the TTL — activities must be idempotent. |
+| **Lock expired / renewal lost** | A lost renewal marks the run stale: it stands down at its next live activity (`STALE_RUN`, "instance lock lost") and the instance stays recoverable (`WorkflowExecutorTest.lostLock_standsTheRunDownBeforeItsNextActivity`). A peer may adopt the instance after the TTL; the adoption bumps the lease epoch, so lease fencing (V6) rejects the stale runner's later run-scoped writes and it stands down as `LEASE_FENCED` (`TwoNodeActivityRaceTest`). The unique `(workflow_instance_id, sequence_number)` index is the second line. The activity in flight at adoption can still run twice — activities must be idempotent. |
 | **NOTIFY listener disconnected** | Cross-node signal wake falls back to the 30s store re-check; the listener reconnects with backoff. No signal is lost. |
-| **Duplicate Kafka delivery** | Activity-lock dedup + unique constraint. |
+| **Duplicate Kafka delivery** | Signal message-id dedup (V9) + unique constraint: `saveSignalIfAbsent` keeps at most one signal row per `(workflow_id, signal_name, message_id)` (partial unique index `idx_wf_signal_message_id`); a signal without an id is not deduplicated. |
 | **Signal before workflow** | Stored with null instance. Adopted on start. |
 | **Signal before await** | Stored unconsumed. Consumed when await reached. |
 

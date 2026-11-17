@@ -128,7 +128,7 @@ docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --topic maestro.signals.my-service --partitions 3
 
-# Admin events topic (optional, for the dashboard)
+# Admin events topic (only with `maestro.admin.events.enabled: true`, for the dashboard)
 docker exec -it $KAFKA_CONTAINER /opt/kafka/bin/kafka-topics.sh \
   --bootstrap-server localhost:9092 \
   --create --topic maestro.admin.events --partitions 1
@@ -637,5 +637,5 @@ You now have a working durable workflow with activities, signals, queries, and t
 - [Self-Recovery](self-recovery.md) -- How workflows survive crashes and how signals are never lost
 - [Cross-Service Patterns](cross-service.md) -- Multi-service coordination with Kafka events and `@MaestroSignalListener`
 - [Testing Guide](testing.md) -- Advanced testing: crash-recovery tests, mocking activities, pre-delivering signals, asserting event logs
-- [Pitfalls](pitfalls.md) -- Eleven rules whose violations pass every straight-through test and fail in production
+- [Pitfalls](pitfalls.md) -- Twelve rules whose violations pass every straight-through test and fail in production
 - [Sample Applications](../maestro-samples/README.md) -- Full e-commerce order fulfilment demo with payment gateway integration

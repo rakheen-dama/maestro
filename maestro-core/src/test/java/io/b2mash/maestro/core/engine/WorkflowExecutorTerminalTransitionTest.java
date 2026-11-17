@@ -74,7 +74,7 @@ class WorkflowExecutorTerminalTransitionTest {
     void setUp() {
         store = new VersionedStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service");
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
     }
 
     @AfterEach
@@ -247,10 +247,11 @@ class WorkflowExecutorTerminalTransitionTest {
     // ── helpers ───────────────────────────────────────────────────────────
 
     private WorkflowExecutor newExecutor(EngineObserver observer) {
-        return new WorkflowExecutor(store, null, null, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
-                WorkflowInstanceLockManager.DEFAULT_LOCK_TTL,
-                false, WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, Duration.ofMillis(200), observer);
+        return WorkflowExecutor.builder(store, serializer, "test-service")
+                .lifecycleEventsEnabled(false)
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .observer(observer)
+                .build();
     }
 
     private String start(String workflowId) {

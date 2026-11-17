@@ -10,11 +10,14 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -40,7 +43,8 @@ import java.util.UUID;
  *
  * <h2>Lease fencing</h2>
  * <p>Every write a <em>running workflow's own thread</em> makes has a fenced
- * overload taking a {@link RunLease}: {@link #appendEvent(WorkflowEvent, RunLease)},
+ * overload taking a {@link RunLease}: {@link #appendEvent(WorkflowEvent, RunLease)}
+ * (and {@link #appendEventReturningPayload}, the same write),
  * {@link #completeInstance(WorkflowInstance, WorkflowEvent, RunLease)},
  * {@link #updateInstance(WorkflowInstance, RunLease)},
  * {@link #saveTimer(WorkflowTimer, RunLease)},
@@ -66,7 +70,8 @@ import java.util.UUID;
  * {@link #createInstance} (no lease exists yet), {@link #saveSignal} and
  * {@link #adoptOrphanedSignals} (signal ingestion from any node), the timer
  * leader's {@link #markTimerFired(UUID)}, an operator's terminate and retry
- * ({@code updateInstance}, {@code deleteFailureEvents}), and the adoption bump
+ * ({@code updateInstance}, {@code reopenFailedInstance}; nodes of older builds
+ * retry with {@code deleteFailureEvents} and {@code updateInstance}), and the adoption bump
  * itself — all of which are arbitrated by the version compare-and-set or are
  * idempotent. The fenced overloads are {@code default} methods that delegate to
  * the unfenced forms: <b>a store that does not override them is unfenced</b>
@@ -181,6 +186,49 @@ public interface WorkflowStore {
                 .sorted(RecoveryCursor.ORDER)
                 .limit(limit)
                 .toList();
+    }
+
+    /**
+     * Counts, per other service name, the active instances of the given
+     * workflow types: for each {@link WorkflowInstance#serviceName()} other
+     * than {@code serviceName} that holds at least one instance whose status
+     * is {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isActive()
+     * active} and whose {@link WorkflowInstance#workflowType()} is in
+     * {@code workflowTypes}, that name's count of such instances.
+     *
+     * <p><b>Advisory, and it never writes.</b> Recovery adopts only the
+     * instances recorded under this node's own service name, so active
+     * instances of this node's types recorded under another name never
+     * resume unless a node runs under that name (Issue 39). The engine calls
+     * this once per node start, off the startup path, and logs a warning per
+     * name it returns; nothing else depends on the answer. Terminal instances
+     * are not counted, and neither are other workflow types: a co-tenant
+     * service with its own types is not reported.
+     *
+     * <p><b>Ordering and limit.</b> The entries iterate by count descending,
+     * then by name ascending; at most {@code limit} are returned. An empty
+     * {@code workflowTypes} returns an empty map without reading the store.
+     *
+     * <p><b>The default</b> returns an empty map — "nothing to report" — so
+     * the engine's check logs nothing over a store that does not override
+     * this. The shipped JDBC store and the in-memory test store override it.
+     *
+     * @param serviceName   this node's service name, whose instances are not counted
+     * @param workflowTypes the workflow types to count
+     * @param limit         the most service names to return; positive
+     * @return the counts, ordered as above; never {@code null}
+     * @throws NullPointerException     if {@code serviceName} or
+     *                                  {@code workflowTypes} is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return Map.of();
     }
 
     /**
@@ -357,6 +405,54 @@ public interface WorkflowStore {
     }
 
     /**
+     * {@link #appendEvent(WorkflowEvent, RunLease)}, returning the event's
+     * payload <em>exactly as a later read of this store returns it</em> — what
+     * {@link #getEventBySequence} or {@link #getEvents} will hand back for this
+     * event, not the node the caller passed in. The engine hands workflow code
+     * the read-back of a live result through this, so the live value is the
+     * value a replay of the step reads.
+     *
+     * <p>The two can differ: Postgres {@code jsonb} reorders object keys
+     * (shortest first, then bytewise) and normalises numbers ({@code 1.0E7}
+     * is stored as {@code 10000000}), and a store that writes text reads every
+     * payload back through its own parser. A {@code null} payload, or a JSON
+     * {@code null}, comes back as whatever the store reads for it (the JDBC
+     * stores: {@code null}).
+     *
+     * <p>The write is exactly the write {@code appendEvent(event, lease)}
+     * makes — the same stored value, the same atomic lease fence, the same
+     * {@code (workflow_instance_id, sequence_number)} uniqueness — and its
+     * exceptions are that method's. On any exception nothing is returned; in
+     * particular a retry after a write whose commit was lost in flight meets
+     * its own earlier row and throws {@link DuplicateEventException}, exactly
+     * as {@code appendEvent} does. If the store cannot parse the stored form
+     * after the write succeeded, it returns {@code event.payload()} and does
+     * not throw: the event is durable, and a later read of it fails exactly
+     * as it would have anyway.
+     *
+     * <p>The default appends with {@code appendEvent(event, lease)} and
+     * returns {@code event.payload()} — correct for a store that returns what
+     * it was given (the in-memory test store does). A decorating store should
+     * forward this method to its delegate; one that does not degrades to the
+     * default, keeping its own {@code appendEvent} behaviour but returning the
+     * node it was given.
+     *
+     * @param event the event to append; {@code event.workflowInstanceId()}
+     *              must equal {@code lease.instanceId()}
+     * @param lease the appending run's lease
+     * @return the payload as this store will read it back; {@code null} where
+     *         a read returns {@code null}
+     * @throws FencedWriteException    if the stored lease epoch differs from
+     *                                 {@code lease.epoch()} (nothing was written)
+     * @throws DuplicateEventException as for {@link #appendEvent(WorkflowEvent)}
+     *                                 (nothing was written)
+     */
+    default @Nullable JsonNode appendEventReturningPayload(WorkflowEvent event, RunLease lease) {
+        appendEvent(event, lease);
+        return event.payload();
+    }
+
+    /**
      * Retrieves a specific event by workflow instance ID and sequence number.
      *
      * <p>This is the core memoization lookup — the activity proxy uses this
@@ -381,6 +477,11 @@ public interface WorkflowStore {
     /**
      * Deletes a workflow instance's <b>failure</b> memos — and nothing else —
      * so a manual retry can re-execute the step that failed.
+     *
+     * <p><b>Since WP3 the engine calls
+     * {@link #reopenFailedInstance(WorkflowInstance, Set, Set)}</b>; this method
+     * is called by its default and by nodes of older builds. Its contract is
+     * unchanged.
      *
      * <p>Deletes exactly the events whose type is
      * {@link io.b2mash.maestro.core.model.EventType#ACTIVITY_FAILED} or
@@ -461,6 +562,65 @@ public interface WorkflowStore {
      * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
      */
     int deleteFailureEvents(UUID instanceId);
+
+    /**
+     * Reopens a {@code FAILED} instance for an operator retry, as one atomic
+     * step.
+     *
+     * <p>Deletes this instance's events at exactly {@code deleteEventSequences},
+     * and its timer rows whose {@code timerId} is in {@code deleteTimerIds}, any
+     * status. Writes {@code reopened} under the same version compare-and-set as
+     * {@link #updateInstance(WorkflowInstance)}, and only while the stored row
+     * is still {@code FAILED}. Either all of it is applied or none of it: a
+     * failure part-way — a refused delete, a lost connection, a crash — leaves
+     * the events, the timer rows and the row exactly as they were.
+     *
+     * <p>Never touches a signal row or another instance. A sequence or timer
+     * id with no row is ignored. Deletion is by exact
+     * {@code (instance, sequence)} and exact {@code (instance, timerId)} — never
+     * a range or a prefix. Both sets are computed by the engine from the
+     * instance's history; the store applies them and nothing else.
+     *
+     * <p><b>Precondition:</b> {@code reopened} is the stored row with
+     * {@code status = RUNNING}, {@code completedAt = null} and
+     * {@code version + 1}. The lease epoch is not bumped here (an operator
+     * write, arbitrated by the version compare-and-set); the relaunch's
+     * adoption bumps it.
+     *
+     * <p><b>The default</b> is the pre-WP3 retry, {@link #deleteFailureEvents}
+     * then {@link #updateInstance(WorkflowInstance)}: two writes, by event
+     * type, ignoring both sets, and not atomic. The default neither checks
+     * {@code FAILED} nor is all-or-nothing: a losing concurrent call has
+     * already deleted by type before its compare-and-set fails. A store with
+     * concurrent operators should override it, and a decorating store should
+     * forward it. The shipped JDBC store and the in-memory test store override
+     * it.
+     *
+     * <p><b>Thread safety:</b> as every store method — callable concurrently
+     * from any thread. Two concurrent reopens of one instance: at most one
+     * compare-and-set wins, and (in an override) the loser writes nothing.
+     *
+     * @param reopened             the fully-built reopened row ({@code RUNNING},
+     *                             {@code completedAt = null}, version already
+     *                             incremented)
+     * @param deleteEventSequences the sequence numbers of this instance's events
+     *                             to delete; may be empty
+     * @param deleteTimerIds       the logical timer ids of this instance's timer
+     *                             rows to delete, any status; may be empty
+     * @throws OptimisticLockException if the stored version is not {@code reopened.version() - 1}, or the stored
+     *         row is no longer {@code FAILED}; nothing was written
+     * @throws WorkflowNotFoundException if no such instance exists; nothing was
+     *         written
+     * @throws IllegalArgumentException (the shipped overrides) if
+     *         {@code reopened} is not {@code RUNNING} with
+     *         {@code completedAt = null}; checked before anything is written
+     * @see io.b2mash.maestro.core.engine.WorkflowExecutor#retryWorkflow
+     */
+    default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                      Set<String> deleteTimerIds) {
+        deleteFailureEvents(reopened.id());
+        updateInstance(reopened);
+    }
 
     // ── Signal operations ────────────────────────────────────────────────
 
@@ -673,17 +833,72 @@ public interface WorkflowStore {
      *       after {@code cutoff}, keep their signals.</li>
      * </ul>
      *
-     * <p><b>Idempotent and safe to run concurrently.</b> The engine's signal
-     * janitor calls this periodically on every node without leader election;
-     * a second call with the same cutoff deletes nothing and returns
-     * {@code 0}. Shared-database implementations should compare against the
-     * stored {@code completed_at} in a single statement.
+     * <p><b>Idempotent and safe to run concurrently.</b> A second call with
+     * the same cutoff deletes nothing and returns {@code 0}. Shared-database
+     * implementations should compare against the stored {@code completed_at}
+     * in a single statement.
+     *
+     * <p><b>The engine no longer calls this</b>; its signal janitor uses the
+     * service-scoped, bounded
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)},
+     * whose default is built on this method — so every store must still
+     * implement it.
      *
      * @param cutoff signals of instances completed strictly before this instant
      *               are purged
      * @return the number of signal rows deleted
      */
     int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff);
+
+    /**
+     * Deletes at most {@code limit} of one service's unconsumed signals
+     * addressed to workflows that finished long ago: those
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}
+     * would delete whose instance's {@link WorkflowInstance#serviceName()}
+     * equals {@code serviceName}.
+     *
+     * <p>The survivors are the one-argument form's — {@code FAILED}
+     * instances' signals, orphans, consumed rows, and signals of instances
+     * with a {@code null} {@code completedAt} or one at or after
+     * {@code cutoff} — plus every signal of another service's instances.
+     * Several services may share the tables, each with its own
+     * {@code terminalRetention}; each deletes only its own rows.
+     *
+     * <p><b>At most {@code limit} rows per call.</b> The engine's signal
+     * janitor calls this in a loop, on every node and without leader
+     * election, until a call returns fewer than {@code limit} (and at most
+     * 1,000 times per sweep), so one call is one short statement rather than
+     * a sweep of the whole backlog. Which
+     * qualifying rows a call takes is up to the store. Safe to run
+     * concurrently: two callers may select the same rows, and the later one
+     * deletes fewer.
+     *
+     * <p><b>The default</b> ignores {@code serviceName} and {@code limit} and
+     * delegates to the unscoped, unbounded
+     * {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(Instant)}, so a
+     * janitor over a store that does not override this behaves as before: it
+     * deletes every service's qualifying signals in one call. When that call
+     * removes {@code limit} rows or more, the janitor calls once more, and
+     * that call deletes nothing and ends the sweep. The shipped JDBC store and
+     * the in-memory test store override it.
+     *
+     * @param serviceName the service whose instances' signals are purged
+     * @param cutoff      signals of instances completed strictly before this
+     *                    instant are purged
+     * @param limit       the most rows to delete in this call; positive
+     * @return the number of signal rows deleted
+     * @throws NullPointerException     if {@code serviceName} or {@code cutoff}
+     *                                  is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+    }
 
     // ── Retention ────────────────────────────────────────────────────────
 
@@ -746,6 +961,41 @@ public interface WorkflowStore {
     PurgeResult purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus status,
                                              Instant cutoff, int batchSize);
 
+    /**
+     * {@link #purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)}
+     * restricted to the instances of {@code serviceName} only: the same
+     * contract — one all-or-nothing batch, children before parent, the same
+     * survivors — over the instances whose {@link WorkflowInstance#serviceName()}
+     * equals {@code serviceName}. Every other service's instances and history
+     * survive, so in tables several services share, each service's own
+     * retention governs its own rows.
+     *
+     * <p>The engine's retention sweeper calls this, with its own service
+     * name. A terminal instance recorded under a service name that no node
+     * runs any more is therefore purged by no sweeper.
+     *
+     * <p><b>The default</b> delegates to the unscoped form, so a store that
+     * does not override it purges every service's rows, as before. The
+     * shipped JDBC store and the in-memory test store override it.
+     *
+     * @param serviceName the service whose instances are purged
+     * @param status      the terminal status to purge; must satisfy
+     *                    {@link io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()}
+     * @param cutoff      instances with {@code completedAt} strictly before
+     *                    this instant are candidates
+     * @param batchSize   the most instances to delete in this call; must be positive
+     * @return how many rows of each table were deleted; never {@code null}
+     * @throws NullPointerException     if {@code serviceName} is {@code null}
+     * @throws IllegalArgumentException if {@code status} is not terminal or
+     *                                  {@code batchSize} is not positive
+     */
+    default PurgeResult purgeTerminalInstancesBefore(String serviceName,
+                                                     io.b2mash.maestro.core.model.WorkflowStatus status,
+                                                     Instant cutoff, int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purgeTerminalInstancesBefore(status, cutoff, batchSize);
+    }
+
     // ── Timer operations ─────────────────────────────────────────────────
 
     /**
@@ -782,11 +1032,67 @@ public interface WorkflowStore {
      * SKIP LOCKED} in Postgres) to allow concurrent timer pollers without
      * contention.
      *
-     * @param now       the current time to compare against {@code fireAt}
+     * @param now       the current time by the caller's clock, compared against
+     *                  {@code fireAt}; see {@link #getDueTimers(int)} for the store's
      * @param batchSize maximum number of timers to return
      * @return list of due timers, ordered by {@code fireAt} ascending
      */
     List<WorkflowTimer> getDueTimers(Instant now, int batchSize);
+
+    /**
+     * Retrieves the timers due now <em>by the store's own clock</em>: the
+     * {@code PENDING} timers whose {@code fireAt} the store's clock has
+     * passed, ordered by {@code fireAt} ascending, at most {@code batchSize}.
+     * The engine's timer poller calls this, so the poller leader's own clock
+     * does not decide when a timer fires (finding 3.7). Locking as
+     * {@link #getDueTimers(Instant, int)}.
+     *
+     * <p>Only the comparison moves: {@code fireAt} is still computed and
+     * written by the node that schedules the timer, on that node's clock.
+     *
+     * <p>The default compares with this JVM's clock —
+     * {@code getDueTimers(Instant.now(), batchSize)}, the behaviour before this
+     * method existed — for a store with no clock of its own (the in-memory
+     * test store, a custom store). The Postgres store overrides it to compare
+     * {@code fire_at <= now()}. A decorating store should forward it to its
+     * delegate; one that does not degrades to the default, which is correct
+     * but compares on the caller's clock.
+     *
+     * <p><b>Mixed-version fleets.</b> Only the elected leader polls. A leader on
+     * a build without this method compares with its JVM clock; a leader on this
+     * build compares with the store's. Both select exactly the {@code PENDING}
+     * rows their clock has passed, and firing is a compare-and-set on the row
+     * ({@link #markTimerFired(UUID)}), so in every combination a timer fires
+     * once and is never lost — only the moment it fires differs, by the old
+     * leader's clock skew, as it did before whenever leadership moved.
+     *
+     * @param batchSize maximum number of timers to return
+     * @return the due timers, ordered by {@code fireAt} ascending
+     */
+    default List<WorkflowTimer> getDueTimers(int batchSize) {
+        return getDueTimers(Instant.now(), batchSize);
+    }
+
+    /**
+     * Returns the store's current time, by its own clock — the clock
+     * {@link #getDueTimers(int)} compares with. Used only by the engine's
+     * clock-skew check, which every node's timer poller runs at start and then
+     * every ten minutes and which logs a {@code WARN} when this node's clock
+     * differs from the store's by more than a second (finding 3.7).
+     *
+     * <p>The default, {@link Optional#empty()}, means the store has no clock
+     * of its own; no check runs then. The Postgres store returns
+     * {@code SELECT now()}. A decorating store should forward it to its
+     * delegate; one that does not only silences the check.
+     *
+     * @return the store's current time, or empty if it has no clock
+     * @throws io.b2mash.maestro.core.exception.StoreUnavailableException if the
+     *         store cannot be reached — like any other read, it may throw what
+     *         a read throws
+     */
+    default Optional<Instant> storeTime() {
+        return Optional.empty();
+    }
 
     /**
      * Looks up a workflow's timer by its logical timer ID, whatever its status.

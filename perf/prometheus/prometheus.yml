@@ -1,0 +1,14 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Every replica of the `node` service: the service name resolves to one A
+  # record per container on the compose network.
+  - job_name: maestro-perf-node
+    metrics_path: /actuator/prometheus
+    dns_sd_configs:
+      - names: [node]
+        type: A
+        port: 8080
+        refresh_interval: 5s

@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.observe;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -149,6 +150,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.resumed().size(), "workflowResumed");
             assertEquals(1, recorder.completed().size(), "workflowCompleted");
             assertEquals(1, recorder.failed().size(), "workflowFailed");
+            assertEquals(1, recorder.finished().size(), "workflowFinished");
             assertEquals(1, recorder.compensating().size(), "workflowCompensating");
             assertEquals(1, recorder.terminated().size(), "workflowTerminated");
             assertEquals(1, recorder.parked().size(), "workflowParked");
@@ -156,6 +158,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.activityStarted().size(), "activityStarted");
             assertEquals(1, recorder.activityCompleted().size(), "activityCompleted");
             assertEquals(1, recorder.activityFailed().size(), "activityFailed");
+            assertEquals(1, recorder.unreadableResults().size(), "activityResultUnreadable");
             assertEquals(1, recorder.signalPersisted().size(), "signalPersisted");
             assertEquals(1, recorder.signalConsumed().size(), "signalConsumed");
             assertEquals(1, recorder.signalDuplicates().size(), "signalDuplicateSuppressed");
@@ -168,6 +171,7 @@ class CompositeEngineObserverTest {
             assertEquals(1, recorder.recoveryPasses().size(), "recoveryPass");
             assertEquals(1, recorder.retentionPasses().size(), "retentionPass");
             assertEquals(1, recorder.standDowns().size(), "standDown");
+            assertEquals(1, recorder.loopErrors().size(), "backgroundLoopError");
         }
     }
 
@@ -268,6 +272,7 @@ class CompositeEngineObserverTest {
         o.workflowResumed(WF);
         o.workflowCompleted(WF);
         o.workflowFailed(WF, "java.lang.IllegalStateException");
+        o.workflowFinished(WF, WorkflowStatus.COMPLETED, Duration.ofMillis(42));
         o.workflowCompensating(WF);
         o.workflowTerminated(WF);
         o.workflowParked(WF, ParkKind.SIGNAL);
@@ -275,6 +280,7 @@ class CompositeEngineObserverTest {
         o.activityStarted(ACT);
         o.activityCompleted(ACT, Duration.ofMillis(3), false);
         o.activityFailed(ACT, Duration.ofMillis(3), "java.lang.RuntimeException", false);
+        o.activityResultUnreadable(ACT, "tools.jackson.databind.exc.InvalidDefinitionException");
         o.signalPersisted(SIG);
         o.signalConsumed(SIG, false);
         o.signalDuplicateSuppressed(SIG);
@@ -287,5 +293,6 @@ class CompositeEngineObserverTest {
         o.recoveryPass(3, 2);
         o.retentionPass(new io.b2mash.maestro.core.spi.PurgeResult(2, 9, 1, 0));
         o.standDown(StandDownReason.STALE_RUN, "wf-1", "seq 7");
+        o.backgroundLoopError("timer-poller", "java.lang.AssertionError");
     }
 }

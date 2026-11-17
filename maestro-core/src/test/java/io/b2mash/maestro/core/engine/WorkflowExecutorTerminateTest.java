@@ -68,10 +68,12 @@ class WorkflowExecutorTerminateTest {
         store = new VersionedInMemoryStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(
-                store, null, messaging, null, serializer, "test-service",
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30),
-                true, Duration.ofSeconds(5), Duration.ofMillis(200));
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .messaging(messaging)
+                .instanceLockTtl(Duration.ofSeconds(30))
+                .shutdownTimeout(Duration.ofSeconds(5))
+                .wakeRecheckInterval(Duration.ofMillis(200))
+                .build();
     }
 
     @AfterEach
@@ -169,7 +171,9 @@ class WorkflowExecutorTerminateTest {
     @DisplayName("terminate works on a node that is not running the workflow")
     void terminateFromANonOwningNode_marksTheRowAnyway() throws Exception {
         var workflow = new SleepingWorkflow();
-        var owner = new WorkflowExecutor(store, null, messaging, null, serializer, "owner-node");
+        var owner = WorkflowExecutor.builder(store, serializer, "owner-node")
+                .messaging(messaging)
+                .build();
         try {
             owner.startWorkflow("term-remote", "TerminateSleepingWorkflow", "default",
                     null, () -> workflow, SleepingWorkflow.class.getMethod("run"));

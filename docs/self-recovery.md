@@ -138,7 +138,7 @@ Here, no special mechanism is needed because the existing mechanisms compose nat
 
 2. **During downtime.** The signal arrives on Kafka. If another instance of the service is running, its `@MaestroSignalListener` receives the message and persists it to the `maestro_workflow_signal` table with `consumed = false`. If no instance is running, the message waits in Kafka until a consumer comes back online.
 
-3. **On restart.** The Spring Boot application starts. `StartupRecoveryRunner` (an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`) calls `executor.recoverWorkflows()`, which queries:
+3. **On restart.** The Spring Boot application starts. `StartupRecoveryRunner` (an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`) starts the recovery poller, whose first pass runs at once, on its own thread, and queries (in pages of 200, this service's rows only):
    ```sql
    SELECT * FROM maestro_workflow_instance
    WHERE status IN ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING')
@@ -226,7 +226,7 @@ flowchart TD
     style I fill:#F5A623,color:#fff
 ```
 
-The `StartupRecoveryRunner` executes as an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`, ensuring it runs before any user-defined `ApplicationRunner` beans. This means workflows are recovered before the service starts accepting new traffic.
+The `StartupRecoveryRunner` executes as an `ApplicationRunner` ordered at `HIGHEST_PRECEDENCE + 10`, before any user-defined `ApplicationRunner` beans. It only starts recovery — the recovery poller, whose first pass runs at once on its own thread (with `maestro.recovery.enabled=false`, a one-shot pass on its own thread) — and returns without waiting for it (`StartupRecoveryRunnerTest`). So the service may accept traffic before every workflow is re-adopted. That is safe: a signal for a workflow not yet re-adopted is persisted and found by its replay (case 3 above), and a query reaches only the node that owns a run, as for any run between owners. The recovery poller's passes adopt, per task queue, only what this node can run or queue, and leave the rest for a peer or for when capacity frees ([Configuration § Worker](configuration.md#worker-configuration)). The one-shot pass of `maestro.recovery.enabled=false` is ungated: it adopts every instance it can lock, and the runs beyond a queue's bound wait for their slots holding their locks.
 
 Recovery queries the `maestro_workflow_instance` table using the `idx_wf_instance_recoverable` partial index, which covers rows with status `RUNNING`, `WAITING_SIGNAL`, `WAITING_TIMER`, or `COMPENSATING`. Only active workflows are considered -- completed and failed workflows are left alone.
 
@@ -241,8 +241,8 @@ Recovery queries the `maestro_workflow_instance` table using the `idx_wf_instanc
 | External API down | Activity retries with backoff (configurable `RetryPolicy`). The attempt counter is in-memory: after a restart the activity restarts at attempt 1 with the full schedule; a completed attempt is never re-executed. |
 | Kafka rebalance | In-progress workflows continue. New tasks reroute to reassigned partitions. |
 | Postgres unavailable | Execution blocks until restored. No activity proceeds without persistence. |
-| Lock expired / NOTIFY lost | The running workflow continues (unique event index is the backstop); a peer may adopt the instance after the lock TTL. Signals stay persisted in Postgres; a lost cross-node wake degrades to the parked await's periodic store re-check (every 30s). |
-| Duplicate Kafka delivery | Activity lock (fast path) + unique constraint on `(workflow_instance_id, sequence_number)` (authoritative). |
+| Lock expired / NOTIFY lost | A renewal that reports the lock lost marks the run stale: it stands down at its next live activity and the instance stays recoverable. A renewal that fails with a backend error keeps the lock handle and retries on the next pass, without marking the run stale (`WorkflowInstanceLockManagerTest.renewFalseDropsHandle`, `renewThrowsKeepsHandle`); the row's TTL keeps running meanwhile, so the lock itself can still expire if the error persists. A peer may adopt the instance after the lock TTL; lease fencing (V6) then rejects the stale runner's writes (`LEASE_FENCED`), and the unique event index is the second line. Signals stay persisted in Postgres; a lost cross-node wake degrades to the parked await's periodic store re-check (every 30s). |
+| Duplicate Kafka delivery | Signal message-id dedup (V9) + unique constraint: `saveSignalIfAbsent` keeps at most one signal row per `(workflow_id, signal_name, message_id)` (partial unique index `idx_wf_signal_message_id`). A signal without an id is not deduplicated, and neither is one whose id is longer than 512 characters (a source's namespace prefix, such as `client:`, included) or contains a control character (U+0000–U+001F or U+007F): the engine stores it without an id, so each delivery is a new row (`SignalManagerTest.overLongMessageIdIsTreatedAsAbsent`) ([Signal identity](cross-service.md#signal-identity)). |
 
 The guiding principle: **Postgres is truth, locks are an optimisation, Kafka is transport.** The distributed lock and the `LISTEN/NOTIFY` wake live in the same Postgres database as the workflow state, so there is no second coordination service to lose; if a lock expires or a notification is lost, the unique event index and optimistic instance versioning remain the correctness backstop and signal wake-up degrades to the parked await's periodic store re-check. If Kafka rebalances, in-flight workflows are unaffected because their state lives in Postgres. The only hard dependency is Postgres -- and if Postgres is down, the correct behaviour is to wait.
 

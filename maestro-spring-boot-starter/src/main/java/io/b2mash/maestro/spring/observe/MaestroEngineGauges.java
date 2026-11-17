@@ -5,16 +5,16 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
 /**
- * Registers the two node-local gauges from the observability design doc
- * §2.2 / §2.3: {@code maestro.workflows.running} and {@code
- * maestro.workflows.parked}.
+ * Registers the four node-local gauges: {@code maestro.workflows.running}
+ * and {@code maestro.workflows.parked} from the observability design doc
+ * §2.2 / §2.3, {@code maestro.wake.permits} and {@code maestro.recovery.deferred}.
  *
  * <p>Kept as a separate holder bean from {@link MicrometerEngineObserver}
  * because gauges need the {@code WorkflowExecutor} bean, while the counters
  * and timers in {@code MicrometerEngineObserver} need only the {@link
  * MeterRegistry} — mixing the two would create a circular executor→observer→
  * executor construction dependency (the {@code EngineObserver} handed to the
- * executor's constructor must never itself hold a reference back to that
+ * executor's builder must never itself hold a reference back to that
  * executor).
  *
  * <h2>Why node-local gauges, not store-polling</h2>
@@ -37,7 +37,7 @@ import io.micrometer.core.instrument.MeterRegistry;
  * singleton reference, which happens to be true today but is an incidental
  * fact about the container, not an invariant of this class — a future
  * refactor (e.g. a factory that hands out short-lived executor views) could
- * silently turn both gauges into {@code NaN} with no test able to tell the
+ * silently turn every gauge into {@code NaN} with no test able to tell the
  * difference from a correctly-wired one, since the constructor would still
  * run and {@code .register(...)} would still succeed. Keeping a {@code
  * final} field makes {@code MaestroEngineGauges} itself a strong root for
@@ -50,12 +50,15 @@ public final class MaestroEngineGauges {
     private final WorkflowExecutor executor;
 
     /**
-     * Registers {@code maestro.workflows.running} and {@code
-     * maestro.workflows.parked} against {@code executor}.
+     * Registers the four gauges {@code maestro.workflows.running}, {@code
+     * maestro.workflows.parked}, {@code maestro.wake.permits} and {@code
+     * maestro.recovery.deferred} against {@code executor}.
      *
      * @param registry the Micrometer registry the gauges are registered against
-     * @param executor the executor whose {@link WorkflowExecutor#runningCount()}
-     *                 and {@link WorkflowExecutor#parkedCount()} back the gauges
+     * @param executor the executor whose {@link WorkflowExecutor#runningCount()},
+     *                 {@link WorkflowExecutor#parkedCount()},
+     *                 {@link WorkflowExecutor#wakePermitCount()} and
+     *                 {@link WorkflowExecutor#recoveryDeferredCount()} back the gauges
      */
     public MaestroEngineGauges(MeterRegistry registry, WorkflowExecutor executor) {
         this.executor = executor;
@@ -63,6 +66,15 @@ public final class MaestroEngineGauges {
                 .strongReference(true)
                 .register(registry);
         Gauge.builder("maestro.workflows.parked", this.executor, WorkflowExecutor::parkedCount)
+                .strongReference(true)
+                .register(registry);
+        Gauge.builder("maestro.wake.permits", this.executor, WorkflowExecutor::wakePermitCount)
+                .description("Wake permits held on this node for workflows that have not parked yet")
+                .strongReference(true)
+                .register(registry);
+        Gauge.builder("maestro.recovery.deferred", this.executor, WorkflowExecutor::recoveryDeferredCount)
+                .description("Recoverable workflows this node's latest full recovery pass left unadopted "
+                        + "for lack of task-queue capacity")
                 .strongReference(true)
                 .register(registry);
     }

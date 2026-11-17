@@ -1,21 +1,35 @@
 package io.b2mash.maestro.integration.kafka;
 
+import io.b2mash.maestro.core.model.WorkflowEvent;
+import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
+import org.apache.kafka.clients.admin.OffsetSpec;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 
@@ -45,6 +59,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.service-name=" + AdminCommandKafkaIT.SERVICE,
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
+                "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + AdminCommandKafkaIT.ADMIN_TOPIC,
                 "maestro.recovery.enabled=false",
                 // Tight budget so the poison case's exhaustion (~1.75s of backoff)
@@ -67,6 +82,9 @@ class AdminCommandKafkaIT extends KafkaSpringIntegrationSupport {
     /** Where a command the dispatcher can never process is parked. */
     static final String SIGNAL_DLT = SIGNAL_TOPIC + ".DLT";
 
+    /** The engine's consumer group on {@link #SIGNAL_TOPIC}: {@code "maestro-" + maestro.service-name}. */
+    private static final String ENGINE_GROUP = "maestro-" + SERVICE;
+
     private static final Duration BOUND = Duration.ofSeconds(30);
 
     @Autowired
@@ -74,6 +92,13 @@ class AdminCommandKafkaIT extends KafkaSpringIntegrationSupport {
 
     @Autowired
     private AdminCommandWorkflows.FlakyActivitiesImpl flaky;
+
+    @Autowired
+    private AdminCommandWorkflows.FallbackActivitiesImpl fallback;
+
+    /** The broker the context consumes from; read to inspect committed offsets and the DLT. */
+    @Value("${spring.kafka.bootstrap-servers}")
+    private String bootstrapServers;
 
     /**
      * @throws ExecutionException   if topic creation fails
@@ -87,6 +112,7 @@ class AdminCommandKafkaIT extends KafkaSpringIntegrationSupport {
     @BeforeEach
     void resetFlakyActivity() {
         flaky.reset();
+        fallback.reset();
     }
 
     // ── (a) retry: FAILED -> fix the fault -> $maestro:retry -> COMPLETED ──
@@ -198,7 +224,183 @@ class AdminCommandKafkaIT extends KafkaSpringIntegrationSupport {
         assertTrue(store.getUnconsumedSignals(terminateWorkflowId, "$maestro:terminate").isEmpty());
     }
 
+    // ── (e) WP3: what a Retry deletes, over the real chain ────────────────
+
+    @Test
+    @DisplayName("$maestro:retry after a caught fallback replays the fallback and completes (3.3)")
+    void retry_afterACaughtFallback_completesWithoutStandDown() throws Exception {
+        var workflowId = "admincmd-fallback-" + UUID.randomUUID().toString().substring(0, 8);
+        maestro.newWorkflow(AdminCommandWorkflows.FallbackWorkflow.class,
+                WorkflowOptions.builder().workflowId(workflowId).build()).startAsync("seed");
+        awaitStatus(workflowId, WorkflowStatus.FAILED, BOUND);
+        fallback.fix();
+        publish(SIGNAL_TOPIC, workflowId, new SignalMessage(workflowId, "$maestro:retry", null));
+        assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin(workflowId, WorkflowStatus.COMPLETED, BOUND));
+        assertEquals(1, fallback.primaryCalls());
+        assertEquals(1, fallback.fallbackCalls());
+        assertEquals(2, fallback.finishCalls());
+    }
+
+    @Test
+    @DisplayName("a $maestro:retry refused because the failure's handling consumed a signal is acknowledged "
+            + "(offset committed, nothing dead-lettered) and writes nothing (MD-1)")
+    void retry_refusedForAConsumedSignal_isAcknowledgedAndWritesNothing() throws Exception {
+        var workflowId = "admincmd-refused-" + UUID.randomUUID().toString().substring(0, 8);
+        maestro.newWorkflow(AdminCommandWorkflows.AckThenRethrowWorkflow.class,
+                WorkflowOptions.builder().workflowId(workflowId).build()).startAsync("seed");
+        awaitStatus(workflowId, WorkflowStatus.WAITING_SIGNAL, BOUND);
+        publish(SIGNAL_TOPIC, workflowId,
+                new SignalMessage(workflowId, AdminCommandWorkflows.ACK_SIGNAL, objectMapper.valueToTree("ok")));
+        var failed = awaitStatus(workflowId, WorkflowStatus.FAILED, BOUND);
+        var history = history(workflowId);
+        assertEquals(List.of(
+                "1 ACTIVITY_FAILED FallbackActivities.primary",
+                "2 TIMER_SCHEDULED $maestro:awaitSignal:ack",
+                "3 SIGNAL_RECEIVED $maestro:awaitSignal:ack",
+                "4 WORKFLOW_FAILED null"), history, "precondition: the failure's handling consumed the ack");
+        var signals = signalRows(workflowId);
+        assertEquals(List.of(new SignalRow(failed.id(), AdminCommandWorkflows.ACK_SIGNAL, true)), signals,
+                "precondition: one ack row, consumed by this run");
+        var timers = timerRows(workflowId);
+        var dltBefore = endOffset(SIGNAL_DLT);
+
+        fallback.fix();
+        var offset = publishAdminCommand(workflowId, "$maestro:retry");
+        awaitCommitted(offset, BOUND);
+
+        assertEquals(dltBefore, endOffset(SIGNAL_DLT), "a refused retry is acknowledged, never dead-lettered");
+        var after = store.getInstance(workflowId).orElseThrow();
+        assertEquals(WorkflowStatus.FAILED, after.status());
+        assertEquals(failed.version(), after.version(), "the refusal must not write the row");
+        assertEquals(history, history(workflowId), "the refusal must not delete an event");
+        assertEquals(signals, signalRows(workflowId), "the consumed signal stays consumed, and its row is kept");
+        assertEquals(timers, timerRows(workflowId), "the refusal must not touch a timer row");
+        assertEquals(1, fallback.primaryCalls(), "nothing was relaunched");
+    }
+
+    @Test
+    @DisplayName("a $maestro:retry redelivered after a committed reopen is acknowledged and does nothing")
+    void retry_redeliveredAfterACommittedReopen_doesNothing() throws Exception {
+        var workflowId = "admincmd-redelivered-" + UUID.randomUUID().toString().substring(0, 8);
+        maestro.newWorkflow(AdminCommandWorkflows.FallbackWorkflow.class,
+                WorkflowOptions.builder().workflowId(workflowId).build()).startAsync("seed");
+        awaitStatus(workflowId, WorkflowStatus.FAILED, BOUND);
+        fallback.fix();
+        // The dashboard's wire shape: one fresh admin:<uuid> id, in the body and the header.
+        var command = new SignalMessage(workflowId, "$maestro:retry", null, "admin:" + UUID.randomUUID());
+        var first = publishRecord(command);
+        assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin(workflowId, WorkflowStatus.COMPLETED, BOUND));
+        awaitCommitted(first, BOUND);
+        var completed = awaitStatus(workflowId, WorkflowStatus.COMPLETED, BOUND);
+        var history = history(workflowId);
+        var dltBefore = endOffset(SIGNAL_DLT);
+
+        // The same record again: what the broker hands the group when the
+        // reopen committed but the offset commit did not.
+        var redelivered = publishRecord(command);
+        awaitCommitted(redelivered, BOUND);
+
+        assertEquals(dltBefore, endOffset(SIGNAL_DLT), "the redelivered command is acknowledged, never dead-lettered");
+        var after = store.getInstance(workflowId).orElseThrow();
+        assertEquals(WorkflowStatus.COMPLETED, after.status());
+        assertEquals(completed.version(), after.version(), "the redelivered command must not write the row");
+        assertEquals(history, history(workflowId), "the redelivered command must not delete or append an event");
+        assertEquals(1, fallback.primaryCalls());
+        assertEquals(1, fallback.fallbackCalls());
+        assertEquals(2, fallback.finishCalls(), "finish ran once on the first run and once after the one reopen");
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
+
+    /**
+     * Polls the instance row every 50 ms until its status is {@code wanted}
+     * or {@code bound} elapses, and returns the last status read — so an
+     * assertion on it fails on the status, not on a timeout.
+     */
+    private @Nullable WorkflowStatus lastStatusWithin(String workflowId, WorkflowStatus wanted, Duration bound)
+            throws InterruptedException {
+        var deadline = System.nanoTime() + bound.toNanos();
+        while (true) {
+            var last = store.getInstance(workflowId).map(WorkflowInstance::status).orElse(null);
+            if (last == wanted || System.nanoTime() >= deadline) {
+                return last;
+            }
+            Thread.sleep(50);
+        }
+    }
+
+    /** The instance's history as {@code "<seq> <type> <step>"}, ascending. */
+    private List<String> history(String workflowId) {
+        var instanceId = store.getInstance(workflowId).orElseThrow().id();
+        return store.getEvents(instanceId).stream()
+                .sorted(Comparator.comparingInt(WorkflowEvent::sequenceNumber))
+                .map(e -> e.sequenceNumber() + " " + e.eventType() + " " + e.stepName())
+                .toList();
+    }
+
+    /** Every timer row of the workflow, whole, as Postgres renders it, by timer id. */
+    private List<String> timerRows(String workflowId) throws SQLException {
+        try (var conn = dataSource.getConnection();
+             var ps = conn.prepareStatement(
+                     "SELECT t::text FROM maestro_workflow_timer t WHERE workflow_id = ? ORDER BY timer_id")) {
+            ps.setString(1, workflowId);
+            try (var rs = ps.executeQuery()) {
+                var rows = new ArrayList<String>();
+                while (rs.next()) {
+                    rows.add(rs.getString(1));
+                }
+                return rows;
+            }
+        }
+    }
+
+    /** Publishes an admin command in the dashboard's wire shape and returns its offset. */
+    private long publishAdminCommand(String workflowId, String command) throws Exception {
+        return publishRecord(new SignalMessage(workflowId, command, null, "admin:" + UUID.randomUUID()));
+    }
+
+    /**
+     * Publishes {@code message} to {@link #SIGNAL_TOPIC}, keyed by workflow id,
+     * with its message id in the {@code maestro-message-id} header too (as
+     * {@code AdminCommandService} does), and returns the record's offset.
+     */
+    private long publishRecord(SignalMessage message) throws Exception {
+        var record = new ProducerRecord<String, byte[]>(SIGNAL_TOPIC, message.workflowId(),
+                objectMapper.writeValueAsBytes(message));
+        if (message.messageId() != null) {
+            record.headers().add("maestro-message-id", message.messageId().getBytes(StandardCharsets.UTF_8));
+        }
+        return producer().send(record).get().getRecordMetadata().offset();
+    }
+
+    /**
+     * Waits until the engine's group has committed past {@code offset} on
+     * {@link #SIGNAL_TOPIC}: the listener returned for that record (or
+     * dead-lettered it, which {@link #endOffset} on the DLT tells apart).
+     */
+    private void awaitCommitted(long offset, Duration bound) {
+        var partition = new TopicPartition(SIGNAL_TOPIC, 0);
+        await("the engine's consumer group committing past offset " + offset + " of " + SIGNAL_TOPIC)
+                .atMost(bound).pollInterval(Duration.ofMillis(100)).until(() -> {
+                    try (var admin = admin()) {
+                        var committed = admin.listConsumerGroupOffsets(ENGINE_GROUP)
+                                .partitionsToOffsetAndMetadata().get().get(partition);
+                        return committed != null && committed.offset() > offset;
+                    }
+                });
+    }
+
+    /** The log-end offset of a single-partition topic. */
+    private long endOffset(String topic) throws Exception {
+        var partition = new TopicPartition(topic, 0);
+        try (var admin = admin()) {
+            return admin.listOffsets(Map.of(partition, OffsetSpec.latest())).partitionResult(partition).get().offset();
+        }
+    }
+
+    private AdminClient admin() {
+        return AdminClient.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers));
+    }
 
     private long adminCommandSignalRowCount() throws SQLException {
         try (var conn = dataSource.getConnection();

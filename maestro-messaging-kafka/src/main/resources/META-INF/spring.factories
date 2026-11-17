@@ -1,0 +1,4 @@
+# Failure Analyzers
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+io.b2mash.maestro.messaging.kafka.config.ProducerFactoryReplacementFailureAnalyzer,\
+io.b2mash.maestro.messaging.kafka.config.ByteArrayTemplateMissingFailureAnalyzer

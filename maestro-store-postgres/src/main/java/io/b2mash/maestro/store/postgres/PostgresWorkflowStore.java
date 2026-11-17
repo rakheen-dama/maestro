@@ -20,6 +20,13 @@ import java.sql.Types;
  *   <li>JSONB parameters via {@link PGobject} for native type handling.</li>
  *   <li>{@code FOR UPDATE SKIP LOCKED} for concurrent timer polling and for
  *       the retention purge's candidate rows.</li>
+ *   <li>Due timers compared with the database clock: {@link #getDueTimers(int)}
+ *       selects {@code fire_at <= now()}, so the timer-poller leader's own
+ *       clock does not decide when a timer fires; {@link #storeTime()} reads
+ *       {@code SELECT now()} for every node's clock-skew check.</li>
+ *   <li>{@code INSERT ... RETURNING payload} for
+ *       {@link #appendEventReturningPayload}, so a live result is the
+ *       {@code jsonb} form a replay reads.</li>
  * </ul>
  *
  * <p>Flyway migrations for the schema are in
@@ -74,6 +81,35 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     }
 
     /**
+     * Returns {@link #getDueTimersSql()} with {@code fire_at} compared to the
+     * database's {@code now()} instead of a bound instant; the one parameter
+     * is the limit.
+     *
+     * <p>{@code fire_at} is {@code TIMESTAMPTZ}, so the comparison is absolute
+     * whatever the session or JVM time zone, and {@code now()} is stable within
+     * the statement, so the partial index on {@code (fire_at, status)} still
+     * serves it (traced).
+     */
+    @Override
+    protected String getDueTimersByStoreClockSql() {
+        return "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, "
+                + "status, created_at FROM " + tableName("workflow_timer")
+                + " WHERE fire_at <= now() AND status = 'PENDING'"
+                + " ORDER BY fire_at ASC"
+                + " LIMIT ?"
+                + " FOR UPDATE SKIP LOCKED";
+    }
+
+    /**
+     * Returns {@code SELECT now()}: the clock {@link #getDueTimersByStoreClockSql()}
+     * compares with, for the clock-skew check.
+     */
+    @Override
+    protected String storeTimeSql() {
+        return "SELECT now()";
+    }
+
+    /**
      * Returns {@code FOR SHARE}: the fenced {@code INSERT ... SELECT} of an
      * event or timer takes a share lock on the instance row it checked, so a
      * concurrent adoption bump ({@code UPDATE ... SET lease_epoch = ...}) either
@@ -85,6 +121,19 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     @Override
     protected String fenceRowLockClause() {
         return " FOR SHARE";
+    }
+
+    /**
+     * Returns {@code true}: {@code jsonb} stores a normalised form — object
+     * keys shortest first then bytewise, numbers rewritten ({@code 1.0E7} is
+     * stored as {@code 10000000}) — so
+     * {@link #appendEventReturningPayload} must hand back what Postgres
+     * stored, not what was sent. The fenced event insert gains
+     * {@code RETURNING payload}; it stays one statement.
+     */
+    @Override
+    protected boolean returnsInsertedPayload() {
+        return true;
     }
 
     /**
@@ -102,6 +151,20 @@ public final class PostgresWorkflowStore extends AbstractJdbcWorkflowStore {
     protected String getPurgeCandidatesSql() {
         return "SELECT id FROM " + tableName("workflow_instance")
                 + " WHERE status = ? AND completed_at < ?"
+                + " ORDER BY completed_at ASC"
+                + " LIMIT ?"
+                + " FOR UPDATE SKIP LOCKED";
+    }
+
+    /**
+     * Returns the service-scoped retention purge's candidate select with
+     * Postgres {@code FOR UPDATE SKIP LOCKED}, for the same reasons as
+     * {@link #getPurgeCandidatesSql()}.
+     */
+    @Override
+    protected String getServicePurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ? AND service_name = ?"
                 + " ORDER BY completed_at ASC"
                 + " LIMIT ?"
                 + " FOR UPDATE SKIP LOCKED";

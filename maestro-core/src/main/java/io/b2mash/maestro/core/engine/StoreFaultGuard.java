@@ -31,7 +31,8 @@ import java.util.function.Supplier;
  * infrastructure blip as a workflow failure.
  *
  * <h2>What is retried</h2>
- * <p>Only {@code appendEvent} (both overloads) and {@code getEventBySequence}:
+ * <p>Only {@code appendEvent} (both overloads), {@code appendEventReturningPayload}
+ * (the same write, returning the stored payload) and {@code getEventBySequence}:
  * up to {@value #MAX_ATTEMPTS} attempts in total, waiting
  * {@link #RETRY_BACKOFF} (200 ms, then 1 s) between them. Both are safe to
  * repeat when the outcome of a failed attempt is unknown: a read has no
@@ -76,8 +77,8 @@ import java.util.function.Supplier;
  * <h2>A latched run cannot append</h2>
  * <p>Once the run bound to the calling thread is latched
  * {@code STORE_UNAVAILABLE}, every append it <em>starts</em> — any method whose
- * name starts with {@code appendEvent}: both {@code appendEvent} overloads and
- * {@code appendEventAndConsumeSignal} — is refused with a
+ * name starts with {@code appendEvent}: both {@code appendEvent} overloads,
+ * {@code appendEventReturningPayload} and {@code appendEventAndConsumeSignal} — is refused with a
  * {@link StoreUnavailableException} <em>without</em> reaching the store, even
  * if the store answers again; the refusal is neither retried nor re-latched.
  * Workflow code may have caught the original exception and carried on down a
@@ -118,7 +119,8 @@ final class StoreFaultGuard {
     static final List<Duration> RETRY_BACKOFF = List.of(Duration.ofMillis(200), Duration.ofSeconds(1));
 
     /** The operations that are safe to repeat after an attempt of unknown outcome. */
-    private static final Set<String> RETRIED = Set.of("appendEvent", "getEventBySequence");
+    private static final Set<String> RETRIED =
+            Set.of("appendEvent", "appendEventReturningPayload", "getEventBySequence");
 
     /** Set while an advisory read runs: the guard neither retries nor latches. */
     private static final ScopedValue<Boolean> ADVISORY = ScopedValue.newInstance();

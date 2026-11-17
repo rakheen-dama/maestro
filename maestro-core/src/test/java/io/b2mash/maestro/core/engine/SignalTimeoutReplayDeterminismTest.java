@@ -62,7 +62,7 @@ class SignalTimeoutReplayDeterminismTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        nodeA = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
     }
 
     @AfterEach
@@ -101,7 +101,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeA = null;
 
         // The gate signal arrives LATE, between the stop and the recovery.
-        nodeB = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         nodeB.deliverSignal(workflowId, "gate", "late-arrival");
 
         // Recovery replay on the replacement node.
@@ -153,7 +153,7 @@ class SignalTimeoutReplayDeterminismTest {
         // Graceful stop; the withdrawal lands late, before the replacement recovers.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         nodeB.deliverSignal(workflowId, "withdraw", "late-withdrawal");
 
         var reg = new WorkflowRegistration("SagaGateWorkflow", "default",
@@ -189,6 +189,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeA.deliverSignal(workflowId, "approval", "granted");
         var reg = new WorkflowRegistration("SingleAwaitWorkflow", "default",
                 () -> new SingleAwaitWorkflow(), method);
+        TestTerminalWait.awaitRunEnded(nodeA, workflowId, Duration.ofSeconds(5));
         nodeA.retryWorkflow(workflowId, reg);
 
         TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));
@@ -222,6 +223,7 @@ class SignalTimeoutReplayDeterminismTest {
         var reg = new WorkflowRegistration("GateThenFlakyWorkflow", "default",
                 () -> new GateThenFlakyWorkflow(failOnce, new java.util.concurrent.CountDownLatch(1)),
                 method);
+        TestTerminalWait.awaitRunEnded(nodeA, workflowId, Duration.ofSeconds(5));
         nodeA.retryWorkflow(workflowId, reg);
 
         TestTerminalWait.awaitTerminal(store, workflowId, Duration.ofSeconds(5));

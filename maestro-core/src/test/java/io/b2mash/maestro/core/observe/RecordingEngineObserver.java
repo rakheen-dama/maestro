@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 
 import java.time.Duration;
@@ -21,6 +22,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record ActivityCompletion(ActivityInfo info, Duration duration, boolean replayed) {}
     public record ActivityFailure(ActivityInfo info, Duration duration,
                                   String exceptionType, boolean replayed) {}
+    public record UnreadableResult(ActivityInfo info, String exceptionType) {}
     public record SignalConsumption(SignalInfo info, boolean replayed) {}
     public record TimerCallback(TimerInfo info, boolean replayed) {}
     public record ParkEvent(WorkflowInfo info, ParkKind kind) {}
@@ -29,6 +31,8 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record RetentionPassCall(io.b2mash.maestro.core.spi.PurgeResult purged) {}
     public record AbandonCall(WorkflowInfo info, AbandonReason reason) {}
     public record WorkflowFailure(WorkflowInfo info, String exceptionType) {}
+    public record WorkflowFinish(WorkflowInfo info, WorkflowStatus status, Duration elapsed) {}
+    public record LoopErrorCall(String loop, String errorType) {}
 
     private final List<Invocation> invocations = new CopyOnWriteArrayList<>();
 
@@ -36,6 +40,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<WorkflowInfo> resumed = new CopyOnWriteArrayList<>();
     private final List<WorkflowInfo> completed = new CopyOnWriteArrayList<>();
     private final List<WorkflowFailure> failed = new CopyOnWriteArrayList<>();
+    private final List<WorkflowFinish> finished = new CopyOnWriteArrayList<>();
     private final List<WorkflowInfo> compensating = new CopyOnWriteArrayList<>();
     private final List<WorkflowInfo> terminated = new CopyOnWriteArrayList<>();
     private final List<ParkEvent> parked = new CopyOnWriteArrayList<>();
@@ -43,6 +48,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<ActivityInfo> activityStarted = new CopyOnWriteArrayList<>();
     private final List<ActivityCompletion> activityCompleted = new CopyOnWriteArrayList<>();
     private final List<ActivityFailure> activityFailed = new CopyOnWriteArrayList<>();
+    private final List<UnreadableResult> unreadableResults = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalPersisted = new CopyOnWriteArrayList<>();
     private final List<SignalConsumption> signalConsumed = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalDuplicates = new CopyOnWriteArrayList<>();
@@ -56,6 +62,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<StandDownCall> standDowns = new CopyOnWriteArrayList<>();
     private final List<RetentionPassCall> retentionPasses = new CopyOnWriteArrayList<>();
     private final List<AbandonCall> abandoned = new CopyOnWriteArrayList<>();
+    private final List<LoopErrorCall> loopErrors = new CopyOnWriteArrayList<>();
 
     // ── EngineObserver callbacks ──────────────────────────────────────
 
@@ -81,6 +88,12 @@ public final class RecordingEngineObserver implements EngineObserver {
     public void workflowFailed(WorkflowInfo w, String exceptionType) {
         record("workflowFailed", w, exceptionType);
         failed.add(new WorkflowFailure(w, exceptionType));
+    }
+
+    @Override
+    public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {
+        record("workflowFinished", w, status, elapsed);
+        finished.add(new WorkflowFinish(w, status, elapsed));
     }
 
     @Override
@@ -124,6 +137,12 @@ public final class RecordingEngineObserver implements EngineObserver {
                                String exceptionType, boolean replayed) {
         record("activityFailed", a, duration, exceptionType, replayed);
         activityFailed.add(new ActivityFailure(a, duration, exceptionType, replayed));
+    }
+
+    @Override
+    public void activityResultUnreadable(ActivityInfo a, String exceptionType) {
+        record("activityResultUnreadable", a, exceptionType);
+        unreadableResults.add(new UnreadableResult(a, exceptionType));
     }
 
     @Override
@@ -193,6 +212,12 @@ public final class RecordingEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void backgroundLoopError(String loop, String errorType) {
+        record("backgroundLoopError", loop, errorType);
+        loopErrors.add(new LoopErrorCall(loop, errorType));
+    }
+
+    @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         record("standDown", reason, workflowId, String.valueOf(detail));
         standDowns.add(new StandDownCall(reason, workflowId, detail));
@@ -213,6 +238,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<WorkflowInfo> resumed() { return List.copyOf(resumed); }
     public List<WorkflowInfo> completed() { return List.copyOf(completed); }
     public List<WorkflowFailure> failed() { return List.copyOf(failed); }
+    public List<WorkflowFinish> finished() { return List.copyOf(finished); }
     public List<WorkflowInfo> compensating() { return List.copyOf(compensating); }
     public List<WorkflowInfo> terminated() { return List.copyOf(terminated); }
     public List<ParkEvent> parked() { return List.copyOf(parked); }
@@ -220,6 +246,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<ActivityInfo> activityStarted() { return List.copyOf(activityStarted); }
     public List<ActivityCompletion> activityCompleted() { return List.copyOf(activityCompleted); }
     public List<ActivityFailure> activityFailed() { return List.copyOf(activityFailed); }
+    public List<UnreadableResult> unreadableResults() { return List.copyOf(unreadableResults); }
     public List<SignalInfo> signalPersisted() { return List.copyOf(signalPersisted); }
     public List<SignalConsumption> signalConsumed() { return List.copyOf(signalConsumed); }
     public List<SignalInfo> signalDuplicates() { return List.copyOf(signalDuplicates); }
@@ -232,6 +259,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public List<RecoveryPassCall> recoveryPasses() { return List.copyOf(recoveryPasses); }
     public List<StandDownCall> standDowns() { return List.copyOf(standDowns); }
     public List<RetentionPassCall> retentionPasses() { return List.copyOf(retentionPasses); }
+    public List<LoopErrorCall> loopErrors() { return List.copyOf(loopErrors); }
 
     /** The reasons {@code workflowId} stood down for, in arrival order. */
     public List<StandDownReason> standDownReasons(String workflowId) {

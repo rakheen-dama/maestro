@@ -1,14 +1,26 @@
 package io.b2mash.maestro.samples.loan.verification;
 
+import io.b2mash.maestro.messaging.kafka.MaestroKafkaBeans;
 import io.b2mash.maestro.samples.loan.verification.workflow.VerificationWorkflow;
 import io.b2mash.maestro.spring.config.WorkflowRegistrar;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.annotation.Bean;
+import org.springframework.kafka.core.DefaultKafkaProducerFactory;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.postgresql.PostgreSQLContainer;
 
+import java.util.Map;
+
+import static org.apache.kafka.clients.producer.ProducerConfig.BOOTSTRAP_SERVERS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG;
+import static org.apache.kafka.clients.producer.ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -30,9 +42,10 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
  * (the engine tolerates that — inbound signal subscription is simply
  * disabled) and {@code @MaestroSignalListener} is inert (its
  * {@code BeanPostProcessor} is registered by that auto-configuration). Boot's
- * {@code @KafkaListener} containers are not started, and the
- * {@code KafkaTemplate} the activities inject is still created by Boot's own
- * Kafka auto-configuration — it connects lazily, so no broker is needed.
+ * {@code @KafkaListener} containers are not started, and the activities'
+ * {@code maestroKafkaTemplate} is a stand-in declared below, because the
+ * auto-configuration that declares it is excluded; it connects lazily, so no
+ * broker is needed.
  * Locking is the Postgres lock, as in production. Workflow discovery and
  * validation do not depend on the transport.
  *
@@ -57,6 +70,23 @@ class VerificationGatewayContextBootTest {
 
     static {
         POSTGRES.start();
+    }
+
+    /**
+     * Stands in for the {@code maestroKafkaTemplate} that the excluded
+     * {@code KafkaMessagingAutoConfiguration} would declare, so the messaging
+     * activities' qualified constructor parameter resolves.
+     */
+    @TestConfiguration(proxyBeanMethods = false)
+    static class MaestroTemplateStandIn {
+
+        @Bean(name = MaestroKafkaBeans.TEMPLATE, defaultCandidate = false)
+        KafkaTemplate<String, byte[]> maestroKafkaTemplate() {
+            return new KafkaTemplate<>(new DefaultKafkaProducerFactory<>(Map.of(
+                    BOOTSTRAP_SERVERS_CONFIG, "localhost:1",
+                    KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                    VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class)));
+        }
     }
 
     @DynamicPropertySource

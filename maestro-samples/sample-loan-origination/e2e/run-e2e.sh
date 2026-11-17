@@ -144,7 +144,7 @@ WAIT_RECOVERY_SECS=150     # crash-recovery scenario end-to-end after restart
 WAIT_ADOPTION_SECS="${WAIT_ADOPTION_SECS:-150}"
 
 # Scenario 8 (rolling restart): dedicated SIGTERM grace period for
-# stop_service_graceful — default maestro.shutdown.timeout=30s (drains
+# stop_service_graceful — default maestro.shutdown.timeout=20s (drains
 # in-flight workflows) + slack for JVM/Spring-context-close overhead
 # (Kafka listener containers, DataSource pool, etc.). Deliberately NOT the
 # shared stop_service()'s 15s teardown wait: 15s is fine for teardown (which
@@ -620,7 +620,7 @@ stop_service_graceful() {
         fi
         sleep 1
     done
-    err "$name (pid $pid) did NOT exit within ${grace}s of SIGTERM - real Spring shutdown exceeded the grace period (maestro.shutdown.timeout default 30s); refusing to KILL so this is visible instead of disguised as a clean shutdown"
+    err "$name (pid $pid) did NOT exit within ${grace}s of SIGTERM - real Spring shutdown exceeded the grace period (maestro.shutdown.timeout default 20s); refusing to KILL so this is visible instead of disguised as a clean shutdown"
     return 1
 }
 
@@ -1528,7 +1528,7 @@ scenario_rolling_restart() {
     done
 
     # ── Graceful SIGTERM of node A, mid-flight, with all 3 parked ───────
-    log "SIGTERM node A (pid $pid_a) - 3 workflows parked, grace ${WAIT_SHUTDOWN_GRACE_SECS}s (maestro.shutdown.timeout default 30s + slack)"
+    log "SIGTERM node A (pid $pid_a) - 3 workflows parked, grace ${WAIT_SHUTDOWN_GRACE_SECS}s (maestro.shutdown.timeout default 20s + slack)"
     stop_service_graceful "loan-application-service" "$WAIT_SHUTDOWN_GRACE_SECS" || return 1
 
     # ── Graceful-shutdown evidence, read from node A's OWN log ──────────

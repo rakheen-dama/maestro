@@ -1,11 +1,15 @@
 package io.b2mash.maestro.core.observe;
 
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Callable;
 
 /**
@@ -19,10 +23,16 @@ import java.util.concurrent.Callable;
  * {@link Error}s are deliberately <b>not</b> caught: the composite must never
  * swallow the engine's control-flow signals
  * ({@code ExecutorShutdownException}, {@code WorkflowTerminatedException}) —
- * and observers must never throw them.
+ * and observers must never throw them. The one exception is
+ * {@link #backgroundLoopError}, which contains every {@code Throwable} but a
+ * {@link MaestroControlFlowError} per delegate: it fires while a background
+ * loop is already containing an {@code Error}.
  *
  * <h2>Thread safety</h2>
- * <p>Immutable and thread-safe; thread safety of the callbacks themselves is
+ * <p>Thread-safe. The delegate list is immutable; the only mutable state is
+ * the concurrent set of delegates currently throwing from
+ * {@link #backgroundLoopError}, kept to rate-limit that warning. Thread safety
+ * of the callbacks themselves is
  * each delegate's obligation per the {@link EngineObserver} contract.
  */
 public final class CompositeEngineObserver implements EngineObserver {
@@ -30,6 +40,12 @@ public final class CompositeEngineObserver implements EngineObserver {
     private static final Logger logger = LoggerFactory.getLogger(CompositeEngineObserver.class);
 
     private final List<EngineObserver> delegates;
+
+    /** Delegate (by position) and loop whose last {@link #backgroundLoopError} call threw. */
+    private final Set<FailingDelegate> failingLoopErrorDelegates = ConcurrentHashMap.newKeySet();
+
+    private record FailingDelegate(int delegateIndex, String loop) {
+    }
 
     private CompositeEngineObserver(List<EngineObserver> delegates) {
         this.delegates = List.copyOf(delegates);
@@ -97,6 +113,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {
+        fanOut("workflowFinished", d -> d.workflowFinished(w, status, elapsed));
+    }
+
+    @Override
     public void workflowCompensating(WorkflowInfo w) {
         fanOut("workflowCompensating", d -> d.workflowCompensating(w));
     }
@@ -161,6 +182,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void activityResultUnreadable(ActivityInfo a, String exceptionType) {
+        fanOut("activityResultUnreadable", d -> d.activityResultUnreadable(a, exceptionType));
+    }
+
+    @Override
     public void signalPersisted(SignalInfo s) {
         fanOut("signalPersisted", d -> d.signalPersisted(s));
     }
@@ -213,6 +239,36 @@ public final class CompositeEngineObserver implements EngineObserver {
     @Override
     public void retentionPass(io.b2mash.maestro.core.spi.PurgeResult purged) {
         fanOut("retentionPass", d -> d.retentionPass(purged));
+    }
+
+    @Override
+    public void backgroundLoopError(String loop, String errorType) {
+        // Wider than fanOut: this callback fires while a loop is already
+        // containing an Error, so a delegate's own Error (an adapter bug, or
+        // the same resource exhaustion) must not skip the delegates after it.
+        // A loop that keeps failing calls this on every pass, so a delegate that
+        // keeps throwing is logged at WARN with the stack trace once per loop
+        // until a call to it succeeds again, then at DEBUG.
+        for (int i = 0; i < delegates.size(); i++) {
+            var delegate = delegates.get(i);
+            var key = new FailingDelegate(i, loop);
+            try {
+                delegate.backgroundLoopError(loop, errorType);
+                failingLoopErrorDelegates.remove(key);
+            } catch (Throwable t) {
+                if (t instanceof MaestroControlFlowError controlFlow) {
+                    throw controlFlow;
+                }
+                if (failingLoopErrorDelegates.add(key)) {
+                    logger.warn("EngineObserver delegate {} threw from backgroundLoopError for loop '{}' — contained; "
+                            + "further failures of it for this loop are logged at DEBUG until it succeeds again",
+                            delegate.getClass().getName(), loop, t);
+                } else {
+                    logger.debug("EngineObserver delegate {} threw again from backgroundLoopError for loop '{}': {}",
+                            delegate.getClass().getName(), loop, t.toString());
+                }
+            }
+        }
     }
 
     @Override

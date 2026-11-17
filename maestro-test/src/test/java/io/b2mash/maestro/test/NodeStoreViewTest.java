@@ -45,14 +45,16 @@ class NodeStoreViewTest {
 
     /** Every {@link WorkflowStore} method that changes state — kept explicit so a new SPI method must be classified. */
     private static final Set<String> WRITES = Set.of(
-            "createInstance", "updateInstance", "completeInstance", "appendEvent", "deleteFailureEvents",
+            "createInstance", "updateInstance", "completeInstance", "appendEvent", "appendEventReturningPayload",
+            "deleteFailureEvents", "reopenFailedInstance",
             "saveSignal", "saveSignalIfAbsent", "markSignalConsumed", "appendEventAndConsumeSignal",
             "adoptOrphanedSignals", "deleteUnconsumedSignalsForTerminalInstancesBefore",
             "purgeTerminalInstancesBefore", "saveTimer", "markTimerFired", "markTimerCancelled");
 
     private static final Set<String> READS = Set.of(
             "getInstance", "getRecoverableInstances", "getEventBySequence", "getEvents",
-            "getUnconsumedSignals", "getDueTimers", "findTimer");
+            "getUnconsumedSignals", "getDueTimers", "findTimer", "storeTime",
+            "getActiveInstanceCountsUnderOtherServices");
 
     private final InMemoryWorkflowStore delegate = new InMemoryWorkflowStore();
 
@@ -166,6 +168,31 @@ class NodeStoreViewTest {
         // The test thread never triggers a crash.
         NodeStoreView.over(delegate, policy).store().appendEvent(event(instance, 2));
         assertEquals(2, delegate.getEvents(instance.id()).size());
+    }
+
+    @Test
+    void appendEventReturningPayloadIsOfferedToTheCrashPolicy() throws Exception {
+        var policy = new NodeStoreView.CrashPolicy() {
+            @Override
+            public String before(WorkflowEvent event) {
+                return null;
+            }
+
+            @Override
+            public String after(WorkflowEvent event) {
+                return event.sequenceNumber() == 1 ? "after seq 1" : null;
+            }
+        };
+        var view = NodeStoreView.over(delegate, policy);
+        var store = view.store();
+        var instance = store.createInstance(instance("wf-returning"));
+
+        var crash = assertThrows(ExecutorShutdownException.class, () -> onWorkflowThread(instance,
+                () -> store.appendEventReturningPayload(event(instance, 1), lease(instance))));
+
+        assertTrue(crash.getMessage().startsWith("Simulated crash: after seq 1"), crash.getMessage());
+        assertEquals(1, delegate.getEvents(instance.id()).size(), "persisted, then the node died");
+        assertTrue(view.isDead());
     }
 
     @Test

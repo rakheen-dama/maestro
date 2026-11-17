@@ -71,7 +71,9 @@ class AwaitTimeoutRetryRearmTest {
     void setUp() throws Exception {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = new WorkflowExecutor(store, null, null, null, serializer, "test-service", clock);
+        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+                .instantSource(clock)
+                .build();
         registration = new WorkflowRegistration("ApprovalWorkflow", "default",
                 ApprovalWorkflow::new, ApprovalWorkflow.class.getMethod("run"));
     }
@@ -192,6 +194,8 @@ class AwaitTimeoutRetryRearmTest {
         now.set(T0.plus(TIMEOUT));
         executor.fireTimer(workflowId, detail.timerId(), row.id());
         TestTerminalWait.awaitStatus(store, workflowId, WorkflowStatus.FAILED, Duration.ofSeconds(5));
+        // The run writes FAILED before it leaves the registry; a retry in between does not relaunch.
+        TestTerminalWait.awaitRunEnded(executor, workflowId, Duration.ofSeconds(5));
 
         assertEquals(EventType.SIGNAL_TIMEOUT,
                 store.getEventBySequence(instanceId, memo.sequenceNumber() + 1).orElseThrow().eventType(),

@@ -60,6 +60,42 @@ var env = TestWorkflowEnvironment.create();
 var env = TestWorkflowEnvironment.create(customMapper);
 ```
 
+### Concurrency Limits
+
+By default the kit's task queues are unbounded: a node runs any number of
+workflows and live activities at once. Production bounds every queue per node
+(`maestro.worker.default-concurrency` / `default-activity-concurrency`, 20 and
+20 by default), and some bugs appear only under a bound, such as an activity
+that waits for a workflow on its own queue ([Pitfalls rule
+11](pitfalls.md#11-never-make-an-activity-wait-for-a-workflow-of-its-own-task-queue)).
+The limits are opt-in:
+
+```java
+var env = TestWorkflowEnvironment.builder()
+        .defaultConcurrency(20, 20)                // production's defaults, every unlisted queue
+        .taskQueueConcurrency("payments", 5, 10)   // like a maestro.worker.task-queues[] entry
+        .objectMapper(customMapper)                // optional
+        .build();
+```
+
+or, with the JUnit extension, `@MaestroTest(defaultConcurrency = 20,
+defaultActivityConcurrency = 20)`; a `@Nested` class without its own
+`@MaestroTest` uses its enclosing class's limits (`MaestroTestLimitsTest`).
+
+- `build()` validates as the starter does: `defaultConcurrency(0, 0)` is
+  unbounded; exactly one `0`, or a negative value, fails with
+  `IllegalArgumentException` naming both; a queue entry needs a non-blank name
+  and both limits at least 1; a queue named twice fails
+  (`TestWorkflowEnvironmentLimitsTest`).
+- The limits apply to every node the environment builds, including the ones
+  `recover()` starts, and to live activities as well as workflow runs.
+- `recover()` stays **ungated**: it re-adopts every active workflow at once,
+  and the runs beyond a queue's bound wait for their slots on their own
+  threads, like a production node whose recovery poller is disabled. It keeps
+  returning the number of workflows re-adopted. (A production node's recovery
+  poller adopts only what it can run or queue; the kit does not model that —
+  [Issue 72](open-issues.md#issue-72).)
+
 ### Lifecycle
 
 Always shut down the environment after your test to release virtual threads:
@@ -373,7 +409,7 @@ This is the at-least-once window every activity must tolerate. See [Pitfalls §3
 - Its workflow threads stop at their next store write and record nothing. The crash is thrown as the engine's own `ExecutorShutdownException`, an `Error`, so a `catch (Exception e)` in workflow code cannot swallow it. The instance keeps its status (`RUNNING`, `WAITING_*` or `COMPENSATING`) and stays recoverable, and its instance lock is released.
 - The test thread can still write. `handle.signal(...)` and `env.advanceTime(...)` while the node is down model a signal or a timer that lands during an outage. The signal waits in the store, and the timer row fires. The dead node's parked thread may wake but cannot record anything. The recovered run consumes the signal, or finds the fired timer row and records the wake.
 - `env.startWorkflow(...)` throws `IllegalStateException` until you recover.
-- After `crashNow()`, a workflow that is mid-activity finishes the activity before it stops. `recover()` waits for it for up to the engine's 30-second shutdown timeout.
+- After `crashNow()`, a workflow that is mid-activity finishes the activity before it stops. `recover()` waits for it for up to the engine's 20-second shutdown timeout.
 
 ### Recovering
 
@@ -429,7 +465,7 @@ It runs the workflow once uninterrupted. Then, for every `k` from 1 to that run'
 
 - One node runs at a time. Two live nodes racing for one workflow (lock expiry, lease fencing between them) are covered by the integration tests' `MaestroEngineHarness`, not by the kit.
 - A crash fires at an event write. To crash between two non-event writes (a timer row and its memo, for instance), use `crashNow()` at a moment the test controls.
-- The in-memory store keeps payloads as Jackson trees and never renders them to text. A type whose round trip depends on the JSON text form is covered only against Postgres.
+- The in-memory store keeps payloads as Jackson trees, but every value the engine hands workflow code is parsed from JSON text, as a JDBC store parses it: untyped numbers arrive as `Integer`, `Long` or `Double`, binary inside an untyped map as a base64 string, decimals exactly, and a `JsonNode` as a copy. What the kit cannot show is Postgres `jsonb`'s own normalisation (object keys shorter first, `1.0E7` stored as `10000000`), so map order can differ from production's, but a live call and its replay read the same stored form on each store, so that difference cannot hide a stand-down (the results rule 12 returns as the activity's own object on the first run — another class, one that cannot be read back (its recovery stands down as `unknown_event_payload`), a future — are the exception, on every store, so a live call that succeeds does not prove its replay will) ([Pitfalls §12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned)). Workflow input is not read back: the first run gets the input as the engine serialized it, while a recovery or retry reads the stored row, so on Postgres an order-sensitive or untyped-number input (a `Map<String, Object>`'s key order, an untyped `1.0E7`) can differ between the first run and a recovery, and the kit cannot show it ([Issue 43](open-issues.md#issue-43): traced from the code, not reproduced end to end).
 - `crashNow()` lets another workflow's in-flight activity finish (up to 30 seconds) before that workflow stops.
 - With `parallel()` branches, `crashAfter(n)` counts completions across the branches in the order they happen to land, so which step is the `n`-th depends on thread timing. Sibling branches still mid-activity at the crash run that activity again after recovery. `assertRecoverable` can therefore report a live-step difference for a parallel workflow that is in fact correct. Use it on sequential workflows, and test parallel ones with targeted `crashAfterPersisting` predicates instead.
 
@@ -712,6 +748,6 @@ assertTrue(handle.getEvents().stream()
 ## See Also
 
 - [Concepts](concepts.md) -- Core concepts: memoization, replay, determinism constraints
-- [Pitfalls](pitfalls.md) -- The ten mistakes that fail only in production, and how a test catches each
+- [Pitfalls](pitfalls.md) -- Twelve rules whose violations pass every straight-through test and fail in production, and how a test catches each
 - [Configuration](configuration.md) -- Runtime configuration reference
 - [Architecture](maestro-architecture.md) -- System architecture and failure modes

@@ -108,7 +108,9 @@ class RecoveryPassIsolationTest {
         // The raw store: the executor wraps it in StoreFaultGuard's proxy itself,
         // so every count below is what reached the store THROUGH that proxy.
         var serializer = new PayloadSerializer(JsonMapper.builder().build());
-        return new WorkflowExecutor(store, lock, null, null, serializer, serviceName);
+        return WorkflowExecutor.builder(store, serializer, serviceName)
+                .distributedLock(lock)
+                .build();
     }
 
     @Test

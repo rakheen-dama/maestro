@@ -249,9 +249,36 @@ documenting the bounded-host-load cycle's index migration (a store migration
 shipped after V100 failed startup, and its first fix moved the failure to older
 nodes), is **resolved** by `outOfOrder` and a numbering rule that puts every
 new migration above V100. Four more (36–39), found by that cycle's final
-whole-branch review, are filed **open**: the test kit cannot apply the default
+whole-branch review, were filed **open**: the test kit cannot apply the default
 concurrency limits, `WorkflowExecutor`'s constructors need a builder, the wake
 listener's shutdown WARN, and silent stranding under another `service_name`.
+Issue 37 is since **resolved** by `WorkflowExecutor.builder(...)` and the
+removal of the ten constructors — see its section; 36, 38 and 39 remain open.
+Issue 40, found by the review of WP9's production schema guidance
+(2026-11-12), is filed **open**: under `validate`, a role that cannot see
+`maestro_schema_history` is told to apply every migration. Issue 41, found by
+the final review of the same work package (2026-11-12), is filed **open**: an
+older node replaying history appended by a newer node is untested. Issues
+42–49, found while making a live activity result equal its replay (WP1,
+2026-11-12), are filed **open**: a replayed failure keeps only type and
+message, workflow input on Postgres differs between the first run and
+recovery, input is read with the raw parameter class, `collectSignals` throws
+on a null payload, an `Error` from a result deserializer fails the run, an
+unparseable stored payload is logged only at `DEBUG`, nothing checks the
+mapper at startup, and future-typed activity results are accepted.
+Issues 50 and 51, left by the wake-permit, timer-clock and activity-lock work
+(WP2, 2026-11-16), are filed **open**: the activity proxy keeps two ignored
+lock parameters, and timer deadlines are still armed on the scheduling node's
+clock. Issues
+52–56, found while making Spring Boot's Kafka beans coexist with Maestro's
+(WP7, 2026-11-16), are filed **open**: `maestro-admin-client` has no wired
+component (a decision for the maintainer), the engine's Kafka clients ignore
+Boot's customizers and most of `KafkaConnectionDetails`, an unresolvable
+bootstrap host fails startup, a host-only `ProducerFactory` fails without a
+failure analysis, and an ambiguous unqualified `byte[]` template point is only
+warned about. Issues 57–58, from the same work's final fix wave, are filed
+**open**: the `byte[]` template check runs a programmatic serializer supplier
+once, and it precedes Maestro's consumers only by registration order.
 
 **Read the "Kind" column first — it determines how you work.** Almost everything
 here was a *library* problem, not a coverage problem. That was the outcome of the
@@ -297,17 +324,54 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
 | [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
-| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | Open — on the default path since 2026-11-11 |
-| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | Open — on the default path since 2026-11-11; recommended next |
+| [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | **Resolved** (WP5) |
+| [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | **Resolved** (WP6) |
 | [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
-| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | Open |
+| [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | **Resolved** |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
 | [35](#issue-35) | A new store migration fails startup on a database that already has the lock band | Library defect — upgrade | High | **Resolved** — `outOfOrder`, and new migrations numbered from V101 |
-| [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | Open |
-| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | Open — before a first Maven Central release |
-| [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | Open |
-| [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | Open |
+| [36](#issue-36) | The test kit cannot apply production's default concurrency limits | Library gap — test fidelity | Medium | **Resolved** (WP6) |
+| [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
+| [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | **Resolved** |
+| [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | **Resolved** (WP8) |
+| [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
+| [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
+| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | Open |
+| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | Open |
+| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | Open |
+| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | Open |
+| [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | Open |
+| [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | Open |
+| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | Open |
+| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | Open |
+| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | Open |
+| [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | Open |
+| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | Open — maintainer to decide |
+| [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | Open |
+| [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | Open |
+| [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | Open |
+| [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | Open |
+| [57](#issue-57) | The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once | Library gap — startup check side effects | Low | Open |
+| [58](#issue-58) | The `byte[]` template check runs before Maestro's consumers only by bean-registration order | Library gap — startup ordering | Low | Open |
+| [59](#issue-59) | Retry refuses when the failure's handling consumed a signal | Library gap — admin retry | Medium | Open |
+| [60](#issue-60) | Two independently failed `parallel()` branches need two Retries | Library gap — admin retry | Low | Open |
+| [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
+| [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
+| [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Partly resolved (WP5: the renewer); the cleaner and the four core pollers open |
+| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | Open |
+| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | Open |
+| [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | Open |
+| [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | Open |
+| [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | Open |
+| [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | Open |
+| [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
+| [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
+| [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
+| [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | Open |
+| [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | Open |
+| [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -679,7 +743,7 @@ no longer reference it.
 
 > **Resolved.** Both threaded through `MaestroProperties` and the
 > `WorkflowExecutor`/`SignalManager` constructors exactly as proposed:
-> `maestro.shutdown.timeout` (default 30s, unchanged) and
+> `maestro.shutdown.timeout` (default 30s, unchanged; 20 s since WP5) and
 > `maestro.signal.wake-recheck-interval` (default 30s, unchanged). Commits
 > `ea9eb34` (core), `dd7c4f8` (starter wiring). Pinned by
 > `MaestroAutoConfigurationConfigSeamsTest` (context-runner tests proving the
@@ -760,6 +824,8 @@ claim it does.
 > `ActivityInvocationHandlerTest.lockHonoursCustomKeyPrefix` (asserts the
 > exact acquired key) and
 > `MaestroAutoConfigurationConfigSeamsTest.lockKeyPrefixReachesActivityInvocationHandler`.
+>
+> *Superseded (WP2, 3.10): the activity lock was removed.*
 
 **What's wrong.** `ActivityInvocationHandler` builds its lock key with a
 hardcoded literal:
@@ -2078,7 +2144,8 @@ in the callout above.
 > decision instead of an alphabetical-package-name accident; `afterName`
 > was deliberately rejected, since it would resurrect Boot's beans
 > alongside Maestro's and break the context with
-> `NoUniqueBeanDefinitionException`. **Part 2 (trace context).**
+> `NoUniqueBeanDefinitionException`. *(Superseded by WP7: the ordering is
+> gone and Boot's beans are no longer suppressed; see the note below.)* **Part 2 (trace context).**
 > `maestroKafkaTemplate` and every `@MaestroSignalListener` container now
 > default Micrometer observation **on** when a `Tracer` *and* a
 > `Propagator` bean both exist and `maestro.observability.tracing.enabled`
@@ -2105,12 +2172,26 @@ in the callout above.
 > default, pt 2), `472e87d` (listener trace extraction + observation + F3
 > named lookup, pt 2), `dc434ea` (workaround removal), `0486212`/`c60cfd7`
 > (`docs/observability.md` correction). Pinned by
-> `KafkaMessagingAutoConfigurationPropertiesTest` (beforeName ordering,
-> `spring.kafka.*` precedence, and the auto-offset-reset-override-vs-
+> `KafkaMessagingAutoConfigurationPropertiesTest` (beforeName ordering, a
+> pin since removed with the ordering in WP7; `spring.kafka.*` precedence, and the auto-offset-reset-override-vs-
 > engine-owned-`group.id` boundary) and `SignalListenerTraceContextIT`
 > (real broker: an inbound `traceparent` on a signal-topic record survives
 > to the persisted `trace_context` column). The rest of this section is
 > kept as the record of the defect.
+>
+> **WP7 (2026-11-16, branch `fix/kafka-coexistence`): Boot's beans are no
+> longer suppressed.** Maestro's three Kafka beans are
+> `@Bean(defaultCandidate = false)` and injected by qualifier
+> (`MaestroKafkaBeans`), and `KafkaMessagingAutoConfiguration` no longer
+> orders itself before `KafkaAutoConfiguration`. Boot's `kafkaTemplate`,
+> `kafkaProducerFactory`, `kafkaConsumerFactory` and, with a
+> `transaction-id-prefix`, `kafkaTransactionManager` register beside
+> Maestro's in either configuration order, and `spring.kafka.*` reaches them
+> (`KafkaCoexistenceContextTest`); the `NoUniqueBeanDefinitionException` that
+> ruled out `afterName` cannot arise, because Maestro's beans are not by-type
+> candidates. The engine's own clients still ignore Boot's factory
+> customizers and take only the bootstrap servers from
+> `KafkaConnectionDetails` ([Issue 53](#issue-53)).
 
 **Kind:** Library defect (plus a documentation gap — corrected in
 `docs/observability.md` §"Cross-service trace propagation (Kafka)", whose
@@ -2774,7 +2855,35 @@ removed.
 
 ### Issue 29 — Shutdown never interrupts threads blocked waiting for a task-queue slot {#issue-29}
 
-> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> **Resolved** (WP5, PR pending). `WorkflowExecutor.shutdown()` now shuts
+> the `TaskQueueGovernor` down: it lends one permit (a "poison permit") to
+> each of its pools, and a waiter that wakes — or that would start waiting —
+> on a shut-down governor gives the permit straight back and throws
+> `ExecutorShutdownException`, which wakes the next waiter. Nothing is
+> interrupted: the run stands down recoverable through the existing
+> `ExecutorShutdownException` arm, writes nothing, and its `finally` releases
+> its instance lock — normally before `shutdown()` returns, but the drain waits
+> for that unwind only for what is left of the shutdown deadline, so a run
+> still unwinding when it passes (behind a run that overran the drain, say)
+> releases its lock after `shutdown()` returns, or by TTL if the JVM exits
+> first. After the drain the governor
+> takes its loans back from every pool with no thread still queued, so its
+> slot counts are exact again. A free activity
+> slot is still taken during the drain, so a bounded pool can run one activity
+> over its limit until the drain ends (MD-3). Pinned by
+> `TaskQueueGovernorTest$Shutdown` (the mechanism, including that no permit is
+> lost or gained once the loan is reclaimed) and `ShutdownReleasesSlotWaitersTest`
+> (a fresh start, an activity, `parallel()` branches, a compensation and a
+> park's reacquire, each queued at shutdown, leave before `shutdown()` returns
+> and release their locks, within the tests' deadline). The interrupt fix proposed below was rejected: a
+> restored interrupt flag on the unwinding thread could fail the JDBC release
+> of its instance lock in the run's `finally` (Audit A, "Surprises" 5).
+> Since WP6 the recovery poller's passes leave at most `concurrency`
+> recovered runs per queue queued at shutdown, not a whole backlog; the
+> ungated passes (the startup pass with `maestro.recovery.enabled=false`, and
+> `WorkflowExecutor.recoverWorkflows(Map)`) still can.
+>
+> Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — shutdown latency. **Severity:** Low (nothing is
@@ -2817,7 +2926,16 @@ the old (unbounded, so never-waiting) behaviour.
 
 ### Issue 30 — Recovery admission is not gated by task-queue capacity {#issue-30}
 
-> **Open.** Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
+> **Resolved** in WP6 (branch fix/recovery-capacity): the recovery poller
+> reserves a slot before locking, queues at most one queue's concurrency
+> (C2), and re-polls on capacity; pinned by RecoveryCapacityTest,
+> RecoveryPollerCapacityTest, RecoveryStarvationTest,
+> MultiNodeRecoveryCapacityIT. The startup pass runs on the poller's thread
+> (with the poller disabled, on a one-shot thread, ungated and retried), not
+> on the `ApplicationRunner` thread (`StartupRecoveryRunnerTest`,
+> `OneShotRecoveryTest`). `recoverWorkflows(Map)` stays the ungated pass.
+>
+> Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — multi-node load distribution. **Severity:** Medium
@@ -3006,7 +3124,9 @@ notification fix above remains what bounds the call itself.
 
 ### Issue 33 — Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate {#issue-33}
 
-> **Open.** Raised by the R61 implementer and sharpened by the R61 reviewer
+> **Resolved** in WP3 (branch fix/admin-retry): the failing await is the one the WORKFLOW_FAILED payload attributes; pinned by AdminRetryTest.issue33_*.
+
+> Raised by the R61 implementer and sharpened by the R61 reviewer
 > (commit `53ca7e9`, "admin retry after an awaitSignal timeout re-arms a fresh
 > deadline instead of honouring the spent one"); filed under Rulings R62/R63.
 
@@ -3271,7 +3391,18 @@ index itself can stay, because V101 finds it.
 
 ### Issue 36 — The test kit cannot apply production's default concurrency limits {#issue-36}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> **Resolved** in WP6 (branch fix/recovery-capacity):
+> `TestWorkflowEnvironment.builder().defaultConcurrency(w, a)
+> .taskQueueConcurrency(q, w, a)` and `@MaestroTest(defaultConcurrency,
+> defaultActivityConcurrency)` bound the kit's task queues, validated like
+> `maestro.worker.*`; the default stays unbounded (C3: opt-in). With `(1, 1)`
+> a same-queue child waited on inside an activity times out; unset or `(0, 0)`
+> it completes. Pinned by TestWorkflowEnvironmentLimitsTest and
+> MaestroTestLimitsTest. Binding from `maestro.worker.*` was not done (the kit
+> has no Spring environment); defaulting to 20/20 and a gated `recover()` are
+> Issue 72.
+>
+> Filed by the final whole-branch review of the bounded-host-load
 > cycle (2026-11-11). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — test fidelity. **Severity:** Medium (a deadlock that
@@ -3281,15 +3412,15 @@ production reaches at its default limits passes every test).
 `maestro.worker.task-queues` is bounded at 20 workflow runs and 20 live
 activities per node (`maestro.worker.default-concurrency` /
 `default-activity-concurrency`). `TestWorkflowEnvironment` builds its
-executors with a constructor that passes no limits at all (`Map.of()` and no
-defaults), and offers no way to pass any. A user's test therefore never queues
+executors with no limits at all (no `taskQueueLimits` and no
+`defaultTaskQueueLimits`), and offers no way to pass any. A user's test therefore never queues
 for a slot. Default-path behaviour that depends on slots is invisible in it:
 the same-queue wait deadlock ([Pitfalls rule 11](pitfalls.md#11-never-make-an-activity-wait-for-a-workflow-of-its-own-task-queue)),
 a parked run's re-check waiting for a slot, and Issues 29 and 30.
 
 **How to tackle it.** Add a `TestWorkflowEnvironment` option that takes the
-default and per-queue limits, and pass them to the executor constructor that
-takes default limits. `@MaestroTest` can bind it from `maestro.worker.*`.
+default and per-queue limits, and pass them to
+`WorkflowExecutor.Builder#taskQueueLimits` / `#defaultTaskQueueLimits`. `@MaestroTest` can bind it from `maestro.worker.*`.
 Decide whether the kit should default to production's 20/20: that makes tests
 behave like production, but could make existing user tests with more than 20
 concurrent runs on one queue slower.
@@ -3302,8 +3433,18 @@ limits unset (or both `0`) completes.
 
 ### Issue 37 — `WorkflowExecutor` has ten public constructors {#issue-37}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
-> cycle (2026-11-11). Recorded, not fixed, in that cycle.
+> **Resolved (2026-11-12, branch `refactor/executor-builder`).** Filed by the
+> final whole-branch review of the bounded-host-load cycle (2026-11-11).
+> `WorkflowExecutor.builder(store, serializer, serviceName)` returns a
+> `WorkflowExecutor.Builder` with one named setter per engine setting, each
+> defaulting to the value the six-argument constructor supplied; `build()`
+> validates as the constructors did, and a `null` `serializer`, `serviceName`,
+> `lockKeyPrefix` or `observer` now fails fast. The starter, the test kit and
+> every test build their executors through it. All ten constructors were
+> removed rather than deprecated, because no Maven Central release has
+> shipped them (engine-hardening cycle decision D6).
+> Pinned by `WorkflowExecutorBuilderTest`, whose
+> `defaultsAreTheValuesTheSixArgumentConstructorSupplied` pins each default.
 
 **Kind:** Library gap — API design. **Severity:** Low (no behaviour impact;
 a public-API cost that grows with every new engine setting).
@@ -3330,7 +3471,20 @@ shipped them), and a builder test pins each default.
 
 ### Issue 38 — `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` {#issue-38}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> **Resolved** (WP10, PR pending). The `WARN` came from the pool, not Maestro:
+> `com.zaxxer.hikari.pool.ProxyConnection` logged `Connection … marked as
+> broken because of SQLSTATE(08003)` (connection does not exist) when
+> `close()` ran `UNLISTEN *` on the connection the interrupt had already
+> closed, and the pool evicted it. `close()` no longer interrupts: the poll
+> thread leaves within one poll, sets a 1 s network timeout, issues
+> `UNLISTEN *`, restores the timeout and returns the connection itself;
+> `close()` joins it for at most 2 s and never touches the connection.
+> Pinned by `PostgresWakeListenerShutdownTest` (Hikari: no pool `WARN`, the
+> same backend reused, nothing listening, the network timeout as lent),
+> `PostgresWakeListenerCloseOrderTest` (the order, by construction) and
+> `PostgresSignalWakeAutoConfigurationTest.closingTheContextLogsNoPoolWarnAndClosesTheListenerBeforeThePool`.
+>
+> Filed by the final whole-branch review of the bounded-host-load
 > cycle (2026-11-11). Recorded, not fixed, in that cycle.
 
 **Kind:** Library defect — log noise. **Severity:** Low (nothing is lost; a
@@ -3358,7 +3512,16 @@ no WARN, and the connection returned to the pool has no active `LISTEN`.
 
 ### Issue 39 — Workflows recorded under another `service_name` are stranded silently {#issue-39}
 
-> **Open.** Filed by the final whole-branch review of the bounded-host-load
+> **Resolved** in WP8 (branch fix/store-hygiene): one advisory query per node
+> start, off the startup path; one WARN per other service_name holding active
+> instances of this node's workflow types. Pinned by
+> StartupForeignServiceCheckTest, ForeignServiceCheckTest,
+> PostgresStoreHygieneTest$ForeignServiceCounts. See
+> [Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name);
+> the false positive on a live co-tenant that registers the same type names
+> is Issue 79.
+>
+> Filed by the final whole-branch review of the bounded-host-load
 > cycle (2026-11-11). Recorded, not fixed, in that cycle.
 
 **Kind:** Library gap — operability. **Severity:** Medium (no data loss, but
@@ -3381,6 +3544,1647 @@ never fail startup on it.
 **Done when.** A node started beside a seeded active instance of one of its
 workflow types, recorded under another `service_name`, logs that WARN naming
 the name and the count, and a node with no such instance logs nothing.
+
+---
+
+### Issue 40 — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration {#issue-40}
+
+> **Open.** Filed by the review of WP9's production schema guidance
+> (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low (startup fails safe;
+the message only points the operator the wrong way).
+
+**What's wrong.** `MaestroSchemaInitializer` in `validate` mode reads
+`maestro_schema_history` through Flyway, in the connection's current schema.
+If the node's role lacks `USAGE` on the schema, or its `search_path` (or JDBC
+`currentSchema`) misses the schema that holds Maestro's tables, Flyway does
+not find the history table. It reports every shipped migration as pending, and
+the node fails startup with `Maestro schema is behind: pending migrations [1,
+2, 3, 4, 5, 6, 7, 8, 9, 100, 101]. Apply them (maestro.store.schema.mode=flyway)
+or run the SQL under [...] yourself.` On a fully migrated database that
+advice is wrong. Following it by switching the node to `flyway` fails with a
+permission error for a DML-only role. For a role that may create tables in the
+schema it does see, it would create a second, empty set of `maestro_*` tables
+there. The misleading message was observed on PostgreSQL 16 in both cases:
+the `USAGE` case by removing the grant from the role in
+`MaestroSchemaInitializerTest.aDmlOnlyRoleRunsValidateModeButCannotMigrate`,
+the search-path case with a scratch probe that pointed the role's
+`currentSchema` at another schema.
+
+**How to tackle it.** When `validate` finds *every* shipped migration pending,
+check before reporting. On the same connection, read `current_schema()`
+(`NULL` when no schema on the search path is usable), and look in
+`pg_catalog.pg_class`/`pg_namespace` for a `maestro_schema_history` in any
+schema, with `has_schema_privilege(<that schema>, 'USAGE')`. The catalogs are
+readable without `USAGE`. If the table exists in a schema the role cannot use
+or is not looking in, name that schema and the missing privilege or
+`search_path` instead of advising a migration. Keep today's message
+for a database that really is empty or behind.
+
+**Done when.** A test with a migrated database and a role lacking `USAGE`,
+and one with a role whose `currentSchema` points elsewhere, each fail
+`validate` with a message naming the schema and the missing privilege or
+search path, not a list of pending migrations. The existing
+pending-migration messages are unchanged.
+
+---
+
+### Issue 41 — An older node replaying history appended by a newer node is untested {#issue-41}
+
+> **Open.** Filed by the final review of WP9
+> (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
+
+**Kind:** Testing gap — rolling deploy. **Severity:** Medium (no defect is
+known, but a rolling deploy or a rollback exercises this path on every
+release, and nothing verifies it).
+
+**What's wrong.** `SeededHistoryUpgradeIT` proves one direction of a rolling
+deploy: the *new* build upgrades, recovers and replays history the *old*
+build (`cbf5a2a`) wrote. Nothing tests the other direction. During a rolling
+deploy, or after a rollback, a node of the previous build can adopt a run
+whose latest events were appended by a node of the new build. Nor are the
+payload bytes the current build appends pinned anywhere: the seeded-history
+fixture freezes only what `cbf5a2a` wrote, and its pins on what this build
+appends (the `APPENDED` list and the others in the "Pins" section of
+`SeededHistoryUpgradeIT`'s Javadoc) name event types and steps, not payload
+bytes. The stand-down design (`UnknownWorkflowHistoryException`, and the
+`unknown_event_payload` and `nondeterministic_history` stand-down reasons) is
+expected to make that direction safe — an older node that cannot read a
+newer node's event stands the run down instead of failing it — but it is
+asserted only by same-build tests, which simulate the newer event rather than
+read one a newer build wrote.
+
+**How to tackle it.** Once a release exists, add the reverse check to the
+release pipeline, beside the N-1 → N upgrade fixture (`RELEASING.md` §
+Upgrade fixtures): let a node of the current build migrate and drive
+workflows in a database, then run a node of the previous release against that
+database, and assert that every run it adopts either completes or stands
+down, and that none is failed or compensated.
+
+**Done when.** The release pipeline runs the previous release's node against
+a database a current node has written to, and fails the release if that node
+fails or compensates any run, or rewrites any event the current node
+appended.
+
+---
+
+### Issue 42 — A replayed activity failure keeps only the exception's type and message {#issue-42}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — replay fidelity. **Severity:** Medium (workflow code
+that reads more than the type and message of a failure behaves differently
+after a restart, with no stand-down to show it).
+
+**What's wrong.** A live activity failure reaches workflow code as
+`ActivityExecutionException` wrapping the exception the activity threw, with
+its subclass, its own fields and its cause chain. What is recorded is only
+the class name and message: `ActivityInvocationHandler.persistFailure`
+(`ActivityInvocationHandler.java:1167`) writes `ErrorDetail(exceptionType,
+message)`. A replay rebuilds the cause from those two strings
+(`reconstructFailure`, `:776`, through `FailureReconstruction.reconstruct`,
+`FailureReconstruction.java:61`): the class's public `(String)` constructor if
+it has one, else a `ReconstructedActivityFailure`. A field such as
+`PaymentDeclinedException.declineCode`, and `getCause()` of the original, are
+gone after a restart. `docs/concepts.md` and Pitfalls rule 2 document the type
+part only.
+
+**Harm.** A workflow that branches on such a field takes one path live and
+another after recovery. If the branch decides a later activity's arguments, it
+stands down as `nondeterministic_history`; if not, it diverges silently.
+
+**Why not WP1.** WP1 made a live *result* equal its replay. The same move for
+failures, throwing the reconstruction live, changes which exception types and
+fields authors can catch on the first run, which needs its own decision
+(plan D-2).
+
+**How to tackle it.** Either record more (a serialized form of the exception's
+own fields, read back into the same type when it can be), or throw the
+reconstruction live too, so both runs see the same thing. The second is
+smaller and matches WP1; the first keeps more for authors.
+
+**Done when.** A kit test whose activity throws an exception with a custom
+field and a cause, and whose workflow reads both, sees the same values live
+and after `crashAfter(n)` + `recover()`.
+
+---
+
+### Issue 43 — Workflow input on Postgres differs between the first run and recovery {#issue-43}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect — replay fidelity. **Severity:** Low (only untyped or
+order-sensitive input shapes are affected).
+
+**What's wrong.** The first run deserializes the node the engine serialized
+(`WorkflowExecutor.java:596`, passed to `launchWorkflow` at `:632`). A
+recovery (`:673`) and a retry (`:1377`) deserialize the stored `jsonb` row,
+which Postgres has normalised: object keys shorter first, and a whole exponent
+number such as `1.0E7` stored as `10000000`
+(`PostgresPayloadFidelityTest.jsonbReordersObjectKeysShortestFirst` and
+`jsonbRewritesAWholeExponentNumberAsAnInteger`). A `Map<String, Object>` input
+therefore iterates in one order on the first run and another after recovery,
+and an untyped `1.0E7` is a `Double` first and an `Integer` after. This is the
+input-side twin of what Task 7 fixed for activity results; it was traced from
+the code and the store's characterisation tests, not reproduced end to end.
+WP1's text read path already made decimals and other untyped numbers agree.
+
+**Harm.** Workflow code that builds a string or a list from such an input's
+iteration order, or that calls `toString()` on such a number, sees different
+values after a restart. If those reach an activity's arguments, the run stands
+down; the fingerprint itself sorts keys and normalises numbers, so passing the
+map or number directly is safe.
+
+**Why not WP1.** WP1's scope was activity results (3.8). The fix touches
+`createInstance`, which no WP1 task changed.
+
+**How to tackle it.** The Task 7 pattern on `createInstance`: return the
+stored `input` (`INSERT … RETURNING input` on Postgres) and launch the first
+run from it.
+
+**Done when.** An integration test starts a workflow whose input map has keys
+`aa` and `b` and an untyped `1.0E7`, records what the workflow saw, crashes it
+and recovers it on Postgres, and both runs saw the same key order and the same
+number class.
+
+---
+
+### Issue 44 — Workflow input is read with the raw parameter class {#issue-44}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect. **Severity:** Medium (the workflow fails on its
+first run, so it is caught early, but the cause is not obvious).
+
+**What's wrong.** `WorkflowExecutor` deserializes the workflow input with
+`workflowMethod.getParameterTypes()[0]` (`WorkflowExecutor.java:2444`), the
+raw class, not `getGenericParameterTypes()[0]`. A `List<Pair>` parameter
+therefore arrives as a `List` of `LinkedHashMap`s, and the first
+`pairs.get(0).a()` throws `ClassCastException`. Observed with a throwaway kit
+probe on this branch: the run ended `FAILED` with
+`java.lang.ClassCastException: class java.util.LinkedHashMap cannot be cast
+to class …Pair`. A `@QueryMethod` argument is read the same way (`:3133`).
+Activity results do not have this problem: they use the generic return type.
+
+**Harm.** A workflow method that takes a parameterized type fails, with a
+compensation if it is a `@Saga`. Users work around it with a wrapper record.
+
+**Why not WP1.** It is not a live-versus-replay difference: the first run and
+every recovery read the input the same wrong way.
+
+**How to tackle it.** Use `getGenericParameterTypes()[0]` (and the same for
+query methods); the `deserialize(JsonNode, Type)` overload already exists.
+Check it does not change what existing inputs read as: a raw `List` parameter
+must still read as it does now.
+
+**Done when.** A kit test with a `List<Pair>` workflow parameter completes and
+reads `Pair`s, live and after recovery.
+
+---
+
+### Issue 45 — `collectSignals` throws `NullPointerException` on a signal with a null payload {#issue-45}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library defect. **Severity:** Low (a null signal payload is unusual,
+but legal for `awaitSignal`).
+
+**What's wrong.** `collectSignals` gathers the awaited payloads and returns
+`List.copyOf(results)` (`DefaultWorkflowOperations.java:735`), which throws on
+a `null` element. A signal delivered with a `null` payload therefore makes
+`collectSignals` throw `NullPointerException` into workflow code. Observed with
+a throwaway kit probe on this branch: the run ended `FAILED` with
+`java.lang.NullPointerException`. `awaitSignal` returns the same `null`
+without trouble (`NullSignalPayloadTest`, whose Javadoc notes this gap).
+
+**Harm.** One `null` signal fails a workflow that collects signals, with
+compensation for a `@Saga`.
+
+**Why not WP1.** It predates WP1 and is not a replay-fidelity difference; WP1
+only noticed it while pinning null payloads.
+
+**How to tackle it.** Return an unmodifiable list that allows `null`
+(`Collections.unmodifiableList(new ArrayList<>(results))`), or reject a `null`
+payload at delivery for workflows that collect. The first keeps today's
+`awaitSignal` contract.
+
+**Done when.** A test delivers a `null` and a non-null signal to a workflow
+that collects two, and the workflow receives `[null, value]` live and after
+recovery.
+
+---
+
+### Issue 46 — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay {#issue-46}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — D9 coverage. **Severity:** Low (needs a custom
+deserializer that throws an `Error`, such as an `AssertionError` or a
+`StackOverflowError`).
+
+**What's wrong.** WP1 reads every live activity result back after recording
+it. The read-back catches `SerializationException` only
+(`ReadBack.orLive`, called from `ActivityInvocationHandler.readBack`): an exception from Jackson becomes the
+D9 path (the run continues with the activity's own object), but an `Error`
+from a custom deserializer propagates. The outcome is already recorded, so a
+successful activity ends the workflow `FAILED`. Observed with a throwaway kit
+probe on this branch: the events were `1:ACTIVITY_COMPLETED,
+2:WORKFLOW_FAILED`, with the failure `java.lang.AssertionError`. A replay of
+the step is guarded the same way (`UnknownHistoryGuard.requireReadablePayload`
+catches `SerializationException` only), so it fails there too (traced, not
+reproduced). Before WP1 the live run never read the result back and only the
+replay failed.
+
+**Harm.** A recorded success is recorded as a workflow failure, and a `@Saga`
+compensates work that succeeded.
+
+**Why not WP1.** The plan's constraints allow no new `catch` broader than
+`SerializationException`, so that no control-flow `Error`
+(`MaestroControlFlowError`) and no node error can be swallowed.
+
+**How to tackle it.** Around the deserialize call only (no store call inside),
+catch `Error`, rethrow `MaestroControlFlowError`, `VirtualMachineError` and
+`LinkageError` (the node errors), and treat any other `Error` like a
+`SerializationException`: live, return the activity's object and report it;
+on replay, stand down as `unknown_event_payload`.
+
+**Done when.** A test with a deserializer that throws `AssertionError`
+completes the live run with the activity's object, counts it in
+`maestro.activity.result.unreadable`, and stands down on recovery; a
+deserializer that throws `OutOfMemoryError` still ends the run as a node error.
+
+---
+
+### Issue 47 — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws {#issue-47}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low (needs a value whose
+stored form exceeds Jackson's read limits, such as a decimal of more than
+1,000 digits once `jsonb` expands it).
+
+**What's wrong.** Postgres stores `1E+1500` as a 1,501-digit integer, longer
+than the number length Jackson's reader accepts. On the outcome append,
+`appendEventReturningPayload` cannot parse what `RETURNING` hands back; the
+row is written, so it returns the payload it was given and logs at `DEBUG`
+only (`AbstractJdbcWorkflowStore.java:817`). Every later read of the row,
+`getEventBySequence` included, throws `SerializationException`
+(`PostgresPayloadFidelityTest.aReturnedPayloadTheStoreCannotParseReturnsTheSentPayload`).
+The activity proxy calls `getEventBySequence` outside any guard
+(`ActivityInvocationHandler.java:524`), so on the run's next recovery that
+exception reaches workflow code as an ordinary exception (traced, not
+reproduced). The read side is the same on any build; WP1 only added the
+`DEBUG` line on the write side.
+
+**Harm.** The live run carries on normally; nothing above `DEBUG` says a row
+is unreadable, and the first recovery fails the workflow where it should stand
+down.
+
+**Why not WP1.** The write succeeded and the live run is unaffected, so no WP1
+path can fail it; the read-side handling of a store that cannot parse its own
+row is outside 3.8.
+
+**How to tackle it.** Log the write-side case at `WARN` with the step and
+sequence (never the value) and count it. On the read side, map a store parse
+failure on an event row to the `unknown_event_payload` stand-down, as an
+unreadable payload already is.
+
+**Done when.** A Postgres test appends `1E+1500`, sees one `WARN`, then
+recovers the run and observes an `unknown_event_payload` stand-down, not
+`FAILED`.
+
+---
+
+### Issue 48 — No startup check that the configured mapper reads back what it writes {#issue-48}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — configuration safety. **Severity:** Medium (a mapper
+customisation silently changes what every workflow computes).
+
+**What's wrong.** The engine uses the host's `ObjectMapper` for every payload
+and never checks at startup that it round-trips the values the engine itself
+records. A mapper that writes timestamps as numbers
+(`DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS` on; Jackson 3's default is off)
+in epoch milliseconds (`WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off) while
+still reading integer timestamps as seconds
+(`READ_DATE_TIMESTAMPS_AS_NANOSECONDS`, on by default) reads `currentTime()`
+back about a thousand times too far from the epoch: a time in 2026 reads as
+the year 58834. The live run is protected: a read-back more than a second
+from the recorded clock value is discarded for the clock value, with one
+`WARN` per `PayloadSerializer`, so `collectSignals` and `retryUntil` budgets
+are computed from the real clock
+(`CurrentTimeReadBackTest.asymmetricMillisMapper_liveRunGetsTheClockValue_andWarnsOncePerSerializer`,
+`asymmetricMillisMapper_collectSignalsBudgetIsNotExhaustedEarly`). A replay
+after a restart still reads the year 58834
+(`asymmetricMillisMapper_aReplayReadsTheMisreadInstant`), so a recovered
+`collectSignals` or `retryUntil` computes its remaining budget from misread
+times (traced, not tested). Mappers that drop a `BigDecimal`'s scale or read
+`Optional.empty()` as `null` are silent.
+
+**Harm.** A configuration mistake made once, in the host application, changes
+deadlines and values in every recovered workflow; the only sign is a `WARN`
+the first time a run reads the clock.
+
+**Why not WP1.** WP1 decided where values are read back, not which mapper
+configurations are acceptable; failing startup on a host mapper is a product
+decision.
+
+**How to tackle it.** At startup, round-trip a small fixed set through
+`PayloadSerializer` (an `Instant` with nanoseconds, `BigDecimal("10.50")`,
+`Optional.empty()`, an `OffsetDateTime` in UTC) and WARN, or fail under a
+property, naming each value that does not come back equal.
+
+**Done when.** A starter context test with the asymmetric millisecond mapper
+fails startup (or logs the WARN) naming `Instant`, and the default mapper
+starts silently.
+
+---
+
+### Issue 49 — Future-typed activity results are not rejected at startup {#issue-49}
+
+> **Open.** Filed by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+
+**Kind:** Library gap — API validation. **Severity:** Medium (a
+`CompletableFuture` return type hangs the workflow after its first restart).
+
+**What's wrong.** An activity call is synchronous and its result is recorded
+as JSON, so a `Future`, `CompletionStage` or `CompletableFuture` return type
+cannot work across a restart. Nothing rejects one: `ActivityProxyFactory.createProxy`
+checks only that the type is an interface and validates its `@Compensate`
+annotations (`ActivityProxyFactory.java:304-309`). Jackson records a
+`CompletableFuture` as its bean properties
+(`{"cancelled":false,"completedExceptionally":false,"done":true,"numberOfDependents":0}`),
+never its value. The live run never reads a future back: it gets the
+activity's own future, and `join()` works
+(`ReadBackFormsTest.aCompletableFutureResultIsTheActivitysFuture_andJoinCompletesOnTheFirstRun`).
+A replay does read it back: a `CompletableFuture` becomes a new future that
+nothing ever completes (`ReadBackTypeValveTest`, row `completableFuture`), and
+a `Future` or `CompletionStage` cannot be read back at all, so every recovery
+stands down as `unknown_event_payload`
+(`ReadBackFormsTest.aFutureOrCompletionStageResult_standsDownOnRecovery`).
+
+**Harm.** After a restart, `join()` on a replayed `CompletableFuture` blocks
+the workflow thread for good, holding its task-queue slot (traced, not
+tested). The other two types strand the run on its first restart.
+
+**Why not WP1.** WP1 does not validate activity interfaces; adding a startup
+failure is an API change.
+
+**How to tackle it.** In `createProxy`, reject an activity method whose return
+type is assignable to `Future` or `CompletionStage`, naming the interface and
+method, so the starter fails at context start.
+
+**Done when.** Creating a proxy for an interface with a `CompletableFuture`
+method throws, naming the method, and `ReadBackFormsTest`'s future cases are
+replaced by that test.
+
+---
+
+### Issue 50 — The activity proxy keeps two ignored lock parameters {#issue-50}
+
+> **Open.** Filed by WP2, wake permits, timer clock and activity lock
+> (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
+
+**Kind:** Library gap — API design. **Severity:** Low (dead arguments, no
+behaviour).
+
+**What's wrong.** WP2 removed the per-activity lock (3.10), but kept the
+parameters that configured it so that existing callers compile. The six
+`ActivityInvocationHandler` constructors (`ActivityInvocationHandler.java:249`,
+`:281`, `:325`, `:370`, `:416`, `:463`) and the six
+`ActivityProxyFactory.createProxy` overloads (`ActivityProxyFactory.java:64`,
+`:100`, `:141`, `:187`, `:239`, `:287`) still take `distributedLock` and
+(all but one) `lockKeyPrefix`; the handler stores neither, and each `@param`
+says "ignored". Separately, `DefaultWorkflowOperations` declares a
+`distributedLock` field (`DefaultWorkflowOperations.java:125`) that its
+constructor assigns (`:316`) and nothing reads; that was already so before
+WP2.
+
+**Harm.** A caller that passes a lock or a key prefix to the proxy factory
+believes it configures something, and every caller keeps passing two dead
+arguments: about 60 direct calls in 31 files (58 of them in tests), plus the
+test helpers that wrap them.
+
+**Why not WP2.** Dropping the parameters touches every one of those call
+sites, most of them tests that WP3–WP6 also edit; a mechanical removal belongs
+in its own change, as the executor builder was.
+
+**How to tackle it.** Give `ActivityProxyFactory` a builder with one named
+setter per setting, as Issue 37 did for `WorkflowExecutor`, migrate the call
+sites, and remove the overloads and constructors that take the two parameters.
+Remove the unused field from `DefaultWorkflowOperations` and the constructor
+parameter that feeds it.
+
+**Done when.** No `ActivityInvocationHandler` constructor or proxy-factory
+entry point takes a `DistributedLock` or a lock key prefix, and
+`DefaultWorkflowOperations` has no `distributedLock` field.
+
+---
+
+### Issue 51 — Timer deadlines are armed on the scheduling node's clock {#issue-51}
+
+> **Open.** Filed by WP2, wake permits, timer clock and activity lock
+> (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
+
+**Kind:** Library gap — clock skew. **Severity:** Low (needs a node whose
+clock is off; NTP keeps skew to milliseconds).
+
+**What's wrong.** WP2 makes the timer poller compare `fire_at` with the
+database clock (`fire_at <= now()`), but every deadline is still computed on
+the clock of the node that schedules it: a `sleep()`'s `fire_at` is
+`instantSource.instant().plus(duration)` (`DefaultWorkflowOperations.java:438`),
+and an `awaitSignal()` deadline is computed the same way
+(`SignalManager.java:712`) and memoized in `AwaitSignalDetail.deadline`. The
+node running an await also times it out on its own clock, comparing the
+memoized deadline with its instant source (`SignalManager.java:926`). So a
+node whose clock is N ahead of the database arms deadlines N later than the
+database would, and one N behind arms them N earlier. The skew `WARN`
+(`ClockSkewCheck`, above 1 s, at timer-poller start and every 10 minutes)
+reports this; it does not prevent it.
+
+**Harm.** On a node with a broken clock, a `sleep()` wakes, and an
+`awaitSignal()` timeout can expire, up to the skew early or late. An early
+timeout can decide an await as timed out while a signal was still due to
+arrive; replay repeats that decision (it is memoized), so the workflow stays
+consistent, but it took a branch the author did not intend.
+
+**Why not WP2.** Arming on the database clock changes what is memoized: the
+await's deadline would have to come from the store, and a replay re-arms a
+missing row at the memoized deadline (`SignalManager.java:815-837`), so the
+two must agree. The test kit's controllable clock (`advanceTime`) drives
+`getDueTimers(Instant, int)` with no store clock, and would need its clock
+injected into the in-memory store (plan D-2). That is an M-size change.
+
+**How to tackle it.** Add a store call that arms a timer from a duration on
+the store's own clock and returns the `fire_at` it wrote (Postgres:
+`now() + interval`), memoize that returned deadline, let the kit's in-memory
+store compute it from the controllable clock, and have the await's self-fire
+compare with the store's time (or rely on the poll). Old history keeps its
+memoized deadlines.
+
+**Done when.** A Postgres test with a node clock 5 minutes off fires a
+`sleep(1 s)` and an `awaitSignal(…, 1 s)` timeout about 1 s after the call by
+the database clock, and the kit's `advanceTime` tests pass unchanged.
+
+---
+
+### Issue 52 — `maestro-admin-client` has no wired component {#issue-52}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not decided: this is
+> the maintainer's call.
+
+**Kind:** Product decision — module scope. **Severity:** Low (no runtime
+effect; a published artifact with no purpose, and docs that must explain it).
+
+**What's wrong.** WP7 deleted the module's auto-configuration
+(`AdminClientAutoConfiguration`, `AdminClientProperties` and its
+`AutoConfiguration.imports`), because its only bean, `adminEventPublisher`,
+was never called and injected the engine's `KafkaTemplate<String, byte[]>` by
+type (pinned by `AdminClientContributesNoAutoConfigurationTest`). What remains:
+
+- **Main source:** one class, `AdminEventPublisher` (a plain, fire-and-forget
+  publisher of `WorkflowLifecycleEvent` to a Kafka topic, constructed by hand
+  from a `KafkaTemplate<String, byte[]>`, an `ObjectMapper` and a topic), plus
+  `package-info.java`. Its tests: `AdminEventPublisherTest` and
+  `AdminClientContributesNoAutoConfigurationTest`.
+- **Dependencies:** `api(project(":maestro-core"))`, `implementation(libs.spring.kafka)`.
+- **Who uses it.** No Maestro service: the engine publishes its own lifecycle
+  events through `WorkflowMessaging` (`maestro-messaging-kafka`) when
+  `maestro.admin.events.enabled=true`. No sample. `maestro-admin` declares
+  `implementation(project(":maestro-admin-client"))` but imports nothing from
+  `io.b2mash.maestro.admin.client`; what it uses through that dependency is
+  `maestro-core` (for `WorkflowLifecycleEvent` and `LifecycleEventType`), which
+  the module exports as `api` (traced, not tested).
+- **Where it is still listed:** `settings.gradle.kts`, the BOM
+  (`maestro-bom/build.gradle.kts`), the aggregate Javadoc list in the root
+  `build.gradle.kts`, `RELEASING.md`'s artifact table, the two issue templates
+  under `.github/ISSUE_TEMPLATE/`, `README.md`, `CLAUDE.md`,
+  `docs/maestro-architecture.md` and `docs/maestro-prd.md`. The docs now say it
+  holds only the plain class.
+
+**Harm.** A published artifact whose name promises "the client side of the
+dashboard" and delivers nothing a service needs; a reader adding it as the old
+`docs/admin.md` asked gets no events and no error.
+
+**Options (not ranked).**
+
+1. **Remove the module.** Delete it from settings, the BOM, the aggregate
+   Javadoc list, `RELEASING.md`, the issue templates and the docs above; give
+   `maestro-admin` a direct `maestro-core` dependency. `AdminEventPublisher`
+   goes with it.
+2. **Merge it.** Move `AdminEventPublisher` into `maestro-admin` (or delete it)
+   and drop the module the same way.
+3. **Keep it and give it a purpose**, for example a publisher for applications
+   that do not run the engine but want to appear on the dashboard. That needs a
+   documented use, a qualified template injection (see
+   `ByteArrayTemplateInjectionCheck`), and a test of the use.
+
+**Done when.** The maintainer has chosen; under 1 or 2, `./gradlew build`
+passes with the module gone and no listing above still names it; under 3, the
+purpose is documented and pinned by a test.
+
+---
+
+### Issue 53 — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` {#issue-53}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
+
+**Kind:** Library gap — Spring Boot integration. **Severity:** Low.
+
+**What's wrong.** `maestroKafkaProducerFactory` and
+`maestroKafkaConsumerFactory` build a `DefaultKafkaProducerFactory` /
+`DefaultKafkaConsumerFactory` themselves from
+`KafkaProperties.buildProducerProperties()` / `buildConsumerProperties()`
+(`KafkaMessagingAutoConfiguration.java:137-227`, traced). From an available
+`KafkaConnectionDetails` they take only `getProducer()` /
+`getConsumer().getBootstrapServers()`. They never apply Boot's
+`DefaultKafkaProducerFactoryCustomizer` / `DefaultKafkaConsumerFactoryCustomizer`
+beans. So (traced, not tested):
+
+- **No Micrometer client metrics for engine traffic.** Boot's
+  `KafkaMetricsAutoConfiguration` registers its `MicrometerProducerListener` /
+  `MicrometerConsumerListener` through those customizers; Boot's own
+  `kafkaProducerFactory` / `kafkaConsumerFactory` get them, the engine's do not.
+- **No security protocol or SSL bundle from connection details.** A
+  `KafkaConnectionDetails` that carries security settings (a service connection
+  to a TLS broker, say) reaches Boot's factories, not the engine's; the engine
+  sees the address and whatever `spring.kafka.ssl.*` / `security.*` say.
+
+`spring.kafka.producer.*` and `spring.kafka.consumer.*` do reach the engine's
+factories (`KafkaMessagingAutoConfigurationPropertiesTest.producerPropertiesReachMaestroFactory`),
+and since WP7 Boot's own beans exist beside the engine's and are fully
+customised (see Issue 23's WP7 note).
+
+**Harm.** Engine traffic is missing from the client metrics a host already
+graphs, and a host relying on connection details for TLS must also set
+`spring.kafka.*` security properties for the engine.
+
+**Why not WP7.** WP7 made Boot's beans coexist with the engine's; changing how
+the engine's own clients are configured is a separate decision about which
+customisations may touch an engine client (a customizer can also change
+serializers, which the engine forces last).
+
+**How to tackle it.** Apply the `ObjectProvider`-ordered customizers to the
+engine's factories before forcing the wire-format invariants, and copy the
+security protocol and SSL bundle from `KafkaConnectionDetails` the way Boot's
+`KafkaAutoConfiguration` does.
+
+**Done when.** A context test with `KafkaMetricsAutoConfiguration` and a
+`MeterRegistry` shows the engine's factories carrying the Micrometer listener,
+and one with a `KafkaConnectionDetails` that sets a security protocol shows it
+in the engine's producer and consumer config, with the engine's serializers,
+`acks` and group id still forced.
+
+---
+
+### Issue 54 — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists {#issue-54}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Pre-existing; recorded, not
+> fixed.
+
+**Kind:** Library gap — startup behaviour, docs. **Severity:** Low.
+
+**What's wrong.** `MaestroSignalListenerBeanPostProcessor` starts each
+`@MaestroSignalListener` container during context refresh
+(`afterSingletonsInstantiated`), and the container constructs its
+`KafkaConsumer` synchronously. A bootstrap host that does not resolve (a typo,
+or a DNS name that exists only inside a compose network) fails that
+construction, so the whole context fails:
+
+```text
+org.apache.kafka.common.KafkaException: Failed to construct kafka consumer
+  … at MaestroSignalListenerBeanPostProcessor.afterSingletonsInstantiated(MaestroSignalListenerBeanPostProcessor.java:211)
+Caused by: org.apache.kafka.common.config.ConfigException: No resolvable bootstrap urls given in bootstrap.servers
+```
+
+Observed while writing `KafkaListenerBoundaryTest` (its `DETAILS_BOOTSTRAP`
+constant says why it must be a resolvable address). A resolvable address with
+no broker behind it starts, and the Maestro container runs
+(`KafkaListenerBoundaryTest.aPlainKafkaListenerRidesBootsFactoryAndAMaestroListenerRidesMaestros`,
+`localhost:1`). The behaviour predates WP7 (traced: the container start was
+synchronous before it).
+
+**Harm.** Two outages that look alike behave differently: a broker that is
+down lets the service start and retry, a name that does not resolve yet stops
+it. Neither is documented.
+
+**How to tackle it.** Decide whether this is wanted (fail fast on a
+configuration error) and document it in `docs/configuration.md` §
+Kafka Topic Verification and `docs/operations.md`; or start the containers
+after refresh so that an unresolvable host behaves like a down broker.
+
+**Done when.** A context test pins the chosen behaviour for an unresolvable
+host, and the docs state it beside the down-broker case.
+
+---
+
+### Issue 55 — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis {#issue-55}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Introduced on that branch;
+> listed in the release note's Breaking list. Recorded, not fixed.
+
+**Kind:** Library gap — error reporting. **Severity:** Low (the release note
+and `docs/configuration.md` give both ways out).
+
+**What's wrong.** Since Maestro's Kafka beans are not default candidates,
+Boot's `kafkaTemplate` no longer backs off for Maestro's template. A host that
+declares only its own `ProducerFactory<String, HostDto>` makes Boot's
+`kafkaProducerFactory` back off, and Boot's `kafkaTemplate` then finds no
+`ProducerFactory<Object, Object>`: startup fails with
+`NoSuchBeanDefinitionException: No qualifying bean of type 'org.springframework.kafka.core.ProducerFactory<java.lang.Object, java.lang.Object>'`,
+raised while creating `kafkaTemplate`
+(`KafkaCoexistenceContextTest.aHostWithOnlyItsOwnProducerFactory_failsStartupInBootsKafkaTemplate`;
+the same context started before WP7, observed against the old code). Both ways
+out start (`aHostWithOnlyItsOwnProducerFactory_startsWithEitherWayOut`).
+
+`ProducerFactoryReplacementFailureAnalyzer` deliberately stays out of this case
+(`ProducerFactoryReplacementFailureAnalyzerTest.aMissingProducerFactoryWithNoMaestroReplacement_isNotAnalyzed`).
+In a real `SpringApplication` run the host got a raw stack (`Application run
+failed`) rather than even Boot's own analysis (observed in WP7 Tasks 4–5). The
+reason is inferred, not observed: Boot's `NoSuchBeanDefinitionFailureAnalyzer`
+calls `getBean` on each candidate, and re-creating a factory-method bean during
+failure analysis probably throws.
+
+**Harm.** A host upgrading with this one shape gets a stack trace that never
+mentions Maestro or the fix.
+
+**Why not WP7.** Widening the analyzer contradicts two assertions pinned in
+WP7 (`aMissingProducerFactoryWithNoMaestroReplacement_isNotAnalyzed`,
+`aPlainReplacementBesideAnotherDefaultCandidateFactory_isNotAnalyzed`), and the
+case is not Maestro's bean.
+
+**How to tackle it.** Either a second analyzer for exactly this shape (a
+`kafkaTemplate` failure, no bean named `maestroKafkaProducerFactory` that is a
+default candidate, one host `ProducerFactory` with non-`Object` generics) that
+names both ways out, or a startup check that explains it before Boot's
+`kafkaTemplate` is created.
+
+**Done when.** A `SpringApplication` run with only a host
+`ProducerFactory<String, HostDto>` logs a failure analysis naming the two ways
+out, and the two existing assertions still hold or are replaced by a ruling.
+
+---
+
+### Issue 56 — An unqualified `byte[]` template point that several templates match is never failed at startup {#issue-56}
+
+> **Open.** Filed by WP7, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed; the
+> narrow behaviour was a WP7 ruling.
+
+**Kind:** Library gap — startup check coverage. **Severity:** Low.
+
+**What's wrong.** `ByteArrayTemplateInjectionCheck` fails startup when an
+unqualified `KafkaTemplate<…, byte[]>` point could only have received a
+template that cannot serialize `byte[]`. When several default-candidate
+templates match the point, Spring chooses by `@Primary`, `@Priority` or the
+parameter or field name, and the check does not reimplement that choice: it
+never fails, and logs one `WARN` per point only when a matching template the
+bean depends on cannot serialize `byte[]` or has a serializer it cannot
+classify (a template whose serializer it cannot see at all gets only a
+`DEBUG` line, traced)
+(`ByteArrayTemplateInjectionCheckTest.aPrimaryTemplateBesideAQualifiedOne_startsAndWarnsOnceThatItCannotTell`,
+`aBeanInjectingTwoTemplatesByParameterName_startsAndWarnsOnceThatItCannotTell`).
+So a genuine misinjection that reaches a `StringSerializer` template through
+`@Primary` or a parameter name starts, and surfaces at the first send as a
+`SerializationException`, as before WP7 (traced, not tested).
+
+**Harm.** The one shape of the old silent break that the check does not catch
+at startup; the `WARN` is the only early sign.
+
+**Why not WP7.** Ruled: a correct `@Primary` host must stay quiet, and
+reimplementing Spring's candidate choice risks false startup failures.
+
+**How to tackle it.** Resolve the point through the bean factory's own
+resolution (`DefaultListableBeanFactory.resolveDependency` with the point's
+`DependencyDescriptor`, which applies `@Primary`, `@Priority` and the name
+fallback) instead of the candidate set, after confirming it creates no bean.
+
+**Done when.** A context where an unqualified `byte[]` point receives a
+`@Primary` `StringSerializer` template fails startup naming that template, and
+the two tests above still start.
+
+---
+
+### Issue 57 — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once {#issue-57}
+
+> **Open.** Filed by WP7's final fix wave, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
+
+**Kind:** Library gap — startup check side effects. **Severity:** Low.
+
+**What's wrong.** To classify a template's value serializer,
+`ByteArrayTemplateInjectionCheck` calls the producer factory's
+`getValueSerializer()` once, for a template an unqualified `byte[]` point
+received. On a `DefaultKafkaProducerFactory` built with a serializer instance
+or supplier, that runs the supplier and the serializer's `configure(…)`
+(`ByteArrayTemplateInjectionCheckTest.theCheckResolvesTheValueSerializerOnce`
+pins exactly one such call). A factory built only from a configuration map
+(Boot's `kafkaProducerFactory` from `spring.kafka.producer.value-serializer`)
+runs no host code: its supplier is Spring Kafka's `() -> null`, and the class
+is read from `value.serializer` without being instantiated
+(`aSerializerNamedOnlyInTheConfigurationMap_isClassifiedWithoutBeingInstantiated`).
+
+**Harm.** Small: Spring Kafka runs the same supplier and `configure(…)` every
+time it creates a producer, so a serializer must already tolerate it. A
+supplier with side effects (a counter, a registry lookup) sees one extra call
+at startup.
+
+**Why not the fix wave.** The suggested order (configuration map first, the
+supplier only as a fallback) misclassifies a factory that has both: Kafka uses
+the instance, which wins over the map
+(`aHostTemplateWithASerializerInstanceForByteArray_starts`: map
+`StringSerializer`, instance `ByteArraySerializer`). Spring Kafka offers no
+way to tell a programmatic supplier from its own `() -> null` default without
+calling it. Calling `getValueSerializerSupplier().get()` (the raw supplier,
+without `configure(…)`) would drop the `configure(…)` call but changes the
+pinned count from one to zero, which the fix wave was told to keep.
+
+**How to tackle it.** Read the raw supplier (`getValueSerializerSupplier()`)
+and call it without `configure(…)`, falling back to `getValueSerializer()` for
+a factory whose raw supplier is absent, then to the configuration map; update
+`theCheckResolvesTheValueSerializerOnce` to pin zero `configure(…)` calls.
+
+**Done when.** The check classifies the instance-wins case correctly and adds
+no `configure(…)` call on a host serializer.
+
+---
+
+### Issue 58 — The `byte[]` template check runs before Maestro's consumers only by bean-registration order {#issue-58}
+
+> **Open.** Filed by WP7's final fix wave, Kafka coexistence
+> (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
+
+**Kind:** Library gap — startup ordering. **Severity:** Low.
+
+**What's wrong.** Spring calls `afterSingletonsInstantiated` in
+bean-registration order. `KafkaMessagingAutoConfiguration` declares
+`maestroKafkaTemplateInjectionCheck` before
+`maestroSignalListenerBeanPostProcessor`, so a failing check stops startup
+before the post-processor verifies the topics or starts any
+`@MaestroSignalListener` consumer
+(`ByteArrayTemplateInjectionCheckTest.theCheckFailsStartupBeforeAnyMaestroSignalListenerConsumerStarts`).
+A host that declares its own `MaestroSignalListenerBeanPostProcessor` bean (the
+auto-configured one is `@ConditionalOnMissingBean`) registers it from its own
+configuration, before the auto-configuration, so its consumers start before
+the check runs (traced, not tested). Any host `SmartInitializingSingleton`
+registered earlier that sends through a misinjected template also runs first
+(traced).
+
+**Harm.** In that shape, consumers poll for a moment before the check fails
+startup and the context closes them; the failure itself is unchanged.
+
+**How to tackle it.** Have the post-processor run the check itself (once,
+idempotently) at the top of its `afterSingletonsInstantiated`, so the order
+holds whichever bean is registered first.
+
+**Done when.** A context with a host-declared post-processor and a
+misinjected point fails startup without starting a consumer.
+
+---
+
+### Issue 59 — Retry refuses when the failure's handling consumed a signal {#issue-59}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Medium.
+
+**What happens.** When the region a Retry would delete holds a
+`SIGNAL_RECEIVED` memo — the workflow caught a failure, awaited a signal
+while handling it (`catch (e) { awaitSignal("ack", …); throw e; }`), then
+rethrew — Retry writes nothing and returns
+`RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE`. The workflow stays `FAILED`;
+the operator can only terminate it or finish its outcome by hand
+(`AdminRetryTest.aSignalConsumedWhileHandlingTheFailure_refusesTheRetryAndWritesNothing`,
+`AdminCommandKafkaIT.retry_refusedForAConsumedSignal_isAcknowledgedAndWritesNothing`).
+
+**Where.** `RetryPlanner.java:152-157` sets `consumedSignalAt`;
+`WorkflowExecutor.java:1424-1430` refuses. The memo cannot be given back
+because it carries the signal's payload, not its row id
+(`SignalManager.java:1368-1379`), and no column links a signal row to the memo
+that consumed it (V1, V9).
+
+**Harm.** A Retry is unavailable for this shape. Before WP3 the same Retry
+relaunched and then stood down on every recovery pass (traced), so the
+refusal is no worse, and it is visible; but the workflow cannot be resumed.
+
+**How to tackle it.** A V102 column on `maestro_workflow_signal` (or on the
+event) linking a `SIGNAL_RECEIVED` memo to the row it consumed, written in
+`appendEventAndConsumeSignal`'s transaction; Retry then deletes the memo and
+flips exactly that row back to unconsumed, in `reopenFailedInstance`'s
+transaction. Releasing "a consumed row with an equal payload" instead is
+inexact (a rounded decimal, a same-name sibling).
+
+**Why it is not WP3.** It needs a migration and a change to the consume
+transaction; WP3 adds no migration (D-7), and refusing keeps "never discard a
+signal" (MD-1).
+
+**Done when.** The shape above is retried: the handling re-runs and consumes
+the same signal again, and no signal row is deleted.
+
+---
+
+### Issue 60 — Two independently failed `parallel()` branches need two Retries {#issue-60}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Low.
+
+**What happens.** When two branches of one `parallel()` both fail uncaught,
+`parallel()` rethrows the lowest-index branch's error, so only that failure
+is attributed. Retry deletes it and keeps the other branch's failure memo; the
+retried run replays that memo and fails again, naming the second branch, and
+a second Retry completes it (`AdminRetryTest.twoFailedBranches_needTwoRetries`).
+
+**Where.** `DefaultWorkflowOperations.java:922-928` (the first error in
+branch-index order is rethrown); `RetryPlanner` deletes only attributed
+failures under `ATTRIBUTED` (D-3 step 3).
+
+**Harm.** One extra operator action. Nothing stands down, nothing compensates,
+and no sibling side effect repeats.
+
+**How to tackle it.** After the attributed truncation, also delete every
+last-in-lane failure of a sibling branch of the same fork — but only an
+uncaught one. That needs the join to record which branches failed uncaught
+(for example in the fork's join, or in `failedSequences`), because a branch
+that caught a gate timeout and returned looks the same in the history, and
+Issue 33 requires a caught gate to survive.
+
+**Why it is not WP3.** Deleting every sibling's last-in-lane failure would
+also clear a caught gate (MD-2); doing it right needs a new recorded fact.
+
+**Done when.** One Retry of the two-failed-branches shape completes, and a
+sibling's caught gate timeout is still kept.
+
+---
+
+### Issue 61 — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry {#issue-61}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — admin retry. **Severity:** Medium.
+
+**What happens.** When `LaneTree` leaves an event unplaced, or two lanes claim
+one slot, the plan's basis is `LEGACY`: Retry deletes every `ACTIVITY_FAILED`,
+every `WORKFLOW_FAILED` and, for an await-timeout failure, the highest
+`SIGNAL_TIMEOUT` with its park memo — exactly the pre-WP3 Retry
+(`RetryPlannerTest.theLegacyPlanKeepsIssue19sTimeoutRule`,
+`aSlotTwoLanesClaim_fallsBackToTheLegacyPlan`,
+`anOverflowingForkMarker_fallsBackToTheLegacyPlan`). Two engine shapes
+produce such a history: a live activity result the mapper could not write
+(the slot is consumed without a memo), caught by workflow code that carries
+on; and an unknown newer operation that partitions the sequence space
+differently. In those histories 3.3 remains: a caught failure is deleted too,
+and the retried run can stand down.
+
+**Where.** `RetryPlanner.java:93-96`; the live serialization failure at
+`ActivityInvocationHandler.java:926-931` ("an ordinary live failure").
+
+**Harm.** In those histories, the old Retry's defect (re-running a caught
+failure, then a stand-down) and Issue 33's highest-timeout attribution
+remain. Never worse than before WP3.
+
+**How to tackle it.** Memoize the slot of a live serialization failure (an
+`ACTIVITY_FAILED` at the slot the result could not be written to), so the
+walk never meets a consumed slot without a memo. The unknown-operation case
+is handled by the stand-down design and needs nothing here.
+
+**Why it is not WP3.** It changes what the activity path records for a
+result the mapper cannot write, which is replay behaviour outside Retry.
+
+**Done when.** A caught result-serialization failure followed by more work
+is retried under `ATTRIBUTED` or `LAST_IN_LANE`, and the caught failure
+replays.
+
+---
+
+### Issue 62 — A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry {#issue-62}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — SPI. **Severity:** Low.
+
+**What happens.** `WorkflowStore.reopenFailedInstance` has a default: the old
+`deleteFailureEvents` then `updateInstance`. It ignores the planned sets, is
+not atomic, and does not check `FAILED`; a losing concurrent call has already
+deleted by type before its compare-and-set fails
+(`WorkflowStoreReopenDefaultTest.theDefaultIsThePreWp3TwoStepRetry`). A
+third-party store, or a decorating store that does not forward the method,
+therefore keeps the pre-WP3 Retry, 3.3 and Issue 33 included.
+
+**Where.** `WorkflowStore.java:575-579`.
+
+**Harm.** Users of a custom store do not get the fix, silently.
+
+**How to tackle it.** Make the method abstract in the next release that may
+break the SPI, or log a `WARN` once per executor when the store's class does
+not declare it.
+
+**Why it is not WP3.** An abstract method is a compile break for every
+third-party store; the house pattern for SPI additions this cycle is a
+default (MD-4).
+
+**Done when.** A store cannot reach the old Retry without its author knowing.
+
+---
+
+### Issue 63 — The dashboard reports "Retry command sent" for a Retry the engine refused {#issue-63}
+
+> **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
+> Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Medium.
+
+**What happens.** The dashboard's Retry button publishes `$maestro:retry`
+and shows "Retry command sent for workflow …" at once. When the engine
+refuses the Retry (`SIGNAL_CONSUMED_AFTER_FAILURE`, Issue 59; also
+`COMPENSATED_NOT_RETRYABLE`), it writes nothing, logs a `WARN` on the
+service's node, and acknowledges the command; the row just stays `FAILED`.
+No refusal event reaches the dashboard.
+
+**Where.** `AdminActionController.java:55` (the flash message);
+`AdminCommandDispatcher.java:143-147` (a non-`RETRIED` outcome is only
+logged); no lifecycle event is published for a refusal.
+
+**Harm.** An operator sees a successful action and an unchanged workflow, and
+must read the service's logs to learn why.
+
+**How to tackle it.** Publish a lifecycle event for a refused Retry (through
+`LifecycleEventSink`, with the outcome), and have the dashboard show it on
+the workflow's page.
+
+**Why it is not WP3.** It adds a lifecycle event type and dashboard UI;
+WP3 changes no lifecycle event or `maestro-admin` code.
+
+**Done when.** A refused Retry shows its outcome on the workflow's dashboard
+page.
+
+---
+
+### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
+
+> **Partly resolved** (WP5, PR pending): the renewer.
+> `WorkflowInstanceLockManager.close(Duration)` no longer interrupts the
+> instance-lock renewer: it counts down a latch the renewer waits on between
+> passes, lets a pass in progress finish, and joins the thread for at most
+> `min(2 s, what is left of the shutdown deadline)`. A pass that fails once
+> the manager is closed counts no `instanceLockRenewFailed`, and a loss it
+> reports after close is logged at INFO and not sent to `instanceLockLost`
+> (the run is still stood down). Pinned by
+> `WorkflowInstanceLockManagerCloseTest` and
+> `WorkflowExecutorShutdownDeadlineTest.aShutdownDuringARenewalPassCountsNoRenewalFailure`.
+> Still open: the lock cleaner (below) and the four core pollers.
+>
+> Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the Tasks 4–5 review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — shutdown. **Severity:** Low.
+
+**What happens.** `close()` sets `running` to `false` and calls
+`thread.interrupt()` on the cleaner's virtual thread. Between sleeps that
+thread runs `PostgresLockCleaner.clean()`: one pooled connection, two
+`DELETE`s. An interrupt that lands while the thread is blocked in a socket
+read closes the socket under the pool. This is the mechanism WP10 reproduced
+for Issue 38 on the wake listener, so the pool marks the connection broken,
+logs a `WARN` and evicts it. WP4 changed only what the loop does with a
+throwable (a failure after `close()` is logged at `DEBUG`); the interrupt is
+older code.
+
+**The same in core.** `WorkflowInstanceLockManager.close()` (called from
+`WorkflowExecutor.shutdown()`) interrupts the instance-lock renewer, which
+may be inside `DistributedLock.renewAll` — on Postgres one pooled connection
+and one `UPDATE` per 500 locks — with the same effect on the pool. The
+interrupted `renewAll` then throws (`LockBackendException`), and the
+renewer's backend-failure arm emits `instanceLockRenewFailed` for **every
+held lock** before the guard sees it is stopping, so a shutdown that lands
+inside a pass adds one `maestro.lock.renew.failures{outcome="error"}` per
+held lock: an alert on that counter fires on a routine deploy. Traced, not
+tested. *(Fixed by WP5; see the callout above.)*
+
+**The four core pollers too.** The timer poller, recovery poller, signal
+janitor and retention sweeper are stopped with `requestStop()`, which calls
+`thread.interrupt()` (`TimerPoller.java:202`, `RecoveryPoller.java:134`,
+`SignalJanitor.java:164`, `RetentionSweeper.java:193`). Each may be inside a
+store call at that moment: leader election, `getDueTimers`, `markTimerFired`,
+the recovery pass's reads and adoption writes, the janitor's `DELETE`, the
+purge transaction. On a virtual thread the interrupt closes the socket, with
+the same pool `WARN` and evicted connection; the janitor and the sweeper also
+log a `WARN … sweep failed` (traced). WP5 kept these interrupts (its MD-1):
+removing them means rewriting the existing tests whose fakes block until
+interrupted — `SignalJanitorTest.stop_whileTheStoreSwallowsTheInterrupt_endsTheLoopPromptly`,
+`RetentionSweeperTest.stopMidSweepEndsBeforeTheNextBatch`,
+`RetentionSweeperTest.stopWhileTheStoreSwallowsTheInterruptEndsPromptly`,
+`BackgroundLoopErrorTest.timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndThrows_endsPromptlyAndUncounted`,
+`BackgroundLoopErrorTest.timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndReturns_endsPromptly`
+and `PostgresLockCleanerSchedulerTest.closeWhileARunSwallowsTheInterruptAndThrowsEndsTheCleaner`
+— plus a Hikari-backed test for the cleaner. Since WP5 the executor joins
+the pollers against the shutdown deadline, so a fix that drops the interrupt
+waits for a store call in progress at most until the deadline. The signal
+janitor and the retention sweeper now end a pause between batches on a stop
+latch, without the interrupt (WP8; `BatchPacerTest`,
+`RetentionSweeperPacingTest`, `SignalJanitorBatchingTest`); their
+`requestStop` still interrupts, for the store call in progress.
+
+**Where.** `PostgresLockCleanerScheduler.java:68-76` (`close()`, the
+interrupt at `:74`); `PostgresLockCleaner.java:62-87` (`clean()`);
+`WorkflowInstanceLockManager.java` (`close()`, `thread.interrupt()`;
+`renewPass()`, the `catch (Exception e)` arm around `renewAll`).
+
+**Harm.** At most one pool `WARN` and one evicted connection per shutdown,
+and only when the shutdown falls inside a run (a few milliseconds every
+`maestro.lock.cleanup-interval`, 10 min by default, for the cleaner; a
+renewal pass every TTL/3, 10 s by default, for the renewer). Nothing durable
+is affected: both `DELETE`s are idempotent and autocommit, and the locks the
+renewer held expire via TTL as they would anyway. The renewer's case also
+counts `maestro.lock.renew.failures{outcome="error"}` once per held lock.
+
+**How to tackle it.** Do what WP10 did for the listener: `close()` stops the
+wait without an interrupt (a latch or condition the loop waits on in place of
+`Thread.sleep`), lets a run in progress finish, and joins the thread for a
+bounded time. Pin it as `PostgresWakeListenerShutdownTest` does: a Hikari pool,
+`close()` during a slow `DELETE`, no pool `WARN`, and the connection reused.
+The renewer takes the same change, and its backend-failure arm should not
+emit `instanceLockRenewFailed` once the manager is closed.
+
+**Why it is not WP4.** WP4 makes the loop survive an `Error`; changing how
+the loop stops is WP10's pattern applied to another class. It needs its own
+Hikari-backed test.
+
+**Done when.** Closing the scheduler during a run, or the executor during a
+renewal pass, logs no pool `WARN`, evicts no connection, and counts no
+renewal failure.
+
+---
+
+### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** The two `maestro-store-postgres` loops — the lock cleaner
+(`maestro-pg-lock-cleaner`) and the wake listener (`maestro-pg-wake-listener`)
+— contain an `Error` as the five engine loops do, and log it at `ERROR`
+(`PostgresLockCleanerSchedulerTest`, `PostgresWakeListenerLoopErrorTest`).
+But they apply the guard's rule inline: `BackgroundLoopGuard` is
+package-private in `maestro-core`, and neither class holds an
+`EngineObserver`, so neither reaches `maestro.loop.errors`. Neither is in
+`/actuator/health` either: `MaestroHealthIndicator` lives in the starter and
+knows only the `WorkflowExecutor`. `PostgresWakeListener.isConnected()` and the
+cleaner's (package-private) `isRunning()` reach no indicator. The wake
+listener's `WARN` for an unexpected `RuntimeException` is also not
+rate-limited like the guard's lines: once per reconnect attempt, so at most
+one per second, falling to one per 30 s as the back-off grows. Its arm for a
+driver `Error` (not a control-flow one) is worse: it keeps the same session
+and pauses 1 s, so a driver that throws an `Error` on every poll logs
+`ERROR` **with the stack trace** about once a second — roughly 3,600 lines an
+hour — with no rate limit and no back-off (traced, not tested; the 1 s pause
+is `anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain`).
+
+**Where.** `PostgresLockCleanerScheduler.java` (`loop`),
+`PostgresWakeListener.java` (`pollLoop`, `dispatch`); their auto-configurations
+`PostgresLockAutoConfiguration.java` and
+`PostgresSignalWakeAutoConfiguration.java`; `MaestroHealthIndicator.java`.
+
+**Harm.** A dead or failing cleaner (expired lock rows accumulate) or wake
+listener (cross-node wakes fall back to `maestro.signal.wake-recheck-interval`)
+is visible only in the log. No alert on the counter or on health fires for
+them.
+
+**How to tackle it.** Give both classes an `EngineObserver` from their
+auto-configurations (`ObjectProvider<EngineObserver>`, wrapped with
+`CompositeEngineObserver.of`) and two more fixed loop names
+(`lock-cleaner`, `wake-listener`) in `EngineObserver.backgroundLoopError`'s
+contract, so the counter sees them. Add a `HealthContributor` in
+`maestro-store-postgres` (`maestroPostgres`) reporting both loops and the
+listener's session, readiness-only like
+[Operations §14](operations.md#14-health-checks-and-kubernetes-probes).
+
+**Why it is not WP4.** Both need new wiring across module boundaries and a
+change to the callback's documented loop names; WP4 kept to the engine's
+observer and the starter's indicator.
+
+**Done when.** An `Error` in either loop moves `maestro.loop.errors`, and a
+dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
+
+---
+
+### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`). Recorded, not fixed. Traced, not tested: the
+> interrupt itself is tested (`MaestroHealthIndicatorTest.aTimedOutProbeIsInterrupted`),
+> its effect on a pooled connection is not.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** When the store probe (`getInstance` on a sentinel id) does
+not finish within 2 s, `MaestroHealthIndicator` reports `UNKNOWN` and
+interrupts the probe's virtual thread. In a pool wait the interrupt is
+harmless. Mid-query it closes the socket — the mechanism WP10 reproduced for
+Issue 38 — so a slow database sees one pool `WARN` and one evicted connection
+per timed-out probe. WP4 made the probe single-flight (a later health call
+joins a probe still in flight instead of starting another), but that bounds
+the cost only for a store call that ignores the interrupt: such a probe stays
+stuck, later calls join it, and it holds one connection. With pgjdbc the
+interrupt frees the probe — the socket is closed and the call throws — so
+the probe ends, the next health call starts a fresh one, and on a database
+that stays slow **each timed-out health call can cost one evicted
+connection** (traced, not tested).
+
+**Where.** `MaestroHealthIndicator.java`, `Probe.abandon()`
+(`thread.interrupt()`), called from `probeStore()` on timeout.
+
+**Harm.** Pool `WARN`s and connection churn on a database that is already
+slow: up to one evicted connection per timed-out health call, from any caller
+(kubelet probes, scrapers, load-balancer checks, the aggregate and the group
+endpoints), while every probe times out mid-query.
+
+**How to tackle it.** Stop interrupting: the single-flight probe already
+bounds the cost of a stuck probe to one thread and one borrowed connection.
+The trade-off to settle first is a probe stuck for ever on a half-open
+connection with no socket timeout, which the interrupt currently frees: with
+no interrupt, health would read `UNKNOWN` until that connection's socket
+timeout or TCP keep-alive gives up. Pin it as `PostgresWakeListenerShutdownTest`
+does: a Hikari pool, a probe that times out mid-query, no pool `WARN`.
+
+**Why it is not WP4.** It changes what a stuck probe costs (a held
+connection instead of an evicted one) and needs a Hikari-backed test; 3.5a
+is the status a timeout reports.
+
+**Done when.** A probe that times out mid-query logs no pool `WARN` and
+evicts no connection, and a stuck probe cannot hold health at `UNKNOWN`
+after the store answers again.
+
+---
+
+### Issue 67 — Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass {#issue-67}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** Each of the four loops counts its failure streak in its
+`BackgroundLoopGuard` and exposes it as a package-private
+`consecutiveFailures()` (`TimerPoller`, `RecoveryPoller`, `SignalJanitor`,
+`RetentionSweeper`), but `WorkflowExecutor` has no public accessor for any of
+them and `MaestroHealthIndicator` reads only whether each loop's thread is
+alive (`timerPollerRunning`, `recoveryPollerRunning`, `signalJanitorRunning`,
+`retentionSweeperRunning`). A loop that fails every pass for hours — say a
+store call that keeps throwing in `getDueTimers` or the recovery page while
+the health probe's `getInstance` still answers — keeps its thread alive and
+reads `UP`. Only the instance-lock renewer's streak
+reaches health (`instanceLockRenewerConsecutiveFailures`, `DOWN` at 2).
+
+**Where.** `MaestroHealthIndicator.health()` (`pollerState`); the four
+loops' `consecutiveFailures()`; `WorkflowExecutor` (the renewer's
+`instanceLockRenewerFailureStreak()` is the model).
+
+**Harm.** A node whose timers never fire, or whose recovery never adopts, reads
+healthy. The guard's `ERROR` lines (first failure, then a reminder every
+5 minutes) and, for an `Error`, `maestro.loop.errors` are the only signals;
+a store fault that is an `Exception` is logged but not counted.
+
+**How to tackle it.** Add public `…FailureStreak()` accessors on
+`WorkflowExecutor` for the four loops, report each as a detail, and decide a
+threshold per loop: the 5 s pollers can use a small streak, while the hourly
+janitor and sweeper would read `DOWN` only after hours, so a time-based
+threshold (failing for longer than N minutes) may fit them better. Keep the
+store-probe rule: a store that is down already reads `DOWN` through the probe.
+
+**Why it is not WP4.** WP4 added the renewer's streak because a failing
+renewer loses locks within one TTL; for the other four the right threshold
+is a design decision, and each needs its own test.
+
+**Done when.** A loop that fails every pass for longer than its threshold
+reads `DOWN`, with its streak in the details, and one that recovers reads
+`UP`.
+
+---
+
+### Issue 68 — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass {#issue-68}
+
+> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
+> Traced, not tested.
+
+**Kind:** Library defect — health. **Severity:** Low.
+
+**What happens.** Two separate gaps in the instance-lock renewer:
+
+1. **A failed start reads idle.** When `startRenewerIfNeeded()` fails with a
+   `RuntimeException` (the thread could not be created or started),
+   `WorkflowInstanceLockManager.tryAcquire` logs `ERROR` and still returns
+   `ACQUIRED`: the lock is held and the run proceeds. `startRenewerIfNeeded()`
+   resets `renewerStarted` to `false` so that the next acquisition retries the
+   start. Until one does, `hasInstanceLockRenewerStarted()` is `false`, so
+   health reads `instanceLockRenewerRunning: "idle"` and `UP` — the reading
+   for a node that holds no lock — while every lock this node holds is
+   unrenewed and expires after the TTL. (An `Error` from the start releases
+   the lock and is rethrown, so it does not leave this state.)
+2. **One lost lock per pass after an observer `Error`.** `renewPass()` walks
+   the handles `renewAll` reported lost and calls `lockLost` for each. If
+   `observer.instanceLockLost` throws an `Error` — possible only with an
+   observer the builder was given unwrapped; the starter always wraps in
+   `CompositeEngineObserver.of`, which contains it — `lockLost` still drops
+   the handle and stands the run down (review d2), but the `Error` leaves the
+   loop over `lost`. The remaining lost handles stay in `heldLocks` until a
+   later pass reports them again, so an observer that throws deterministically
+   handles one lost lock per pass (one renew interval each).
+
+**Where.** `WorkflowInstanceLockManager.java`: `tryAcquire` (the
+`catch (Exception e)` around `startRenewerIfNeeded()`),
+`startRenewerIfNeeded()`, `renewPass()` (the loop over `lost`), `lockLost`;
+`MaestroHealthIndicator.renewerState`.
+
+**Harm.** (1) A node whose renewer never started looks healthy while its
+workflows lose their locks to other nodes one TTL after acquisition — the
+churn 3.5b fixed for a dead renewer, without the `DOWN`. (2) Runs whose locks
+are lost are stood down one renew interval apart instead of at once; until
+then they keep executing without the lock (the lease fence still rejects
+their writes).
+
+**How to tackle it.** (1) Distinguish "no lock ever held" from "locks held,
+renewer not running": report `instanceLockRenewerRunning: false` (a fault)
+whenever `heldLocks` is non-empty and the renewer is not running, whatever
+`renewerStarted` says. (2) Contain an observer `Error` per lost handle in
+`renewPass` (as d3 did per notification in the wake listener), rethrowing
+only a control-flow `Error`, after the remaining handles are processed.
+
+**Why it is not WP4.** Both were found by the whole-branch review after WP4's
+tasks were done; each needs a red test of its own.
+
+**Done when.** A node holding locks with no running renewer reads `DOWN`, and
+an observer `Error` on one lost lock does not delay the others.
+
+---
+
+### Issue 69 — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` {#issue-69}
+
+> **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
+> Recorded, not fixed. Traced, not tested.
+
+**Kind:** Library gap — shutdown. **Severity:** Low.
+
+**What happens.** Maestro creates its Kafka listener containers by hand
+(`new ConcurrentMessageListenerContainer`, started explicitly) instead of
+registering them as Spring lifecycle beans, so no lifecycle phase stops them:
+
+- They keep consuming through the engine's whole drain. That is safe:
+  `deliverSignal` does not check `shuttingDown`, so a signal that arrives is
+  persisted, and a parked run that would have consumed it is recovered with
+  it.
+- They stop in `DisposableBean.destroy()`, during bean destruction, after
+  every lifecycle phase. Each `container.stop()` waits up to Spring Kafka's
+  `ContainerProperties.DEFAULT_SHUTDOWN_TIMEOUT` (10 s), and that time adds to
+  the grace-period arithmetic ([Operations §15.4](operations.md#154-the-grace-period-arithmetic)).
+- `MaestroSignalListenerBeanPostProcessor` is a `BeanPostProcessor`, created
+  before ordinary singletons, so it is destroyed after the `DataSource`. A
+  record in flight in that window fails with `StoreUnavailableException` and
+  goes to the container's error handler (`KafkaRedeliveryErrorHandlers`:
+  a `DefaultErrorHandler` with `max-attempts − 1` back-off intervals and a
+  dead-letter recoverer). If attempts remain, the back-off is cut short by the
+  stop and the record is redelivered after the restart. With the default
+  `maestro.messaging.redelivery.max-attempts` of 10 (about 151 s of back-off)
+  that is the expected case, since the container stops within seconds. With
+  `max-attempts: 1` there is no back-off: the first failure goes to
+  `<topic>.DLT`. With `maestro.messaging.redelivery.enabled: false` the record
+  is logged and skipped (traced from the handler wiring and Spring Kafka's
+  `DefaultErrorHandler`; not run).
+
+**Where.** `KafkaWorkflowMessaging.subscribeSignals` (creates and starts the
+engine's container) and `KafkaWorkflowMessaging.destroy()` (stops it);
+`MaestroSignalListenerBeanPostProcessor` (creates and starts one container per
+`@MaestroSignalListener`, stops them in `destroy()`);
+`KafkaMessagingAutoConfiguration` (registers the post-processor).
+
+**Harm.** Partitions move to peers only after the drain and after bean
+destruction reaches the containers, up to 10 s per container later than they
+could. A `@MaestroSignalListener` record in flight while the `DataSource` is
+already closed fails once and is redelivered after the restart while its
+redelivery budget lasts (the default); with `max-attempts: 1` it is
+dead-lettered to `<topic>.DLT`, still durable, and with redelivery disabled it
+is skipped, the at-most-once behaviour that setting chooses.
+
+**How to tackle it.** A `SmartLifecycle` in the messaging module, in phase
+`MAX_VALUE - 100` (the phase of a host's `@KafkaListener` containers), that
+stops every Maestro container asynchronously before the engine's drain.
+Partitions then move to peers sooner, and no consumer runs after the
+`DataSource` closes. Pin it with a context test against a broker.
+
+**Why it is not WP5.** It changes `maestro-messaging-kafka` (WP7's module) and
+needs a broker-backed context test; the total shutdown time does not change,
+because Spring's phases run in series (WP5's MD-5).
+
+**Done when.** Every Maestro container has stopped before the engine's
+shutdown phase begins, and none consumes after the `DataSource` is closed.
+
+---
+
+### Issue 70 — A run still executing at the shutdown deadline can record a failure caused by bean teardown {#issue-70}
+
+> **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
+> Recorded, not fixed. Traced, not tested.
+
+**Kind:** Library gap — shutdown. **Severity:** Low–Medium.
+
+**What happens.** `WorkflowExecutor.shutdown()` never interrupts a run
+executing an activity: at the deadline the run is left running, and
+`shutdown()` returns. Spring then goes on to destroy beans. If that activity
+then fails because a host bean it uses was destroyed, and that attempt is its
+last, and Maestro's store is still writable, the run records `ACTIVITY_FAILED`;
+the workflow may then fail and compensate — for a failure the shutdown caused.
+Before the last attempt nothing is recorded: the retry backoff is abandoned
+(`RunCancellation.requestShutdown`). A run whose next write meets a closed
+`DataSource` is abandoned `STORE_UNAVAILABLE` instead (a null SQLSTATE maps
+to `StoreUnavailableException`), which records nothing.
+
+**Where.** `WorkflowExecutor.shutdown()` (the drain ends at the deadline;
+runs still registered are left running); the stop points a fix would check:
+`RetryExecutor`, `ActivityInvocationHandler`, `DefaultWorkflowOperations`,
+`SagaManager`, `StoreFaultGuard`, and the executor's failure path.
+
+**Harm.** A workflow recorded `FAILED` (and compensated) by a routine deploy,
+only when an activity overruns `maestro.shutdown.timeout` and then fails on
+its last attempt because of teardown. Rare with the default timeout and
+idempotent activities, but it is the outcome graceful shutdown exists to
+prevent.
+
+**How to tackle it.** At the deadline, latch every run still registered with
+a new `RunCancellation` cause stronger than `SHUTDOWN`, checked where
+`STORE_UNAVAILABLE` is checked, so that nothing it does afterwards is appended
+and it is abandoned as `SHUTDOWN`. This changes behaviour: a successful
+activity result after the deadline is discarded and the activity re-runs on
+adoption.
+
+**Why it is not WP5.** It threads a new cause through about seven stop points
+and changes what happens to a successful late result; it deserves its own
+review (WP5's MD-4).
+
+**Done when.** A run whose activity fails after the shutdown deadline records
+nothing and is recovered by a peer, pinned on the in-memory executor.
+
+---
+
+### Issue 72 — The test kit is unbounded by default and its `recover()` is ungated {#issue-72}
+
+> **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
+> `fix/recovery-capacity`): coordinator call C3's follow-up. Recorded, not
+> fixed.
+
+**Kind:** Library gap — test fidelity. **Severity:** Low.
+
+**What happens.** Issue 36 made the kit's concurrency limits opt-in: a
+`TestWorkflowEnvironment` built with `create()`, or a plain `@MaestroTest`,
+is still unbounded, while a production node bounds every queue at 20/20. And
+`recover()` re-adopts every active workflow with the ungated
+`recoverWorkflows`, while a production node's recovery poller adopts per queue
+only its free slots plus `concurrency` queued runs and defers the rest.
+
+**Where.** `TestWorkflowEnvironment.Builder` (the unbounded default);
+`TestWorkflowEnvironment.recover(Class...)`, which calls
+`node.executor.recoverWorkflows(registrations)`
+(`maestro-test/src/main/java/io/b2mash/maestro/test/TestWorkflowEnvironment.java:578`).
+
+**Harm.** A user test that does not opt in sees neither production's limits
+(pitfalls rule 11's deadlock passes) nor gated recovery (a crash test never
+sees deferred runs, and `recover()` always returns every workflow).
+
+**How to tackle it.** Default the kit to 20/20, after a release note, since
+existing user tests with more than 20 concurrent runs on one queue would slow
+down; and give `recover()` a gated mode (the poller's full pass, then capacity
+passes until the backlog is adopted), keeping today's ungated return value
+for crash tests that count re-adopted workflows.
+
+**Why it is not WP6.** Both change what existing user tests see; C3 made the
+limits opt-in for this cycle.
+
+**Done when.** `TestWorkflowEnvironment.create()` applies 20/20, and a
+`recover()` mode adopts per queue only what the node can run or queue,
+pinned by kit tests.
+
+---
+
+### Issue 73 — No health or readiness detail says the startup recovery pass is still running {#issue-73}
+
+> **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
+> `fix/recovery-capacity`): maintainer decision MD-6. Recorded, not fixed.
+
+**Kind:** Library gap — operability. **Severity:** Low.
+
+**What happens.** `StartupRecoveryRunner` now only starts the recovery
+poller (or, with `maestro.recovery.enabled=false`, a one-shot pass) and
+returns, so the application reports ready while the startup pass is still
+adopting orphans. `MaestroHealthIndicator` reports `recoveryPollerRunning`
+(whether the loop is alive), but nothing says whether the first pass has
+finished, and the one-shot pass is not reported at all. With
+`maestro.recovery.enabled=false` the one-shot pass has no health detail and
+no meter of its own: a store fault in it is logged (one `ERROR`, then a
+reminder every 5 minutes), not counted (`maestro.loop.errors` counts only
+`Error`s), and it is retried every `poll-interval` with no limit, so a node
+whose store stays unreachable retries for ever with only its log to show
+it.
+
+**Where.** `StartupRecoveryRunner.run`
+(`maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/config/StartupRecoveryRunner.java:61`,
+`:65`); `MaestroHealthIndicator`
+(`maestro-spring-boot-starter/src/main/java/io/b2mash/maestro/spring/health/MaestroHealthIndicator.java:248`).
+
+**Harm.** An operator cannot tell from `/actuator/health` whether a freshly
+started node has finished its startup recovery. Safe for signals (persisted)
+and queries (owning node only), but a dashboard or a deploy script that wants
+"recovery done" has only the log line
+`Maestro startup recovery pass: adopted … deferred …`.
+
+**How to tackle it.** A `startupRecovery` detail on `MaestroHealthIndicator`:
+`"running"` until the poller's first pass (or the one-shot pass) completes,
+then `"complete"`, informational only (never `DOWN`); for the one-shot pass,
+also its failed-attempt streak, as the renewer reports its own. Holding readiness
+instead was rejected (MD-6): it would tie readiness to the backlog again, and
+a store fault in the pass would keep the pod out of service.
+
+**Why it is not WP6.** MD-6 accepted readiness not waiting for recovery; the
+detail is new health surface that deserves its own review.
+
+**Done when.** `/actuator/health` shows `startupRecovery: "running"` while
+the first pass is in progress and `"complete"` afterwards, pinned by a
+starter test.
+
+---
+
+### Issue 74 — Without a lock backend, a recovery pass can adopt a run this node is starting {#issue-74}
+
+> **Open.** Filed while fixing a CI failure of `StoreOutageMidStepIT`
+> (2026-11-17, branch `fix/recovery-capacity`). Recorded, not fixed.
+> Pinned by `NoLockStartRecoveryRaceTest`.
+
+**Kind:** Library gap — at-least-once window. **Severity:** Low.
+
+**What happens.** `WorkflowExecutor.startWorkflow` writes the `RUNNING` row
+(`WorkflowExecutor.java:701`) and only later registers the run in this node's
+running set (`launchWorkflow`, `WorkflowExecutor.java:2873`). With a lock
+backend the start takes the instance lock before the row exists, so a recovery
+pass cannot adopt it. With **no** lock backend the running set is the only
+guard: a pass that reads the new row between the two adopts it (lease epoch
++1) and launches a second run of the same workflow on the same node. The
+lease fence and the terminal compare-and-set keep one persisted outcome — the
+fresh run's writes are fenced, or it converges on the twin's outcome — but
+the first activity can run twice: once in each run.
+
+**Harm.** One extra execution of an activity, which the at-least-once contract
+already allows (activities must be idempotent). Only on a node with no lock
+backend, and only when a pass coincides with a start. Since the recovery
+poller's first pass runs as soon as it starts, a start issued at the same
+moment as the poller starts can meet it; that is how `StoreOutageMidStepIT`
+(which started the poller just before its workflow) failed once in CI with
+`reserve` run twice. That test now starts the run before the poller.
+
+**How to tackle it.** On the no-lock path, register the run (a placeholder
+entry) in the running set before `createInstance`, and remove it if the write
+fails; or have a pass skip a row whose `started_at` is within a few seconds of
+now when no lock backend is configured.
+
+**Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
+the just-started row.
+
+### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
+
+> **Open.** Filed by WP8, store hygiene (2026-11-17, branch
+> `fix/store-hygiene`): the consequence of the maintainer's decision that a
+> retention sweep purges only its own service's workflows, so that each
+> service's retentions govern its own rows in shared tables. Recorded, not
+> fixed.
+
+**Kind:** Library gap — retention. **Severity:** Low.
+
+**What happens.** The retention sweep now purges only instances whose
+`service_name` equals the sweeping node's `maestro.service-name`, and the
+signal janitor deletes only that service's signals. A terminal workflow
+recorded under a name no node runs any more — after a rename, or after
+replicas once ran with per-replica names — is purged by no sweeper, so its
+row and history stay for good.
+
+**Where.** `RetentionSweeper.sweepOnce`
+(`maestro-core/src/main/java/io/b2mash/maestro/core/engine/RetentionSweeper.java`,
+the call to `purgeTerminalInstancesBefore(serviceName, …)`);
+`AbstractJdbcWorkflowStore.getServicePurgeCandidatesSql()` and the Postgres
+override.
+
+**Harm.** Table growth bounded by what the abandoned name left behind;
+nothing active is affected. Before this build the other services' sweeps
+purged those rows — with their own retentions.
+
+**How to tackle it.** An operator command (for example on the admin
+dashboard) that purges a named service's terminal rows with the documented
+safeguards, or extend the startup service-name check to report terminal rows
+under names no node has led for a while. Until then
+[Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name)
+gives a tested manual purge.
+
+**Why it is not WP8.** The scope change is WP8's; a purge command is new
+operator surface, and "no node runs this name" needs a liveness signal the
+store does not have (see Issue 79).
+
+**Done when.** An operator can purge an abandoned name's terminal history
+without hand-written SQL, pinned by a Testcontainers test.
+
+---
+
+### Issue 78 — In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps {#issue-78}
+
+> **Open.** Filed by WP8, store hygiene (2026-11-17, branch
+> `fix/store-hygiene`). Measured on the planning probe; recorded, not fixed.
+
+**Kind:** Library gap — shared-table cost. **Severity:** Low.
+
+**What happens.** The scoped candidate select (`… WHERE status = ? AND
+completed_at < ? AND service_name = ? ORDER BY completed_at …`) walks V8's
+`idx_wf_instance_terminal (status, completed_at)` and filters `service_name`
+on the heap. When a co-tenant service keeps a longer retention for the same
+status, its rows inside this service's window sit ahead in the index, and
+every batch reads past them: 86 ms per batch reading past 34,960 co-tenant
+rows on the planning probe (Postgres 16, 412,500 instances), against 0.57 ms
+on a single-service database.
+
+**Where.** `PostgresWorkflowStore.getServicePurgeCandidatesSql()`;
+`AbstractJdbcWorkflowStore.getServicePurgeCandidatesSql()`.
+
+**Harm.** Database time per retention batch in shared tables only, under the
+sweeper's pacing. No correctness effect.
+
+**How to tackle it.** Migration V102: `CREATE INDEX IF NOT EXISTS … ON
+maestro_workflow_instance (service_name, status, completed_at) WHERE
+completed_at IS NOT NULL`, numbered under the 101–199 rule, with V101's
+guidance to pre-create it `CONCURRENTLY` on a large table (and its
+`validate`-mode note).
+
+**Why it is not WP8.** WP8 ships no migration: under `validate` every
+deployment would have to record it before a node of the build starts, for a
+cost only shared-table deployments pay.
+
+**Done when.** The scoped candidate select uses the new index on a seeded
+shared table, pinned by an `EXPLAIN` test.
+
+---
+
+### Issue 79 — The service-name check warns about a live co-tenant service that registers the same workflow type names {#issue-79}
+
+> **Open.** Filed by WP8, store hygiene (2026-11-17, branch
+> `fix/store-hygiene`): the maintainer accepted this false positive, with a
+> conditional remedy in the warning and a type filter, rather than couple
+> the check to the lock SPI. Recorded, not fixed.
+
+**Kind:** Library gap — false positive. **Severity:** Low.
+
+**What happens.** The startup service-name check (Issue 39) warns about every
+other `service_name` holding active instances of a workflow type this node
+registers. Two live services sharing one set of `maestro_*` tables (Issue 31)
+that both register a type of the same name each warn about the other at
+every node start, although the other's workflows are not stranded.
+
+**Where.** `ForeignServiceCheck.run`
+(`maestro-core/src/main/java/io/b2mash/maestro/core/engine/ForeignServiceCheck.java`);
+`AbstractJdbcWorkflowStore.getActiveInstanceCountsUnderOtherServices`.
+
+**Harm.** One misleading `WARN` per such name per node start. Its remedy is
+conditional — "if no node runs that name any more, start one under it or
+correct the rows" — so it does not direct an operator at a live co-tenant's
+rows; an operator who skips that condition could still correct rows that
+are not stranded.
+
+**How to tackle it.** Suppress names that hold an unexpired
+`maestro:leader:timer-poller:<name>` row: a new `DistributedLock` default
+(for example `Set<String> liveLeaders(Collection<String> electionKeys)`),
+its Postgres override and tests. A rolling rename still warns until the old
+nodes stop.
+
+**Why it is not WP8.** It couples an advisory store check to the lock SPI;
+the maintainer accepted the conditional wording instead.
+
+**Done when.** A node beside a live co-tenant with a same-named type logs no
+warning for it, and still warns for a name with no live leader, pinned by a
+starter test.
 
 ---
 
@@ -3439,9 +5243,9 @@ R56). Issues 29–31 are latency/load gaps with no correctness impact.
 
 **After the 2026-11-11 bounded-host-load cycle:** task queues are bounded by
 default (20/20 per queue per node), which puts Issues 29 and 30 on the default
-path rather than behind an opt-in. **Issue 30 is the recommended next piece of
-work**: without capacity-gated adoption, a post-deploy backlog sits on the
-first node to recover it. Issue 12 is partly addressed by the same cycle
+path rather than behind an opt-in. **Issue 30 was the recommended next piece of
+work**: without capacity-gated adoption, a post-deploy backlog sat on the
+first node to recover it. It was resolved in WP6, together with Issue 36. Issue 12 is partly addressed by the same cycle
 (batched renewal, paged service-scoped recovery scan).
 
 ---

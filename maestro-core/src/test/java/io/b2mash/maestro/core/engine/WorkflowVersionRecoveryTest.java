@@ -48,7 +48,7 @@ class WorkflowVersionRecoveryTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        nodeA = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
     }
 
     @AfterEach
@@ -74,7 +74,7 @@ class WorkflowVersionRecoveryTest {
         // Node stops mid-park; a replacement running NEW code adopts the instance.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = new WorkflowExecutor(store, null, null, null, serializer, SERVICE);
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
         nodeB.recoverWorkflows(Map.of("VersionedWorkflow",
                 new WorkflowRegistration("VersionedWorkflow", "default",
                         () -> new VersionedWorkflow(3), method)));

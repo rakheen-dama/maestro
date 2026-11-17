@@ -38,9 +38,11 @@ import java.time.Instant;
 import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -57,8 +59,7 @@ import static org.awaitility.Awaitility.await;
  * Pins that configuration seams actually reach the engine through the
  * real auto-configuration chain (Issues 7 + 9, audit finding F6):
  * {@code maestro.shutdown.timeout}, {@code maestro.signal.wake-recheck-interval},
- * {@code maestro.lock.key-prefix} for the per-activity lock (in addition
- * to the instance lock, which already honoured it), and
+ * {@code maestro.lock.key-prefix}, and
  * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
  * retry policy. {@code maestro.signal.janitor-interval} and
  * {@code maestro.signal.terminal-retention} (C14b) are pinned the same way,
@@ -66,7 +67,9 @@ import static org.awaitility.Awaitility.await;
  * {@code maestro.worker.*} (the listed task queues, the
  * {@code default-concurrency}/{@code default-activity-concurrency} bound on
  * every other queue, its startup validation and INFO line) and
- * {@code maestro.replay.verify-arguments}.
+ * {@code maestro.replay.verify-arguments}. {@code maestro.lock.ttl} and
+ * {@code maestro.lock.key-prefix} are also pinned on the instance lock the
+ * executor acquires (Issue 37).
  *
  * <p>Before this fix, all four had a hardcoded value baked into
  * {@link WorkflowExecutor} / {@code ActivityInvocationHandler} /
@@ -103,7 +106,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
     }
 
     @Test
-    @DisplayName("maestro.shutdown.timeout bounds WorkflowExecutor#shutdown() instead of the 30s default")
+    @DisplayName("maestro.shutdown.timeout bounds WorkflowExecutor#shutdown() instead of the 20 s default")
     void shutdownTimeoutReachesWorkflowExecutor() {
         runner.withPropertyValues("maestro.shutdown.timeout=300ms")
                 .run(context -> {
@@ -123,7 +126,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
 
                     assertThat(elapsed)
                             .as("shutdown must return once the configured 300ms timeout elapses, "
-                                    + "not wait out the 30s default — took " + elapsed)
+                                    + "not wait out the 20 s default — took " + elapsed)
                             .isLessThan(Duration.ofSeconds(5));
                 });
     }
@@ -164,8 +167,8 @@ class MaestroAutoConfigurationConfigSeamsTest {
     }
 
     @Test
-    @DisplayName("maestro.lock.key-prefix reaches the per-activity distributed lock, not just the instance lock")
-    void lockKeyPrefixReachesActivityInvocationHandler() {
+    @DisplayName("A workflow's activities take no lock under a custom maestro.lock.key-prefix; its instance lock uses the prefix")
+    void noActivityLockIsTakenUnderACustomKeyPrefix() {
         var lock = new RecordingLock();
         runner.withBean(DistributedLock.class, () -> lock)
                 .withPropertyValues("maestro.lock.key-prefix=custom:prefix:")
@@ -176,14 +179,25 @@ class MaestroAutoConfigurationConfigSeamsTest {
                     client.newWorkflow(ActivityCallingWorkflow.class, options("lock-prefix-1"))
                             .startAndWait(null, Duration.ofSeconds(10), String.class);
 
-                    var activityKeys = lock.acquiredKeys.stream()
-                            .filter(key -> key.contains(":activity:"))
-                            .toList();
-                    assertThat(activityKeys)
-                            .as("the activity lock key must use the configured prefix, "
-                                    + "not the hardcoded maestro:lock: default — acquired keys were "
-                                    + lock.acquiredKeys)
-                            .containsExactly("custom:prefix:activity:lock-prefix-1:1");
+                    assertThat(lock.acquiredKeys.stream().filter(key -> key.contains(":activity:")).toList())
+                            .as("acquired keys were " + lock.acquiredKeys).isEmpty();
+                    assertThat(lock.acquiredKeys).contains("custom:prefix:workflow:lock-prefix-1");
+                });
+    }
+
+    @Test
+    @DisplayName("maestro.lock.ttl and maestro.lock.key-prefix reach the instance lock")
+    void lockTtlAndKeyPrefixReachTheInstanceLock() {
+        var lock = new RecordingLock();
+        runner.withBean(DistributedLock.class, () -> lock)
+                .withPropertyValues("maestro.lock.ttl=45s", "maestro.lock.key-prefix=custom:prefix:")
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    context.getBean(MaestroClient.class)
+                            .newWorkflow(ActivityCallingWorkflow.class, options("lock-ttl-1"))
+                            .startAndWait(null, Duration.ofSeconds(10), String.class);
+                    assertThat(lock.acquiredTtls)
+                            .containsEntry("custom:prefix:workflow:lock-ttl-1", Duration.ofSeconds(45));
                 });
     }
 
@@ -529,7 +543,11 @@ class MaestroAutoConfigurationConfigSeamsTest {
     /** The admin retry path: {@code AdminCommandDispatcher}'s exact call. */
     private static void retry(org.springframework.context.ApplicationContext context, String workflowId) {
         var registration = context.getBean(WorkflowRegistrar.class).getRegistration(ArgDriftWorkflow.class);
-        var outcome = context.getBean(WorkflowExecutor.class).retryWorkflow(workflowId, registration);
+        var executor = context.getBean(WorkflowExecutor.class);
+        // The failed run writes FAILED before it leaves the executor's registry;
+        // a retry in between reopens the row without relaunching it.
+        await().atMost(Duration.ofSeconds(10)).until(() -> !executor.isRunning(workflowId));
+        var outcome = executor.retryWorkflow(workflowId, registration);
         assertThat(outcome).isEqualTo(WorkflowExecutor.RetryOutcome.RETRIED);
     }
 
@@ -632,7 +650,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
         }
     }
 
-    /** Calls a single no-op activity, to drive the activity lock key through the real chain. */
+    /** Calls a single no-op activity, to drive a live activity through the real chain. */
     @DurableWorkflow(name = "ConfigSeamsActivityCallingWorkflow")
     public static class ActivityCallingWorkflow {
 
@@ -837,10 +855,12 @@ class MaestroAutoConfigurationConfigSeamsTest {
     private static final class RecordingLock implements DistributedLock {
 
         final List<String> acquiredKeys = new ArrayList<>();
+        final Map<String, Duration> acquiredTtls = new ConcurrentHashMap<>();
 
         @Override
         public synchronized Optional<LockHandle> tryAcquire(String key, Duration ttl) {
             acquiredKeys.add(key);
+            acquiredTtls.put(key, ttl);
             return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
         }
 

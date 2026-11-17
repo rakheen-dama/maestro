@@ -28,7 +28,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  *
  * <h2>The crash</h2>
  * <p>Writes that persist an event — {@code appendEvent} (both forms),
- * {@code appendEventAndConsumeSignal} (when it returns {@code true}) and
+ * {@code appendEventReturningPayload} (the engine's live activity outcome and
+ * side-effect appends), {@code appendEventAndConsumeSignal} (when it returns
+ * {@code true}) and
  * {@code completeInstance} (when it returns {@code true}) — are offered to
  * the {@link CrashPolicy} before and after the delegate call. A policy that
  * answers with a reason kills the node and throws
@@ -39,8 +41,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * workflow — it writes nothing, leaves the instance recoverable and releases
  * the instance lock.
  *
- * <p>Once dead, every <em>write</em> (any method not named {@code get*} or
- * {@code find*}) throws the same error — but only on a thread bound to a
+ * <p>Once dead, every <em>write</em> (any method not named {@code get*},
+ * {@code find*} or {@code storeTime}) throws the same error — but only on a thread bound to a
  * {@link WorkflowContext}, i.e. one of this node's workflow, branch,
  * compensation or activity-attempt threads. The test thread still reaches
  * the store, which is how a signal or a timer "lands while the service is
@@ -159,14 +161,15 @@ final class NodeStoreView implements InvocationHandler {
 
     /**
      * Whether a {@link WorkflowStore} method changes state. Everything except the
-     * {@code get*}/{@code find*} reads does.
+     * {@code get*}/{@code find*} reads and {@code storeTime} (a read of the
+     * store's clock) does.
      *
      * @param method a {@link WorkflowStore} method
      * @return {@code true} for a write
      */
     static boolean isWrite(Method method) {
         var name = method.getName();
-        return !(name.startsWith("get") || name.startsWith("find"));
+        return !(name.startsWith("get") || name.startsWith("find") || name.equals("storeTime"));
     }
 
     @Override
@@ -205,7 +208,8 @@ final class NodeStoreView implements InvocationHandler {
 
     /**
      * The event a write persists, if it is one the crash policy is offered:
-     * {@code appendEvent(event[, lease])}, {@code appendEventAndConsumeSignal(memo, lease, id)}
+     * {@code appendEvent(event[, lease])}, {@code appendEventReturningPayload(event, lease)},
+     * {@code appendEventAndConsumeSignal(memo, lease, id)}
      * and {@code completeInstance(terminal, event[, lease])}. A {@code false}
      * return from the latter two means nothing was written, so no "after".
      */
@@ -214,7 +218,7 @@ final class NodeStoreView implements InvocationHandler {
             return null;
         }
         return switch (method.getName()) {
-            case "appendEvent", "appendEventAndConsumeSignal" ->
+            case "appendEvent", "appendEventReturningPayload", "appendEventAndConsumeSignal" ->
                     args[0] instanceof WorkflowEvent e ? e : null;
             case "completeInstance" -> args.length > 1 && args[1] instanceof WorkflowEvent e ? e : null;
             default -> null;
