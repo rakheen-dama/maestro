@@ -2875,8 +2875,10 @@ removed.
 > and release their locks, within the tests' deadline). The interrupt fix proposed below was rejected: a
 > restored interrupt flag on the unwinding thread could fail the JDBC release
 > of its instance lock in the run's `finally` (Audit A, "Surprises" 5).
-> Since WP6 at most `concurrency` recovered runs per queue can be queued at
-> shutdown, not a whole backlog.
+> Since WP6 the recovery poller's passes leave at most `concurrency`
+> recovered runs per queue queued at shutdown, not a whole backlog; the
+> ungated passes (the startup pass with `maestro.recovery.enabled=false`, and
+> `WorkflowExecutor.recoverWorkflows(Map)`) still can.
 >
 > Filed by the 2026-10-24 bug-fix cycle's review of the Issue 25
 > fix (plan 05 Task 5, ruling R47). Recorded, not fixed, in that cycle.
