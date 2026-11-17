@@ -182,9 +182,15 @@ Maestro cannot place (a slot consumed without a memo and followed by more
 work, or two lanes claiming one slot), Retry deletes what it always did:
 every `ACTIVITY_FAILED`, the `WORKFLOW_FAILED` and, for an await timeout, the
 highest `SIGNAL_TIMEOUT` with its park memo. Every deleted timer slot takes
-its timer row, of any status; the deletes and the `FAILED → RUNNING`
-compare-and-set are one transaction, and the relaunch bumps the lease epoch
-through the normal adoption. If the deleted region holds a consumed signal
+its timer row, of any status. In the shipped JDBC/Postgres store and the
+in-memory test store, the deletes and the `FAILED → RUNNING` compare-and-set
+are one transaction (`PostgresReopenFailedInstanceTest`,
+`InMemoryWorkflowStoreTest`). A third-party store that inherits the SPI
+default `WorkflowStore.reopenFailedInstance` is not atomic and does not apply
+this plan: the default ignores both delete sets and runs the old two-step
+Retry, `deleteFailureEvents` then `updateInstance`, as separate operations
+(`WorkflowStoreReopenDefaultTest`; Issue 62). The relaunch bumps the lease
+epoch through the normal adoption. If the deleted region holds a consumed signal
 (`SIGNAL_RECEIVED`) — the failure's handling awaited one — Retry writes
 nothing and returns `SIGNAL_CONSUMED_AFTER_FAILURE`, and the engine logs a
 `WARN` naming the workflow, the signal, its sequence and the remedy
