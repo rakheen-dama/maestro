@@ -62,7 +62,7 @@ class WorkflowExecutorBuilderTest {
         assertEquals(Duration.ofSeconds(30), b.instanceLockTtl);
         assertSame(WorkflowInstanceLockManager.DEFAULT_LOCK_TTL, b.instanceLockTtl);
         assertTrue(b.lifecycleEventsEnabled);
-        assertEquals(Duration.ofSeconds(30), b.shutdownTimeout);
+        assertEquals(Duration.ofSeconds(20), b.shutdownTimeout);
         assertSame(WorkflowExecutor.DEFAULT_SHUTDOWN_TIMEOUT, b.shutdownTimeout);
         assertEquals(Duration.ofSeconds(30), b.wakeRecheckInterval);
         assertSame(SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL, b.wakeRecheckInterval);

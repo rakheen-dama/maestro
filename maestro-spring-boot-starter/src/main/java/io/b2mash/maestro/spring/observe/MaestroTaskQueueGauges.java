@@ -38,6 +38,15 @@ import java.util.TreeSet;
  * Micrometer deduplicates meters by id, so a second refresh event (a child
  * context's, propagated to this listener) registers nothing new.
  *
+ * <h2>During shutdown</h2>
+ * {@code WorkflowExecutor.shutdown()} lends each bounded pool one permit to
+ * release the runs queued for a slot, and takes it back after the drain. While
+ * the loan is out each gauge reads one less than the slots held — {@code -1} on
+ * an idle pool — and a pool whose loan could not be taken back (the drain hit
+ * its deadline with runs still queued, or with every slot held) keeps reading
+ * one less until the node exits. A scrape in that window is a scrape of a node
+ * that is going away.
+ *
  * <h2>Node-local</h2>
  * Slots are per node, so are these gauges: each pod reports its own held
  * slots, and a cluster total is their sum across pods.

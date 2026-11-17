@@ -193,7 +193,7 @@ public final class ChaosController {
         long started = System.nanoTime();
         String startTs = nowUtc();
         for (NodeRole node : service.roles()) {
-            cluster.stopGraceful(node);       // grace 40s > shutdown timeout 30s
+            cluster.stopGraceful(node);       // grace 40s > shutdown timeout 20s
             cluster.replace(node);            // wait healthy before the next node
         }
         record("ROLLING_RESTART", service.name(), Map.of(), startTs, startTs, nowUtc(), ms(started));

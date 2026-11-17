@@ -2,6 +2,37 @@
 
 ## Unreleased — Postgres + Kafka only
 
+### Changed — one shutdown deadline; slot waiters released at shutdown; Maestro stops alongside the web server; maestro.shutdown.timeout defaults to 20 s (3.6, Issue 29, Issue 64, D11)
+
+- **What was wrong** (measured).
+  - With `maestro.shutdown.timeout=1s`, four background loops whose store call ignored the interrupt, plus a stuck lifecycle publisher, made `shutdown()` take 26 s: every step had its own timeout (4 × 5 s + the drain + 5 s). At the defaults that is up to 55 s.
+  - Spring could not bound it: Maestro stopped synchronously in the web server's graceful-shutdown phase and ahead of it, so the web server began draining only after Maestro had finished (1,012 ms later with a 1 s drain).
+  - A run queued for a task-queue slot kept waiting, and kept its instance lock, until a slot freed.
+  - A deploy that landed during a lock-renewal pass counted one `maestro.lock.renew.failures{outcome="error"}` per held lock.
+- **What changes.**
+  - **One deadline.** `WorkflowExecutor.shutdown()` measures one deadline on the monotonic clock and gives every step that waits only what is left of it: the drain, then the background loops' joins, the lock renewer's close (at most 2 s of it) and the lifecycle-event flush (at most 5 s of it). With every step stuck at once it returns within the timeout plus under 1 s (`WorkflowExecutorShutdownDeadlineTest.shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`: 1,002–1,008 ms measured at a 1 s timeout).
+  - **Slot waiters leave (Issue 29).** Shutting down lends each task-queue pool one "poison" permit: a waiter that wakes on a shut-down governor gives it back, wakes the next waiter, and stands down recoverable with `ExecutorShutdownException`, releasing its instance lock as it unwinds — normally before `shutdown()` returns, though the drain waits for that only within the shutdown deadline. Nothing is interrupted (`TaskQueueGovernorTest$Shutdown`, `ShutdownReleasesSlotWaitersTest`).
+  - **Maestro stops alongside the web server.** `GracefulShutdownHandler.stop(callback)` returns at once; the engine shuts down on the virtual thread `maestro-shutdown`, which calls Spring back when it is done, also when it threw (`GracefulShutdownHandlerTest`, `GracefulShutdownLifecycleTest`). The handler is no longer pauseable, so `context.pause()` leaves the engine running instead of shutting it down for good. Unchanged: a request already in flight that calls `startWorkflow` after shutdown began gets `IllegalStateException` (HTTP 500 unless the host maps it; `startingAWorkflowDuringTheDrainIsRefused`).
+  - **The lock renewer stops without an interrupt** and counts no renewal failure once closed; a lock loss it learns of after close is logged at INFO and not reported as `instanceLockLost`, though the run is still stood down (Issue 64, the renewer half; `WorkflowInstanceLockManagerCloseTest`).
+  - **A second `shutdown()` call waits for the first** (at most what is left plus 2 s), so Spring's destroy method on the executor no longer lets the `DataSource` close under a drain that outlived the phase timeout (`aSecondShutdownCallReturnsOnlyAfterTheFirstHasFinished`, `theEngineDrainsBeforeTheBeansItIsBuiltOnAreDestroyed`).
+- **Changed default — breaking for a drain that needs more than 20 s.** `maestro.shutdown.timeout` (and `WorkflowExecutor.builder(...)`'s default) is now **20 s**, was 30 s, and it now bounds the whole engine shutdown, not only the drain. With a 30 s drain under an asynchronous stop, the drain alone would equal Spring Boot's 30 s `spring.lifecycle.timeout-per-shutdown-phase` and Kubernetes' 30 s `terminationGracePeriodSeconds`, leaving no time for the rest of shutdown. To keep 30 s, set `maestro.shutdown.timeout: 30s`, `spring.lifecycle.timeout-per-shutdown-phase: 35s` and `terminationGracePeriodSeconds: 45` (more with a preStop hook) — see [Operations §15](operations.md#15-shutdown-one-deadline-and-the-grace-period).
+- **Changed log lines** — for anyone alerting on them.
+
+  | Old | New |
+  |---|---|
+  | `Shutting down WorkflowExecutor, {} workflow(s) in-flight` (INFO) | `Maestro shutdown started: {n} run(s) in flight; deadline {budget} ms (maestro.shutdown.timeout)` (INFO) |
+  | `WorkflowExecutor shutdown complete — all workflows finished` (INFO) | `Maestro shutdown finished in {total} ms of its {budget} ms deadline: … 0 still running (drain …, background loops …, instance locks …, lifecycle events …)` (INFO) |
+  | `WorkflowExecutor shutdown complete with {} workflow(s) still running` (WARN) | `Maestro shutdown hit its {budget} ms deadline (maestro.shutdown.timeout): {m} of {n} run(s) still running [ids]; …` (WARN, at most ten ids) |
+  | `Shutdown already in progress` (INFO) | `Shutdown already in progress — waiting up to {} ms for it to finish` (INFO; WARN if the wait runs out) |
+  | `Timer poller stopped` and the other loops' `… stopped` (INFO, always) | logged only once the loop has ended; a loop still in a store call at the deadline logs WARN `Background loop '{name}' did not stop within the shutdown deadline; it ends after its current store call` |
+  | — | WARN `Lifecycle event publisher stopped with {k} queued event(s) unpublished`; ERROR `Maestro graceful shutdown failed: …` |
+
+  `Maestro graceful shutdown initiated` and `Maestro graceful shutdown complete` are unchanged.
+- **Fixed after review (PR #60).** `Thread.join(Duration)` throws `IllegalThreadStateException` for a thread that has not been started. Two shutdown joins could meet one, and the exception escaped `shutdown()`, skipping its later steps (the lock renewer's close, the lifecycle flush, the summary line):
+  - The drain could meet a run that a launch had registered but not yet started. The drain now waits for that launch, within the deadline, and then joins the run. A launch still not started at the deadline is reported as still running (`aRunRegisteredButNotYetStartedIsWaitedForByTheDrain`, `aRunStillUnstartedAtTheDeadlineIsReportedAsStillRunning`, `aLaunchThatFailsBeforeItsThreadStartsReleasesTheDrainAtOnce`).
+  - The lock manager's close could meet a renewer that had been published but not yet started. The close now skips the join for it, and the renewer leaves at once when it starts (`closeWhileTheRenewerIsPublishedButNotStartedReturnsAndTheRenewerEnds`).
+- **Still open:** Issue 64 (the four core pollers and the lock cleaner still interrupt), Issue 69 (Maestro's Kafka listener containers stop at bean destruction, the `@MaestroSignalListener` ones after the `DataSource`), Issue 70 (a run still executing at the deadline can record a failure caused by bean teardown).
+
 ### Fixed — background loops survive an Error; a health probe timeout is UNKNOWN (3.5a, 3.5b)
 
 - **What was wrong.** Every background loop Maestro starts died on the first `Error` an iteration threw — an `OutOfMemoryError`, a `NoClassDefFoundError` from a bad deploy, an `AssertionError` — and the JDK printed it to `System.err`, not to the log. Nothing reported the dead loop: the signal janitor and the instance-lock renewer were not in `/actuator/health`, and the renewer's death was invisible while it churned every instance lock on the node 30 s after acquisition (a later `tryAcquire` never restarted it). The wake listener also spun without a pause on a driver that kept throwing a `RuntimeException`, and `/actuator/health` read `DOWN` whenever its 2 s store probe timed out — on a busy, healthy pool too.

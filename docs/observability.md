@@ -236,7 +236,14 @@ builder went out of scope.
   queue those workflows name. **An unbounded queue has no gauge** (both
   defaults `0` and not listed): it has no slots to count. A queue listed in
   configuration that no registered workflow names has none either. Reading the
-  gauge never takes or waits for a slot.
+  gauge never takes or waits for a slot. **During a shutdown it reads one
+  low:** `WorkflowExecutor.shutdown()` lends each bounded pool one permit to
+  release the runs queued for a slot (Issue 29, [Operations §15](operations.md#15-shutdown-one-deadline-and-the-grace-period))
+  and takes it back after the drain, so until then each series reads one less
+  than the slots held — `-1` on an idle pool. A pool whose loan could not be
+  taken back (the drain hit its deadline with runs still queued, or with every
+  slot held) reads one less until the node exits
+  (`TaskQueueGovernorTest.inUseReadsOneLessWhileTheShutdownLoanIsOutAndIsExactAfterTheReclaim`).
 
 **These are node-local, in-JVM values.** They are not store-derived, they do not
 survive a restart, and they say nothing about workflows owned by other nodes.

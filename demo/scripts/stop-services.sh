@@ -23,8 +23,8 @@ DEMO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUN_DIR="$DEMO_DIR/.run"
 TARGETS_DIR="$DEMO_DIR/targets"
 
-# Maestro's default shutdown timeout (maestro.shutdown.timeout) is 30s; give
-# the JVM a little more than that before escalating.
+# Maestro's default shutdown timeout (maestro.shutdown.timeout) is 20s (30s
+# before WP5); give the JVM a little more than that before escalating.
 GRACE="${GRACE:-35}"
 
 log() { printf '%s [demo] %s\n' "$(date +%H:%M:%S)" "$*"; }

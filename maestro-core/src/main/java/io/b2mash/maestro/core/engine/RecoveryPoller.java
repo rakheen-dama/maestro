@@ -35,9 +35,12 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * @see WorkflowExecutor#recoverWorkflows(Map)
  */
-final class RecoveryPoller {
+final class RecoveryPoller implements StoppableLoop {
 
     private static final Logger logger = LoggerFactory.getLogger(RecoveryPoller.class);
+
+    /** How long {@link #stop()} waits for the loop's thread to end. */
+    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     private final WorkflowExecutor executor;
     private final Map<String, WorkflowRegistration> registrations;
@@ -103,21 +106,64 @@ final class RecoveryPoller {
     }
 
     /**
-     * Stops the polling loop. After stopping, the poller cannot be restarted.
+     * Stops the polling loop: {@link #requestStop()}, then
+     * {@link #awaitStopped(Duration) awaitStopped(STOP_JOIN)} — waits up to
+     * {@link #STOP_JOIN} (5 seconds) for the thread to end. After stopping,
+     * the poller cannot be restarted.
      */
-    synchronized void stop() {
+    void stop() {
+        requestStop();
+        awaitStopped(STOP_JOIN);
+    }
+
+    @Override
+    public String loopName() {
+        return BackgroundLoopGuard.RECOVERY_POLLER;
+    }
+
+    /**
+     * Asks the polling loop to stop and returns at once: no new iteration starts,
+     * and the thread is interrupted (Issue 64 tracks that interrupt, which
+     * can land inside a store call). Never joins. Idempotent.
+     */
+    @Override
+    public synchronized void requestStop() {
         running = false;
         var thread = pollerThread;
         if (thread != null) {
             thread.interrupt();
-            try {
-                thread.join(Duration.ofSeconds(5));
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Waits at most {@code bound} for the polling loop's thread to end. Once it
+     * has ended, logs that the poller stopped (once) and forgets the thread.
+     *
+     * @param bound the longest to wait; zero or negative only checks
+     * @return {@code true} if the thread has ended or was never started,
+     *         {@code false} if it is still running — nothing is logged then
+     */
+    @Override
+    public boolean awaitStopped(Duration bound) {
+        var thread = pollerThread;
+        if (thread == null) {
+            return true;
+        }
+        try {
+            thread.join(bound);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        if (thread.isAlive()) {
+            return false;
+        }
+        synchronized (this) {
+            if (pollerThread == thread) {
+                pollerThread = null;
+                logger.info("Recovery poller stopped");
             }
         }
-        pollerThread = null;
-        logger.info("Recovery poller stopped");
+        return true;
     }
 
     /**

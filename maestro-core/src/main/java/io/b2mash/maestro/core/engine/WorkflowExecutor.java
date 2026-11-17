@@ -53,6 +53,7 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -60,6 +61,8 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
@@ -123,12 +126,14 @@ public final class WorkflowExecutor {
     private static final Logger logger = LoggerFactory.getLogger(WorkflowExecutor.class);
 
     /**
-     * Default wait for in-flight workflows to drain during {@link #shutdown()},
-     * used when no explicit {@code shutdownTimeout} is set with
+     * Default deadline for the whole of {@link #shutdown()} — 20 seconds,
+     * below Spring Boot's 30 s {@code spring.lifecycle.timeout-per-shutdown-phase}
+     * and Kubernetes' 30 s grace period, so the rest of a host's shutdown
+     * still fits — used when no explicit {@code shutdownTimeout} is set with
      * {@link Builder#shutdownTimeout}. Corresponds to
      * {@code maestro.shutdown.timeout} in the Spring Boot starter.
      */
-    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(30);
+    static final Duration DEFAULT_SHUTDOWN_TIMEOUT = Duration.ofSeconds(20);
 
     /**
      * How many times a terminal-status write is retried against a fresh read
@@ -167,6 +172,22 @@ public final class WorkflowExecutor {
      * Package-private; production never assigns it.
      */
     volatile Runnable afterLaunchAdmission = () -> { };
+
+    /**
+     * Test seam: runs on the shutting-down thread just before the drain
+     * (D-2's step 5). A test makes it throw to show that a second
+     * {@link #shutdown()} caller is released when the first call fails.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeShutdownDrain = () -> { };
+
+    /**
+     * Test seam: runs on the launching thread after a run has been registered
+     * in {@code runningWorkflows} and before its thread is started. A test
+     * holds it to put a registered-but-unstarted run in front of a shutdown.
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRunThreadStart = () -> { };
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
@@ -176,6 +197,19 @@ public final class WorkflowExecutor {
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
     private final AtomicReference<RetentionSweeper> retentionSweeper = new AtomicReference<>();
     private volatile @Nullable RetentionSettings retentionSettings;
+
+    /**
+     * How long a second {@link #shutdown()} caller waits beyond what is left
+     * of the first call's deadline (D-5): the first call's last steps and its
+     * summary line run after the deadline's last bounded wait.
+     */
+    static final Duration SECOND_CALLER_GRACE = Duration.ofSeconds(2);
+
+    /** The running shutdown's deadline, published for a second caller; {@code null} until then. */
+    private volatile @Nullable ShutdownDeadline shutdownDeadline;
+    /** Counted down when the first {@link #shutdown()} call has finished, however it ended. */
+    private final CountDownLatch shutdownFinished = new CountDownLatch(1);
+    private final Duration instanceLockTtl;
 
     /**
      * The single build path: {@link Builder#build()} ends here, and it is
@@ -266,6 +300,7 @@ public final class WorkflowExecutor {
                 instanceLockTtl.dividedBy(3), observer);
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
+        this.instanceLockTtl = instanceLockTtl;
         this.wakeRecheckInterval = wakeRecheckInterval;
         this.shuttingDown = new AtomicBoolean(false);
         // Proactive stand-down (Issue 11): a run whose instance lock was lost
@@ -415,13 +450,15 @@ public final class WorkflowExecutor {
         }
 
         /**
-         * Sets how long {@link WorkflowExecutor#shutdown()} waits for in-flight
-         * workflows to drain before returning. Corresponds to
-         * {@code maestro.shutdown.timeout}. Default: 30 seconds. {@link #build()} rejects
-         * {@code null}, zero or negative with an {@link IllegalArgumentException}.
+         * Sets the deadline for the whole engine shutdown — the drain, the
+         * background loops, the lock renewer and the lifecycle-event flush —
+         * not only the drain: {@link WorkflowExecutor#shutdown()} returns
+         * within it. Corresponds to {@code maestro.shutdown.timeout}.
+         * Default: 20 seconds. {@link #build()} rejects {@code null}, zero or
+         * negative with an {@link IllegalArgumentException}.
          *
-         * @param shutdownTimeout how long {@link WorkflowExecutor#shutdown()} waits for
-         *                        in-flight workflows to drain — must be strictly positive
+         * @param shutdownTimeout the deadline for the whole of
+         *                        {@link WorkflowExecutor#shutdown()} — must be strictly positive
          * @return this builder
          */
         public Builder shutdownTimeout(Duration shutdownTimeout) {
@@ -1752,10 +1789,43 @@ public final class WorkflowExecutor {
     /**
      * Gracefully shuts down the executor.
      *
-     * <p>Stops accepting new workflows, abandons every parked waiter so those
-     * virtual threads exit, waits up to the configured shutdown timeout
-     * (default 30 seconds; {@code maestro.shutdown.timeout}) for in-flight
-     * workflows to drain, and then stops renewing instance locks.
+     * <h2>One deadline</h2>
+     * <p>The configured shutdown timeout (default 20 seconds;
+     * {@code maestro.shutdown.timeout}) is the deadline for the whole call,
+     * measured on the monotonic clock ({@link System#nanoTime()}, never the
+     * executor's {@code InstantSource}). Every step that waits takes what is
+     * left of it, so {@code shutdown()} returns within the timeout plus a few
+     * milliseconds of bookkeeping even when every step is stuck. In order:
+     * <ol>
+     *   <li>Stop taking work, without waiting: the timer poller, recovery
+     *       poller, signal janitor and retention sweeper are asked to stop;
+     *       every park and retry backoff is abandoned; every run queued for a
+     *       task-queue slot is released.</li>
+     *   <li>Drain the runs in flight until the deadline, a run whose launch has
+     *       registered it but not yet started its thread included.</li>
+     *   <li>Join the background loops for what is left. A loop still inside
+     *       a store call at the deadline is named in a {@code WARN} and ends
+     *       after that call.</li>
+     *   <li>Stop the instance-lock renewer, waiting at most two seconds of
+     *       what is left.</li>
+     *   <li>Flush queued lifecycle events, for at most five seconds of what is
+     *       left; events still queued then are counted as dropped.</li>
+     * </ol>
+     * <p>One summary line follows: {@code INFO Maestro shutdown finished in …}
+     * when no run is left, otherwise {@code WARN Maestro shutdown hit its …
+     * deadline}, naming up to ten of the runs still running.
+     *
+     * <p>Shutdown never interrupts a workflow thread or the lock renewer. If
+     * the calling thread is interrupted, every remaining wait ends at once,
+     * the steps that do not wait still run, and the interrupt status is
+     * restored before the call returns.
+     *
+     * <h2>A second call</h2>
+     * <p>A call made while a shutdown is in progress — in a Spring context,
+     * the executor's inferred destroy method — waits for the first to finish,
+     * for at most what is left of its deadline plus two seconds, so the beans
+     * the engine was built on are not destroyed under a drain still in
+     * progress. A call after a shutdown has finished returns at once.
      *
      * <h2>What a parked workflow sees</h2>
      * <p>A workflow parked on {@code awaitSignal()} or {@code sleep()} has
@@ -1782,72 +1852,171 @@ public final class WorkflowExecutor {
      * progress is abandoned too, with {@link ExecutorShutdownException},
      * leaving the instance {@code RUNNING} and recoverable; the attempt counter
      * restarts on the next node.
+     *
+     * <p>A run waiting for a task-queue slot (a fresh start, an adopted run, a
+     * park's reacquire, an activity or a compensation) leaves at once with
+     * {@link ExecutorShutdownException}: it stands down recoverable and
+     * releases its instance lock before {@code shutdown()} returns.
      */
     public void shutdown() {
         if (!shuttingDown.compareAndSet(false, true)) {
-            logger.info("Shutdown already in progress");
+            awaitShutdownInProgress();
             return;
         }
+        // Step 1: one deadline for every step below, on the monotonic clock.
+        var deadline = ShutdownDeadline.start(shutdownTimeout);
+        shutdownDeadline = deadline;
+        try {
+            shutdown(deadline);
+        } finally {
+            shutdownFinished.countDown();
+        }
+    }
 
-        // Stop the pollers first — no new timers should fire and no new
-        // recoveries should launch during shutdown
-        var poller = timerPoller.getAndSet(null);
-        if (poller != null) {
-            poller.stop();
-        }
-        var recovery = recoveryPoller.getAndSet(null);
-        if (recovery != null) {
-            recovery.stop();
-        }
-        var janitor = signalJanitor.getAndSet(null);
-        if (janitor != null) {
-            janitor.stop();
-        }
-        var sweeper = retentionSweeper.getAndSet(null);
-        if (sweeper != null) {
-            sweeper.stop();
-        }
+    /** D-2's steps 2–10, each bounded step taking what is left of {@code deadline}. */
+    private void shutdown(ShutdownDeadline deadline) {
+        var inFlightAtStart = runningWorkflows.size();
+        logger.info("Maestro shutdown started: {} run(s) in flight; deadline {} ms (maestro.shutdown.timeout)",
+                inFlightAtStart, deadline.budget().toMillis());
 
-        logger.info("Shutting down WorkflowExecutor, {} workflow(s) in-flight",
-                runningWorkflows.size());
-
-        // Abandon every park so those threads exit promptly. Their workflows
-        // keep the WAITING_* status they parked in and stay recoverable —
-        // a park abandoned this way is not a workflow failure.
+        // Steps 2–4 never wait, so their order does not matter. Step 2: ask
+        // the background loops to stop — no new timer fires and no new
+        // recovery launches — and join them only after the drain (step 6),
+        // so a loop stuck in a store call never delays it.
+        var loops = new ArrayList<StoppableLoop>(4);
+        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(
+                timerPoller, recoveryPoller, signalJanitor, retentionSweeper)) {
+            var loop = slot.getAndSet(null);
+            if (loop != null) {
+                loop.requestStop();
+                loops.add(loop);
+            }
+        }
+        // Step 3: abandon every park so those threads exit promptly. Their
+        // workflows keep the WAITING_* status they parked in and stay
+        // recoverable — a park abandoned this way is not a workflow failure.
         parkingLot.shutdown();
         // Abandon every retry backoff the same way. Shutdown is not checked
         // before an activity attempt, so in-flight work still drains.
         runningWorkflows.values().forEach(r -> r.cancellation().requestShutdown());
+        // Step 4: release every run queued for a task-queue slot (Issue 29):
+        // the governor's poison permit wakes each waiter in turn, without an
+        // interrupt, and each stands down recoverable.
+        taskQueueGovernor.shutdown();
 
-        // Wait for in-flight workflows with a deadline
-        var deadline = Instant.now().plus(shutdownTimeout);
+        // Step 5: drain in-flight runs until the deadline. Never interrupted.
+        beforeShutdownDrain.run();
+        var drainStart = System.nanoTime();
         for (var entry : runningWorkflows.entrySet()) {
+            var run = entry.getValue();
             try {
-                var remaining = Duration.between(Instant.now(), deadline);
-                if (remaining.isPositive()) {
-                    entry.getValue().thread().join(remaining);
+                // A run registered before its thread is started (launchWorkflow
+                // registers, then starts) is waited for, not skipped: its
+                // cancellation was requested at step 3, so once started it
+                // stands down at its first stop point or completes, and the
+                // join below follows it. Thread.join(Duration) would throw
+                // IllegalThreadStateException on the still-NEW thread.
+                if (!run.launched().await(deadline.remaining().toNanos(), TimeUnit.NANOSECONDS)) {
+                    continue; // still not started at the deadline: reported as still running
                 }
+                if (run.thread().getState() == Thread.State.NEW) {
+                    continue; // the launch failed before start(): the launcher unregistered it and released its lock
+                }
+                run.thread().join(deadline.remaining());
             } catch (InterruptedException e) {
+                // Restored at once: every bounded wait below then ends at once
+                // too, and the non-blocking steps still run.
                 Thread.currentThread().interrupt();
                 logger.warn("Interrupted while waiting for workflow '{}' during shutdown", entry.getKey());
                 break;
             }
         }
+        var drainMs = millisSince(drainStart);
 
-        // Stop the lock renewer; locks of overrunning workflows expire via TTL
-        instanceLockManager.close();
-
-        // Give the lifecycle publisher a short, bounded window to flush events
-        // queued by workflows that just drained, then force it down — a stalled
-        // transport must not make shutdown hang.
-        lifecycleEventPublisher.shutdown();
-
-        var remaining = runningWorkflows.size();
-        if (remaining > 0) {
-            logger.warn("WorkflowExecutor shutdown complete with {} workflow(s) still running", remaining);
-        } else {
-            logger.info("WorkflowExecutor shutdown complete — all workflows finished");
+        // Step 6: join the loops asked to stop at step 2, against what is left.
+        var loopsStart = System.nanoTime();
+        for (var loop : loops) {
+            if (!loop.awaitStopped(deadline.remaining())) {
+                logger.warn("Background loop '{}' did not stop within the shutdown deadline; "
+                        + "it ends after its current store call", loop.loopName());
+            }
         }
+        var loopsMs = millisSince(loopsStart);
+
+        // Step 7: the poison has finished travelling: take the governor's
+        // loans back so its slot counts are exact again.
+        taskQueueGovernor.reclaimShutdownPermits();
+
+        // Step 8: stop the lock renewer (never interrupted). It renewed the
+        // locks of runs still draining until now; those still running when
+        // it stops expire by TTL.
+        var locksStart = System.nanoTime();
+        instanceLockManager.close(deadline.remainingAtMost(WorkflowInstanceLockManager.CLOSE_JOIN));
+        var locksMs = millisSince(locksStart);
+
+        // Step 9: last, so it carries the events of the runs that drained —
+        // a bounded flush, then the publisher is forced down: a stalled
+        // transport must not make shutdown hang.
+        var eventsStart = System.nanoTime();
+        lifecycleEventPublisher.shutdown(deadline.remainingAtMost(LifecycleEventPublisher.SHUTDOWN_TIMEOUT));
+        var eventsMs = millisSince(eventsStart);
+
+        // Step 10: the summary line.
+        var steps = "drain %d ms, background loops %d ms, instance locks %d ms, lifecycle events %d ms"
+                .formatted(drainMs, loopsMs, locksMs, eventsMs);
+        var stillRunning = List.copyOf(runningWorkflows.keySet());
+        if (stillRunning.isEmpty()) {
+            logger.info("Maestro shutdown finished in {} ms of its {} ms deadline: {} run(s) in flight at start, "
+                            + "0 still running ({})",
+                    deadline.elapsed().toMillis(), deadline.budget().toMillis(), inFlightAtStart, steps);
+        } else {
+            var recoveredBy = distributedLock != null
+                    ? "their instance locks expire after " + instanceLockTtl.toMillis()
+                            + " ms (maestro.lock.ttl) and a peer recovers them"
+                    : "a restarted node recovers them";
+            logger.warn("Maestro shutdown hit its {} ms deadline (maestro.shutdown.timeout): {} of {} run(s) still "
+                            + "running {}; shutdown does not interrupt them and records nothing for them; {} ({})",
+                    deadline.budget().toMillis(), stillRunning.size(), inFlightAtStart,
+                    workflowIdList(stillRunning), recoveredBy, steps);
+        }
+    }
+
+    /**
+     * D-5: a {@link #shutdown()} call made while another is in progress — in
+     * a Spring context, the executor's inferred destroy method — waits for
+     * the first to finish, for at most what is left of its deadline plus
+     * {@link #SECOND_CALLER_GRACE}. So bean destruction cannot take the
+     * {@code DataSource} and the other beans the engine was built on away
+     * under a drain that outlived Spring's phase timeout.
+     */
+    private void awaitShutdownInProgress() {
+        if (shutdownFinished.getCount() == 0) {
+            return;
+        }
+        var deadline = shutdownDeadline;
+        var bound = (deadline != null ? deadline.remaining() : shutdownTimeout).plus(SECOND_CALLER_GRACE);
+        logger.info("Shutdown already in progress — waiting up to {} ms for it to finish", bound.toMillis());
+        try {
+            if (!shutdownFinished.await(bound.toNanos(), TimeUnit.NANOSECONDS)) {
+                logger.warn("Shutdown still in progress after waiting {} ms — returning without waiting longer",
+                        bound.toMillis());
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private static long millisSince(long startNanos) {
+        return TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+    }
+
+    /** At most ten ids, then {@code and N more}: a deadline WARN stays one readable line. */
+    private static String workflowIdList(List<String> ids) {
+        var shown = 10;
+        if (ids.size() <= shown) {
+            return ids.toString();
+        }
+        return ids.subList(0, shown) + " and " + (ids.size() - shown) + " more";
     }
 
     // ── Query registration ─────────────────────────────────────────────
@@ -2318,7 +2487,7 @@ public final class WorkflowExecutor {
             // Register before starting to prevent the race where a fast workflow
             // finishes and removes itself before the put() below executes
             running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
-                    cancellation);
+                    cancellation, new CountDownLatch(1));
             runningWorkflows.put(instance.workflowId(), running);
             // R22(1): shutdown() requests a shutdown on every run it finds
             // registered. A launch that passed its shuttingDown check before
@@ -2329,7 +2498,9 @@ public final class WorkflowExecutor {
             if (shuttingDown.get()) {
                 cancellation.requestShutdown();
             }
+            beforeRunThreadStart.run();
             thread.start();
+            running.launched().countDown();
         } catch (RuntimeException | Error e) {
             if (running != null) {
                 runningWorkflows.remove(instance.workflowId(), running);
@@ -2342,6 +2513,13 @@ public final class WorkflowExecutor {
             } catch (RuntimeException | Error releaseFailure) {
                 // The launch's own failure is what the caller must see.
                 e.addSuppressed(releaseFailure);
+            } finally {
+                if (running != null) {
+                    // Never started. Released only after the lock is given back, so a
+                    // drain waiting for this launch does not let shutdown finish (and
+                    // the store be torn down) under the release.
+                    running.launched().countDown();
+                }
             }
             throw e;
         }
@@ -3412,7 +3590,10 @@ public final class WorkflowExecutor {
      * {@link WorkflowContext} holds — terminate/shutdown requests to the run.
      * {@code workflowImpl} is the object the registration's factory built for
      * this run alone; queries against the run are invoked on it.
+     * {@code launched} is counted down once the launch has started
+     * {@code thread}, or has failed to and unregistered the run — so a
+     * shutdown drain never joins a thread that is not started yet.
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
-                           Object workflowImpl, RunCancellation cancellation) {}
+                           Object workflowImpl, RunCancellation cancellation, CountDownLatch launched) {}
 }
