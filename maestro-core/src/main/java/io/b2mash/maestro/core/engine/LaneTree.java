@@ -12,6 +12,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedSet;
 import java.util.TreeSet;
+import java.util.function.IntPredicate;
 
 /**
  * The lanes of a workflow's sequence space, rebuilt from its history alone
@@ -256,16 +257,49 @@ final class LaneTree {
      * @throws IllegalArgumentException if {@code sequence} is not placed
      */
     SortedSet<Integer> after(int sequence) {
+        var path = new TreeSet<Integer>();
+        walkAfter(sequence, slot -> {
+            path.add(slot);
+            return true;
+        });
+        return Collections.unmodifiableSortedSet(path);
+    }
+
+    /**
+     * Reports whether every slot of {@link #after(int) after(sequence)}
+     * satisfies {@code test} — {@code after(sequence).stream().allMatch(test)}
+     * without building the path: it walks the same slots and stops at the
+     * first that fails, so a check that fails early costs a few slots, not the
+     * rest of the history.
+     *
+     * @param sequence a placed sequence
+     * @param test     the predicate every slot of the path must satisfy
+     * @return {@code true} if every slot of the path satisfies {@code test}
+     *         (also when the path is empty)
+     * @throws IllegalArgumentException if {@code sequence} is not placed
+     */
+    boolean afterHoldsOnly(int sequence, IntPredicate test) {
+        return walkAfter(sequence, test);
+    }
+
+    /**
+     * Visits the slots of {@code after(sequence)} — each exactly once, in no
+     * particular order — until {@code visitor} returns {@code false}.
+     *
+     * @return {@code false} if the visitor stopped the walk, else {@code true}
+     */
+    private boolean walkAfter(int sequence, IntPredicate visitor) {
         var lane = laneOfSlot.get(sequence);
         if (lane == null) {
             throw new IllegalArgumentException("Sequence " + sequence + " is not placed in the lane tree");
         }
-        var path = new TreeSet<Integer>();
         var forks = new ArrayDeque<Integer>();
         int from = sequence;
         for (var current = lane; current != null; current = current.parent) {
             for (var slot : current.slots.tailSet(from, false)) {
-                path.add(slot);
+                if (!visitor.test(slot)) {
+                    return false;
+                }
                 if (branchesOfFork.containsKey(slot)) {
                     forks.push(slot);
                 }
@@ -276,13 +310,15 @@ final class LaneTree {
         while (!forks.isEmpty()) {
             for (var branch : branchesOfFork.get(forks.pop())) {
                 for (var slot : branch.slots) {
-                    path.add(slot);
+                    if (!visitor.test(slot)) {
+                        return false;
+                    }
                     if (branchesOfFork.containsKey(slot)) {
                         forks.push(slot);
                     }
                 }
             }
         }
-        return Collections.unmodifiableSortedSet(path);
+        return true;
     }
 }

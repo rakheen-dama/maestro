@@ -139,7 +139,8 @@ final class RetryPlanner {
             var seq = event.sequenceNumber();
             var candidate = event.eventType() == EventType.ACTIVITY_FAILED
                     || (event.eventType() == EventType.SIGNAL_TIMEOUT && timeoutEscaped);
-            if (candidate && tree.isPlaced(seq) && onlyWorkflowFailed(tree.after(seq), bySeq)) {
+            if (candidate && tree.isPlaced(seq)
+                    && tree.afterHoldsOnly(seq, s -> isWorkflowFailed(bySeq.get(s)))) {
                 deletes.addAll(opSlots(seq, bySeq));
             }
         }
@@ -283,14 +284,8 @@ final class RetryPlanner {
         return event.eventType() == EventType.ACTIVITY_FAILED || event.eventType() == EventType.SIGNAL_TIMEOUT;
     }
 
-    private static boolean onlyWorkflowFailed(SortedSet<Integer> sequences, Map<Integer, WorkflowEvent> bySeq) {
-        for (var seq : sequences) {
-            var event = bySeq.get(seq);
-            if (event == null || event.eventType() != EventType.WORKFLOW_FAILED) {
-                return false;
-            }
-        }
-        return true;
+    private static boolean isWorkflowFailed(@Nullable WorkflowEvent event) {
+        return event != null && event.eventType() == EventType.WORKFLOW_FAILED;
     }
 
     private static @Nullable String text(JsonNode node, String field) {

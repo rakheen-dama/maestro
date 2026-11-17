@@ -281,6 +281,30 @@ class RetryPlannerTest {
     }
 
     @Test
+    void thousandsOfCaughtFailures_lastInLanePlansInBoundedMemory() {
+        // 5,000 caught failures, each followed by its fallback, then a failure
+        // the terminal does not attribute: only the last one and the
+        // WORKFLOW_FAILED go. Each caught failure's lane check must stop at its
+        // fallback, not build the whole remaining history (PR #57 review 3).
+        var pairs = 5_000;
+        var history = new ArrayList<WorkflowEvent>(2 * pairs + 2);
+        for (var i = 0; i < pairs; i++) {
+            history.add(af(2 * i + 1, "primary", ISE, "down"));
+            history.add(ac(2 * i + 2, "fallback"));
+        }
+        var last = 2 * pairs + 1;
+        history.add(af(last, "finish", ISE, "boom"));
+        history.add(wf(last + 1, "[]", AEE, "x"));
+        var threads = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        var allocatedBefore = threads.getCurrentThreadAllocatedBytes();
+        var plan = RetryPlanner.plan("w", history);
+        var allocated = threads.getCurrentThreadAllocatedBytes() - allocatedBefore;
+        assertPlan(Basis.LAST_IN_LANE, Set.of(last, last + 1), plan);
+        assertTrue(allocated < 32L * 1024 * 1024,
+                "planning over " + pairs + " caught failures allocated " + allocated + " bytes");
+    }
+
+    @Test
     void theLegacyPlanKeepsIssue19sTimeoutRule() {
         // slot 3 is empty, so 4 and 5 are unplaced
         var plan = plan(awaitPark(1, "a"), ev(2, SIGNAL_TIMEOUT, AWAIT + "a", null),
