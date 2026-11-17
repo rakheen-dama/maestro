@@ -840,7 +840,23 @@ if [[ -n "$s3src" ]]; then
   out=$(s3_eval s3-parked-missing "${first_plateau} as \$i | .windows[\$i] |= del(.parkedBefore)")
   expect "s3: no parked snapshot before the window: validity.parked" INVALID "$(s3st "$out" validity.parked)"
 
-  # validity.windows
+  # validity.windows: exactly one well-formed measured window per reached
+  # plateau, in order (a null, missing, duplicated or unplanned plateau
+  # window must not leave the remaining windows to pass the gates).
+  win_detail() { s3_field "$1" '.checks[] | select(.id == "validity.windows") | .detail'; }
+  out=$(s3_eval s3-win-null '.windows[2] = null')
+  expect "s3: the Pmax plateau window is null: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  expect "s3: null window: the detail names windows[2]" yes "$(win_detail s3-win-null | grep -qF 'windows[2]' && echo yes || echo no)"
+  out=$(s3_eval s3-win-missing 'del(.windows[2])')
+  expect "s3: the Pmax plateau window is missing: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  expect "s3: missing window: the detail names the planned plateaus" yes "$(win_detail s3-win-missing | grep -qF "plateau windows [${pmin}] are not one per reached plateau" && echo yes || echo no)"
+  out=$(s3_eval s3-win-dup '.windows += [.windows[1]]')
+  expect "s3: a plateau window measured twice: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  expect "s3: a plateau window measured twice: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+  out=$(s3_eval s3-win-unplanned '.windows[1].P = 1500')
+  expect "s3: a plateau window at an unplanned P: validity.windows" INVALID "$(s3st "$out" validity.windows)"
+  out=$(s3_eval s3-win-notlist '.windows = {}')
+  expect "s3: measurements.windows is not a list: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
   out=$(s3_eval s3-win-short "${last_plateau} as \$i | .windows[\$i].windowSecs = (.plan.holdSecs - 10)")
   expect "s3: a plateau window 10 s short of its hold: validity.windows" INVALID "$(s3st "$out" validity.windows)"
   out=$(s3_eval s3-win-long "${last_plateau} as \$i | .windows[\$i].windowSecs = (.plan.holdSecs + 6)")

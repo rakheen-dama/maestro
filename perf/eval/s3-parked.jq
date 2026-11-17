@@ -206,7 +206,10 @@
 #   exactly P rows of the park prefix exist, all in the parked status, and no
 #   other row of the run is open: a plateau measured while runs are still
 #   starting, or with a probe or warm-up row still running, is INVALID.
-# validity.windows: the window unit is a whole multiple of every node's
+# validity.windows: measurements.windows holds only windows, its plateau
+#   windows are exactly the reached plateaus (one each, in order; an
+#   unreached plateau is correctness.plateauReached's FAIL), and
+#   the window unit is a whole multiple of every node's
 #   wake-recheck, recovery-poll and timer-poll interval; the idle window lasts
 #   idleSecs, every plateau window holdSecs and the release window a whole
 #   number of units, each measured within +5 s (the snapshot's own latency).
@@ -493,17 +496,34 @@ $identity[0] as $id
          and ($plan.idleSecs / $unit) == (($plan.idleSecs / $unit) | floor)
          and ($plan.holdSecs / $unit) == (($plan.holdSecs / $unit) | floor)) as $planOk
       | (($rawWindows | length) > 0 and ($rawWindows[0].kind == "idle") and ($rawWindows[0].P == 0)) as $firstIdle
-      | ($unitOk and $planOk and $firstIdle and ($wl | all(.ok)) and ($rl | all(.ok))) as $ok
+      # Every entry of measurements.windows is a window (objs would silently
+      # drop a null one), and the plateau windows are exactly the REACHED
+      # plateaus (measurements.plateaus[].reached), one each, in order: a
+      # missing, duplicated or unplanned plateau window must not leave the
+      # others to pass the gates. A plateau that was not reached has no window
+      # by design; correctness.plateauReached compares the plateaus with the
+      # plan and FAILs that run (validity must not hide the FAIL).
+      | ($m.windows | if type == "array" then [to_entries[] | select(.value | type != "object") | .key] else null end) as $nonObj
+      | ([$rawWindows[] | select(.kind == "plateau") | .P]) as $plateauPs
+      | ([($m.plateaus | objs)[] | select(.reached == true) | .P]) as $reachedPs
+      | (($reachedPs | length) > 0 and $plateauPs == $reachedPs) as $coverOk
+      | ($unitOk and $planOk and $firstIdle and ($wl | all(.ok)) and ($rl | all(.ok))
+         and $nonObj == [] and $coverOk) as $ok
       | check("validity.windows"; "validity"; if $ok then "PASS" else "INVALID" end;
           {windowUnitSecs: $unit, nodeIntervals: $iv, idleSecs: $plan.idleSecs, holdSecs: $plan.holdSecs,
            holdRequestedSecs: $plan.holdRequestedSecs, windows: $wl, release: $rl};
           {unit: "a whole multiple of every node's wake-recheck, recovery-poll and timer-poll interval",
-           windowSecs: "planned length (idle, hold, or a whole number of units for the release) to + \(window_slack_secs) s"};
+           windowSecs: "planned length (idle, hold, or a whole number of units for the release) to + \(window_slack_secs) s",
+           plateauWindows: "exactly one window per reached plateau, in order; every entry of measurements.windows a window"};
           if $ok then "window unit \($unit) s (recheck/recovery/timer intervals \($iv[0].r)/\($iv[0].c)/\($iv[0].t) s); idle \($plan.idleSecs) s, hold \($plan.holdSecs) s (requested \($plan.holdRequestedSecs) s)\(if ($rl | length) > 0 then ", release \($rl[0].planned) s" else "" end); every window measured within + \(window_slack_secs) s of its planned length"
           else [
             (if $unitOk | not then "the window unit \($unit | tojson) is not a whole multiple of every node's intervals \($iv | tojson)" else null end),
             (if $planOk | not then "idle \($plan.idleSecs | tojson) s / hold \($plan.holdSecs | tojson) s are not whole units" else null end),
             (if $firstIdle | not then "windows[0] is not the idle window (P = 0)" else null end),
+            (if $nonObj == null then "measurements.windows is \($m.windows | type), not a list"
+             elif ($nonObj | length) > 0 then "measurements.windows\($nonObj | map("[\(.)]") | join(", ")) \(if ($nonObj | length) == 1 then "is" else "are" end) not a window"
+             else null end),
+            (if $coverOk | not then "plateau windows \($plateauPs | tojson) are not one per reached plateau \($reachedPs | tojson) (planned \($plan.plateaus | tojson)), in order" else null end),
             ($wl[] | select(.ok | not) | "\(.kind) window P=\(.P) lasted \(.windowSecs) s, planned \(.planned)"),
             ($rl[] | select(.ok | not) | "release window lasted \(.windowSecs) s, not a whole number of \($unit) s units")
           ] | reasons end) ),
