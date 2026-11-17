@@ -52,7 +52,8 @@ import java.lang.annotation.Target;
  * is production's default); they are validated like
  * {@link TestWorkflowEnvironment.Builder#defaultConcurrency(int, int)}. A
  * {@code @Nested} test class without its own {@code @MaestroTest} uses the
- * nearest enclosing class's.
+ * nearest enclosing class's, as JUnit runs it: a nested class inherited from
+ * an unannotated base takes the annotated subclass's limits.
  *
  * @see TestWorkflowEnvironment
  * @see MaestroTestExtension
