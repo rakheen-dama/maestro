@@ -1920,7 +1920,7 @@ public final class WorkflowExecutor {
                     continue; // still not started at the deadline: reported as still running
                 }
                 if (run.thread().getState() == Thread.State.NEW) {
-                    continue; // its start failed: the launcher unregistered it and released its lock
+                    continue; // the launch failed before start(): the launcher unregistered it and released its lock
                 }
                 run.thread().join(deadline.remaining());
             } catch (InterruptedException e) {
@@ -2504,7 +2504,6 @@ public final class WorkflowExecutor {
         } catch (RuntimeException | Error e) {
             if (running != null) {
                 runningWorkflows.remove(instance.workflowId(), running);
-                running.launched().countDown(); // never started: a drain waiting for it moves on
                 // A wake that saw this run registered may have stored a permit;
                 // no run will park on it now (3.2).
                 parkingLot.clearPending(instance.workflowId());
@@ -2514,6 +2513,13 @@ public final class WorkflowExecutor {
             } catch (RuntimeException | Error releaseFailure) {
                 // The launch's own failure is what the caller must see.
                 e.addSuppressed(releaseFailure);
+            } finally {
+                if (running != null) {
+                    // Never started. Released only after the lock is given back, so a
+                    // drain waiting for this launch does not let shutdown finish (and
+                    // the store be torn down) under the release.
+                    running.launched().countDown();
+                }
             }
             throw e;
         }
