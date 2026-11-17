@@ -8,9 +8,12 @@ import org.junit.jupiter.params.provider.MethodSource;
 import org.springframework.context.SmartLifecycle;
 
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -70,6 +73,30 @@ class GracefulShutdownHandlerTest {
             }
         });
         assertTrue(callback.await(2, SECONDS), "Spring must get its callback, or the phase waits out its timeout");
+    }
+
+    /**
+     * Review f7: when the {@code maestro-shutdown} thread cannot be started,
+     * the shutdown runs on the calling thread, and {@code stop(callback)}
+     * does not rethrow once the callback has run — Spring counts its phase
+     * latch down in the callback and again when {@code stop} throws.
+     */
+    @Test
+    void aShutdownThreadThatCannotStartRunsTheShutdownOnTheCallerAndCallsBackOnce() {
+        var engineRan = new AtomicInteger();
+        var handler = new GracefulShutdownHandler(() -> {
+            engineRan.incrementAndGet();
+            throw new ExecutorShutdownException("x");
+        }, body -> {
+            throw new RejectedExecutionException("no thread can be started");
+        });
+        handler.start();
+        var callbacks = new AtomicInteger();
+
+        assertDoesNotThrow(() -> handler.stop(callbacks::incrementAndGet),
+                "stop(callback) must not throw after it has called back");
+        assertEquals(1, engineRan.get(), "the engine shut down on the calling thread");
+        assertEquals(1, callbacks.get(), "Spring's callback ran exactly once");
     }
 
     @Test

@@ -6,6 +6,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.SmartLifecycle;
 
+import java.util.function.Consumer;
+
 /**
  * Shuts the Maestro workflow engine down when the Spring context closes, by
  * calling {@link WorkflowExecutor#shutdown()}: stop taking work, drain the
@@ -51,6 +53,7 @@ public class GracefulShutdownHandler implements SmartLifecycle {
     private static final Logger logger = LoggerFactory.getLogger(GracefulShutdownHandler.class);
 
     private final Runnable engineShutdown;
+    private final Consumer<Runnable> shutdownThreadStarter;
     private volatile boolean running;
 
     /**
@@ -69,7 +72,19 @@ public class GracefulShutdownHandler implements SmartLifecycle {
      * @param engineShutdown the engine's shutdown
      */
     GracefulShutdownHandler(Runnable engineShutdown) {
+        this(engineShutdown, body -> Thread.ofVirtual().name("maestro-shutdown").start(body));
+    }
+
+    /**
+     * Test seam: also replaces how the {@code maestro-shutdown} thread is
+     * started, so a test can make the start fail.
+     *
+     * @param engineShutdown        the engine's shutdown
+     * @param shutdownThreadStarter starts a thread running the given body
+     */
+    GracefulShutdownHandler(Runnable engineShutdown, Consumer<Runnable> shutdownThreadStarter) {
         this.engineShutdown = engineShutdown;
+        this.shutdownThreadStarter = shutdownThreadStarter;
     }
 
     @Override
@@ -94,7 +109,8 @@ public class GracefulShutdownHandler implements SmartLifecycle {
      * Starts the engine's shutdown on the virtual thread {@code maestro-shutdown}
      * and returns at once. {@code callback} runs on that thread when the
      * shutdown has returned or thrown. If the thread cannot be started, the
-     * same work runs on the calling thread.
+     * same work runs on the calling thread, and nothing is rethrown once the
+     * callback has run.
      *
      * @param callback Spring's callback, run exactly once
      */
@@ -116,11 +132,16 @@ public class GracefulShutdownHandler implements SmartLifecycle {
             }
         };
         try {
-            Thread.ofVirtual().name("maestro-shutdown").start(body);
+            shutdownThreadStarter.accept(body);
         } catch (RuntimeException | OutOfMemoryError cannotStart) {
             logger.warn("Could not start the maestro-shutdown thread ({}); shutting down on the calling thread",
                     cannotStart.toString());
-            body.run();
+            try {
+                body.run();
+            } catch (MaestroControlFlowError alreadyReported) {
+                // Logged by the body, and Spring has had its callback: rethrowing
+                // here would make Spring count its phase latch down a second time.
+            }
         }
     }
 
