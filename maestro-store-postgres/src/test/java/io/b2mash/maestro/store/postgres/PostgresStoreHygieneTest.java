@@ -19,6 +19,8 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.time.Duration;
 import java.time.Instant;
@@ -31,6 +33,7 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -155,35 +158,35 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
 
         /**
          * The manual purge {@code docs/operations.md} §11.5 gives for the
-         * history of a service name no node runs any more: one batch of at
-         * most 500 terminal instances finished over 30 days ago, children
-         * before the instances. Repeat until the last statement deletes no
-         * row. Every parameter is the service name.
+         * history of a service name no node runs any more: ONE statement that
+         * deletes at most 500 terminal instances of the service finished
+         * longer ago than the age, with their signals, timers and events.
+         * Repeat it until it reports 0 rows. The two parameters are the
+         * service name and the age (an interval text such as
+         * {@code '30 days'}), each written once.
          *
-         * <p><b>All five statements run in one transaction</b>, because that
-         * is what makes the script safe beside a live service. The first
-         * statement locks its candidates ({@code FOR UPDATE SKIP LOCKED}) until
-         * the commit: an operator Retry of a {@code FAILED} candidate waits for
-         * the batch and then finds no row, and a candidate some other
-         * transaction holds is skipped, not waited on. Each delete also
-         * re-checks service, status and age, so a candidate that no longer
-         * qualifies keeps its row and its whole history.
+         * <p>One statement is atomic even in autocommit. The {@code candidates}
+         * CTE locks its rows ({@code FOR UPDATE SKIP LOCKED}) for the whole
+         * statement: a candidate another transaction holds (a Retry in
+         * flight, say) is skipped, not waited on, and keeps its row and
+         * history; a Retry that starts later waits and then finds no row. The
+         * data-modifying CTEs run whether or not anything reads them, and
+         * the foreign keys are checked at the end of the statement, after
+         * the children are gone.
          */
-        static final String MANUAL_PURGE_ELIGIBLE = "SELECT p.id FROM maestro_purge_ids p"
-                + " JOIN maestro_workflow_instance i ON i.id = p.id"
-                + " WHERE i.service_name = ? AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
-                + " AND i.completed_at < now() - interval '30 days'";
-
-        static final List<String> MANUAL_PURGE_SQL = List.of(
-                "CREATE TEMPORARY TABLE maestro_purge_ids ON COMMIT DROP AS"
-                        + " SELECT id FROM maestro_workflow_instance"
-                        + " WHERE service_name = ? AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
-                        + " AND completed_at < now() - interval '30 days'"
-                        + " ORDER BY completed_at LIMIT 500 FOR UPDATE SKIP LOCKED",
-                "DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN (" + MANUAL_PURGE_ELIGIBLE + ")",
-                "DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN (" + MANUAL_PURGE_ELIGIBLE + ")",
-                "DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN (" + MANUAL_PURGE_ELIGIBLE + ")",
-                "DELETE FROM maestro_workflow_instance WHERE id IN (" + MANUAL_PURGE_ELIGIBLE + ")");
+        static final String MANUAL_PURGE_SQL = "WITH candidates AS ("
+                + " SELECT id FROM maestro_workflow_instance"
+                + " WHERE service_name = ? AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
+                + " AND completed_at < now() - CAST(? AS interval)"
+                + " ORDER BY completed_at LIMIT 500"
+                + " FOR UPDATE SKIP LOCKED),"
+                + " purged_signals AS (DELETE FROM maestro_workflow_signal"
+                + " WHERE workflow_instance_id IN (SELECT id FROM candidates)),"
+                + " purged_timers AS (DELETE FROM maestro_workflow_timer"
+                + " WHERE workflow_instance_id IN (SELECT id FROM candidates)),"
+                + " purged_events AS (DELETE FROM maestro_workflow_event"
+                + " WHERE workflow_instance_id IN (SELECT id FROM candidates))"
+                + " DELETE FROM maestro_workflow_instance WHERE id IN (SELECT id FROM candidates)";
 
         @BeforeEach
         void fixture() {
@@ -290,67 +293,60 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
             for (int i = 0; i < 3; i++) {
                 attachHistory(finished("orders-old-" + i, "orders-old", WorkflowStatus.COMPLETED, 40));
             }
-            int rounds = 0;
-            int deleted;
-            do {
-                deleted = runManualPurge("orders-old");
-                rounds++;
-            } while (deleted > 0 && rounds < 10);
-            assertEquals(0, deleted, "the manual purge ran dry");
+            attachHistory(finished("orders-old-f", "orders-old", WorkflowStatus.FAILED, 40));
+            attachHistory(finished("orders-old-t", "orders-old", WorkflowStatus.TERMINATED, 40));
+            assertEquals(List.of(5, 0), List.of(runManualPurge("orders-old", "30 days"),
+                    runManualPurge("orders-old", "30 days")), "one statement took the batch; the next reported 0");
             assertEquals(0, instancesOf("orders-old"));
             assertEquals(0, orphanedChildRows());
             assertEquals(3, instancesOf("orders"), "another service's rows are untouched");
             assertEquals(2, instancesOf("billing"), "another service's rows are untouched");
         }
 
-        /**
-         * An operator Retry of a FAILED candidate, started after the manual
-         * purge selected it: it either waits for the purge and then finds no
-         * row, or the retried workflow keeps its row and history. Never a
-         * retried workflow whose row or history the purge deleted.
-         */
         @Test
-        void aRetryStartedAfterTheManualPurgesSelectNeverLosesTheRetriedWorkflow() throws Exception {
-            var failed = finished("orders-old-f", "orders-old", WorkflowStatus.FAILED, 40);
-            attachHistory(failed);
-            CompletableFuture<Boolean> retry;
-            Boolean retriedBeforeThePurgeEnded;
-            try (Connection conn = dataSource.getConnection()) {
-                conn.setAutoCommit(false);
-                runManualPurge(conn, 0, 1, "orders-old");
-                retry = CompletableFuture.supplyAsync(() -> retry(failed));
-                retriedBeforeThePurgeEnded = retry.copy().completeOnTimeout(null, 1, SECONDS).get();
-                runManualPurge(conn, 1, MANUAL_PURGE_SQL.size(), "orders-old");
-                conn.commit();
+        void theManualPurgeTakesOnlyTheNamedServicesRowsOlderThanTheAge() throws Exception {
+            attachHistory(finished("old-40", "orders-old", WorkflowStatus.COMPLETED, 40));
+            attachHistory(finished("old-10", "orders-old", WorkflowStatus.COMPLETED, 10));
+            attachHistory(finished("other-40", "orders-other", WorkflowStatus.COMPLETED, 40));
+            assertEquals(1, runManualPurge("orders-old", "30 days"));
+            assertEquals(List.of(0L, 1L, 2L, 1L, 2L), List.of(rowsOfWorkflow("old-40"), rowsOfWorkflow("old-10"),
+                    childRowsOfWorkflow("maestro_workflow_event", "old-10"), rowsOfWorkflow("other-40"),
+                    childRowsOfWorkflow("maestro_workflow_event", "other-40")));
+        }
+
+        @Test
+        void theManualPurgeTakesAtMostFiveHundredInstancesPerRun() throws Exception {
+            for (int i = 0; i < 501; i++) {
+                finished("old-" + i, "orders-old", WorkflowStatus.COMPLETED, 40);
             }
-            boolean retried = retry.get(10, SECONDS);
-            assertEquals(List.of("retried=false", "row=0", "events=0", "orphans=0"),
-                    List.of("retried=" + retried, "row=" + rowsOfWorkflow("orders-old-f"),
-                            "events=" + childRowsOfWorkflow("maestro_workflow_event", "orders-old-f"),
-                            "orphans=" + orphanedChildRows()),
-                    "the retry waited for the purge's lock (retried before the purge ended: "
-                            + retriedBeforeThePurgeEnded + ")");
+            assertEquals(List.of(500, 1, 0), List.of(runManualPurge("orders-old", "30 days"),
+                    runManualPurge("orders-old", "30 days"), runManualPurge("orders-old", "30 days")));
         }
 
         /**
-         * The script's second safeguard: a candidate that stopped qualifying
-         * after the select (here reopened inside the script's own transaction,
-         * which holds its lock) keeps its row and its whole history.
+         * A Retry in flight — it has reopened a FAILED candidate and not yet
+         * committed — when the manual purge runs: the purge skips the
+         * candidate at once, and the retried workflow keeps its row and its
+         * whole history.
          */
         @Test
-        void aCandidateThatNoLongerQualifiesAtDeleteTimeKeepsItsRowAndHistory() throws Exception {
+        void aRetryInFlightWhenTheManualPurgeRunsKeepsItsRowAndHistory() throws Exception {
             attachHistory(finished("orders-old-f", "orders-old", WorkflowStatus.FAILED, 40));
             attachHistory(finished("orders-old-c", "orders-old", WorkflowStatus.COMPLETED, 40));
-            try (Connection conn = dataSource.getConnection()) {
-                conn.setAutoCommit(false);
-                runManualPurge(conn, 0, 1, "orders-old");
-                try (var ps = conn.prepareStatement("UPDATE maestro_workflow_instance SET status = 'RUNNING',"
+            Integer deleted;
+            CompletableFuture<Integer> purge;
+            try (Connection retry = dataSource.getConnection()) {
+                retry.setAutoCommit(false);
+                try (var ps = retry.prepareStatement("UPDATE maestro_workflow_instance SET status = 'RUNNING',"
                         + " completed_at = NULL, version = version + 1 WHERE workflow_id = 'orders-old-f'")) {
                     assertEquals(1, ps.executeUpdate());
                 }
-                runManualPurge(conn, 1, MANUAL_PURGE_SQL.size(), "orders-old");
-                conn.commit();
+                purge = CompletableFuture.supplyAsync(() -> manualPurge("orders-old", "30 days"));
+                deleted = purge.copy().completeOnTimeout(-1, 5, SECONDS).get();
+                retry.commit();
             }
+            purge.get(10, SECONDS);
+            assertEquals(1, deleted, "the manual purge waited on the Retry (-1) instead of skipping its row");
             assertEquals(List.of(1L, 2L, 2L, 2L, 0L), List.of(rowsOfWorkflow("orders-old-f"),
                     childRowsOfWorkflow("maestro_workflow_event", "orders-old-f"),
                     childRowsOfWorkflow("maestro_workflow_signal", "orders-old-f"),
@@ -369,13 +365,7 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                      var rs = ps.executeQuery()) {
                     assertTrue(rs.next());
                 }
-                var purge = CompletableFuture.supplyAsync(() -> {
-                    try {
-                        return runManualPurge("orders-old");
-                    } catch (Exception e) {
-                        throw new IllegalStateException(e);
-                    }
-                });
+                var purge = CompletableFuture.supplyAsync(() -> manualPurge("orders-old", "30 days"));
                 var deleted = purge.copy().completeOnTimeout(-1, 5, SECONDS).get();
                 conn2.rollback();
                 purge.get(10, SECONDS);
@@ -386,36 +376,51 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                     childRowsOfWorkflow("maestro_workflow_signal", "orders-old-0"),
                     childRowsOfWorkflow("maestro_workflow_timer", "orders-old-0"),
                     rowsOfWorkflow("orders-old-1")));
-        }
-
-        /** Runs all of {@link #MANUAL_PURGE_SQL} as one transaction; returns the instance rows it deleted. */
-        private int runManualPurge(String serviceName) throws Exception {
-            try (Connection conn = dataSource.getConnection()) {
-                conn.setAutoCommit(false);
-                int last = runManualPurge(conn, 0, MANUAL_PURGE_SQL.size(), serviceName);
-                conn.commit();
-                return last;
-            }
+            assertEquals(1, runManualPurge("orders-old", "30 days"), "once released, the next run takes it");
         }
 
         /**
-         * Runs statements {@code from} (inclusive) to {@code to} (exclusive)
-         * of {@link #MANUAL_PURGE_SQL} on {@code conn}'s transaction, binding
-         * the service name to every parameter; returns the last update count.
+         * Guard: the script {@code docs/operations.md} §11.5 prints is this
+         * statement, with {@code :'service'} and {@code :'age'} for the two
+         * parameters, each written exactly once.
          */
-        private int runManualPurge(Connection conn, int from, int to, String serviceName) throws Exception {
-            int last = 0;
-            for (int i = from; i < to; i++) {
-                var sql = MANUAL_PURGE_SQL.get(i);
-                try (var ps = conn.prepareStatement(sql)) {
-                    int params = (int) sql.chars().filter(c -> c == '?').count();
-                    for (int p = 1; p <= params; p++) {
-                        ps.setString(p, serviceName);
-                    }
-                    last = ps.executeUpdate();
-                }
+        @Test
+        void theOperationsGuidePrintsExactlyThisStatement() throws Exception {
+            var guide = Files.readString(Path.of("..", "docs", "operations.md"));
+            var start = guide.indexOf("\\set ON_ERROR_STOP on\n");
+            assertTrue(start >= 0, "the guide's manual purge block starts with \\set ON_ERROR_STOP on");
+            var block = guide.substring(start, guide.indexOf("```", start));
+            var statement = block.lines().filter(l -> !l.startsWith("\\")).collect(Collectors.joining(" "));
+            assertEquals(List.of(1, 1), List.of(occurrences(statement, ":'service'"), occurrences(statement, ":'age'")),
+                    "service and age are each written once");
+            assertEquals(normalised(MANUAL_PURGE_SQL),
+                    normalised(statement.replace(":'service'", "?").replace(":'age'", "?").replace(";", "")));
+        }
+
+        /** Runs {@link #MANUAL_PURGE_SQL} once, in autocommit; returns the instance rows it deleted. */
+        private int runManualPurge(String serviceName, String age) throws Exception {
+            try (Connection conn = dataSource.getConnection();
+                 var ps = conn.prepareStatement(MANUAL_PURGE_SQL)) {
+                ps.setString(1, serviceName);
+                ps.setString(2, age);
+                return ps.executeUpdate();
             }
-            return last;
+        }
+
+        private int manualPurge(String serviceName, String age) {
+            try {
+                return runManualPurge(serviceName, age);
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+
+        private static int occurrences(String text, String token) {
+            return text.split(java.util.regex.Pattern.quote(token), -1).length - 1;
+        }
+
+        private static String normalised(String sql) {
+            return sql.replaceAll("\\s+", " ").replace("( ", "(").replace(" )", ")").strip();
         }
 
         /** The engine's Retry write; {@code false} when the row is gone. */

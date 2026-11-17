@@ -1331,56 +1331,61 @@ FROM maestro_workflow_instance WHERE completed_at IS NOT NULL
 GROUP BY 1, 2;
 ```
 
-To remove one abandoned name's history, run this script in `psql`. It deletes
-at most 500 terminal workflows finished over 30 days ago per run, children
-before the instances; repeat it until the last `DELETE` reports `DELETE 0`.
+To remove one abandoned name's history, run this in `psql`, after setting
+the name and the age once at the top:
 
 ```sql
+\set ON_ERROR_STOP on
 \set service 'orders-old'
-BEGIN;
-CREATE TEMPORARY TABLE maestro_purge_ids ON COMMIT DROP AS
+\set age '30 days'
+WITH candidates AS (
   SELECT id FROM maestro_workflow_instance
   WHERE service_name = :'service' AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')
-  AND completed_at < now() - interval '30 days'
-  ORDER BY completed_at LIMIT 500 FOR UPDATE SKIP LOCKED;
-DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN (SELECT p.id FROM maestro_purge_ids p
-  JOIN maestro_workflow_instance i ON i.id = p.id
-  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
-  AND i.completed_at < now() - interval '30 days');
-DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN (SELECT p.id FROM maestro_purge_ids p
-  JOIN maestro_workflow_instance i ON i.id = p.id
-  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
-  AND i.completed_at < now() - interval '30 days');
-DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN (SELECT p.id FROM maestro_purge_ids p
-  JOIN maestro_workflow_instance i ON i.id = p.id
-  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
-  AND i.completed_at < now() - interval '30 days');
-DELETE FROM maestro_workflow_instance WHERE id IN (SELECT p.id FROM maestro_purge_ids p
-  JOIN maestro_workflow_instance i ON i.id = p.id
-  WHERE i.service_name = :'service' AND i.status IN ('COMPLETED', 'TERMINATED', 'FAILED')
-  AND i.completed_at < now() - interval '30 days');
-COMMIT;
+  AND completed_at < now() - CAST(:'age' AS interval)
+  ORDER BY completed_at LIMIT 500
+  FOR UPDATE SKIP LOCKED),
+purged_signals AS (DELETE FROM maestro_workflow_signal
+  WHERE workflow_instance_id IN (SELECT id FROM candidates)),
+purged_timers AS (DELETE FROM maestro_workflow_timer
+  WHERE workflow_instance_id IN (SELECT id FROM candidates)),
+purged_events AS (DELETE FROM maestro_workflow_event
+  WHERE workflow_instance_id IN (SELECT id FROM candidates))
+DELETE FROM maestro_workflow_instance WHERE id IN (SELECT id FROM candidates);
 ```
 
-**Run it as one transaction, as written** (`BEGIN` … `COMMIT`; never in
-autocommit). That is what makes it safe beside running services:
+**What it does.** It is one statement. It picks at most 500 terminal
+workflows (`COMPLETED`, `TERMINATED` or `FAILED`) recorded under that name and
+finished longer ago than the age, oldest first. It deletes their signals,
+timers and events, then the workflows themselves. `psql` prints `DELETE n`,
+the number of workflows removed. **Run it again until it prints `DELETE 0`.**
 
-- The first statement locks its candidates (`FOR UPDATE SKIP LOCKED`) until the
-  `COMMIT`. An operator Retry of a `FAILED` candidate waits for the batch, then
-  finds no row; a candidate another transaction holds is skipped, not waited
-  on, and keeps its row and history.
-- Every delete re-checks name, status and age, so a candidate that stopped
-  qualifying keeps its row and its whole history.
-- Without the transaction, the temporary table is dropped after its own
-  statement and the locks are released at once.
+**Why it is safe beside running services:**
 
-The statements are, whitespace aside, the ones `PostgresStoreHygieneTest$ScopedPurge`
-runs (`MANUAL_PURGE_SQL`, its parameters bound to the service name):
-`theDocumentedManualPurgeRemovesAnAbandonedServicesHistory`,
-`aRetryStartedAfterTheManualPurgesSelectNeverLosesTheRetriedWorkflow`,
-`aCandidateThatNoLongerQualifiesAtDeleteTimeKeepsItsRowAndHistory` and
-`theManualPurgeSkipsACandidateLockedElsewhereAndLeavesItsHistory`, on Postgres
-16. Change `30 days` to the age you want.
+- **It is atomic, even in autocommit.** A single statement either removes a
+  batch completely or changes nothing.
+- **The name and the age are written once**, in the `\set` lines, so the
+  child deletes and the workflow delete cannot disagree.
+- **It locks its candidates for the whole statement** (`FOR UPDATE SKIP
+  LOCKED`):
+  - a candidate that another transaction holds is skipped, not waited on,
+    and keeps its row and history. A Retry in flight is one such
+    transaction;
+  - a Retry that starts later waits for the statement, then finds no row.
+
+Tested on Postgres 16 (Testcontainers `postgres:16-alpine`) by
+`PostgresStoreHygieneTest$ScopedPurge`:
+
+| Test | Shows |
+|---|---|
+| `theDocumentedManualPurgeRemovesAnAbandonedServicesHistory` | The history goes and nothing is orphaned. |
+| `theManualPurgeTakesOnlyTheNamedServicesRowsOlderThanTheAge` | Only the named service, only past the age. |
+| `theManualPurgeTakesAtMostFiveHundredInstancesPerRun` | Runs of 501 rows report 500, 1, then 0. |
+| `aRetryInFlightWhenTheManualPurgeRunsKeepsItsRowAndHistory` | A Retry in flight keeps its row and history. |
+| `theManualPurgeSkipsACandidateLockedElsewhereAndLeavesItsHistory` | A locked candidate is skipped, not waited on. |
+| `theOperationsGuidePrintsExactlyThisStatement` | This text is the tested statement. |
+
+The tests bind the name and the age as the two parameters. The statement is
+not tested on Postgres 14.
 
 **The cost of scoping in shared tables (Issue 78).** The sweep's candidate
 select still walks `idx_wf_instance_terminal (status, completed_at)` and
