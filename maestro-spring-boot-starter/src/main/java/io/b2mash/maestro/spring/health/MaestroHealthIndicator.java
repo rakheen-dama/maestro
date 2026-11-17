@@ -68,7 +68,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *       ({@code management.endpoint.health.group.readiness.include=readinessState,maestro});</li>
  *   <li>a dead loop reads {@code DOWN} and its thread's end is logged at
  *       {@code ERROR}; the remedy is restarting the node, which readiness does
- *       not do.</li>
+ *       not do;</li>
+ *   <li>{@link #health()} can take up to {@link #STORE_PROBE_TIMEOUT} (2 s) to
+ *       answer, longer than a kubelet probe's default {@code timeoutSeconds}
+ *       of 1: give a readiness probe that includes {@code maestro}
+ *       {@code timeoutSeconds: 3} or more, or a slow store fails the HTTP
+ *       probe itself and the {@code UNKNOWN} (HTTP 200) answer never reaches
+ *       the kubelet.</li>
  * </ul>
  * Spring Boot's default status order is {@code DOWN, OUT_OF_SERVICE, UP,
  * UNKNOWN}, so an {@code UNKNOWN} {@code maestro} leaves an aggregate that has
