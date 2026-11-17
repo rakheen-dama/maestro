@@ -769,7 +769,7 @@ it replays a workflow against its recorded history.
 | `maestro.shutdown.timeout`            | `Duration` | `20s`   | The deadline for the whole engine shutdown: the drain of in-flight runs, the background loops, the instance-lock renewer and the lifecycle-event flush all share it. Runs still executing at the deadline are left running, never interrupted. Keep it at least 2 s below `spring.lifecycle.timeout-per-shutdown-phase`. See [Operations §15](operations.md#15-shutdown-one-deadline-and-the-grace-period). |
 | `maestro.signal.wake-recheck-interval`| `Duration` | `30s`   | How often a parked workflow re-reads the store for a wake it may have missed — a signal ingested elsewhere, or a timer fired/cancelled by a remote timer-poller leader. |
 | `maestro.signal.wake-notify.enabled`  | `boolean`  | `true`  | Whether the Postgres `LISTEN/NOTIFY` cross-node signal wake is active. Set `false` behind PgBouncer in transaction-pooling mode (`LISTEN` needs a session); wake then falls back to `wake-recheck-interval`. |
-| `maestro.signal.janitor-interval`     | `Duration` | `1h`    | How often unconsumed signals addressed to finished workflows are purged. Every node runs the janitor (the purge is idempotent; no leader election). |
+| `maestro.signal.janitor-interval`     | `Duration` | `1h`    | How often unconsumed signals addressed to finished workflows are purged. Every node runs the janitor, without leader election (the purge is idempotent). It deletes only this service's signals (those of workflows recorded under this node's `maestro.service-name`), in batches of 1,000, pausing between batches as long as the previous batch took (at most 5 s), and at most 1,000 batches (1,000,000 signals) per sweep; a larger backlog takes more than one interval (`SignalJanitorBatchingTest`, `PostgresStoreHygieneTest`). |
 | `maestro.signal.terminal-retention`   | `Duration` | `7d`    | How long after a workflow reaches `COMPLETED`/`TERMINATED` its unconsumed signals are kept; `FAILED` workflows keep theirs because they can be retried. Orphaned (pre-delivery) and consumed signals are never purged by the janitor. |
 
 The first two were previously hardcoded 30-second constants with no
@@ -832,7 +832,17 @@ retention — the instance row *and its whole history*: events, signals (consume
 or not) and timers, so the four `maestro_*` tables stop growing without bound.
 One node per service sweeps at a time, elected on
 `maestro:leader:retention:{service}` (15 s TTL, re-checked before every batch);
-each batch is one transaction, children deleted before the parent. See
+each batch is one transaction, children deleted before the parent. Between two
+batches the sweeper waits as long as the previous batch took, at most 5 s (a
+third of the leader TTL), so a sweep keeps the database busy about half of the
+time it runs; a sweep of B batches of t each takes about B·t + (B−1)·min(t, 5 s)
+(arithmetic; the pause rule is `RetentionSweeperPacingTest`). A sweep purges
+only workflows recorded under this node's `maestro.service-name`
+(`RetentionSweeperScopeTest`, `PostgresStoreHygieneTest`): services sharing the
+tables each purge their own rows with their own retentions, and rows recorded
+under a name no node runs any more are purged by nobody — see
+[Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name)
+for how to find and remove them. See
 [Operations § Retention and table growth](operations.md#11-retention-and-table-growth)
 for what a purge means for the dashboard, for workflow-ID reuse and for late
 signals.
@@ -845,7 +855,7 @@ signals.
 | `maestro.retention.terminated-retention` | `Duration` | `30d`   | How long a `TERMINATED` workflow is kept after it was terminated. Its leftover `PENDING` timers go with it. |
 | `maestro.retention.failed-retention`     | `Duration` | `90d`   | How long a `FAILED` workflow is kept after it failed. Longer by default because an operator may still retry it; once purged, a retry reports the workflow not found. |
 | `maestro.retention.batch-size`           | `int`      | `500`   | Instances deleted per transaction (plus all of their child rows). 1 to 10 000; each candidate is one JDBC bind parameter in the batch's deletes and pgjdbc allows 32 767 per statement, so a larger value is rejected at startup rather than failing every batch. |
-| `maestro.retention.max-batches-per-sweep`| `int`      | `100`   | Batches per status per sweep. Bounds one sweep's work on a large backlog: at the defaults, at most 50 000 instances per status per hour; the rest waits for the next interval. |
+| `maestro.retention.max-batches-per-sweep`| `int`      | `100`   | Batches per status per sweep. Bounds one sweep's work on a large backlog: at the defaults, at most 50 000 instances per status per hour; the rest waits for the next interval. The pause between batches adds no batch. |
 
 `maestro.signal.terminal-retention` (above) is independent and narrower: it
 purges only the *unconsumed signals* of `COMPLETED`/`TERMINATED` workflows,

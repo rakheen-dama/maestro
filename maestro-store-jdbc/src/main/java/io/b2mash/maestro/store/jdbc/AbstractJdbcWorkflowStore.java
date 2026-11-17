@@ -38,7 +38,10 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -124,6 +127,9 @@ import java.util.stream.Collectors;
  *       purge's candidate rows (Postgres: {@code LIMIT ? FOR UPDATE SKIP
  *       LOCKED}); the portable default uses {@code FETCH FIRST ? ROWS ONLY}
  *       and relies on the batch's count check instead.</li>
+ *   <li>{@link #getServicePurgeCandidatesSql()} — the same for the
+ *       service-scoped retention purge, which the engine's sweeper uses;
+ *       override it alongside {@link #getPurgeCandidatesSql()}.</li>
  *   <li>{@link #setJsonParameter(PreparedStatement, int, JsonNode)} — override
  *       to use database-native JSON types (e.g., Postgres JSONB via PGobject).</li>
  *   <li>{@link #getJsonValue(ResultSet, String)} — override if the database
@@ -329,6 +335,32 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     /**
+     * Returns the SQL selecting one batch of one service's retention-purge
+     * candidates: {@link #getPurgeCandidatesSql()} restricted to the instances
+     * whose {@code service_name} equals a parameter.
+     *
+     * <p>The SQL must take exactly four parameters, in order: the status name
+     * ({@code VARCHAR}), the cutoff ({@code TIMESTAMP}), the service name
+     * ({@code VARCHAR}), and the batch size ({@code INT}); select {@code id}
+     * only; filter on {@code status = ? AND completed_at < ? AND
+     * service_name = ?}; and order by {@code completed_at} ascending. The
+     * default is the portable {@code ORDER BY completed_at ASC FETCH FIRST ?
+     * ROWS ONLY}, which locks nothing; the locking trade-offs of
+     * {@link #getPurgeCandidatesSql()} apply unchanged, and a dialect that
+     * overrides one should override both (Postgres:
+     * {@code LIMIT ? FOR UPDATE SKIP LOCKED}).
+     *
+     * @return the parameterized SQL string
+     * @see #purgeTerminalInstancesBefore(String, WorkflowStatus, Instant, int)
+     */
+    protected String getServicePurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ? AND service_name = ?"
+                + " ORDER BY completed_at ASC"
+                + " FETCH FIRST ? ROWS ONLY";
+    }
+
+    /**
      * Sets a JSON parameter on a {@link PreparedStatement}.
      *
      * <p>Default implementation uses {@link PreparedStatement#setString(int, String)}.
@@ -483,6 +515,49 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             }
             ps.setInt(index, limit);
         }, this::mapInstance);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One read: {@code SELECT service_name, count(*)} over the active
+     * statuses, {@code service_name <> ?} and {@code workflow_type IN (...)}
+     * (one bind per type), {@code GROUP BY service_name ORDER BY 2 DESC, 1
+     * FETCH FIRST ? ROWS ONLY}. The status list is the one the partial
+     * active-instance indexes are built on, so its cost follows the active
+     * rows of every service, never the terminal ones. An empty
+     * {@code workflowTypes} returns before a connection is borrowed.
+     */
+    @Override
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
+            String serviceName, Set<String> workflowTypes, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(workflowTypes, "workflowTypes");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        if (workflowTypes.isEmpty()) {
+            return Map.of();
+        }
+        var types = List.copyOf(workflowTypes);
+        String sql = "SELECT service_name, count(*) FROM " + tableName("workflow_instance")
+                + " WHERE status IN (" + ACTIVE_STATUS_SQL + ")"
+                + " AND service_name <> ? AND workflow_type IN ("
+                + String.join(", ", Collections.nCopies(types.size(), "?")) + ")"
+                + " GROUP BY service_name ORDER BY 2 DESC, 1 FETCH FIRST ? ROWS ONLY";
+
+        var counts = new LinkedHashMap<String, Long>();
+        for (var row : queryList(sql, ps -> {
+            int index = 1;
+            ps.setString(index++, serviceName);
+            for (var type : types) {
+                ps.setString(index++, type);
+            }
+            ps.setInt(index, limit);
+        }, rs -> Map.entry(rs.getString(1), rs.getLong(2)))) {
+            counts.put(row.getKey(), row.getValue());
+        }
+        return counts;
     }
 
     @Override
@@ -1177,6 +1252,55 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        return purge(status, cutoff, batchSize, null,
+                conn -> selectPurgeCandidates(conn, getPurgeCandidatesSql(), ps -> {
+                    ps.setString(1, status.name());
+                    ps.setTimestamp(2, Timestamp.from(cutoff));
+                    ps.setInt(3, batchSize);
+                }));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same single transaction as the unscoped form, with the candidate
+     * select {@link #getServicePurgeCandidatesSql()}. The instance delete
+     * re-checks {@code service_name} as well as status and cutoff: the engine
+     * never changes an instance's service name, but an operator may correct
+     * it by hand (docs/operations.md §11.5). Where the candidate select does
+     * not lock its rows (the portable SQL), a candidate renamed between the
+     * select and the delete makes the delete count fall short, and the whole
+     * batch, children included, rolls back, as for a retried candidate. A
+     * select that locks its rows (Postgres) excludes the race outright.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purge(status, cutoff, batchSize, serviceName,
+                conn -> selectPurgeCandidates(conn, getServicePurgeCandidatesSql(), ps -> {
+                    ps.setString(1, status.name());
+                    ps.setTimestamp(2, Timestamp.from(cutoff));
+                    ps.setString(3, serviceName);
+                    ps.setInt(4, batchSize);
+                }));
+    }
+
+    /** Selects one batch of purge candidate ids on the caller's transaction. */
+    @FunctionalInterface
+    private interface CandidateSelect {
+        List<UUID> select(Connection conn) throws SQLException;
+    }
+
+    /**
+     * One purge batch: validates the arguments, then selects the candidates
+     * with {@code select} and deletes them with their history in one
+     * transaction (see {@link #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)}).
+     * A non-null {@code serviceName} is re-checked in the instance delete with
+     * the status and the cutoff.
+     */
+    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize, @Nullable String serviceName,
+                              CandidateSelect select) {
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(cutoff, "cutoff");
         if (!status.isTerminal()) {
@@ -1191,7 +1315,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             conn.setAutoCommit(false);
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
-                var ids = selectPurgeCandidates(conn, status, cutoff, batchSize);
+                var ids = select.select(conn);
                 if (ids.isEmpty()) {
                     conn.rollback();
                     settled = true;
@@ -1205,20 +1329,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 int events = executeUpdate(conn, "DELETE FROM " + tableName("workflow_event")
                         + " WHERE workflow_instance_id IN (" + in + ")", ps -> setIds(ps, ids, 1));
                 int instances = executeUpdate(conn, "DELETE FROM " + tableName("workflow_instance")
-                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?", ps -> {
+                        + " WHERE id IN (" + in + ") AND status = ? AND completed_at < ?"
+                        + (serviceName == null ? "" : " AND service_name = ?"), ps -> {
                     int next = setIds(ps, ids, 1);
                     ps.setString(next, status.name());
                     ps.setTimestamp(next + 1, Timestamp.from(cutoff));
+                    if (serviceName != null) {
+                        ps.setString(next + 2, serviceName);
+                    }
                 });
                 if (instances != ids.size()) {
                     // A candidate stopped qualifying between select and delete
-                    // (a retry flipped it to RUNNING). Its memoization log is
-                    // in this transaction's delete set — roll everything back
-                    // rather than leave a live workflow with no history.
+                    // (a retry flipped it to RUNNING, or its service name was
+                    // corrected). Its history is in this transaction's delete
+                    // set — roll everything back rather than leave a workflow
+                    // with no history.
                     conn.rollback();
                     settled = true;
                     log.warn("Retention purge of {} {} instance(s) rolled back: only {} still qualified at delete "
-                            + "time — a candidate was retried concurrently; will retry next sweep",
+                            + "time — a candidate was retried or moved to another service concurrently; will "
+                            + "retry next sweep",
                             ids.size(), status, instances);
                     return PurgeResult.EMPTY;
                 }
@@ -1240,13 +1370,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
-    /** The candidate select of {@link #purgeTerminalInstancesBefore}, on the caller's transaction. */
-    private List<UUID> selectPurgeCandidates(Connection conn, WorkflowStatus status, Instant cutoff,
-                                             int batchSize) throws SQLException {
-        try (var ps = conn.prepareStatement(getPurgeCandidatesSql())) {
-            ps.setString(1, status.name());
-            ps.setTimestamp(2, Timestamp.from(cutoff));
-            ps.setInt(3, batchSize);
+    /** Runs a purge candidate select on the caller's transaction and returns the selected ids. */
+    private List<UUID> selectPurgeCandidates(Connection conn, String sql, StatementSetter params)
+            throws SQLException {
+        try (var ps = conn.prepareStatement(sql)) {
+            params.set(ps);
             try (var rs = ps.executeQuery()) {
                 var ids = new ArrayList<UUID>();
                 while (rs.next()) {
@@ -1657,6 +1785,39 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                 + WorkflowStatus.TERMINATED.name() + "') AND completed_at < ?)";
 
         return update(sql, ps -> ps.setTimestamp(1, Timestamp.from(cutoff)));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One dialect-neutral statement in autocommit: a {@code DELETE} whose
+     * {@code id IN (SELECT ...)} subquery joins the instance, filters on its
+     * status, {@code completed_at} and {@code service_name}, and takes the
+     * first {@code limit} rows with the portable {@code FETCH FIRST ? ROWS
+     * ONLY} (Postgres accepts it with a bind parameter). The join leaves
+     * orphans out, and the outer {@code consumed = FALSE} re-checks a row
+     * consumed after the subquery read it.
+     */
+    @Override
+    public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        Objects.requireNonNull(cutoff, "cutoff");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+
+        String sql = "DELETE FROM " + tableName("workflow_signal")
+                + " WHERE consumed = FALSE AND id IN (SELECT s.id FROM " + tableName("workflow_signal") + " s"
+                + " JOIN " + tableName("workflow_instance") + " i ON i.id = s.workflow_instance_id"
+                + " WHERE s.consumed = FALSE AND i.status IN ('" + WorkflowStatus.COMPLETED.name() + "', '"
+                + WorkflowStatus.TERMINATED.name() + "') AND i.completed_at < ? AND i.service_name = ?"
+                + " FETCH FIRST ? ROWS ONLY)";
+
+        return update(sql, ps -> {
+            ps.setTimestamp(1, Timestamp.from(cutoff));
+            ps.setString(2, serviceName);
+            ps.setInt(3, limit);
+        });
     }
 
     // ── Timer operations ──────────────────────────────────────────────────
