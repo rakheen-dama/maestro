@@ -178,8 +178,8 @@
 # s1 run's statements are in it): net statements per COMPLETED workflow, via
 # statements_gate (common.jq): symmetric band = tolerance + relativeAllowance
 # x expected. The expected value comes from perf/baselines/s1-throughput.json,
-# used only when its workflowShape {activities, activityMillis}, profile and
-# replicas match this run (otherwise NO_BASELINE, with the reason); a file of
+# used only when its workflowShape {activities, activityMillis}, profile,
+# replicas and adminEventsEnabled match this run (otherwise NO_BASELINE, with the reason); a file of
 # another schema or scenario is INVALID, an empty or unparseable one ERROR
 # (common.jq baseline_record). The detail names the baseline's runId and
 # engine commit.
@@ -199,8 +199,9 @@
 #   r20261116t225610z 26.00 (164857 calls; admin events ON, 85644 records)
 # a spread of 5 calls over 6337 workflows (0.0008 per workflow), with admin
 # events on or off: publishing lifecycle events costs no database
-# statement, so the baseline match does not include the setting (the
-# baseline records it as adminEventsEnabled). All four ran on a contended
+# statement; the baseline match includes the setting all the same
+# (adminEventsEnabled): a baseline is compared only with a run of its own
+# settings. All four ran on a contended
 # host (advisory.contention: host load 7.7-14.6 per CPU) and the figure did
 # not move with it. The per-activity lock's removal took exactly 10
 # statements per workflow (2 per live activity x 5) off the earlier figure:
@@ -292,6 +293,7 @@ def s1_baseline_match($b; $m; $id):
     then "baseline workflowShape \($b.workflowShape | tojson) is not this run's \($m.workflowShape | {activities, activityMillis} | tojson)"
   elif $b.profile != $id.profile then "baseline profile \($b.profile | tojson) is not this run's \($id.profile | tojson)"
   elif $b.replicas != $id.config.replicas then "baseline replicas \($b.replicas | tojson) is not this run's \($id.config.replicas)"
+  elif $b.adminEventsEnabled != $id.config.adminEventsRequested then "baseline adminEventsEnabled \($b.adminEventsEnabled | tojson) is not this run's \($id.config.adminEventsRequested | tojson)"
   else null end;
 
 # The idle background rate (calls/s, lock-cleaner calls excluded), or null.

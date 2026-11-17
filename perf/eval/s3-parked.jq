@@ -105,7 +105,7 @@
 #   tolerance + relativeAllowance x expected) on perParkedCallsPerMin(Pmax)
 #   against perf/baselines/s3-parked.json's perParkedCallsPerMin, used only
 #   when its parkMode, wakeRecheckInterval, recoveryPollInterval, lockTtl,
-#   plateaus, Pmax, profile and replicas match this run (otherwise
+#   plateaus, Pmax, profile, replicas and adminEventsEnabled match this run (otherwise
 #   NO_BASELINE, with the reason); a file of another schema or scenario is
 #   INVALID, an empty or unparseable one ERROR (common.jq baseline_record).
 #   The detail names the baseline's runId and engine commit.
@@ -418,6 +418,7 @@ $identity[0] as $id
    elif $b.Pmax != ($wMax.P // null) then "baseline Pmax \($b.Pmax | tojson) is not this run's \($wMax.P // null | tojson)"
    elif $b.profile != $id.profile then "baseline profile \($b.profile | tojson) is not this run's \($id.profile | tojson)"
    elif $b.replicas != $replicas then "baseline replicas \($b.replicas | tojson) is not this run's \($replicas)"
+   elif $b.adminEventsEnabled != $id.config.adminEventsRequested then "baseline adminEventsEnabled \($b.adminEventsEnabled | tojson) is not this run's \($id.config.adminEventsRequested | tojson)"
    else null end) as $noBase
 | (if $noBase == null then $b.perParkedCallsPerMin else null end) as $expected
 | ($m.plateaus | objs) as $plRecs

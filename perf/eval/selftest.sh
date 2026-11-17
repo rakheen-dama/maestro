@@ -566,7 +566,9 @@ if [[ -n "$s1src" ]]; then
   # The statement gate: baseline matched on shape, profile and replicas.
   net=$(s1_field s1-pass '.measurements.statements.statementsPerWorkflowNet')
   prof=$(jq -r .profile "${s1src}/identity.json")
-  bl() { printf '{"schema":1,"scenario":"s1-throughput","profile":"%s","replicas":%s,"workflowShape":{"type":"chain","activities":%s,"activityMillis":50},"statementsPerWorkflowNet":%s}' "$1" "$2" "$3" "$4"; }
+  # The source run's admin-events setting, which a baseline must match.
+  ae=$(jq .config.adminEventsRequested "${s1src}/identity.json")
+  bl() { printf '{"schema":1,"scenario":"s1-throughput","profile":"%s","replicas":%s,"adminEventsEnabled":%s,"workflowShape":{"type":"chain","activities":%s,"activityMillis":50},"statementsPerWorkflowNet":%s}' "$1" "$2" "$ae" "$3" "$4"; }
   out=$(s1_eval s1-gate-match '.' '.' "$(bl "$prof" 1 5 "$net")")
   expect "s1 gate: baseline = this run's net: PASS" PASS "$(st "$out" gate.statementsPerWorkflow)"
   expect "s1 gate: the allowance in force is s1_relative_allowance" \
@@ -590,6 +592,12 @@ if [[ -n "$s1src" ]]; then
   expect "s1 gate: baseline of another profile: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
   out=$(s1_eval s1-gate-replicas '.' '.' "$(bl "$prof" 2 5 "$net")")
   expect "s1 gate: baseline of another replica count: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
+  out=$(s1_eval s1-gate-admin '.' '.' "$(bl "$prof" 1 5 "$net" | jq -c '.adminEventsEnabled |= not')")
+  expect "s1 gate: baseline at the other admin-events setting: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
+  expect "s1 gate: admin-events mismatch: the detail names it" yes \
+    "$(s1_field s1-gate-admin '.checks[] | select(.id == "gate.statementsPerWorkflow") | .detail' | grep -qF adminEventsEnabled && echo yes || echo no)"
+  out=$(s1_eval s1-gate-noadmin '.' '.' "$(bl "$prof" 1 5 "$net" | jq -c 'del(.adminEventsEnabled)')")
+  expect "s1 gate: baseline without adminEventsEnabled: NO_BASELINE" NO_BASELINE "$(st "$out" gate.statementsPerWorkflow)"
   # The baseline file itself: its schema and scenario, an empty or
   # unparseable file, and what the gate's detail says about the baseline.
   gate_detail() { s1_field "$1" '.checks[] | select(.id == "gate.statementsPerWorkflow") | .detail'; }
@@ -963,7 +971,8 @@ if [[ -n "$s3src" ]]; then
   expect "s3: sleep mode with 2 reads per re-check: gate.parkedCostArithmetic" PASS "$(s3st "$out" gate.parkedCostArithmetic)"
   # With a usable baseline the arithmetic gate still judges every plateau.
   out=$(s3_eval s3-ar-p2-base "$(s3_fig "if .P == ${pmin} then 7.22 else 8.42 end")" '.' \
-    "$(jq -c '{schema: 1, scenario: "s3-parked", profile: .profile, replicas: .identity.config.replicas}
+    "$(jq -c '{schema: 1, scenario: "s3-parked", profile: .profile, replicas: .identity.config.replicas,
+               adminEventsEnabled: .identity.config.adminEventsRequested}
                + .measurements.baselineCandidate + {perParkedCallsPerMin: 8.42}' "${work}/s3-pass/result.json")")
   expect "s3: P-squared run against a baseline recorded at its own Pmax: gate.parkedCostBaseline" PASS "$(s3st "$out" gate.parkedCostBaseline)"
   expect "s3: P-squared run against that baseline: gate.parkedCostArithmetic" FAIL "$(s3st "$out" gate.parkedCostArithmetic)"
@@ -971,7 +980,8 @@ if [[ -n "$s3src" ]]; then
   # gate.parkedCostBaseline (statements_gate, symmetric)
   net=$(s3_field s3-pass '.measurements.baselineCandidate.perParkedCallsPerMin')
   mk_base() { # <perParkedCallsPerMin> [<jq edit>]
-    jq -c --argjson v "$1" "{schema: 1, scenario: \"s3-parked\", profile: .profile, replicas: .identity.config.replicas}
+    jq -c --argjson v "$1" "{schema: 1, scenario: \"s3-parked\", profile: .profile, replicas: .identity.config.replicas,
+       adminEventsEnabled: .identity.config.adminEventsRequested}
       + .measurements.baselineCandidate + {perParkedCallsPerMin: \$v} | ${2:-.}" "${work}/s3-pass/result.json"
   }
   out=$(s3_eval s3-base-same '.' '.' "$(mk_base "$net")")
@@ -994,6 +1004,11 @@ if [[ -n "$s3src" ]]; then
   out=$(s3_eval s3-base-ttl '.' '.' "$(mk_base "$net" '.lockTtl = "PT60S"')")
   expect "s3: baseline at another lock TTL: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
   expect "s3: baseline at another lock TTL: the detail says lockTtl" yes "$(s3_gate_detail s3-base-ttl | grep -qF lockTtl && echo yes || echo no)"
+  out=$(s3_eval s3-base-admin '.' '.' "$(mk_base "$net" '.adminEventsEnabled |= not')")
+  expect "s3: baseline at the other admin-events setting: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
+  expect "s3: admin-events mismatch: the detail names it" yes "$(s3_gate_detail s3-base-admin | grep -qF adminEventsEnabled && echo yes || echo no)"
+  out=$(s3_eval s3-base-noadmin '.' '.' "$(mk_base "$net" 'del(.adminEventsEnabled)')")
+  expect "s3: baseline without adminEventsEnabled: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
   out=$(s3_eval s3-base-nottl '.' '.' "$(mk_base "$net" 'del(.lockTtl)')")
   expect "s3: baseline without lockTtl: gate.parkedCostBaseline" NO_BASELINE "$(s3st "$out" gate.parkedCostBaseline)"
   out=$(s3_eval s3-base-plateaus '.' '.' "$(mk_base "$net" '.plateaus = [1000, 5000, 10000]')")

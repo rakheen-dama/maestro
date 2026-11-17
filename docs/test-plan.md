@@ -245,8 +245,9 @@ PASS or WARN and never change the verdict.
   evaluator's header); a drop below the band FAILs too, and its detail says
   how to re-record the baseline if the drop is intended. INVALID when the tolerance alone exceeds 25 % of
   expected. NO_BASELINE when no baseline matches (S1: workflow shape, profile,
-  replicas; S3: park mode, wake-recheck and recovery-poll intervals, lock TTL,
-  plateaus and Pmax, profile, replicas). A baseline file of another `schema`
+  replicas, `adminEventsEnabled`; S3: park mode, wake-recheck and
+  recovery-poll intervals, lock TTL, plateaus and Pmax, profile, replicas,
+  `adminEventsEnabled`). A baseline file of another `schema`
   or `scenario` makes the gate INVALID; an empty or unparseable one, or one
   holding more than one JSON document or a non-object, makes it ERROR (never
   "absent"). A key that appears twice in a baseline file takes its last
