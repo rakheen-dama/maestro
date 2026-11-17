@@ -957,7 +957,9 @@ What a running workflow does with one:
   `sleep()`, `awaitSignal()` or terminal write. A fault inside a `parallel()`
   branch, or during compensation, abandons the whole run the same way.
 - **Recovery resumes it.** The recovery poller's own pass fails while the
-  store is down (`Recovery polling error — will retry next cycle` at `ERROR`).
+  store is down (`Background loop 'recovery-poller' failed …` at `ERROR`
+  once, then a reminder every 5 minutes, and `… recovered after N consecutive
+  failure(s)` at `INFO`).
   The first pass after the store answers adopts the instance, so expect it
   back within one `maestro.recovery.poll-interval` (default 60s). If the
   instance-lock release could not reach the database either, the lock row

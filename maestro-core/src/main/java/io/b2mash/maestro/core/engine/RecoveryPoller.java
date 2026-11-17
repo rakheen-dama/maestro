@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.EngineObserver;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * instance lock (cross-node), the executor's in-JVM running-workflow check,
  * and idempotent replay; all-node polling is what makes orphan pickup fast.
  *
+ * <p><b>Failures:</b> a pass that throws — a store fault, or any
+ * {@code Error} but a {@code MaestroControlFlowError} — is contained by the
+ * loop's {@link BackgroundLoopGuard}, and the next pass runs after the loop's
+ * own {@code pollInterval} (60 s by default). A failure streak logs one
+ * {@code ERROR} with the stack trace, then {@code DEBUG} with an {@code ERROR}
+ * reminder every 5 minutes while it continues, and one {@code INFO} when a
+ * pass succeeds again.
+ *
  * <p><b>Thread safety:</b> {@link #start()} and {@link #stop()} are
  * thread-safe; the loop runs on a dedicated virtual thread.
  *
@@ -34,6 +43,7 @@ final class RecoveryPoller {
     private final Map<String, WorkflowRegistration> registrations;
     private final String serviceName;
     private final Duration pollInterval;
+    private final BackgroundLoopGuard guard;
     private final AtomicBoolean started = new AtomicBoolean(false);
     private volatile boolean running;
     private volatile @Nullable Thread pollerThread;
@@ -44,6 +54,26 @@ final class RecoveryPoller {
             String serviceName,
             Duration pollInterval
     ) {
+        this(executor, registrations, serviceName, pollInterval, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a recovery poller that reports contained {@code Error}s.
+     *
+     * @param executor      the executor whose recovery pass this repeats
+     * @param registrations workflow type → registration, as for {@link WorkflowExecutor#recoverWorkflows(Map)}
+     * @param serviceName   the owning service name (thread name)
+     * @param pollInterval  interval between passes; must be positive
+     * @param observer      receives {@link EngineObserver#backgroundLoopError}
+     *                      for every {@code Error} the loop contains
+     */
+    RecoveryPoller(
+            WorkflowExecutor executor,
+            Map<String, WorkflowRegistration> registrations,
+            String serviceName,
+            Duration pollInterval,
+            EngineObserver observer
+    ) {
         if (pollInterval == null || pollInterval.isNegative() || pollInterval.isZero()) {
             throw new IllegalArgumentException("pollInterval must be positive, got " + pollInterval);
         }
@@ -51,6 +81,8 @@ final class RecoveryPoller {
         this.registrations = Map.copyOf(registrations);
         this.serviceName = serviceName;
         this.pollInterval = pollInterval;
+        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.RECOVERY_POLLER, pollInterval, () -> !running,
+                observer);
     }
 
     /**
@@ -65,6 +97,7 @@ final class RecoveryPoller {
         running = true;
         pollerThread = Thread.ofVirtual()
                 .name("maestro-recovery-poller-" + serviceName)
+                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
                 .start(this::pollLoop);
         logger.info("Recovery poller started (interval={}, service={})", pollInterval, serviceName);
     }
@@ -97,6 +130,16 @@ final class RecoveryPoller {
         return running && thread != null && thread.isAlive();
     }
 
+    /**
+     * The loop's current failure streak (failed passes since the last
+     * successful one). Safe to call from any thread.
+     *
+     * @return the number of consecutive failed passes
+     */
+    int consecutiveFailures() {
+        return guard.consecutiveFailures();
+    }
+
     // ── Internal: polling loop ──────────────────────────────────────────
 
     private void pollLoop() {
@@ -107,15 +150,18 @@ final class RecoveryPoller {
                     break;
                 }
                 var recovered = executor.recoverWorkflows(registrations);
+                guard.succeeded();
                 if (recovered > 0) {
                     logger.info("Recovery poller adopted {} orphaned workflow(s)", recovered);
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
-            } catch (Exception e) {
-                // Don't let one error kill the poller
-                logger.error("Recovery polling error — will retry next cycle", e);
+            } catch (Throwable t) {
+                // Rethrows a MaestroControlFlowError (ending the loop);
+                // contains and logs everything else. The next pass waits one
+                // pollInterval at the top of the loop.
+                guard.failed(t);
             }
         }
         logger.debug("Recovery poller loop exited");

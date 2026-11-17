@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -49,6 +50,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *       the CAS succeeds — a duplicate or cancelled fire is a no-op.</li>
  * </ul>
  *
+ * <h2>Failures</h2>
+ * <p>An iteration that throws — a store or lock-backend fault, or any
+ * {@code Error} but a {@code MaestroControlFlowError} — is contained by the
+ * loop's {@link BackgroundLoopGuard}, and the poller tries again after its own
+ * {@code pollInterval} (5 s by default), never sooner and never later. A
+ * failure streak logs one {@code ERROR} with the stack trace, then
+ * {@code DEBUG} with an {@code ERROR} reminder every 5 minutes while it
+ * continues, and one {@code INFO} when an iteration succeeds again.
+ *
  * <h2>Thread Safety</h2>
  * <p>{@link #start()} and {@link #stop()} may be called from any thread.
  * The polling loop runs on its own virtual thread. Concurrent {@code start()}
@@ -70,6 +80,7 @@ final class TimerPoller {
     private final int batchSize;
     private final String candidateId;
     private final ClockSkewCheck skewCheck;
+    private final BackgroundLoopGuard guard;
     private final AtomicBoolean started = new AtomicBoolean(false);
 
     private volatile boolean running;
@@ -94,6 +105,31 @@ final class TimerPoller {
             Duration pollInterval,
             int batchSize
     ) {
+        this(store, executor, distributedLock, serviceName, pollInterval, batchSize, EngineObserver.NOOP);
+    }
+
+    /**
+     * Creates a new timer poller that reports contained {@code Error}s.
+     *
+     * @param store           workflow store for timer queries
+     * @param executor        workflow executor for firing timers
+     * @param distributedLock optional lock backend for leader election
+     *                        ({@code null} for single-node mode)
+     * @param serviceName     the owning service name (for leader election key)
+     * @param pollInterval    interval between polling cycles
+     * @param batchSize       maximum timers to process per cycle
+     * @param observer        receives {@link EngineObserver#backgroundLoopError}
+     *                        for every {@code Error} the loop contains
+     */
+    TimerPoller(
+            WorkflowStore store,
+            WorkflowExecutor executor,
+            @Nullable DistributedLock distributedLock,
+            String serviceName,
+            Duration pollInterval,
+            int batchSize,
+            EngineObserver observer
+    ) {
         if (store == null) throw new NullPointerException("store must not be null");
         if (executor == null) throw new NullPointerException("executor must not be null");
         if (serviceName == null || serviceName.isBlank()) {
@@ -113,6 +149,7 @@ final class TimerPoller {
         this.batchSize = batchSize;
         this.candidateId = UUID.randomUUID().toString();
         this.skewCheck = new ClockSkewCheck(store);
+        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.TIMER_POLLER, pollInterval, () -> !running, observer);
     }
 
     /**
@@ -127,6 +164,7 @@ final class TimerPoller {
         running = true;
         pollerThread = Thread.ofVirtual()
                 .name("maestro-timer-poller-" + serviceName)
+                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
                 .start(this::pollLoop);
         logger.info("Timer poller started (interval={}, batchSize={}, service={})",
                 pollInterval, batchSize, serviceName);
@@ -163,6 +201,16 @@ final class TimerPoller {
         return running && thread != null && thread.isAlive();
     }
 
+    /**
+     * The loop's current failure streak (failed iterations since the last
+     * successful one). Safe to call from any thread.
+     *
+     * @return the number of consecutive failed iterations
+     */
+    int consecutiveFailures() {
+        return guard.consecutiveFailures();
+    }
+
     // ── Internal: polling loop ──────────────────────────────────────────
 
     private void pollLoop() {
@@ -175,9 +223,10 @@ final class TimerPoller {
                 // this renewal and the next one, so a blocked read can delay
                 // the NEXT renewal (at most once per ClockSkewCheck.INTERVAL);
                 // losing the lease is safe, firing a timer is a compare-and-set.
-                var leader = isLeader();
                 try {
-                    if (leader) {
+                    // Inside this try so that a failed election still runs
+                    // the skew check below; the failure itself goes to the guard.
+                    if (isLeader()) {
                         var fired = pollDueTimers();
                         if (fired > 0) {
                             logger.debug("Fired {} due timer(s)", fired);
@@ -185,19 +234,27 @@ final class TimerPoller {
                     }
                 } finally {
                     // Every node, leader or not: every node arms deadlines
-                    // (3.7). Runs even when the poll threw. Never throws a
-                    // RuntimeException; at most one store read per
-                    // ClockSkewCheck.INTERVAL.
+                    // (3.7). Runs even when the election or the poll threw.
+                    // Never throws a RuntimeException; at most one store read
+                    // per ClockSkewCheck.INTERVAL.
                     skewCheck.maybeCheck();
                 }
+                guard.succeeded();
                 Thread.sleep(pollInterval);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 logger.debug("Timer poller interrupted, exiting loop");
                 break;
-            } catch (Exception e) {
-                logger.error("Timer polling error — will retry next cycle", e);
-                // Don't let one error kill the poller
+            } catch (Throwable t) {
+                // Rethrows a MaestroControlFlowError (ending the loop);
+                // contains and logs everything else.
+                guard.failed(t);
+                // stop() interrupts this thread, but a store call may swallow
+                // that interrupt and then throw; without this re-check the loop
+                // would sleep a full interval after stop().
+                if (!running) {
+                    break;
+                }
                 try {
                     Thread.sleep(pollInterval);
                 } catch (InterruptedException ie) {
@@ -237,23 +294,20 @@ final class TimerPoller {
      *
      * <p>Uses {@link DistributedLock#trySetLeader} which serves as both
      * initial election and TTL renewal — the implementation returns
-     * {@code true} if this candidate is (or becomes) the leader.
+     * {@code true} if this candidate is (or becomes) the leader. A backend
+     * failure propagates to the loop's {@link BackgroundLoopGuard}, which
+     * logs it, and skips this cycle's poll; the next cycle elects (or renews)
+     * again.
      */
     private boolean isLeader() {
         if (distributedLock == null) {
             return true; // No lock backend — single-node mode, always poll
         }
 
-        var key = LEADER_KEY_PREFIX + serviceName;
-        try {
-            var elected = distributedLock.trySetLeader(key, candidateId, LEADER_TTL);
-            if (!elected) {
-                logger.debug("Another instance holds timer poller leadership for service '{}'", serviceName);
-            }
-            return elected;
-        } catch (Exception e) {
-            logger.warn("Leader election failed for service '{}' — skipping this poll cycle", serviceName, e);
-            return false;
+        var elected = distributedLock.trySetLeader(LEADER_KEY_PREFIX + serviceName, candidateId, LEADER_TTL);
+        if (!elected) {
+            logger.debug("Another instance holds timer poller leadership for service '{}'", serviceName);
         }
+        return elected;
     }
 }

@@ -1518,7 +1518,8 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start timer poller");
         }
-        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
+        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize,
+                observer);
         installAndStart(timerPoller, poller, "Timer poller", poller::start, poller::stop);
         timerPollerStarted.set(true);
     }
@@ -1547,7 +1548,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
-        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval);
+        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer);
         installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
         recoveryPollerStarted.set(true);
     }
