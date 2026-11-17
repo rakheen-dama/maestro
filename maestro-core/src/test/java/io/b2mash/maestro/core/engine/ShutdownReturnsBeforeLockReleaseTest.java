@@ -424,7 +424,16 @@ class ShutdownReturnsBeforeLockReleaseTest {
         }
     }
 
-    /** Opens {@code gate} 300 ms from now, letting {@code shutdown()} run ahead of it as on a loaded runner. */
+    /**
+     * Opens {@code gate} 300 ms from now, letting {@code shutdown()} run ahead
+     * of it as on a loaded runner.
+     *
+     * <p>The sleep is deliberate and only widens the window for the code
+     * before the fix: a drain that does not wait for the release returns
+     * within it, so the test fails reliably. With the fix the drain waits for
+     * the gate whatever its timing, so the sleep decides nothing; do not
+     * replace it with a latch.
+     */
     private static void openLater(CountDownLatch gate) {
         Thread.ofVirtual().start(() -> {
             try {
