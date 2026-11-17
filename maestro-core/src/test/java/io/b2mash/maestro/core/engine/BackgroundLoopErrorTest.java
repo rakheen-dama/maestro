@@ -3,10 +3,12 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.RecoveryCursor;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -164,6 +166,85 @@ class BackgroundLoopErrorTest {
         assertTrue(executor.isRecoveryPollerRunning());
     }
 
+    // ── Signal janitor ────────────────────────────────────────────────
+
+    @ParameterizedTest
+    @MethodSource("survivableErrors")
+    void signalJanitor_anErrorFromASweep_isContainedAndTheNextSweepRuns(Supplier<Error> error) throws Exception {
+        store.failure = error;
+        executor.startSignalJanitor(Duration.ofMillis(50), Duration.ofDays(1));
+        assertTrue(store.secondJanitorSweep.await(5, TimeUnit.SECONDS), "the janitor made no second sweep");
+        assertTrue(executor.isSignalJanitorRunning());
+    }
+
+    @Test
+    void anErrorIsCountedForItsLoop() throws Exception {
+        store.failure = () -> new AssertionError("x");
+        executor.startSignalJanitor(Duration.ofMillis(50), Duration.ofDays(1));
+        assertTrue(store.secondJanitorSweep.await(5, TimeUnit.SECONDS));
+        assertEquals(new RecordingEngineObserver.LoopErrorCall("signal-janitor", "java.lang.AssertionError"),
+                observer.loopErrors().getFirst());
+    }
+
+    /** Shutdown during a failing streak: stop() lands in the janitor's wait and ends the loop at once. */
+    @Test
+    void signalJanitor_stopDuringAFailingStreak_endsTheLoopPromptly() {
+        var failing = new PollFaultStore() {
+            @Override
+            public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+                throw new AssertionError("every sweep fails");
+            }
+        };
+        var janitor = new SignalJanitor(failing, Duration.ofMinutes(10), Duration.ofDays(1), observer);
+        janitor.start();
+        await("the first failed sweep").atMost(Duration.ofSeconds(5))
+                .until(() -> janitor.consecutiveFailures() >= 1);
+
+        var started = System.nanoTime();
+        janitor.stop();
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
+                "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
+        assertFalse(janitor.isRunning());
+    }
+
+    // ── Retention sweeper ─────────────────────────────────────────────
+
+    @ParameterizedTest
+    @MethodSource("survivableErrors")
+    void retentionSweeper_anErrorFromASweep_isContainedAndTheNextSweepRuns(Supplier<Error> error) throws Exception {
+        store.failure = error;
+        executor.startRetentionSweeper(new WorkflowExecutor.RetentionSettings(Duration.ofMillis(50),
+                Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1));
+        assertTrue(store.secondRetentionSweep.await(5, TimeUnit.SECONDS), "the sweeper made no second sweep");
+        assertTrue(executor.isRetentionSweeperRunning());
+    }
+
+    /** Shutdown during a failing streak: stop() lands in the sweeper's wait and ends the loop at once. */
+    @Test
+    void retentionSweeper_stopDuringAFailingStreak_endsTheLoopPromptly() {
+        var failing = new PollFaultStore() {
+            @Override
+            public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+                throw new AssertionError("every sweep fails");
+            }
+        };
+        var sweeper = new RetentionSweeper(failing, null, "svc", new WorkflowExecutor.RetentionSettings(
+                Duration.ofMinutes(10), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1), observer);
+        sweeper.start();
+        await("the first failed sweep").atMost(Duration.ofSeconds(5))
+                .until(() -> sweeper.consecutiveFailures() >= 1);
+
+        var started = System.nanoTime();
+        sweeper.stop();
+        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+
+        assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
+                "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
+        assertFalse(sweeper.isRunning());
+    }
+
     // ── Fixtures ──────────────────────────────────────────────────────
 
     /** Saves a {@code PENDING} timer that is already due (fire_at = now - 1 s). */
@@ -211,6 +292,10 @@ class BackgroundLoopErrorTest {
         final AtomicInteger clockReads = new AtomicInteger();
         final AtomicInteger recoveryPasses = new AtomicInteger();
         final CountDownLatch secondRecoveryPass = new CountDownLatch(1);
+        final AtomicInteger janitorSweeps = new AtomicInteger();
+        final CountDownLatch secondJanitorSweep = new CountDownLatch(1);
+        final AtomicInteger retentionPurges = new AtomicInteger();
+        final CountDownLatch secondRetentionSweep = new CountDownLatch(1);
 
         @Override
         public List<WorkflowTimer> getDueTimers(int batchSize) {
@@ -230,6 +315,28 @@ class BackgroundLoopErrorTest {
                 secondRecoveryPass.countDown();
             }
             return List.of();
+        }
+
+        @Override
+        public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
+            var call = janitorSweeps.incrementAndGet();
+            if (call == 1) {
+                throwFailure();
+            } else if (call == 2) {
+                secondJanitorSweep.countDown();
+            }
+            return 0;
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            var call = retentionPurges.incrementAndGet();
+            if (call == 1) {
+                throwFailure();
+            } else if (call == 2) {
+                secondRetentionSweep.countDown();
+            }
+            return PurgeResult.EMPTY;
         }
 
         @Override

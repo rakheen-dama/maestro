@@ -1595,7 +1595,7 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, interval, retention);
+        var janitor = new SignalJanitor(store, interval, retention, observer);
         installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
     }

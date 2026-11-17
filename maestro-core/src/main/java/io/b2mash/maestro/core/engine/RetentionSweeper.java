@@ -48,7 +48,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * at {@code WARN}, the current sweep ends, and the loop carries on to the next
  * interval; the sweeper never dies of a store error. A sweep that purged
  * anything is logged at {@code INFO}; a non-leader's skipped sweep at
- * {@code DEBUG}.
+ * {@code DEBUG}. An {@code Error} is contained by the loop's guard, logged and
+ * counted on {@code maestro.loop.errors}, and the next sweep runs one interval
+ * later.
  *
  * <h2>Observation</h2>
  * <p>Every sweep this node ran as leader — including one that found nothing —
@@ -83,6 +85,7 @@ final class RetentionSweeper {
     private final WorkflowExecutor.RetentionSettings settings;
     private final EngineObserver observer;
     private final String candidateId;
+    private final BackgroundLoopGuard guard;
     private final AtomicBoolean started = new AtomicBoolean(false);
     /**
      * Set by {@link #stop()} and never cleared; distinct from {@code running}
@@ -124,6 +127,8 @@ final class RetentionSweeper {
         this.settings = settings;
         this.observer = observer;
         this.candidateId = UUID.randomUUID().toString();
+        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.RETENTION_SWEEPER, settings.interval(),
+                () -> !running, observer);
     }
 
     /**
@@ -139,6 +144,7 @@ final class RetentionSweeper {
         running = true;
         sweeperThread = Thread.ofVirtual()
                 .name(THREAD_NAME)
+                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
                 .start(this::sweepLoop);
         logger.info("Retention sweeper started (interval={}, completedRetention={}, terminatedRetention={}, "
                         + "failedRetention={}, batchSize={}, maxBatchesPerSweep={}, service={})",
@@ -176,6 +182,16 @@ final class RetentionSweeper {
     boolean isRunning() {
         var thread = sweeperThread;
         return running && thread != null && thread.isAlive();
+    }
+
+    /**
+     * The loop's current failure streak (sweeps that threw since the last one
+     * that returned). Safe to call from any thread.
+     *
+     * @return the number of consecutive failed sweeps
+     */
+    int consecutiveFailures() {
+        return guard.consecutiveFailures();
     }
 
     /**
@@ -280,7 +296,15 @@ final class RetentionSweeper {
 
     private void sweepLoop() {
         while (running) {
-            sweepOnce();
+            try {
+                sweepOnce();
+                guard.succeeded();
+            } catch (Throwable t) {
+                // Rethrows a MaestroControlFlowError (ending the loop);
+                // contains and logs everything else. Store and lock-backend
+                // faults never get here: sweepOnce logs and swallows them.
+                guard.failed(t);
+            }
             // stop() interrupts this thread, but a store call (e.g. a JDBC
             // driver) may swallow that interrupt and return normally; without
             // this re-check the loop would then sleep a full interval after
