@@ -2840,13 +2840,15 @@ public final class WorkflowExecutor {
                 emit("workflowStarted", instance.workflowId(),
                         () -> observer.workflowStarted(observed(instance)));
             }
+            // Set as executeWorkflow is entered. Until then no finally of the
+            // run owns the lock, the entry or the reservation, so a Throwable
+            // before it is cleaned up in the run's catch below. Allocated here,
+            // on the launching thread, so nothing on the run's thread runs
+            // before that catch can see it.
+            var entered = new boolean[1];
             var thread = Thread.ofVirtual()
                     .name("maestro-workflow-%s-%s".formatted(instance.workflowType(), instance.workflowId()))
                     .unstarted(() -> {
-                        // Set as executeWorkflow is entered. Until then no
-                        // finally of the run owns the lock, the entry or the
-                        // reservation, so a Throwable before it is cleaned up here.
-                        var entered = new boolean[1];
                         try {
                             WorkflowMDC.populate(ctx);
                             beforeRunBody.run();
@@ -2923,22 +2925,30 @@ public final class WorkflowExecutor {
     private void runThreadDiedBeforeItsBody(String workflowId,
                                             TaskQueueGovernor.@Nullable SlotReservation reservation,
                                             Throwable cause) {
+        // Each step in its own guard, nothing allocated ahead of them: a
+        // failure in one step, or in setting it up, never skips the next.
         var self = Thread.currentThread();
-        List<Runnable> steps = List.of(
-                () -> runningWorkflows.computeIfPresent(workflowId, (_, r) -> r.thread() == self ? null : r),
-                () -> parkingLot.clearPending(workflowId),
-                () -> {
-                    if (reservation != null) {
-                        reservation.release();
-                    }
-                },
-                () -> instanceLockManager.release(workflowId));
-        for (var step : steps) {
-            try {
-                step.run();
-            } catch (RuntimeException | Error cleanupFailure) {
-                cause.addSuppressed(cleanupFailure);
+        try {
+            runningWorkflows.computeIfPresent(workflowId, (_, r) -> r.thread() == self ? null : r);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            parkingLot.clearPending(workflowId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            if (reservation != null) {
+                reservation.release();
             }
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
+        }
+        try {
+            instanceLockManager.release(workflowId);
+        } catch (RuntimeException | Error cleanupFailure) {
+            cause.addSuppressed(cleanupFailure);
         }
     }
 
