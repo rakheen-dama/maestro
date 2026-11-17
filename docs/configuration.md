@@ -958,15 +958,16 @@ maestro:
       enabled: true
 ```
 
-Meters registered (21): counters `maestro.workflow.started|completed|failed|compensated|terminated`,
+Meters registered (24): counters `maestro.workflow.started|completed|failed|compensated|terminated`,
 `maestro.activity.result.unreadable`, `maestro.signal.consumed`, `maestro.signal.duplicates`,
 `maestro.timer.fired`, `maestro.recovery.scanned`, `maestro.recovery.adopted`,
 `maestro.retention.sweeps`, `maestro.retention.purged`, `maestro.lock.renew.failures`,
-`maestro.loop.errors`, `maestro.standdown` (16);
-timer `maestro.activity.duration`; gauges `maestro.workflows.running`,
-`maestro.workflows.parked` and `maestro.wake.permits` (node-local — sum across
-pods for a cluster total) and `maestro.recovery.deferred` (node-local, but not
-to be summed: every node sees the same unadopted rows).
+`maestro.loop.errors`, `maestro.standdown`, `maestro.run.abandoned` (17);
+timers `maestro.activity.duration` and `maestro.workflow.duration` (2); gauges
+`maestro.workflows.running`, `maestro.workflows.parked`, `maestro.wake.permits`
+and `maestro.taskqueue.slots.used` (node-local — sum across pods for a cluster
+total) and `maestro.recovery.deferred` (node-local, but not to be summed: every
+node sees the same unadopted rows) (5).
 See [`docs/observability.md`](observability.md) for tags, tag values, span
 topology, and the Kafka propagation header contract.
 

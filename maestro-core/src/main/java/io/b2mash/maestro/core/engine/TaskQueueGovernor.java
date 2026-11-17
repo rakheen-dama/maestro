@@ -134,11 +134,11 @@ public final class TaskQueueGovernor {
     public static final TaskQueueGovernor UNBOUNDED = new TaskQueueGovernor(Map.of());
 
     /**
-     * One bounded queue's two slot pools, and its recovery tickets: how many
-     * more recovered runs may be admitted to wait for a slot, at most the
-     * queue's workflow concurrency.
+     * One bounded queue's two slot pools, the limits they were sized from, and
+     * its recovery tickets: how many more recovered runs may be admitted to
+     * wait for a slot, at most the queue's workflow concurrency.
      */
-    private record Bucket(String name, Semaphore workflowSlots, Semaphore activitySlots,
+    private record Bucket(String name, TaskQueueLimits limits, Semaphore workflowSlots, Semaphore activitySlots,
                           AtomicInteger recoveryTickets) {}
 
     /**
@@ -593,6 +593,62 @@ public final class TaskQueueGovernor {
     }
 
     /**
+     * Returns how many workflow slots of {@code taskQueue} are held right now:
+     * the queue's workflow limit minus its free slots. A run parked on
+     * {@code sleep()} or {@code awaitSignal()} holds none (see {@link #parked}).
+     *
+     * <p>Read-only and non-blocking: it never takes or waits for a slot, so it
+     * is safe to call from a metrics scrape thread. Like
+     * {@link #availableWorkflowSlots}, a call naming an unconfigured queue
+     * under default limits creates that queue's pools.
+     *
+     * <p>During {@link #shutdown}, until {@link #reclaimShutdownPermits}, each
+     * pool holds one lent permit above its limit, so this reads one less than
+     * the slots actually held, {@code -1} on an idle pool. A pool that keeps
+     * its loan (the drain hit its deadline with threads still queued, or with
+     * every slot held) reads one less for the rest of the node's life.
+     *
+     * <p>During recovery, a {@link SlotReservation.Kind#RESERVED RESERVED}
+     * reservation counts from {@link #admitRecovery} on, before its run claims
+     * it (the permit is taken; the claim takes no second one). A
+     * {@link SlotReservation.Kind#QUEUED QUEUED} recovered run holds no slot
+     * while it waits, like any waiting run, and does not count.
+     *
+     * @param taskQueue the task queue
+     * @return the held slot count, or empty if the queue is unbounded
+     */
+    public OptionalInt workflowSlotsInUse(String taskQueue) {
+        var bucket = bucket(taskQueue);
+        return bucket == null ? OptionalInt.empty()
+                : OptionalInt.of(bucket.limits().workflowConcurrency() - bucket.workflowSlots().availablePermits());
+    }
+
+    /**
+     * Returns how many activity slots of {@code taskQueue} are held right now:
+     * the queue's activity limit minus its free slots — that is, the live
+     * activity executions of the queue's runs on this node.
+     *
+     * <p>Read-only and non-blocking: it never takes or waits for a slot, so it
+     * is safe to call from a metrics scrape thread. Like
+     * {@link #availableActivitySlots}, a call naming an unconfigured queue
+     * under default limits creates that queue's pools.
+     *
+     * <p>During {@link #shutdown}, until {@link #reclaimShutdownPermits}, each
+     * pool holds one lent permit above its limit, so this reads one less than
+     * the slots actually held, {@code -1} on an idle pool. A pool that keeps
+     * its loan (the drain hit its deadline with threads still queued, or with
+     * every slot held) reads one less for the rest of the node's life.
+     *
+     * @param taskQueue the task queue
+     * @return the held slot count, or empty if the queue is unbounded
+     */
+    public OptionalInt activitySlotsInUse(String taskQueue) {
+        var bucket = bucket(taskQueue);
+        return bucket == null ? OptionalInt.empty()
+                : OptionalInt.of(bucket.limits().activityConcurrency() - bucket.activitySlots().availablePermits());
+    }
+
+    /**
      * Shuts the governor down: every wait for a slot, queued now or started
      * later, leaves with {@link ExecutorShutdownException}. Lends one permit
      * to every pool that exists (configured, and default pools created so
@@ -672,7 +728,7 @@ public final class TaskQueueGovernor {
     }
 
     private static Bucket newBucket(String queue, TaskQueueLimits limit) {
-        return new Bucket(queue,
+        return new Bucket(queue, limit,
                 new Semaphore(limit.workflowConcurrency(), true),
                 new Semaphore(limit.activityConcurrency(), true),
                 new AtomicInteger(limit.workflowConcurrency()));

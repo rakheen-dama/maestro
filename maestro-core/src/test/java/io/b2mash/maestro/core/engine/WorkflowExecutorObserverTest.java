@@ -75,7 +75,11 @@ class WorkflowExecutorObserverTest {
     }
 
     private StepActivities proxy(EngineObserver obs) {
-        return proxyFactory.createProxy(StepActivities.class, new StepActivitiesImpl(),
+        return proxy(obs, new StepActivitiesImpl());
+    }
+
+    private StepActivities proxy(EngineObserver obs, StepActivities impl) {
+        return proxyFactory.createProxy(StepActivities.class, impl,
                 store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor,
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, obs);
@@ -154,6 +158,79 @@ class WorkflowExecutorObserverTest {
         assertEquals(0, observer.failed().size());
     }
 
+    // ── workflowFinished (WP11: maestro.workflow.duration) ────────────
+
+    @Test
+    @DisplayName("finished: one workflowFinished(COMPLETED) directly after workflowCompleted, "
+            + "elapsed measured from the row's startedAt")
+    void finishedCarriesStatusAndElapsedSinceStart() throws Exception {
+        var done = new CountDownLatch(1);
+        var activities = proxy(observer, new SlowSecondStepActivities(Duration.ofMillis(200)));
+        var workflow = new TwoStepWorkflow(activities, done);
+        var method = TwoStepWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("obs-finished", "TwoStepWorkflow", "default", "in", () -> workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(1, observer.finished().size(), "workflowFinished must fire exactly once"));
+        var finish = observer.finished().getFirst();
+        assertEquals(WorkflowStatus.COMPLETED, finish.status());
+        assertEquals("obs-finished", finish.info().workflowId());
+        assertEquals("TwoStepWorkflow", finish.info().workflowType());
+        assertTrue(finish.elapsed().compareTo(Duration.ofMillis(200)) >= 0,
+                "elapsed must span the 200 ms second step, was " + finish.elapsed());
+        assertTrue(finish.elapsed().compareTo(Duration.ofSeconds(10)) < 0,
+                "elapsed must be measured from this run's start, was " + finish.elapsed());
+
+        var names = observer.callbackNames();
+        var completedAt = names.indexOf("workflowCompleted");
+        assertTrue(completedAt >= 0, "workflowCompleted must have fired: " + names);
+        assertEquals("workflowFinished", names.get(completedAt + 1),
+                "workflowFinished must be the invocation directly after workflowCompleted: " + names);
+    }
+
+    @Test
+    @DisplayName("finished: a failed run fires one workflowFinished(FAILED) directly after workflowFailed")
+    void failedRunFinishesWithFailedStatus() throws Exception {
+        var workflow = new ThrowingWorkflow();
+        var method = ThrowingWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("obs-fail-finish", "ThrowingWorkflow", "default", "in", () -> workflow, method);
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(1, observer.finished().size(), "workflowFinished must fire exactly once"));
+        var finish = observer.finished().getFirst();
+        assertEquals(WorkflowStatus.FAILED, finish.status());
+        assertEquals("obs-fail-finish", finish.info().workflowId());
+
+        var names = observer.callbackNames();
+        assertEquals("workflowFinished", names.get(names.indexOf("workflowFailed") + 1),
+                "workflowFinished must be the invocation directly after workflowFailed: " + names);
+    }
+
+    @Test
+    @DisplayName("finished: a converged loser is abandoned CONVERGED and never fires workflowFinished")
+    void convergedLoserDoesNotFinish() throws Exception {
+        var started = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var workflow = new GatedWorkflow(started, release);
+        var method = GatedWorkflow.class.getMethod("run", String.class);
+
+        executor.startWorkflow("obs-loser-finish", "GatedWorkflow", "default", "in", () -> workflow, method);
+        assertTrue(started.await(5, TimeUnit.SECONDS));
+
+        // Another runner finalised the instance while this node's run was mid-flight.
+        store.forceStatus("obs-loser-finish", WorkflowStatus.COMPLETED);
+        release.countDown();
+
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(List.of(AbandonReason.CONVERGED), observer.abandonReasons(),
+                        "the loser must be abandoned exactly once, as CONVERGED"));
+        await().atMost(Duration.ofSeconds(2)).until(() -> !executor.isRunning("obs-loser-finish"));
+        assertEquals(List.of(), observer.finished(),
+                "only the winner of the terminal transition may fire workflowFinished");
+    }
+
     @Test
     @DisplayName("terminate: workflowTerminated fires once from the winning CAS, never on ALREADY_TERMINAL")
     void terminateEmitsOnce() throws Exception {
@@ -175,6 +252,13 @@ class WorkflowExecutorObserverTest {
         assertEquals(1, observer.terminated().size(),
                 "only the winning terminate CAS may emit workflowTerminated");
         assertEquals("obs-term", observer.terminated().getFirst().workflowId());
+
+        // End state: the parked run has unwound on its own thread.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertEquals(List.of(AbandonReason.TERMINATED), observer.abandonReasons()));
+        await().atMost(Duration.ofSeconds(2)).until(() -> !executor.isRunning("obs-term"));
+        assertEquals(List.of(), observer.finished(),
+                "a terminate is not a terminal transition this run won — no workflowFinished");
     }
 
     @Test
@@ -280,6 +364,8 @@ class WorkflowExecutorObserverTest {
         assertEquals(List.of(StandDownReason.STALE_RUN),
                 observer.standDowns().stream().map(RecordingEngineObserver.StandDownCall::reason).toList(),
                 "an occupied terminal slot means another run owns the outcome — a stale-run stand-down");
+        assertEquals(List.of(), observer.finished(),
+                "a stand-down records no outcome, so it must not fire workflowFinished");
     }
 
     @Test
@@ -471,6 +557,29 @@ class WorkflowExecutorObserverTest {
         @Override public String step1() { return "one"; }
 
         @Override public String step2() { return "two"; }
+
+        @Override public String step3() { return "three"; }
+    }
+
+    /** Like {@link StepActivitiesImpl}, but {@code step2} takes {@code nap} of wall time. */
+    public static class SlowSecondStepActivities implements StepActivities {
+        private final Duration nap;
+
+        public SlowSecondStepActivities(Duration nap) {
+            this.nap = nap;
+        }
+
+        @Override public String step1() { return "one"; }
+
+        @Override public String step2() {
+            try {
+                Thread.sleep(nap);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("interrupted", e);
+            }
+            return "two";
+        }
 
         @Override public String step3() { return "three"; }
     }

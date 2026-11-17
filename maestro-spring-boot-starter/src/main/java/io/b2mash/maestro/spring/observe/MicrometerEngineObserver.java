@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.SignalInfo;
@@ -33,6 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.workflow.failed}</td><td>Counter</td><td>workflow</td><td>{@link #workflowFailed}</td></tr>
  *   <tr><td>{@code maestro.workflow.compensated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowCompensating}</td></tr>
  *   <tr><td>{@code maestro.workflow.terminated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowTerminated}</td></tr>
+ *   <tr><td>{@code maestro.workflow.duration}</td><td>Timer</td><td>workflow, outcome=completed|failed</td><td>{@link #workflowFinished}</td></tr>
  *   <tr><td>{@code maestro.activity.duration}</td><td>Timer</td><td>workflow, activity, outcome</td><td>{@link #activityCompleted}/{@link #activityFailed} (live only)</td></tr>
  *   <tr><td>{@code maestro.activity.result.unreadable}</td><td>Counter</td><td>workflow, activity</td><td>{@link #activityResultUnreadable} (live only)</td></tr>
  *   <tr><td>{@code maestro.signal.consumed}</td><td>Counter</td><td>workflow, signal</td><td>{@link #signalConsumed} (live only)</td></tr>
@@ -45,13 +48,15 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.lock.renew.failures}</td><td>Counter</td><td>outcome=error|lost</td><td>{@link #instanceLockRenewFailed}/{@link #instanceLockLost}</td></tr>
  *   <tr><td>{@code maestro.loop.errors}</td><td>Counter</td><td>loop</td><td>{@link #backgroundLoopError}; the five engine loops' series are registered at zero on construction</td></tr>
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
+ *   <tr><td>{@code maestro.run.abandoned}</td><td>Counter</td><td>reason=shutdown|terminated|converged|terminal_write_failed|node_error|store_unavailable</td><td>{@link #runAbandoned}</td></tr>
  * </table>
  *
  * <p>The gauges ({@code maestro.workflows.running}, {@code maestro.workflows.parked},
  * {@code maestro.wake.permits} and {@code maestro.recovery.deferred}) are
  * <b>not</b> registered by this class — they need the
  * {@code WorkflowExecutor} bean, which this observer never sees; they are
- * registered by {@link MaestroEngineGauges} instead.
+ * registered by {@link MaestroEngineGauges} instead, and
+ * {@code maestro.taskqueue.slots.used} by {@link MaestroTaskQueueGauges}.
  *
  * <h2>Cardinality</h2>
  * Tag values are always code-bounded: {@code workflowType}, {@code
@@ -135,6 +140,27 @@ public final class MicrometerEngineObserver implements EngineObserver {
     public void workflowFailed(WorkflowInfo w, String exceptionType) {
         // exceptionType is intentionally not tagged — open-ended cardinality (design §2.2 note).
         increment("maestro.workflow.failed", TAG_WORKFLOW, w.workflowType());
+    }
+
+    /**
+     * Records the workflow's start-to-terminal wall time under
+     * {@code maestro.workflow.duration}, tagged {@code outcome=completed} or
+     * {@code outcome=failed}. The engine fires this only with those two
+     * statuses; any other status records nothing, so the {@code outcome} tag
+     * value set stays closed at two. One sample per terminal transition: a
+     * manually retried workflow records once per outcome it reached.
+     */
+    @Override
+    public void workflowFinished(WorkflowInfo w, WorkflowStatus status, Duration elapsed) {
+        String outcome;
+        switch (status) {
+            case COMPLETED -> outcome = "completed";
+            case FAILED -> outcome = "failed";
+            default -> {
+                return;
+            }
+        }
+        record("maestro.workflow.duration", elapsed, TAG_WORKFLOW, w.workflowType(), TAG_OUTCOME, outcome);
     }
 
     @Override
@@ -277,6 +303,31 @@ public final class MicrometerEngineObserver implements EngineObserver {
             case NONDETERMINISTIC_HISTORY -> "nondeterministic_history";
             case STALE_RUN -> "stale_run";
             case LEASE_FENCED -> "lease_fenced";
+        };
+    }
+
+    /**
+     * Counts an abandoned local run under its own meter, tagged by reason only.
+     *
+     * <p>A terminate moves {@code maestro.workflow.terminated} once (from
+     * {@link #workflowTerminated}, on the node that handled the terminate) and
+     * this counter ({@code reason=terminated}) at most once, from the
+     * workflow's own thread on the node running it — not at all if no node
+     * holds a live run. Never fold one into the other.
+     */
+    @Override
+    public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
+        increment("maestro.run.abandoned", TAG_REASON, abandonTag(reason));
+    }
+
+    private static String abandonTag(AbandonReason reason) {
+        return switch (reason) {
+            case SHUTDOWN -> "shutdown";
+            case TERMINATED -> "terminated";
+            case CONVERGED -> "converged";
+            case TERMINAL_WRITE_FAILED -> "terminal_write_failed";
+            case NODE_ERROR -> "node_error";
+            case STORE_UNAVAILABLE -> "store_unavailable";
         };
     }
 

@@ -969,7 +969,8 @@ MDC (`Workflow '<id>' abandoned its local run on a node-level error (<class>)
 `maestro.abandon.reason=NODE_ERROR`), writes nothing, releases the lock, and
 leaves the instance recoverable, so every recovery pass re-adopts it and logs
 again until the node is fixed or rolled back. Alert on that `ERROR` line (or the
-span attribute); the remedy is the node — redeploy the previous build, fix the
+span attribute, or any increase of
+`maestro_run_abandoned_total{reason="node_error"}`); the remedy is the node — redeploy the previous build, fix the
 classpath, raise the heap — or terminate the workflow if it cannot be healed.
 `StackOverflowError`, `AssertionError` and every other `Error` remain workflow
 failures (`FAILED` + compensation): they recur identically on every node.
@@ -1054,9 +1055,11 @@ burst: roughly one `STORE_UNAVAILABLE` abandon per workflow that was running
 (not parked — parked workflows only make advisory reads) when the database
 went away, on every node. Recovery passes fail until the database answers,
 so nothing is re-adopted into the outage. Alert when the abandon rate stays
-up after the database is healthy again. Count the `WARN` lines or the segment
-spans tagged `maestro.abandon.reason=STORE_UNAVAILABLE`: `runAbandoned` has no
-meter (see `docs/observability.md`). **The same run id abandoning
+up after the database is healthy again: alert on the rate of
+`maestro_run_abandoned_total{reason="store_unavailable"}` (Micrometer
+`maestro.run.abandoned`, see `docs/observability.md`), or count the `WARN`
+lines or the segment spans tagged `maestro.abandon.reason=STORE_UNAVAILABLE`.
+**The same run id abandoning
 `STORE_UNAVAILABLE` on every recovery pass while other workflows progress is
 not an outage.** It is a deterministic fault the classifier cannot tell from
 one, most often a schema mismatch (class `42`). The `WARN` carries the

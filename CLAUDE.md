@@ -71,6 +71,7 @@ maestro/
 ├── maestro-samples/
 │   ├── sample-order-service        ← Order fulfilment workflow (e-commerce demo)
 │   ├── sample-payment-gateway      ← Payment processing with durable retries & saga
+│   ├── sample-perf                 ← Load-test target for perf/ (k6); unpublished, engine defaults
 │   └── sample-loan-origination     ← Multi-service loan E2E (application/underwriting/verification), nightly CI
 └── docs/
 ```

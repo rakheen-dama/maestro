@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.ActivityInfo;
 import io.b2mash.maestro.core.observe.SignalInfo;
 import io.b2mash.maestro.core.observe.StandDownReason;
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -85,6 +88,29 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.workflow.duration — Timer, tags workflow/outcome=completed|failed; other statuses record nothing")
+    void workflowFinishedRecordsDurationByOutcome() {
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.COMPLETED, Duration.ofMillis(150));
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.FAILED, Duration.ofMillis(75));
+        observer.workflowFinished(WORKFLOW, WorkflowStatus.TERMINATED, Duration.ofMillis(999));
+
+        var completed = registry.get("maestro.workflow.duration")
+                .tag("workflow", "OrderWorkflow").tag("outcome", "completed").timer();
+        assertThat(completed.count()).isEqualTo(1);
+        assertThat(completed.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+
+        var failed = registry.get("maestro.workflow.duration")
+                .tag("workflow", "OrderWorkflow").tag("outcome", "failed").timer();
+        assertThat(failed.count()).isEqualTo(1);
+        assertThat(failed.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(75.0);
+
+        assertThat(registry.get("maestro.workflow.duration").timers())
+                .as("TERMINATED must not mint a third outcome series")
+                .extracting(t -> t.getId().getTag("outcome"))
+                .containsExactlyInAnyOrder("completed", "failed");
+    }
+
+    @Test
     @DisplayName("maestro.activity.duration — Timer, tags workflow/activity/outcome=completed, live only")
     void activityDurationCompleted() {
         var activity = new ActivityInfo("wf-1", "OrderWorkflow", "PaymentActivities.charge", 3);
@@ -98,7 +124,7 @@ class MicrometerEngineObserverTest {
                 .tag("outcome", "completed")
                 .timer();
         assertThat(timer.count()).isEqualTo(1);
-        assertThat(timer.totalTime(java.util.concurrent.TimeUnit.MILLISECONDS)).isEqualTo(150.0);
+        assertThat(timer.totalTime(TimeUnit.MILLISECONDS)).isEqualTo(150.0);
     }
 
     @Test
@@ -247,6 +273,31 @@ class MicrometerEngineObserverTest {
                 .counter().count()).isEqualTo(1.0);
         assertThat(registry.get("maestro.standdown").tag("reason", "lease_fenced")
                 .counter().count()).isEqualTo(1.0);
+    }
+
+    @Test
+    @DisplayName("maestro.run.abandoned — Counter, tag reason=shutdown|terminated|converged"
+            + "|terminal_write_failed|node_error|store_unavailable, no workflow tag")
+    void runAbandonedCountsByReason() {
+        for (var reason : AbandonReason.values()) {
+            observer.runAbandoned(WORKFLOW, reason);
+        }
+        observer.runAbandoned(WORKFLOW, AbandonReason.STORE_UNAVAILABLE);
+
+        assertThat(registry.get("maestro.run.abandoned").tag("reason", "store_unavailable")
+                .counter().count()).isEqualTo(2.0);
+        for (var tag : new String[] {"shutdown", "terminated", "converged", "terminal_write_failed", "node_error"}) {
+            assertThat(registry.get("maestro.run.abandoned").tag("reason", tag).counter().count())
+                    .as("reason=%s", tag)
+                    .isEqualTo(1.0);
+        }
+        var counters = registry.get("maestro.run.abandoned").counters();
+        assertThat(counters).hasSize(6);
+        assertThat(counters).allSatisfy(counter -> {
+            var tags = counter.getId().getTags();
+            assertThat(tags).hasSize(1);
+            assertThat(tags.getFirst().getKey()).isEqualTo("reason");
+        });
     }
 
     @Test
