@@ -196,8 +196,14 @@ host-wide lock `/tmp/maestro-perf.lock` refuses a second):
 | smoke | `perf/run.sh smoke` | 20 chain runs (2 × 10 ms) complete; every measurement path works |
 | s1-throughput | `perf/run.sh s1-throughput` | one node's throughput ceiling at the defaults; statements per workflow (chain 5 × 50 ms) |
 | s3-parked | `perf/run.sh s3-parked` | the steady store load of 1k–10k parked runs, per parked run per minute; `PERF_PARK_MODE=sleep` parks on a durable `sleep()` instead of a signal |
+| s2-recovery-drain | `perf/run.sh s2-recovery-drain` (2 replicas) | finding 3.1 (WP6): 5,000 orphaned runs drained by one node, then by a rolling start of two |
+| s4-signals | `perf/run.sh s4-signals` (2 replicas) | finding 3.2 (WP2): signal delivery on the run's own node vs another, and whether a delivery leaves a wake permit behind |
+| s5-pool-health | `perf/run.sh s5-pool-health` | finding 3.5a (WP4): Maestro's health component while the host's own database work exhausts the shared pool |
+| s6-retention | `perf/run.sh s6-retention` (2 replicas) | findings 3.11a/b (WP8): a node's startup retention sweep and signal janitor over a large terminal backlog, against foreground load |
 
-Options: `--profile local|full` (default `local`), `--replicas N` (default 1),
+Options: `--profile local|full` (default `local`), `--replicas N` (default 1;
+`s2-recovery-drain` and `s6-retention` run exactly 2, `s4-signals` defaults to
+2 and refuses 1 — refused before anything is touched),
 `--record-baseline` (S1, S3; clean tree only: judges the run *without* the
 existing `perf/baselines/<scenario>.json`, and on PASS replaces it, printing
 old and new values side by side; see *Re-recording a baseline* below). Environment: `PERF_ADMIN_EVENTS=true|false`
@@ -218,6 +224,10 @@ stamps the sample's jar with `./gradlew :maestro-samples:sample-perf:bootJar`).
 |---|---|---|
 | s1-throughput | levels 5 / 20 / 40 / 80 starts/s, ramp 5 s, hold 40 s; about 6 min | levels 5 / 10 / 20 / 40 / 60 / 80 / 120, ramp 10 s, hold 120 s; about 20–25 min |
 | s3-parked | plateaus 1000 / 2000 parked, idle 60 s, hold 120 s; about 12 min | plateaus 1000 / 5000 / 10000, idle 120 s, hold 300 s; about 35 min |
+| s2-recovery-drain | N = 5,000, chain 2 × 2 s, probes 0.2/s, phases A and B, drain timeout 1,800 s per phase; about 16–20 min | the same plus phase C (600 rows, 15 fresh starts/s for 120 s) |
+| s4-signals | 2 nodes, W = 450 runs × M = 10 signals, levels 50 and 100/s × 30 s, 200 sleep runs; about 6 min | 3 nodes, W = 1,500, levels 50 / 100 / 200 / 400/s, 600 sleep runs |
+| s5-pool-health | 10 hold runs × 5 × 8 s; health 30 / 35 / 30 s; about 5 min | 10 × 10 × 8 s; exhausted window 75 s |
+| s6-retention | 84,000 seeded instances (sets in `perf/sql/s6-seed.sql`), windows 60 s + sweep (≤ 180 s) + 60 s; about 8 min | 252,000 instances; sweep allowance 600 s |
 
 **Check classes and the verdict** (`perf/eval/common.jq`; allow-list, first
 match wins): **ERROR** (exit 3) — a check is ERROR or of an unknown class or
@@ -335,13 +345,19 @@ pass on jq 1.7.1 and 1.8.1.
 **CI:** a pull request that touches `perf/**`, `sample-perf` or the
 workflow runs `perf.yml`'s `selftest` job (contents: read): the evidence
 guard, the evaluator self-test from committed evidence and the
-baseline-record self-test; never a load run. The load job:
+baseline-record self-test and the background-loop self-test
+(`perf/lib/bgloop-selftest.sh`); the evaluator self-test covers the WP12
+scenarios from `perf/.evidence/wp12/` too, superseded runs included (their
+verdicts pinned); never a load run. The load job:
 `.github/workflows/perf.yml` (`Perf (k6)`) — `workflow_dispatch`
-(scenario, profile, replicas, admin_events; defaults `s1-throughput`,
-`local`, `1`, `false`) and Saturday 04:00 UTC (s1-throughput and s3-parked,
-**local** profile: the profile both committed baselines were recorded with,
-so the baseline gates judge; `full` is a manual choice, and its baseline gates
-read NO_BASELINE). Never on pull requests: a load run on a shared 4-vCPU
+(scenario — any of the seven —, profile, replicas, admin_events; defaults
+`s1-throughput`, `local`, empty = the scenario's own replica count, `false`)
+and Saturday 04:00 UTC: s1-throughput, s3-parked, s5-pool-health,
+s2-recovery-drain and s6-retention in parallel jobs, **local** profile (the
+profile both committed baselines were recorded with, so the baseline gates
+judge; `full` is a manual choice, and its baseline gates read NO_BASELINE).
+s4-signals is dispatch-only: 100 signals/s on two nodes of a shared 4-vCPU
+runner risks dropped iterations (INVALID). Never on pull requests: a load run on a shared 4-vCPU
 runner is not a merge signal (pull requests run only the self-tests above). What is hardware-sensitive on such a runner
 (the statement figures are not): dropped iterations and the plan's iteration
 count (`validity.droppedIterations`, `validity.plan`; also the warm-up drain,
@@ -358,7 +374,21 @@ before calling it an engine regression. Results are uploaded for 14 days.
 `scenario_run` (writes `measurements.json`), a `perf/eval/<name>.jq` (includes
 `common`, returns `result(...)`) and its k6 script under `perf/k6/` — nothing
 else; `run.sh` dispatches on the file names (add the name to its scenario
-`case` and to `perf.yml`'s choice list).
+`case` and to `perf.yml`'s choice list). Shared pieces a scenario can use:
+`perf/lib/topology.sh` (`node_stop` / `node_start` / `node_wait_ready` by exact
+container name; each event lands in `measurements.topology`, so
+`validity.identity`, `validity.noRestart` and `validity.sweeps` judge planned
+restarts, and each planned start allows its own startup sweep in the window
+it falls in); the in-database activity sampler
+(`perf/sql/activity-sampler.sql`: a procedure counting the engine's active
+backends matching a pattern at 10 Hz, as role postgres, unlogged;
+`activity-samples.sql` summarises a label over a time window, with a
+time-weighted busy fraction and the largest gap inside the busy span);
+`K6_NODES` (a k6 phase to a subset of nodes); `measurements.phaseTable`
+(rendered in `summary.md`). Every background pid a scenario starts is
+registered with `bg_register`: `run.sh` kills them by pid on any exit, and a
+loop also stops when the harness is gone or past its deadline
+(`perf/lib/bgloop-selftest.sh`).
 
 **First numbers** (2026-11-16/17, engine 9eb7ca6 = `main` 525b287 merged
 into the harness branch; one node unless stated; admin events off unless
@@ -388,18 +418,162 @@ local runs, e.g. r20261112t223114z) and the same S3 figures (6.0141–6.0172,
 r20261113t030358z and others): removing the per-activity lock (3.10) took
 exactly 10 statements (2 × 5 activities) off S1 and nothing off a parked run.
 
-**An older engine with this harness:**
+**Finding-linked scenarios (WP12): gates.** Each gate ties to one finding and
+was FAIL on the engine before its fix and PASS after it (table below); every
+fix-linked gate has a validity guard that makes "nothing measured" INVALID,
+never PASS. Pass/fail rests on counts and ratios of two figures of one run.
+
+- **s2-recovery-drain** (3.1, WP6): `gate.twoNodeDrain` drainB / drainA ≤
+  0.65; `gate.noHoard` max (running − parked − workflow slots used) per node
+  ≤ 2C, the engine's documented running-or-queued bound (operations.md,
+  recovery pass row); `gate.freshStartsNotStarved` phase A probe p95 ≤ 0.25 ×
+  drainA; and three statement gates — `gate.lockAcquisitionsPerAdoption`
+  (successful lock acquisitions − probe starts + adoption CAS) / adoptions ≤
+  2.02 (with the classifier's adoptCas = adoptions = N, that is one lock per
+  adoption and no run locked twice), `gate.lostLockRaces` (lock calls − lock
+  rows) / N ≤ 0.5 (attempts lost to the peer between its heldKeys read and its
+  lock call: inherent on two nodes without a claim protocol in the store, and
+  growing with statement latency; measured 0 on one node, 0.124 and 0.185 on
+  two after WP6; a peer chasing every row would lose ≥ 1 per run),
+  `gate.recoveryPassRate` (page + heldKeys reads) ≤ 1.25 × a designed floor
+  (capacity passes at most once per second per node counted at one page + one
+  heldKeys each — a pass whose page fills reads on, so the real figure can be
+  higher —, plus a full pass every recovery poll interval and one at each node
+  start; node-seconds from each start, on the database clock, and reads both
+  to the component snapshot that counts them);
+  1.25 rests on the measurements: 0.56–0.71 on one node, 0.78–0.82 on two,
+  worst 0.824. The old single figure, (lockAcquire −
+  probes + adoptCas + pages + heldKeys) / N, is `advisory.recoveryStatements`:
+  on two nodes after WP6 it reads 2.41–2.45, above the one-node 2.17–2.22,
+  because it counts the lost races and the second node's passes — expected,
+  not a regression. Validity: template snapshot, exact seeding, a rolling
+  start (node 2 starts 0–15 s after node 1 reads ready, and reads ready
+  itself), every phase's status record present (`validity.statusRecorded`),
+  every statement component matched (≥ 1 each, adoptCas = the nodes'
+  adoption counters = N), gauge series covering every node's drain from the
+  moment it answered to the drain's end with no stretch over two sampling
+  periods (10 s) unobserved (`validity.hoardSeries`), and the hoard and probe
+  loops ended with exit status 0 (`validity.collectors`).
+- **s4-signals** (3.2, WP2): `gate.noStrayPermits` — every node's
+  `maestro_wake_permits` delta over the local, cross and timer phases is 0
+  (per node: a sum over nodes could cancel); `gate.crossNodeStatementParity`
+  — net engine statements per consumed signal, |cross − local| ≤ tolerance +
+  5 % of local. Validity: the permit gauge present on every node at every
+  read (absent is never 0), ≥ 2 nodes, and both phases set up as named (every
+  run parked before signalling; local routed to the owner, cross to another
+  node).
+- **s5-pool-health** (3.5a, WP4): `gate.notDownWhenBusy` — while the pool is
+  exhausted, 0 `DOWN` answers and 0 unanswered within 5 s from
+  `/actuator/health/perf` (Maestro's component alone). Validity: ≥ 80 % of
+  the exhausted window's samples show ≥ `hikariMaximumPoolSize` − 1 engine
+  backends in `pg_sleep` and Hikari's pending reached ≥ 1
+  (`validity.poolExhausted`); no Hikari timeout (busy, not failing); the
+  sampler never stalled > 1 s (the database itself reachable). Each probe
+  iteration also asks the root `/actuator/health`, which runs Maestro's
+  indicator a second time and Boot's `db` indicator on the same pool, so the
+  36 answers of a window are not independent draws (the same on both builds).
+- **s6-retention** (3.11a/b, WP8): `gate.retentionPaced` — the sweep's busy
+  fraction ≤ 0.65: the time-weighted share of the sweep's own span (first to
+  last sampler sample with a purge statement active) during which one was;
+  `gate.janitorServiceScoped` — every unconsumed signal of the other service
+  kept; `gate.janitorBatched` — janitor rows per DELETE call ≤ 1,000, the
+  engine's batch (calls ≥ ⌈rows / 1,000⌉; an average over the calls, as
+  `pg_stat_statements` keeps rows and calls, not each call's rows).
+  Correctness: retention removed exactly its cutoffs' and budget's rows and
+  nothing else — every retained instance keeps its events and timers, the rc
+  remainder its template children and consumed signals —, no orphan, every
+  foreground probe completed, at least one during the sweep; the janitor
+  deleted exactly its targets. Validity: exact seeding from a template that
+  carries every child kind (events, its cancelled timer, a consumed signal);
+  node 2's sweep observed and node 1's not; the statement texts
+  matched (purge DELETEs a whole 4 per batch, the janitor ≥ 1 call when its
+  targets are gone); the sampler and `pg_stat_statements`' purge execution
+  time agree on the duty cycle within 0.15; the sampler's largest gap inside
+  the span ≤ 0.3 s. The span is each sweep's own, so a paced sweep that spans
+  longer than an unpaced one is judged on the same footing; the before's
+  sweep spans only ~5.5 s (55 samples, ≈ 0.02 resolution) and the after's
+  ~10.3 s (101): short, but both resolved, and the gate's 0.65 sits 0.20 from
+  the before (0.85) and 0.18 from the after (0.47).
+
+**Seeding fidelity limits.** S2 seeds by cloning one mid-run snapshot (one
+step completed) of a real chain run, 5,000 times, by SQL: no instance-lock
+rows (a crashed node's locks expired), one history shape, no signal or timer
+rows, the clones never passed through `startWorkflow`. S6 clones one
+released park run (events, its cancelled timer, a consumed signal) into eight
+sets of ages, statuses and services by SQL; the sweeping node's own pool is
+not under foreground load (the foreground runs on the other node).
+
+**Measured characteristics, not defects.** S4's consume latency (a signal
+row's `received_at` to its `SIGNAL_RECEIVED` event): a local delivery wakes
+the parked run in memory; a cross-node delivery wakes it through the
+post-commit `NOTIFY` (a virtual thread borrows a second pooled connection on
+the receiving node, Postgres delivers to the owner's one `LISTEN`
+connection, one listener thread dispatches in turn); both phases issue the
+`NOTIFY` (4,500 `pg_notify` calls each). Measured after WP2
+(r20261117t171420z): p50 1.0 ms local vs 3.4 ms cross at 100 signals/s
+(+2.4 ms, the `NOTIFY` hop), p95 2.1 vs 5.0 ms; the pooled p95 is dominated
+by rare stalls of tens of ms that land on either phase (13.2 local / 38.7
+cross in r20261117t155519z, 39.4 local / 5.1 cross in r20261117t171420z, the
+local tail all in its first level), so `advisory.consumeLatency` is advisory.
+S5: with the pool exhausted the root `/actuator/health` (Boot's `db`
+indicator on the same pool) went unanswered within 5 s 12 times in 36 after
+WP4 while Maestro's component answered every time — Issue 75.
+
+**Finding-linked before/after** (local profile, MacBook Pro 10 CPUs, Docker
+7837 MiB; every result in `perf/.evidence/wp12/`; "as run" is the verdict
+stored in the file, written by the evaluator of its harness — a stub for the
+first runs of each scenario —; "now" the verdict re-evaluated by the
+evaluator at the commit named, the commit where that scenario's evaluator
+last changed, with `common.jq` at 12a03f5a; `perf/eval/selftest-evidence.sh`
+re-checks every one):
+
+| Scenario | Role | runId | Engine | As run / now (evaluator) | Key figures |
+|---|---|---|---|---|---|
+| S2 | before | r20261117t115610z | `main` 5b170009 (no WP6) | ERROR (stub) / **FAIL** (2ef6b779) | B/A 0.9962; hoard 4,941; probe p95 / drainA 0.917; lost races 0 |
+| S2 | preview | r20261117t122039z | `fix/recovery-capacity` 25e84962 | ERROR (stub) / **PASS** (2ef6b779) | 0.5165; 21; 0.010; lost 0.124 / run; pass rate 0.82 × designed |
+| S2 | after | r20261117t162103z | `main` d1600bf1 | PASS / **PASS** (2ef6b779) | 0.5113; 21; 0.011; lost 0.185 / run; pass rate 0.78 × designed; adoptions 2,551 / 2,449 |
+| S4 | before | r20261117t171940z | 0c710a1e (`834a9da8` + the gauge, MD-2) | FAIL / **FAIL** (b94a938c) | permits local 0, cross **4,500** (2,250 per node), timer **100**; 24.9 / 24.9 statements per signal |
+| S4 | after | r20261117t171420z | `main` 40aa3c21 | PASS / **PASS** (b94a938c) | permits 0 / 0 / 0; 24.7 / 24.7 statements per signal |
+| S5 | before | r20261117t155013z | bdcc074d | FAIL / **FAIL** (2ef6b779) | exhausted: 28 `DOWN` (store "timed out"), 8 `UP`; root 14 `DOWN`, 14 unanswered |
+| S5 | after | r20261117t153355z | `main` bd583f06 | PASS / **PASS** (2ef6b779) | 0 `DOWN`, 32 `UNKNOWN`, 4 `UP`; root 24 `UP`, 12 unanswered (Issue 75) |
+| S6 | before | r20261117t165803z | `main` d1600bf1 (no WP8) | FAIL / **FAIL** (79729932) | busy 0.8525; janitor 1 call × 20,000 rows; foreign signals kept 0 / 10,000; `perf-foreign` rows purged 1,000 / 1,000 (Issue 76) |
+| S6 | after | r20261117t170538z | `main` 40aa3c21 | PASS / **PASS** (79729932) | busy 0.4692; 11 calls, 909 rows per call; all foreign signals and rows kept |
+
+Superseded runs: S4 r20261117t155519z / r20261117t160028z (replaced by the
+per-level re-takes; now PASS / FAIL) and S6 r20261117t161125z /
+r20261117t163846z (replaced by re-takes on the sampler that measures its
+span gap; they predate it and now read INVALID) stay committed as run, their
+current verdicts pinned by the evidence self-test. S5 r20261117t130237z,
+taken with a probe that counted a 503 as no answer, was replaced by
+r20261117t153355z and removed from the evidence (`9ae34033`); its exhausted
+window had read 0 `DOWN` either way.
+
+**`sample-perf` additions (harness settings, not Maestro ones):** the
+management health group `perf` (`include: maestro`, `show-details: always`)
+so S5 reads Maestro's component alone, the root endpoint unchanged; the
+`hold` type (activities holding a pooled connection with `pg_sleep`: the
+host's own database work, MD-6); the `signals` type (M distinct awaits, so
+each delivery is a distinct key).
+
+**An older engine with this harness (MD-1, the overlay):**
 
 ```bash
+H=$(git rev-parse HEAD)                     # the harness commit
 git worktree add --detach ../k6-old <engine-commit>
 cd ../k6-old
-git cherry-pick $(git log --reverse --format=%H --grep='^test(perf)' origin/main)
-perf/run.sh smoke && perf/run.sh s1-throughput
+git diff <engine-commit> "$H" -- settings.gradle.kts   # expect only the sample-perf include
+git rm -r -q perf maestro-samples/sample-perf          # drop files H no longer has
+git checkout "$H" -- perf maestro-samples/sample-perf settings.gradle.kts
+git commit -m "perf harness overlay $H (local only, never pushed)"
+git diff "$H" HEAD --stat -- perf maestro-samples/sample-perf   # must be empty
+PERF_ENGINE_REF="<WPn> before: engine <sha>; harness $H" perf/run.sh <scenario>
 ```
 
-Cite both commits from `identity.repo` (`engineCommit` is the old engine,
-`harnessCommit` the cherry-picked harness). On an engine that predates the
-WP11 meters the advisories that need them say "not available".
+`identity.repo.engineCommit` names the old engine and the run's label names
+`H`; the tree-equality check proves the before and the after ran the same
+harness. Remove the worktree once its `result.json` is copied. (The
+cherry-pick of every `test(perf)` commit, used once for `cbf5a2a`, still
+works but proves tree equality only indirectly.)
 
 ---
 

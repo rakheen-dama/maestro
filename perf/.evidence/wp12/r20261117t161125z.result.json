@@ -1,0 +1,1485 @@
+{
+  "schema": 1,
+  "identity": {
+    "runId": "r20261117t161125z",
+    "scenario": "s6-retention",
+    "profile": "local",
+    "startedAtUtc": "2026-11-17T16:11:26Z",
+    "repo": {
+      "head": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+      "dirty": false,
+      "shallow": false,
+      "engineCommit": "ec0458caa867a61542434db597aa17d7f7f1f144",
+      "harnessCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+      "engineRefLabel": "WP8 before: engine = WP12 branch (main d1600bf1, without WP8); harness 0368426c"
+    },
+    "host": {
+      "uname": "Darwin 25.5.0 arm64",
+      "cpus": 10,
+      "memoryMb": 32768,
+      "dockerServer": "28.5.1",
+      "dockerCompose": "2.40.3-desktop.1",
+      "dockerMemoryMb": 7837
+    },
+    "images": [
+      "apache/kafka:3.9.0",
+      "curlimages/curl:8.11.1",
+      "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+      "grafana/k6:2.3.0",
+      "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "prom/prometheus:v3.5.0"
+    ],
+    "config": {
+      "replicas": 2,
+      "adminEventsRequested": false,
+      "nodeHeap": "1g",
+      "nodeCpus": "2",
+      "nodeMem": "1536m"
+    },
+    "notes": [],
+    "build": {
+      "bakedCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+      "expectedCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+      "jarCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+      "jarSha256": "85586eca7f881edcf9968f8b2b9bd53933bf358ab0381980b1e7e101c0a23692"
+    },
+    "imageDigests": [
+      "apache/kafka@sha256:fbc7d7c428e3755cf36518d4976596002477e4c052d1f80b5b9eafd06d0fff2f",
+      "curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
+      "eclipse-temurin@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+      "grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8",
+      "postgres@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996"
+    ],
+    "containers": [
+      {
+        "name": "maestro-perf-curl-1",
+        "service": "curl",
+        "image": "curlimages/curl:8.11.1",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-kafka-1",
+        "service": "kafka",
+        "image": "apache/kafka:3.9.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-kafka-init-1",
+        "service": "kafka-init",
+        "image": "apache/kafka:3.9.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-node-1",
+        "service": "node",
+        "image": "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+        "cpus": 2,
+        "memoryBytes": 1610612736
+      },
+      {
+        "name": "maestro-perf-node-2",
+        "service": "node",
+        "image": "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+        "cpus": 2,
+        "memoryBytes": 1610612736
+      },
+      {
+        "name": "maestro-perf-postgres-1",
+        "service": "postgres",
+        "image": "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-prometheus-1",
+        "service": "prometheus",
+        "image": "prom/prometheus:v3.5.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      }
+    ],
+    "nodes": [
+      {
+        "container": "maestro-perf-node-1",
+        "buildCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+        "buildTime": "2026-11-17T16:11:29.011Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "38ea4c993e37",
+        "pid": 1,
+        "jvmStartMillis": 1794931903776,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794931917268
+      },
+      {
+        "container": "maestro-perf-node-2",
+        "buildCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+        "buildTime": "2026-11-17T16:11:29.011Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "f41b45d7616e",
+        "pid": 1,
+        "jvmStartMillis": 1794931903972,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794931917428
+      }
+    ],
+    "nodesAfter": [
+      {
+        "container": "maestro-perf-node-1",
+        "buildCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+        "buildTime": "2026-11-17T16:11:29.011Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "38ea4c993e37",
+        "pid": 1,
+        "jvmStartMillis": 1794931903776,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794932320863
+      },
+      {
+        "container": "maestro-perf-node-2",
+        "buildCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+        "buildTime": "2026-11-17T16:11:29.011Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "f41b45d7616e",
+        "pid": 1,
+        "jvmStartMillis": 1794932078795,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794932321032
+      }
+    ],
+    "effective": {
+      "adminEventsEffective": false,
+      "adminEventsEffectiveByNode": [
+        false,
+        false
+      ],
+      "adminTopicEndOffset": 0,
+      "hikariMaximumPoolSize": 10,
+      "workerDefaultConcurrency": 20,
+      "workerDefaultActivityConcurrency": 20,
+      "wakeRecheckInterval": "PT30S",
+      "recoveryPollInterval": "PT1M",
+      "timerPollInterval": "PT5S",
+      "lockCleanupInterval": "PT10M",
+      "signalJanitorInterval": "PT1H",
+      "retentionEnabled": true,
+      "retentionInterval": "PT1H"
+    },
+    "postgres": {
+      "version": "PostgreSQL 16.15 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+      "settings": {
+        "fsync": "on",
+        "full_page_writes": "on",
+        "max_connections": "300",
+        "pg_stat_statements.max": "10000",
+        "pg_stat_statements.save": "on",
+        "pg_stat_statements.track": "all",
+        "pg_stat_statements.track_planning": "off",
+        "pg_stat_statements.track_utility": "on",
+        "shared_buffers": "128MB",
+        "synchronous_commit": "on",
+        "wal_level": "replica",
+        "work_mem": "4MB"
+      }
+    }
+  },
+  "scenario": "s6-retention",
+  "profile": "local",
+  "measurements": {
+    "plan": {
+      "sets": {
+        "rc": 51000,
+        "rt": 5000,
+        "rf": 5000,
+        "young": 1000,
+        "jown": 10000,
+        "jfailed": 1000,
+        "jforeign": 10000,
+        "xforeign": 1000
+      },
+      "retentionBudget": 50000,
+      "rcRemainder": 1000,
+      "windowSecs": {
+        "pre": 60,
+        "sweepAllowance": 180,
+        "post": 60
+      },
+      "foregroundRatePerSec": 5
+    },
+    "warmup": {
+      "prefix": "r20261117t161125z-warmup-",
+      "count": 40,
+      "vus": 20,
+      "timeoutSecs": 120,
+      "drain": {
+        "waitedSecs": 1,
+        "timedOut": false
+      },
+      "runStatus": {
+        "total": 40,
+        "byStatus": {
+          "COMPLETED": 40
+        }
+      }
+    },
+    "background": {
+      "ticks": 12,
+      "timerPollSecs": 5,
+      "recoveryPollSecs": 60,
+      "idleSecs": 60,
+      "window": {
+        "resetAt": "2026-11-17T16:12:01.21609+00:00",
+        "snapshotAt": "2026-11-17T16:13:01.523633+00:00",
+        "windowSecs": 60.308,
+        "dealloc": 0,
+        "maestroCalls": 39,
+        "maestroCallsTopLevel": 39,
+        "maestroStatements": 3,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 25,
+            "rows": 12,
+            "toplevel": true,
+            "totalMs": 3.062,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 12,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.324,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 2,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.319,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ]
+      }
+    },
+    "k6": [
+      {
+        "phase": "warmup",
+        "script": "start-batch.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 40,
+        "droppedIterations": 0,
+        "httpReqs": 40,
+        "httpReqFailedRate": 0,
+        "vusMax": null,
+        "checksPassed": 40,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 107.246208,
+          "p95": 141.81295204999998,
+          "p99": 142.31949224000002,
+          "max": 142.3205
+        }
+      },
+      {
+        "phase": "foreground",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 1501,
+        "droppedIterations": 0,
+        "httpReqs": 1501,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 1501,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 5.822792,
+          "p95": 14.756292,
+          "p99": 37.571375,
+          "max": 192.671125
+        }
+      }
+    ],
+    "topology": [
+      {
+        "at": 1794931985.905,
+        "dbNow": "2026-11-17T16:13:06.035732+00:00",
+        "action": "stop",
+        "container": "maestro-perf-node-2",
+        "jvm": null
+      },
+      {
+        "at": 1794932078.357,
+        "dbNow": "2026-11-17T16:14:38.463875+00:00",
+        "action": "start",
+        "container": "maestro-perf-node-2",
+        "jvm": {
+          "container": "maestro-perf-node-2",
+          "buildCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+          "buildTime": "2026-11-17T16:11:29.011Z",
+          "version": "0.3.0-SNAPSHOT",
+          "hostname": "f41b45d7616e",
+          "pid": 1,
+          "jvmStartMillis": 1794932078795,
+          "javaVersion": "25.0.5+8-LTS",
+          "availableProcessors": 2,
+          "maxHeapBytes": 1037959168,
+          "serviceName": "perf",
+          "adminEventsEnabled": false,
+          "workerDefaultConcurrency": 20,
+          "workerDefaultActivityConcurrency": 20,
+          "workerTaskQueues": [],
+          "wakeRecheckInterval": "PT30S",
+          "recoveryPollInterval": "PT1M",
+          "timerPollInterval": "PT5S",
+          "hikariMaximumPoolSize": 10,
+          "lockCleanupInterval": "PT10M",
+          "lockTtl": "PT30S",
+          "signalJanitorInterval": "PT1H",
+          "retentionEnabled": true,
+          "retentionInterval": "PT1H",
+          "reportedAtMillis": 1794932083781
+        },
+        "infoAt": 1794932083.872
+      }
+    ],
+    "template": {
+      "captured": true,
+      "status": "COMPLETED",
+      "events": 5,
+      "eventTypes": [
+        "ACTIVITY_COMPLETED",
+        "TIMER_SCHEDULED",
+        "SIGNAL_RECEIVED",
+        "ACTIVITY_COMPLETED",
+        "WORKFLOW_COMPLETED"
+      ],
+      "timers": 1,
+      "timerStatuses": [
+        "CANCELLED"
+      ],
+      "signals": 1,
+      "signalsConsumed": 1,
+      "finalByStatus": {
+        "COMPLETED": 1
+      }
+    },
+    "seed": {
+      "sets": {
+        "rc": 51000,
+        "rt": 5000,
+        "rf": 5000,
+        "young": 1000,
+        "jown": 10000,
+        "jfailed": 1000,
+        "jforeign": 10000,
+        "xforeign": 1000
+      },
+      "seconds": 29.970,
+      "at": "2026-11-17T16:13:36.188905+00:00"
+    },
+    "seeded": {
+      "sets": {
+        "jfailed": {
+          "instances": 1000,
+          "events": 5000,
+          "timers": 1000,
+          "signalsConsumed": 1000,
+          "signalsUnconsumed": 1000
+        },
+        "jforeign": {
+          "instances": 10000,
+          "events": 50000,
+          "timers": 10000,
+          "signalsConsumed": 10000,
+          "signalsUnconsumed": 10000
+        },
+        "jown": {
+          "instances": 10000,
+          "events": 50000,
+          "timers": 10000,
+          "signalsConsumed": 10000,
+          "signalsUnconsumed": 10000
+        },
+        "rc": {
+          "instances": 51000,
+          "events": 255000,
+          "timers": 51000,
+          "signalsConsumed": 51000,
+          "signalsUnconsumed": 0
+        },
+        "rf": {
+          "instances": 5000,
+          "events": 25000,
+          "timers": 5000,
+          "signalsConsumed": 5000,
+          "signalsUnconsumed": 0
+        },
+        "rt": {
+          "instances": 5000,
+          "events": 25000,
+          "timers": 5000,
+          "signalsConsumed": 5000,
+          "signalsUnconsumed": 0
+        },
+        "xforeign": {
+          "instances": 1000,
+          "events": 5000,
+          "timers": 1000,
+          "signalsConsumed": 1000,
+          "signalsUnconsumed": 0
+        },
+        "young": {
+          "instances": 1000,
+          "events": 5000,
+          "timers": 1000,
+          "signalsConsumed": 1000,
+          "signalsUnconsumed": 0
+        }
+      },
+      "orphans": {
+        "events": 0,
+        "timers": 0,
+        "signals": 0
+      },
+      "at": "2026-11-17T16:13:36.358053+00:00"
+    },
+    "windows": [
+      {
+        "resetAt": "2026-11-17T16:13:37.73677+00:00",
+        "snapshotAt": "2026-11-17T16:14:37.909902+00:00",
+        "windowSecs": 60.173,
+        "dealloc": 0,
+        "maestroCalls": 5991,
+        "maestroCallsTopLevel": 4799,
+        "maestroStatements": 14,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 1192,
+            "rows": 1192,
+            "toplevel": false,
+            "totalMs": 22.732,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 895,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 38.351,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 894,
+            "rows": 894,
+            "toplevel": true,
+            "totalMs": 205.472,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 598,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 16.405,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 597,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.840,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 299,
+            "rows": 299,
+            "toplevel": true,
+            "totalMs": 48.307,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 299,
+            "rows": 299,
+            "toplevel": true,
+            "totalMs": 41.208,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 298,
+            "rows": 298,
+            "toplevel": true,
+            "totalMs": 36.364,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 298,
+            "rows": 298,
+            "toplevel": true,
+            "totalMs": 31.351,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 298,
+            "rows": 298,
+            "toplevel": true,
+            "totalMs": 18.307,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 298,
+            "rows": 298,
+            "toplevel": true,
+            "totalMs": 9.049,
+            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+          },
+          {
+            "calls": 12,
+            "rows": 12,
+            "toplevel": true,
+            "totalMs": 1.197,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 12,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.202,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 1,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.183,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ],
+        "phase": "pre"
+      },
+      {
+        "resetAt": "2026-11-17T16:14:38.212572+00:00",
+        "snapshotAt": "2026-11-17T16:14:50.022619+00:00",
+        "windowSecs": 11.810,
+        "dealloc": 0,
+        "maestroCalls": 368099,
+        "maestroCallsTopLevel": 1863,
+        "maestroStatements": 41,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 1,
+          "retention": 124
+        },
+        "harnessCalls": 351,
+        "top": [
+          {
+            "calls": 183236,
+            "rows": 236,
+            "toplevel": false,
+            "totalMs": 849.282,
+            "query": "SELECT 1 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 61000,
+            "rows": 0,
+            "toplevel": false,
+            "totalMs": 502.638,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_event\" x WHERE $1 OPERATOR(pg_catalog.=) \"workflow_instance_id\" FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 61000,
+            "rows": 0,
+            "toplevel": false,
+            "totalMs": 349.526,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_timer\" x WHERE $1 OPERATOR(pg_catalog.=) \"workflow_instance_id\" FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 61000,
+            "rows": 0,
+            "toplevel": false,
+            "totalMs": 346.957,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_signal\" x WHERE $1 OPERATOR(pg_catalog.=) \"workflow_instance_id\" FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 247,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.230,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 177,
+            "rows": 177,
+            "toplevel": true,
+            "totalMs": 26.761,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 177,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 6.271,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 128,
+            "rows": 126,
+            "toplevel": true,
+            "totalMs": 9.019,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 124,
+            "rows": 61000,
+            "toplevel": true,
+            "totalMs": 96.608,
+            "query": "SELECT id FROM maestro_workflow_instance WHERE status = $1 AND completed_at < $2 ORDER BY completed_at ASC LIMIT $3 FOR UPDATE SKIP LOCKED"
+          },
+          {
+            "calls": 122,
+            "rows": 61000,
+            "toplevel": true,
+            "totalMs": 4593.335,
+            "query": "DELETE FROM maestro_workflow_instance WHERE id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32"
+          },
+          {
+            "calls": 122,
+            "rows": 305000,
+            "toplevel": true,
+            "totalMs": 295.548,
+            "query": "DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29"
+          },
+          {
+            "calls": 122,
+            "rows": 61000,
+            "toplevel": true,
+            "totalMs": 126.575,
+            "query": "DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29"
+          },
+          {
+            "calls": 122,
+            "rows": 61000,
+            "toplevel": true,
+            "totalMs": 118.266,
+            "query": "DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $2"
+          },
+          {
+            "calls": 118,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 2.981,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 59,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 8.067,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 59,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 7.520,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 59,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 6.621,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 59,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 5.912,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 59,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 4.035,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 59,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 1.891,
+            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+          },
+          {
+            "calls": 10,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.109,
+            "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+          },
+          {
+            "calls": 6,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.058,
+            "query": "SET ROLE 'maestro'"
+          },
+          {
+            "calls": 4,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.021,
+            "query": "SHOW search_path"
+          },
+          {
+            "calls": 3,
+            "rows": 3,
+            "toplevel": true,
+            "totalMs": 0.077,
+            "query": "SELECT EXISTS ( SELECT $3 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = $4 )"
+          },
+          {
+            "calls": 3,
+            "rows": 3,
+            "toplevel": true,
+            "totalMs": 0.014,
+            "query": "SELECT CURRENT_USER"
+          }
+        ],
+        "sweepWindow": true,
+        "phase": "sweep"
+      },
+      {
+        "resetAt": "2026-11-17T16:14:50.39927+00:00",
+        "snapshotAt": "2026-11-17T16:18:39.127187+00:00",
+        "windowSecs": 228.728,
+        "dealloc": 0,
+        "maestroCalls": 22947,
+        "maestroCallsTopLevel": 18387,
+        "maestroStatements": 16,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 6466,
+        "top": [
+          {
+            "calls": 4560,
+            "rows": 4560,
+            "toplevel": false,
+            "totalMs": 85.865,
+            "query": "SELECT 1 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 3420,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 137.921,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 3419,
+            "rows": 3419,
+            "toplevel": true,
+            "totalMs": 1386.215,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 2280,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 59.250,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 2280,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 3.120,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 1140,
+            "rows": 1140,
+            "toplevel": true,
+            "totalMs": 184.372,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 1140,
+            "rows": 1140,
+            "toplevel": true,
+            "totalMs": 136.006,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 1140,
+            "rows": 1140,
+            "toplevel": true,
+            "totalMs": 129.332,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 1140,
+            "rows": 1140,
+            "toplevel": true,
+            "totalMs": 110.115,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 1140,
+            "rows": 1140,
+            "toplevel": true,
+            "totalMs": 62.024,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 1140,
+            "rows": 1140,
+            "toplevel": true,
+            "totalMs": 29.374,
+            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+          },
+          {
+            "calls": 92,
+            "rows": 46,
+            "toplevel": true,
+            "totalMs": 12.309,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 46,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 1.581,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = 'PENDING' ORDER BY fire_at ASC LIMIT $1 FOR UPDATE S"
+          },
+          {
+            "calls": 7,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 1.180,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 2,
+            "rows": 2,
+            "toplevel": true,
+            "totalMs": 0.421,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 1,
+            "rows": 1,
+            "toplevel": true,
+            "totalMs": 0.249,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          }
+        ],
+        "phase": "post"
+      }
+    ],
+    "sweep": {
+      "waitedSecs": 6,
+      "ended": true,
+      "pgssReset": {
+        "resetAt": "2026-11-17T16:14:38.212572+00:00"
+      },
+      "components": {
+        "janitor": {
+          "calls": 1,
+          "rows": 20000,
+          "totalMs": 51.324,
+          "entries": 1
+        },
+        "purgeCandidates": {
+          "calls": 124,
+          "rows": 61000,
+          "totalMs": 96.608,
+          "entries": 1
+        },
+        "purgeDeletes": {
+          "calls": 488,
+          "rows": 488000,
+          "totalMs": 5133.724,
+          "entries": 4
+        }
+      },
+      "walBytes": 26361229
+    },
+    "sampler": {
+      "samples": 2272,
+      "firstAt": "2026-11-17T16:14:38.216347+00:00",
+      "lastAt": "2026-11-17T16:18:38.12682+00:00",
+      "maxGapSecs": 0.621,
+      "matchingSamples": 53,
+      "firstMatchAt": "2026-11-17T16:14:43.397227+00:00",
+      "lastMatchAt": "2026-11-17T16:14:49.487099+00:00",
+      "spanSamples": 60,
+      "matchingInSpan": 53,
+      "maxMatching": 1,
+      "min": 1
+    },
+    "foreground": {
+      "during": {
+        "n": 30,
+        "completed": 30,
+        "p50Ms": 73.8,
+        "p95Ms": 100.7
+      },
+      "post": {
+        "n": 1145,
+        "completed": 1145,
+        "p50Ms": 77.6,
+        "p95Ms": 117.6
+      },
+      "pre": {
+        "n": 326,
+        "completed": 326,
+        "p50Ms": 80.3,
+        "p95Ms": 116.9
+      }
+    },
+    "counters": {
+      "node1": {
+        "before": {
+          "ok": true,
+          "at": 1794932078.091,
+          "sweeps": 1,
+          "purged": {
+            "instance": 0,
+            "signal": 0,
+            "timer": 0,
+            "event": 0
+          }
+        },
+        "after": {
+          "ok": true,
+          "at": 1794932319.353,
+          "sweeps": 1,
+          "purged": {
+            "instance": 0,
+            "signal": 0,
+            "timer": 0,
+            "event": 0
+          }
+        }
+      },
+      "node2": {
+        "after": {
+          "ok": true,
+          "at": 1794932319.520,
+          "sweeps": 1,
+          "purged": {
+            "instance": 61000,
+            "signal": 61000,
+            "timer": 61000,
+            "event": 305000
+          }
+        }
+      }
+    },
+    "final": {
+      "sets": {
+        "jfailed": {
+          "instances": 1000,
+          "events": 5000,
+          "timers": 1000,
+          "signalsConsumed": 1000,
+          "signalsUnconsumed": 1000
+        },
+        "jforeign": {
+          "instances": 10000,
+          "events": 50000,
+          "timers": 10000,
+          "signalsConsumed": 10000,
+          "signalsUnconsumed": 0
+        },
+        "jown": {
+          "instances": 10000,
+          "events": 50000,
+          "timers": 10000,
+          "signalsConsumed": 10000,
+          "signalsUnconsumed": 0
+        },
+        "rc": {
+          "instances": 1000,
+          "events": 5000,
+          "timers": 1000,
+          "signalsConsumed": 1000,
+          "signalsUnconsumed": 0
+        },
+        "young": {
+          "instances": 1000,
+          "events": 5000,
+          "timers": 1000,
+          "signalsConsumed": 1000,
+          "signalsUnconsumed": 0
+        }
+      },
+      "orphans": {
+        "events": 0,
+        "timers": 0,
+        "signals": 0
+      },
+      "at": "2026-11-17T16:18:40.386574+00:00"
+    },
+    "phaseTable": [
+      {
+        "window": "pre",
+        "windowSecs": 60.173,
+        "maestroCalls": 5991,
+        "janitorCalls": 0,
+        "retentionCalls": 0,
+        "foregroundP95Ms": 116.9
+      },
+      {
+        "window": "sweep",
+        "windowSecs": 11.810,
+        "maestroCalls": 368099,
+        "janitorCalls": 1,
+        "retentionCalls": 124,
+        "foregroundP95Ms": 100.7
+      },
+      {
+        "window": "post",
+        "windowSecs": 228.728,
+        "maestroCalls": 22947,
+        "janitorCalls": 0,
+        "retentionCalls": 0,
+        "foregroundP95Ms": 117.6
+      }
+    ]
+  },
+  "checks": [
+    {
+      "id": "validity.identity",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "buildCommits": [
+          "0368426c935e731de06b2f596f2bd6bfa9a74863",
+          "0368426c935e731de06b2f596f2bd6bfa9a74863"
+        ],
+        "nodes": 2,
+        "distinctHostnames": 2,
+        "hostnames": [
+          "38ea4c993e37",
+          "f41b45d7616e"
+        ],
+        "plannedJvms": [
+          {
+            "container": "maestro-perf-node-2",
+            "buildCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863"
+          }
+        ]
+      },
+      "limit": {
+        "expectedCommit": "0368426c935e731de06b2f596f2bd6bfa9a74863",
+        "replicas": 2
+      },
+      "detail": "every node runs the stamped jar on a distinct host; so does the JVM of each of the 1 planned start(s)"
+    },
+    {
+      "id": "validity.noRestart",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "before": [
+          {
+            "hostname": "38ea4c993e37",
+            "jvmStartMillis": 1794931903776,
+            "pid": 1
+          },
+          {
+            "hostname": "f41b45d7616e",
+            "jvmStartMillis": 1794931903972,
+            "pid": 1
+          }
+        ],
+        "expectedAfter": [
+          {
+            "hostname": "38ea4c993e37",
+            "jvmStartMillis": 1794931903776,
+            "pid": 1
+          },
+          {
+            "hostname": "f41b45d7616e",
+            "jvmStartMillis": 1794932078795,
+            "pid": 1
+          }
+        ],
+        "after": [
+          {
+            "hostname": "38ea4c993e37",
+            "jvmStartMillis": 1794931903776,
+            "pid": 1
+          },
+          {
+            "hostname": "f41b45d7616e",
+            "jvmStartMillis": 1794932078795,
+            "pid": 1
+          }
+        ]
+      },
+      "limit": "per container, the last JVM the topology log recorded",
+      "detail": "every node's final JVM is the last one the topology log recorded (1 planned start(s)): no unplanned restart"
+    },
+    {
+      "id": "validity.adminEvents",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "requested": false,
+        "effectiveByNode": [
+          false,
+          false
+        ],
+        "adminTopicEndOffset": 0
+      },
+      "limit": "requested == /perf/info.adminEventsEnabled == (maestro.admin.events end offset > 0)",
+      "detail": "admin events off as requested"
+    },
+    {
+      "id": "validity.pgssComplete",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windows": 4,
+        "dealloc": [
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "limit": {
+        "dealloc": 0
+      },
+      "detail": "no statement entry evicted"
+    },
+    {
+      "id": "validity.k6",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "warmup",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "foreground",
+          "exitCode": 0,
+          "summary": true
+        }
+      ],
+      "limit": {
+        "exitCode": [
+          0,
+          99
+        ],
+        "summary": true
+      },
+      "detail": "every k6 phase exited 0 with a summary"
+    },
+    {
+      "id": "validity.droppedIterations",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "warmup",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "foreground",
+          "droppedIterations": 0
+        }
+      ],
+      "limit": {
+        "droppedIterations": 0
+      },
+      "detail": "no k6 phase dropped an iteration"
+    },
+    {
+      "id": "validity.warmup",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "count": 40,
+        "total": 40,
+        "byStatus": {
+          "COMPLETED": 40
+        },
+        "timedOut": false,
+        "waitedSecs": 1
+      },
+      "limit": {
+        "timedOut": false,
+        "completed": 40
+      },
+      "detail": "40/40 warm-up runs COMPLETED in 1 s, before the idle window"
+    },
+    {
+      "id": "advisory.dirtyTree",
+      "class": "advisory",
+      "status": "PASS",
+      "value": false,
+      "limit": false,
+      "detail": "clean tree"
+    },
+    {
+      "id": "validity.sweeps",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windows": [
+          {
+            "name": "background",
+            "sinceEarliestNodeStartSecs": [
+              17,
+              78
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[0]",
+            "sinceEarliestNodeStartSecs": [
+              114,
+              174
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[1]",
+            "sinceEarliestNodeStartSecs": [
+              174,
+              186
+            ],
+            "plannedStarts": 1,
+            "sweepWindow": true,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 1,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 1
+            },
+            "retention": {
+              "observedCalls": 124,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 3
+            }
+          },
+          {
+            "name": "windows[2]",
+            "sinceEarliestNodeStartSecs": [
+              187,
+              415
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "container": "maestro-perf-node-1",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 13.49
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 13.46,
+            "planned": false,
+            "lifetimeEndSecs": 82.06
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 4.99,
+            "planned": true,
+            "lifetimeEndSecs": null
+          }
+        ]
+      },
+      "limit": {
+        "lockCleanerCalls": "within 2 x [certain, possible] passes predicted from each node's reported interval, jvmStartMillis and reportedAtMillis (+5 s drift per pass); subtracted exactly from the window's calls",
+        "signalJanitorCalls": 0,
+        "retentionCalls": 0,
+        "signalJanitorOrRetentionPassesPredicted": 0
+      },
+      "detail": "every measured window's sweeps are accounted for: no signal-janitor or retention statement in any window, none predicted; lock-cleaner calls as predicted from the reported intervals (none in any window)"
+    },
+    {
+      "id": "correctness.s6",
+      "class": "correctness",
+      "status": "ERROR",
+      "value": null,
+      "limit": null,
+      "detail": "evaluator not written"
+    }
+  ],
+  "verdict": "ERROR"
+}

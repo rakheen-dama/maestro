@@ -73,6 +73,17 @@ if grep -E -- '--arg pwd|pwd: \$pwd|\$\(uname -a\)' "${PERF_DIR}/run.sh" >/dev/n
   fail "perf/run.sh records pwd or uname -a in identity.json"
 fi
 
+# Every script the perf workflow runs directly (a `run: perf/….sh` line in
+# .github/workflows/perf.yml, and run.sh) is committed executable (mode
+# 100755): a 100644 one fails in CI with exit 126 while passing locally. The
+# sourced libraries and scenarios (lib/common.sh, lib/topology.sh,
+# lib/baseline.sh, scenarios/*.sh) stay 100644.
+while IFS= read -r script; do
+  mode=$(git -C "${PERF_DIR}/.." ls-files -s -- "$script" | awk '{print $1}')
+  [[ "$mode" == 100755 ]] || fail "${script} is run directly by perf.yml but committed as ${mode:-untracked}, not 100755"
+done < <({ grep -oE 'run: perf/[A-Za-z0-9_./-]+\.sh' "${PERF_DIR}/../.github/workflows/perf.yml" | sed 's/^run: //'
+           echo perf/run.sh; } | sort -u)
+
 # The check itself: each negative fixture (a clean committed result with one
 # personal detail planted) must be caught.
 fixture_src=$(git -C "${PERF_DIR}/.." ls-files -- 'perf/.evidence/*/*.result.json' | head -1)

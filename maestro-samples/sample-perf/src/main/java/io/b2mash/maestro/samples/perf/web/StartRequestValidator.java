@@ -54,6 +54,26 @@ public final class StartRequestValidator {
             }
             return Optional.empty();
         }
-        return Optional.of("type must be chain or park");
+        if (StartRequest.HOLD.equals(request.type())) {
+            var input = request.holdInput();
+            if (input.activities() < 1 || input.activities() > 50) {
+                return Optional.of("activities must be 1..50");
+            }
+            if (input.holdMillis() < 0 || input.holdMillis() > 20_000) {
+                return Optional.of("holdMillis must be 0..20000");
+            }
+            return Optional.empty();
+        }
+        if (StartRequest.SIGNALS.equals(request.type())) {
+            var input = request.signalsInput();
+            if (input.signals() < 1 || input.signals() > 50) {
+                return Optional.of("signals must be 1..50");
+            }
+            if (input.parkSeconds() < 1 || input.parkSeconds() > 86_400) {
+                return Optional.of("parkSeconds must be 1..86400");
+            }
+            return Optional.empty();
+        }
+        return Optional.of("type must be chain, park, hold or signals");
     }
 }

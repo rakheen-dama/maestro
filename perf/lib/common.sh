@@ -28,6 +28,81 @@ dc() {
   docker compose -p "${COMPOSE_PROJECT}" -f "${PERF_DIR}/compose.yml" --profile tools "$@"
 }
 
+# Background work a scenario starts (S2's probe and hoard loops, samplers,
+# a background k6) must never outlive the harness: an orphaned probe loop
+# would keep running `docker compose run k6` against a torn-down stack and
+# recreate its network.
+#   bg_start <cmd…>  runs <cmd…> in the background with its stdout appended
+#       to harness.log, never the caller's stdout: inside `x=$(phase)` (S2's
+#       s2_phase) that stdout is the command substitution's pipe, and a loop
+#       holding it open makes the parent wait for the loop's own end after a
+#       die or an interrupt. Registers the pid; sets BG_LAST_PID.
+#   bg_register <pid>  records the pid with its process start time (ps
+#       lstart) in ${RESULTS}/.bg-pids.
+#   bg_wait <pid> [<var>]  waits for it and forgets it, so a pid the kernel
+#       may reuse later is never in the registry. Never fails itself: the
+#       process's exit status goes into <var> when one is named (S2 records
+#       its collectors' statuses, so a loop that stopped early is seen).
+#   bg_kill_all  (run.sh's on_exit) first drops ${RESULTS}/.bg-stop, which
+#       bg_should_continue reads, so no loop begins another iteration; then
+#       for each recorded pid whose live process still has the recorded start
+#       time (the same process, not a reused pid): freezes it (SIGSTOP), so it
+#       cannot replace the child it is about to lose, kills its direct
+#       children, then it (SIGTERM, SIGCONT) — BY PID, never by name or
+#       pattern.
+#   bg_should_continue <deadline epoch>  a loop's guard: false once cleanup
+#       has begun (.bg-stop), once the harness (PERF_MAIN_PID, run.sh's own
+#       pid) is gone, e.g. after a SIGKILL that ran no trap, or once the
+#       deadline has passed.
+# perf/lib/bgloop-selftest.sh pins all of it.
+bg_start_time() {
+  ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //; s/ $//' | tr ' ' '_'
+}
+bg_register() {
+  printf '%s|%s|%s\n' "$1" "$(bg_start_time "$1")" "${BASHPID:-$$}" >>"${RESULTS}/.bg-pids"
+}
+bg_start() {
+  "$@" >>"${RESULTS}/harness.log" &
+  BG_LAST_PID=$!
+  bg_register "$BG_LAST_PID"
+}
+bg_forget() {
+  [[ -s "${RESULTS}/.bg-pids" ]] || return 0
+  grep -v "^$1|" "${RESULTS}/.bg-pids" >"${RESULTS}/.bg-pids.tmp" || true
+  mv "${RESULTS}/.bg-pids.tmp" "${RESULTS}/.bg-pids"
+}
+bg_wait() {
+  local _bg_rc=0
+  wait "$1" || _bg_rc=$?
+  bg_forget "$1"
+  if [[ -n "${2:-}" ]]; then printf -v "$2" '%s' "$_bg_rc"; fi
+}
+bg_kill_all() {
+  local pid started rest child children
+  [[ -n "${RESULTS:-}" && -s "${RESULTS}/.bg-pids" ]] || return 0
+  # No loop starts another iteration once cleanup has begun.
+  : >"${RESULTS}/.bg-stop"
+  while IFS='|' read -r pid started rest; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    kill -0 "$pid" 2>/dev/null || continue
+    # The same process, not a pid the kernel has since given to another.
+    [[ -n "$started" && "$(bg_start_time "$pid")" == "$started" ]] || continue
+    # Freeze it first, so it cannot replace the child it is about to lose,
+    # then kill its children, then it (SIGCONT lets the TERM land).
+    kill -STOP "$pid" 2>/dev/null || true
+    children=$(ps -axo pid=,ppid= | awk -v p="$pid" '$2 == p {print $1}')
+    for child in $children; do
+      kill "$child" 2>/dev/null || true
+    done
+    kill "$pid" 2>/dev/null || true
+    kill -CONT "$pid" 2>/dev/null || true
+  done <"${RESULTS}/.bg-pids"
+  return 0
+}
+bg_should_continue() {
+  [[ ! -e "${RESULTS:-/nonexistent}/.bg-stop" ]] && kill -0 "${PERF_MAIN_PID:-$$}" 2>/dev/null && (($(date +%s) < $1))
+}
+
 # Rewrites identity.json in place: identity_set '<jq filter>' [jq args…]
 identity_set() {
   local filter=$1
@@ -87,17 +162,22 @@ collect_nodes() {
 # Runs one k6 phase and records its exit code and key summary values in
 # k6-runs.jsonl. A non-zero exit never aborts the harness: 99 (advisory
 # thresholds crossed) is recorded as such, anything else makes validity.k6
-# INVALID.
+# INVALID. k6 sends to every replica (PERF_NODES = node_urls), or, when
+# K6_NODES is set and non-empty, to exactly those comma-separated base URLs
+# (WP12: a scenario whose other nodes are stopped). Each record names the
+# nodes it used (nodes).
 # k6_run <phase> <script> [KEY=VALUE env for the script…]
 k6_run() {
   local phase=$1 script=$2
   shift 2
-  local args=(-e "PERF_NODES=$(node_urls)" -e "PERF_PHASE=${phase}")
+  local targets="${K6_NODES:-}"
+  [[ -n "$targets" ]] || targets=$(node_urls)
+  local args=(-e "PERF_NODES=${targets}" -e "PERF_PHASE=${phase}")
   local kv
   for kv in "$@"; do
     args+=(-e "$kv")
   done
-  log "k6 ${phase}: ${script} $*"
+  log "k6 ${phase}: ${script} $* (nodes ${targets})"
   local rc=0
   local summary="${RESULTS}/k6-${phase}.json"
   rm -f "$summary"
@@ -111,9 +191,9 @@ k6_run() {
   # droppedIterations at all, and validity.k6 / validity.droppedIterations
   # are INVALID for it.
   if [[ -s "$summary" ]]; then
-    jq -c --arg phase "$phase" --arg script "$script" --argjson rc "$rc" '
+    jq -c --arg phase "$phase" --arg script "$script" --argjson rc "$rc" --arg nodes "$targets" '
       def v($m; $k): (.metrics[$m].values[$k] // null);
-      {phase: $phase, script: $script, exitCode: $rc, summaryMissing: false,
+      {phase: $phase, script: $script, exitCode: $rc, summaryMissing: false, nodes: ($nodes | split(",")),
        iterations: v("iterations"; "count"),
        droppedIterations: (v("dropped_iterations"; "count") // 0),
        httpReqs: v("http_reqs"; "count"),
@@ -128,8 +208,8 @@ k6_run() {
                  | if . then {p50: .med, p95: .["p(95)"], p99: .["p(99)"], max: .max} else null end)}' \
       "$summary" >>"${RESULTS}/k6-runs.jsonl"
   else
-    jq -nc --arg phase "$phase" --arg script "$script" --argjson rc "$rc" \
-      '{phase: $phase, script: $script, exitCode: $rc, summaryMissing: true}' >>"${RESULTS}/k6-runs.jsonl"
+    jq -nc --arg phase "$phase" --arg script "$script" --argjson rc "$rc" --arg nodes "$targets" \
+      '{phase: $phase, script: $script, exitCode: $rc, summaryMissing: true, nodes: ($nodes | split(","))}' >>"${RESULTS}/k6-runs.jsonl"
   fi
   return 0
 }

@@ -1,0 +1,4852 @@
+{
+  "schema": 1,
+  "identity": {
+    "runId": "r20261117t122039z",
+    "scenario": "s2-recovery-drain",
+    "profile": "local",
+    "startedAtUtc": "2026-11-17T12:20:40Z",
+    "repo": {
+      "head": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+      "dirty": false,
+      "shallow": false,
+      "engineCommit": "25e8496242f46b083a966f63b2b264c520969418",
+      "harnessCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+      "engineRefLabel": "WP6 preview: engine fix/recovery-capacity 25e84962; harness 24763185"
+    },
+    "host": {
+      "uname": "Darwin 25.5.0 arm64",
+      "cpus": 10,
+      "memoryMb": 32768,
+      "dockerServer": "28.5.1",
+      "dockerCompose": "2.40.3-desktop.1",
+      "dockerMemoryMb": 7837
+    },
+    "images": [
+      "apache/kafka:3.9.0",
+      "curlimages/curl:8.11.1",
+      "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+      "grafana/k6:2.3.0",
+      "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "prom/prometheus:v3.5.0"
+    ],
+    "config": {
+      "replicas": 2,
+      "adminEventsRequested": false,
+      "nodeHeap": "1g",
+      "nodeCpus": "2",
+      "nodeMem": "1536m"
+    },
+    "notes": [],
+    "build": {
+      "bakedCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+      "expectedCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+      "jarCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+      "jarSha256": "4c36d1bf96c11efee0d5c43bb1a9c4027aa53a1277852412dbcd6afd0f97b196"
+    },
+    "imageDigests": [
+      "apache/kafka@sha256:fbc7d7c428e3755cf36518d4976596002477e4c052d1f80b5b9eafd06d0fff2f",
+      "curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
+      "eclipse-temurin@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+      "grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8",
+      "postgres@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996"
+    ],
+    "containers": [
+      {
+        "name": "maestro-perf-curl-1",
+        "service": "curl",
+        "image": "curlimages/curl:8.11.1",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-kafka-1",
+        "service": "kafka",
+        "image": "apache/kafka:3.9.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-kafka-init-1",
+        "service": "kafka-init",
+        "image": "apache/kafka:3.9.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-node-1",
+        "service": "node",
+        "image": "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+        "cpus": 2,
+        "memoryBytes": 1610612736
+      },
+      {
+        "name": "maestro-perf-node-2",
+        "service": "node",
+        "image": "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+        "cpus": 2,
+        "memoryBytes": 1610612736
+      },
+      {
+        "name": "maestro-perf-postgres-1",
+        "service": "postgres",
+        "image": "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-prometheus-1",
+        "service": "prometheus",
+        "image": "prom/prometheus:v3.5.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      }
+    ],
+    "nodes": [
+      {
+        "container": "maestro-perf-node-1",
+        "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+        "buildTime": "2026-11-17T12:20:43.495Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "bde7e05558b0",
+        "pid": 1,
+        "jvmStartMillis": 1794918058508,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794918068891
+      },
+      {
+        "container": "maestro-perf-node-2",
+        "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+        "buildTime": "2026-11-17T12:20:43.495Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "e020100381ff",
+        "pid": 1,
+        "jvmStartMillis": 1794918058403,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794918069032
+      }
+    ],
+    "nodesAfter": [
+      {
+        "container": "maestro-perf-node-1",
+        "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+        "buildTime": "2026-11-17T12:20:43.495Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "bde7e05558b0",
+        "pid": 1,
+        "jvmStartMillis": 1794918700036,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794918995232
+      },
+      {
+        "container": "maestro-perf-node-2",
+        "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+        "buildTime": "2026-11-17T12:20:43.495Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "e020100381ff",
+        "pid": 1,
+        "jvmStartMillis": 1794918712133,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794918995434
+      }
+    ],
+    "effective": {
+      "adminEventsEffective": false,
+      "adminEventsEffectiveByNode": [
+        false,
+        false
+      ],
+      "adminTopicEndOffset": 0,
+      "hikariMaximumPoolSize": 10,
+      "workerDefaultConcurrency": 20,
+      "workerDefaultActivityConcurrency": 20,
+      "wakeRecheckInterval": "PT30S",
+      "recoveryPollInterval": "PT1M",
+      "timerPollInterval": "PT5S",
+      "lockCleanupInterval": "PT10M",
+      "signalJanitorInterval": "PT1H",
+      "retentionEnabled": true,
+      "retentionInterval": "PT1H"
+    },
+    "postgres": {
+      "version": "PostgreSQL 16.15 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+      "settings": {
+        "fsync": "on",
+        "full_page_writes": "on",
+        "max_connections": "300",
+        "pg_stat_statements.max": "10000",
+        "pg_stat_statements.save": "on",
+        "pg_stat_statements.track": "all",
+        "pg_stat_statements.track_planning": "off",
+        "pg_stat_statements.track_utility": "on",
+        "shared_buffers": "128MB",
+        "synchronous_commit": "on",
+        "wal_level": "replica",
+        "work_mem": "4MB"
+      }
+    }
+  },
+  "scenario": "s2-recovery-drain",
+  "profile": "local",
+  "measurements": {
+    "plan": {
+      "n": 5000,
+      "activityMillis": 2000,
+      "concurrency": 20,
+      "drainTimeoutSecs": 1800,
+      "probeRatePerSec": 0.2,
+      "rollingDelaySecs": 5,
+      "phases": [
+        "A",
+        "B"
+      ]
+    },
+    "warmup": {
+      "prefix": "r20261117t122039z-warmup-",
+      "count": 40,
+      "vus": 20,
+      "timeoutSecs": 120,
+      "drain": {
+        "waitedSecs": 0,
+        "timedOut": false
+      },
+      "runStatus": {
+        "total": 40,
+        "byStatus": {
+          "COMPLETED": 40
+        }
+      }
+    },
+    "background": {
+      "ticks": 12,
+      "timerPollSecs": 5,
+      "recoveryPollSecs": 60,
+      "idleSecs": 60,
+      "window": {
+        "resetAt": "2026-11-17T12:21:12.566022+00:00",
+        "snapshotAt": "2026-11-17T12:22:12.855108+00:00",
+        "windowSecs": 60.289,
+        "dealloc": 0,
+        "maestroCalls": 38,
+        "maestroCallsTopLevel": 38,
+        "maestroStatements": 3,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 24,
+            "rows": 12,
+            "toplevel": true,
+            "totalMs": 3.700,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 12,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.301,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 2,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.200,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ]
+      }
+    },
+    "k6": [
+      {
+        "phase": "warmup",
+        "script": "start-batch.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 40,
+        "droppedIterations": 0,
+        "httpReqs": 40,
+        "httpReqFailedRate": 0,
+        "vusMax": null,
+        "checksPassed": 40,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 79.101375,
+          "p95": 111.1673021,
+          "p99": 111.48700637,
+          "max": 111.520709
+        }
+      },
+      {
+        "phase": "probea-0",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 8.0888755,
+          "p95": 18.08207275,
+          "p99": 19.93541455,
+          "max": 20.39875
+        }
+      },
+      {
+        "phase": "probea-1",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 8.6565205,
+          "p95": 11.357844,
+          "p99": 11.9641024,
+          "max": 12.115667
+        }
+      },
+      {
+        "phase": "probea-2",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 8.389666,
+          "p95": 25.004531249999996,
+          "p99": 27.21490625,
+          "max": 27.7675
+        }
+      },
+      {
+        "phase": "probea-3",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 8.2005205,
+          "p95": 10.84568725,
+          "p99": 10.963403849999999,
+          "max": 10.992833
+        }
+      },
+      {
+        "phase": "probea-4",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 7.7225205,
+          "p95": 10.63038525,
+          "p99": 10.80234345,
+          "max": 10.845333
+        }
+      },
+      {
+        "phase": "probea-5",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 6.806354000000001,
+          "p95": 9.7796665,
+          "p99": 10.3776333,
+          "max": 10.527125
+        }
+      },
+      {
+        "phase": "probea-6",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 7.633563,
+          "p95": 12.233041499999999,
+          "p99": 12.8087083,
+          "max": 12.952625
+        }
+      },
+      {
+        "phase": "probea-7",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 7.692604,
+          "p95": 15.894968749999999,
+          "p99": 17.35869375,
+          "max": 17.724625
+        }
+      },
+      {
+        "phase": "probea-8",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 9.169625,
+          "p95": 12.69663575,
+          "p99": 13.349160750000001,
+          "max": 13.512292
+        }
+      },
+      {
+        "phase": "probea-9",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 6.9922295000000005,
+          "p95": 15.726739499999997,
+          "p99": 17.3552479,
+          "max": 17.762375
+        }
+      },
+      {
+        "phase": "probea-10",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 62.141000500000004,
+          "p95": 166.99320849999998,
+          "p99": 175.57504169999999,
+          "max": 177.7205
+        }
+      },
+      {
+        "phase": "probea-11",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 21.8983335,
+          "p95": 57.34294774999999,
+          "p99": 59.606189549999996,
+          "max": 60.172
+        }
+      },
+      {
+        "phase": "probea-12",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 8.337813,
+          "p95": 19.888854249999998,
+          "p99": 19.89780445,
+          "max": 19.900042
+        }
+      },
+      {
+        "phase": "probea-13",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 9.588000000000001,
+          "p95": 19.4235525,
+          "p99": 20.4568777,
+          "max": 20.715209
+        }
+      },
+      {
+        "phase": "probea-14",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 20.532208500000003,
+          "p95": 39.69160425,
+          "p99": 40.516220849999996,
+          "max": 40.722375
+        }
+      },
+      {
+        "phase": "probea-15",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 10.816082999999999,
+          "p95": 32.771458249999995,
+          "p99": 36.999291649999996,
+          "max": 38.05625
+        }
+      },
+      {
+        "phase": "probea-16",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 11.7329375,
+          "p95": 16.17248975,
+          "p99": 16.82723155,
+          "max": 16.990917
+        }
+      },
+      {
+        "phase": "probeb-0",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 26.990000000000002,
+          "p95": 59.76471875,
+          "p99": 64.35334375000001,
+          "max": 65.5005
+        }
+      },
+      {
+        "phase": "probeb-1",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 11.4116875,
+          "p95": 47.67565575,
+          "p99": 49.511763949999995,
+          "max": 49.970791
+        }
+      },
+      {
+        "phase": "probeb-2",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 7.470458,
+          "p95": 10.6120415,
+          "p99": 11.1721747,
+          "max": 11.312208
+        }
+      },
+      {
+        "phase": "probeb-3",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 9.293208,
+          "p95": 32.529948,
+          "p99": 36.5268896,
+          "max": 37.526125
+        }
+      },
+      {
+        "phase": "probeb-4",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 7.9396255,
+          "p95": 10.96613575,
+          "p99": 11.08256075,
+          "max": 11.111667
+        }
+      },
+      {
+        "phase": "probeb-5",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 8.2722295,
+          "p95": 11.407604,
+          "p99": 11.501087199999999,
+          "max": 11.524458
+        }
+      },
+      {
+        "phase": "probeb-6",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 6,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 6.7005625,
+          "p95": 9.12891625,
+          "p99": 9.17821605,
+          "max": 9.190541
+        }
+      },
+      {
+        "phase": "probeb-7",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 9.0338745,
+          "p95": 12.35233325,
+          "p99": 13.09613305,
+          "max": 13.282083
+        }
+      },
+      {
+        "phase": "probeb-8",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080",
+          "http://maestro-perf-node-2:8080"
+        ],
+        "iterations": 7,
+        "droppedIterations": 0,
+        "httpReqs": 6,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 6,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 13.984604000000001,
+          "p95": 29.104739999999996,
+          "p99": 31.156415199999998,
+          "max": 31.669334
+        }
+      }
+    ],
+    "topology": [
+      {
+        "at": 1794918139.028,
+        "dbNow": "2026-11-17T12:22:19.149986+00:00",
+        "action": "stop",
+        "container": "maestro-perf-node-1",
+        "jvm": null
+      },
+      {
+        "at": 1794918140.069,
+        "dbNow": "2026-11-17T12:22:20.187355+00:00",
+        "action": "stop",
+        "container": "maestro-perf-node-2",
+        "jvm": null
+      },
+      {
+        "at": 1794918140.236,
+        "dbNow": "2026-11-17T12:22:20.459714+00:00",
+        "action": "start",
+        "container": "maestro-perf-node-1",
+        "jvm": {
+          "container": "maestro-perf-node-1",
+          "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+          "buildTime": "2026-11-17T12:20:43.495Z",
+          "version": "0.3.0-SNAPSHOT",
+          "hostname": "bde7e05558b0",
+          "pid": 1,
+          "jvmStartMillis": 1794918140828,
+          "javaVersion": "25.0.5+8-LTS",
+          "availableProcessors": 2,
+          "maxHeapBytes": 1037959168,
+          "serviceName": "perf",
+          "adminEventsEnabled": false,
+          "workerDefaultConcurrency": 20,
+          "workerDefaultActivityConcurrency": 20,
+          "workerTaskQueues": [],
+          "wakeRecheckInterval": "PT30S",
+          "recoveryPollInterval": "PT1M",
+          "timerPollInterval": "PT5S",
+          "hikariMaximumPoolSize": 10,
+          "lockCleanupInterval": "PT10M",
+          "lockTtl": "PT30S",
+          "signalJanitorInterval": "PT1H",
+          "retentionEnabled": true,
+          "retentionInterval": "PT1H",
+          "reportedAtMillis": 1794918145576
+        },
+        "infoAt": 1794918145.653
+      },
+      {
+        "at": 1794918145.916,
+        "dbNow": "2026-11-17T12:22:26.042856+00:00",
+        "action": "start",
+        "container": "maestro-perf-node-2",
+        "jvm": {
+          "container": "maestro-perf-node-2",
+          "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+          "buildTime": "2026-11-17T12:20:43.495Z",
+          "version": "0.3.0-SNAPSHOT",
+          "hostname": "e020100381ff",
+          "pid": 1,
+          "jvmStartMillis": 1794918146196,
+          "javaVersion": "25.0.5+8-LTS",
+          "availableProcessors": 2,
+          "maxHeapBytes": 1037959168,
+          "serviceName": "perf",
+          "adminEventsEnabled": false,
+          "workerDefaultConcurrency": 20,
+          "workerDefaultActivityConcurrency": 20,
+          "workerTaskQueues": [],
+          "wakeRecheckInterval": "PT30S",
+          "recoveryPollInterval": "PT1M",
+          "timerPollInterval": "PT5S",
+          "hikariMaximumPoolSize": 10,
+          "lockCleanupInterval": "PT10M",
+          "lockTtl": "PT30S",
+          "signalJanitorInterval": "PT1H",
+          "retentionEnabled": true,
+          "retentionInterval": "PT1H",
+          "reportedAtMillis": 1794918150985
+        },
+        "infoAt": 1794918151.065
+      },
+      {
+        "at": 1794918152.372,
+        "dbNow": "2026-11-17T12:22:32.480757+00:00",
+        "action": "stop",
+        "container": "maestro-perf-node-1",
+        "jvm": null
+      },
+      {
+        "at": 1794918153.424,
+        "dbNow": "2026-11-17T12:22:33.55393+00:00",
+        "action": "stop",
+        "container": "maestro-perf-node-2",
+        "jvm": null
+      },
+      {
+        "at": 1794918154.715,
+        "dbNow": "2026-11-17T12:22:34.816905+00:00",
+        "action": "start",
+        "container": "maestro-perf-node-1",
+        "jvm": {
+          "container": "maestro-perf-node-1",
+          "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+          "buildTime": "2026-11-17T12:20:43.495Z",
+          "version": "0.3.0-SNAPSHOT",
+          "hostname": "bde7e05558b0",
+          "pid": 1,
+          "jvmStartMillis": 1794918155103,
+          "javaVersion": "25.0.5+8-LTS",
+          "availableProcessors": 2,
+          "maxHeapBytes": 1037959168,
+          "serviceName": "perf",
+          "adminEventsEnabled": false,
+          "workerDefaultConcurrency": 20,
+          "workerDefaultActivityConcurrency": 20,
+          "workerTaskQueues": [],
+          "wakeRecheckInterval": "PT30S",
+          "recoveryPollInterval": "PT1M",
+          "timerPollInterval": "PT5S",
+          "hikariMaximumPoolSize": 10,
+          "lockCleanupInterval": "PT10M",
+          "lockTtl": "PT30S",
+          "signalJanitorInterval": "PT1H",
+          "retentionEnabled": true,
+          "retentionInterval": "PT1H",
+          "reportedAtMillis": 1794918160606
+        },
+        "infoAt": 1794918160.663
+      },
+      {
+        "at": 1794918697.527,
+        "dbNow": "2026-11-17T12:31:37.676135+00:00",
+        "action": "stop",
+        "container": "maestro-perf-node-1",
+        "jvm": null
+      },
+      {
+        "at": 1794918699.508,
+        "dbNow": "2026-11-17T12:31:39.735938+00:00",
+        "action": "start",
+        "container": "maestro-perf-node-1",
+        "jvm": {
+          "container": "maestro-perf-node-1",
+          "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+          "buildTime": "2026-11-17T12:20:43.495Z",
+          "version": "0.3.0-SNAPSHOT",
+          "hostname": "bde7e05558b0",
+          "pid": 1,
+          "jvmStartMillis": 1794918700036,
+          "javaVersion": "25.0.5+8-LTS",
+          "availableProcessors": 2,
+          "maxHeapBytes": 1037959168,
+          "serviceName": "perf",
+          "adminEventsEnabled": false,
+          "workerDefaultConcurrency": 20,
+          "workerDefaultActivityConcurrency": 20,
+          "workerTaskQueues": [],
+          "wakeRecheckInterval": "PT30S",
+          "recoveryPollInterval": "PT1M",
+          "timerPollInterval": "PT5S",
+          "hikariMaximumPoolSize": 10,
+          "lockCleanupInterval": "PT10M",
+          "lockTtl": "PT30S",
+          "signalJanitorInterval": "PT1H",
+          "retentionEnabled": true,
+          "retentionInterval": "PT1H",
+          "reportedAtMillis": 1794918706203
+        },
+        "infoAt": 1794918706.270
+      },
+      {
+        "at": 1794918711.616,
+        "dbNow": "2026-11-17T12:31:51.800145+00:00",
+        "action": "start",
+        "container": "maestro-perf-node-2",
+        "jvm": {
+          "container": "maestro-perf-node-2",
+          "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+          "buildTime": "2026-11-17T12:20:43.495Z",
+          "version": "0.3.0-SNAPSHOT",
+          "hostname": "e020100381ff",
+          "pid": 1,
+          "jvmStartMillis": 1794918712133,
+          "javaVersion": "25.0.5+8-LTS",
+          "availableProcessors": 2,
+          "maxHeapBytes": 1037959168,
+          "serviceName": "perf",
+          "adminEventsEnabled": false,
+          "workerDefaultConcurrency": 20,
+          "workerDefaultActivityConcurrency": 20,
+          "workerTaskQueues": [],
+          "wakeRecheckInterval": "PT30S",
+          "recoveryPollInterval": "PT1M",
+          "timerPollInterval": "PT5S",
+          "hikariMaximumPoolSize": 10,
+          "lockCleanupInterval": "PT10M",
+          "lockTtl": "PT30S",
+          "signalJanitorInterval": "PT1H",
+          "retentionEnabled": true,
+          "retentionInterval": "PT1H",
+          "reportedAtMillis": 1794918718520
+        },
+        "infoAt": 1794918718.580
+      }
+    ],
+    "template": {
+      "captured": true,
+      "status": "RUNNING",
+      "events": 1,
+      "activityCompleted": 1,
+      "eventTypes": [
+        "ACTIVITY_COMPLETED"
+      ],
+      "sequences": [
+        1
+      ],
+      "liveStatus": "RUNNING",
+      "finalByStatus": {
+        "COMPLETED": 1
+      }
+    },
+    "emptyStarts": [
+      {
+        "node": 1,
+        "container": "maestro-perf-node-1",
+        "startIssuedAt": 1794918140.236,
+        "dbStartIssuedAt": "2026-11-17T12:22:20.459714+00:00",
+        "jvmStartMillis": 1794918140828,
+        "pid": 1,
+        "infoAt": 1794918145.653,
+        "readyAt": 1794918145.880,
+        "readinessDelaySecs": 5.644
+      },
+      {
+        "node": 2,
+        "container": "maestro-perf-node-2",
+        "startIssuedAt": 1794918145.916,
+        "dbStartIssuedAt": "2026-11-17T12:22:26.042856+00:00",
+        "jvmStartMillis": 1794918146196,
+        "pid": 1,
+        "infoAt": 1794918151.065,
+        "readyAt": 1794918151.261,
+        "readinessDelaySecs": 5.345
+      }
+    ],
+    "phases": [
+      {
+        "name": "A",
+        "prefix": "r20261117t122039z-s2a-",
+        "rows": 5000,
+        "rolling": false,
+        "seed": {
+          "seeded": 5000,
+          "events": 5000,
+          "at": "2026-11-17T12:22:34.236949+00:00"
+        },
+        "seeded": {
+          "total": 5000,
+          "byStatus": {
+            "RUNNING": 5000
+          },
+          "outputs": {},
+          "events": 5000,
+          "lockRows": 0,
+          "firstStartedAt": "2026-11-17T12:22:13.020901+00:00",
+          "lastCompletedAt": null,
+          "dbNow": "2026-11-17T12:22:34.379167+00:00"
+        },
+        "pgssReset": {
+          "resetAt": "2026-11-17T12:22:34.542554+00:00"
+        },
+        "t0": "2026-11-17T12:22:34.682514+00:00",
+        "starts": [
+          {
+            "node": 1,
+            "container": "maestro-perf-node-1",
+            "startIssuedAt": 1794918154.715,
+            "dbStartIssuedAt": "2026-11-17T12:22:34.816905+00:00",
+            "jvmStartMillis": 1794918155103,
+            "pid": 1,
+            "infoAt": 1794918160.663,
+            "readyAt": 1794918160.932,
+            "readinessDelaySecs": 6.217
+          }
+        ],
+        "drain": {
+          "waitedSecs": 519,
+          "timedOut": false
+        },
+        "status": {
+          "total": 5000,
+          "byStatus": {
+            "COMPLETED": 5000
+          },
+          "outputs": {
+            "2": 5000
+          },
+          "events": 15000,
+          "lockRows": 0,
+          "firstStartedAt": "2026-11-17T12:22:13.020901+00:00",
+          "lastCompletedAt": "2026-11-17T12:31:15.590096+00:00",
+          "dbNow": "2026-11-17T12:31:35.861546+00:00"
+        },
+        "window": {
+          "resetAt": "2026-11-17T12:22:34.542554+00:00",
+          "snapshotAt": "2026-11-17T12:31:35.373802+00:00",
+          "windowSecs": 540.831,
+          "dealloc": 0,
+          "maestroCalls": 67889,
+          "maestroCallsTopLevel": 57685,
+          "maestroStatements": 40,
+          "sweepCalls": {
+            "lockCleaner": 0,
+            "lockCleanerStatements": 0,
+            "signalJanitor": 1,
+            "retention": 3
+          },
+          "harnessCalls": 104,
+          "top": [
+            {
+              "calls": 10204,
+              "rows": 10204,
+              "toplevel": false,
+              "totalMs": 272.498,
+              "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+            },
+            {
+              "calls": 10102,
+              "rows": 10102,
+              "toplevel": true,
+              "totalMs": 541.554,
+              "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+            },
+            {
+              "calls": 10102,
+              "rows": 5000,
+              "toplevel": true,
+              "totalMs": 362.704,
+              "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+            },
+            {
+              "calls": 5212,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 4.977,
+              "query": "BEGIN"
+            },
+            {
+              "calls": 5102,
+              "rows": 5102,
+              "toplevel": true,
+              "totalMs": 643.690,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 5102,
+              "rows": 5102,
+              "toplevel": true,
+              "totalMs": 534.021,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            },
+            {
+              "calls": 5102,
+              "rows": 5102,
+              "toplevel": true,
+              "totalMs": 415.410,
+              "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+            },
+            {
+              "calls": 5102,
+              "rows": 5102,
+              "toplevel": true,
+              "totalMs": 206.480,
+              "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+            },
+            {
+              "calls": 5000,
+              "rows": 5000,
+              "toplevel": true,
+              "totalMs": 300.621,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 4642,
+              "rows": 4642,
+              "toplevel": true,
+              "totalMs": 1026.470,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 559,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 66.444,
+              "query": "SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY($1) AND expires_at > now()"
+            },
+            {
+              "calls": 551,
+              "rows": 33431,
+              "toplevel": true,
+              "totalMs": 123.639,
+              "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+            },
+            {
+              "calls": 460,
+              "rows": 460,
+              "toplevel": true,
+              "totalMs": 69.548,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 204,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 5.030,
+              "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+            },
+            {
+              "calls": 110,
+              "rows": 110,
+              "toplevel": true,
+              "totalMs": 27.048,
+              "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+            },
+            {
+              "calls": 107,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 3.811,
+              "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+            },
+            {
+              "calls": 102,
+              "rows": 102,
+              "toplevel": true,
+              "totalMs": 12.392,
+              "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+            },
+            {
+              "calls": 51,
+              "rows": 1774,
+              "toplevel": true,
+              "totalMs": 37.294,
+              "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+            },
+            {
+              "calls": 10,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.410,
+              "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+            },
+            {
+              "calls": 10,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.007,
+              "query": "COMMIT"
+            },
+            {
+              "calls": 9,
+              "rows": 1800,
+              "toplevel": true,
+              "totalMs": 7.390,
+              "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+            },
+            {
+              "calls": 9,
+              "rows": 9,
+              "toplevel": true,
+              "totalMs": 0.789,
+              "query": "SELECT pg_type.oid, typname FROM pg_catalog.pg_type LEFT JOIN (select ns.oid as nspoid, ns.nspname, r.r from pg_namespace as ns join ( select s.r, (current_schemas($2))[s.r] as nspname from generate_s"
+            },
+            {
+              "calls": 6,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.106,
+              "query": "SET ROLE 'maestro'"
+            },
+            {
+              "calls": 4,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.030,
+              "query": "SHOW search_path"
+            },
+            {
+              "calls": 3,
+              "rows": 3,
+              "toplevel": true,
+              "totalMs": 0.090,
+              "query": "SELECT EXISTS ( SELECT $3 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = $4 )"
+            }
+          ]
+        },
+        "components": {
+          "componentsAt": "2026-11-17T12:31:35.558754+00:00",
+          "components": {
+            "clockSkew": {
+              "calls": 1,
+              "entries": 1,
+              "totalMs": 0.007
+            },
+            "lockRenewAll": {
+              "calls": 51,
+              "entries": 1,
+              "totalMs": 37.294
+            },
+            "instanceRead": {
+              "calls": 10102,
+              "entries": 1,
+              "totalMs": 541.554
+            },
+            "recoveryPage": {
+              "calls": 560,
+              "entries": 2,
+              "totalMs": 131.029
+            },
+            "lockAcquire": {
+              "calls": 5102,
+              "entries": 1,
+              "totalMs": 415.410
+            },
+            "heldKeys": {
+              "calls": 559,
+              "entries": 1,
+              "totalMs": 66.444
+            },
+            "leaderElection": {
+              "calls": 110,
+              "entries": 1,
+              "totalMs": 27.048
+            },
+            "timerDuePoll": {
+              "calls": 107,
+              "entries": 1,
+              "totalMs": 3.811
+            },
+            "lockRelease": {
+              "calls": 5102,
+              "entries": 1,
+              "totalMs": 206.480
+            },
+            "other": {
+              "calls": 35991,
+              "entries": 29,
+              "totalMs": 2961.286
+            }
+          },
+          "otherTop": [
+            {
+              "calls": 10102,
+              "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+            },
+            {
+              "calls": 5212,
+              "query": "BEGIN"
+            },
+            {
+              "calls": 5102,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            },
+            {
+              "calls": 5102,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 5000,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 4642,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 460,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 204,
+              "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+            },
+            {
+              "calls": 102,
+              "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+            },
+            {
+              "calls": 10,
+              "query": "COMMIT"
+            }
+          ],
+          "nestedCalls": 10204
+        },
+        "recovery": {
+          "adoptCas": {
+            "calls": 5000,
+            "entries": 1
+          },
+          "fencedUpdate": {
+            "calls": 5102
+          }
+        },
+        "nodesEnd": [
+          {
+            "at": 1794918696.078,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 5000.0,
+            "completed": 5102
+          }
+        ],
+        "hoardSamples": [
+          {
+            "at": 1794918160.944,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 40.0,
+            "completed": null
+          },
+          {
+            "at": 1794918166.130,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 79.0,
+            "completed": 40
+          },
+          {
+            "at": 1794918171.290,
+            "container": "maestro-perf-node-1",
+            "running": 32.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 129.0,
+            "completed": 100
+          },
+          {
+            "at": 1794918176.463,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 177.0,
+            "completed": 140
+          },
+          {
+            "at": 1794918181.612,
+            "container": "maestro-perf-node-1",
+            "running": 32.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 227.0,
+            "completed": 200
+          },
+          {
+            "at": 1794918186.786,
+            "container": "maestro-perf-node-1",
+            "running": 33.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 275.0,
+            "completed": 251
+          },
+          {
+            "at": 1794918192.105,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 334.0,
+            "completed": 300
+          },
+          {
+            "at": 1794918197.506,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 392.0,
+            "completed": 360
+          },
+          {
+            "at": 1794918202.758,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 432.0,
+            "completed": 400
+          },
+          {
+            "at": 1794918208.107,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 491.0,
+            "completed": 460
+          },
+          {
+            "at": 1794918213.436,
+            "container": "maestro-perf-node-1",
+            "running": 28.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 537.0,
+            "completed": 520
+          },
+          {
+            "at": 1794918218.798,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 589.0,
+            "completed": 560
+          },
+          {
+            "at": 1794918224.202,
+            "container": "maestro-perf-node-1",
+            "running": 29.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 636.0,
+            "completed": 620
+          },
+          {
+            "at": 1794918229.444,
+            "container": "maestro-perf-node-1",
+            "running": 39.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 695.0,
+            "completed": 670
+          },
+          {
+            "at": 1794918234.675,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 746.0,
+            "completed": 720
+          },
+          {
+            "at": 1794918239.841,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 795.0,
+            "completed": 780
+          },
+          {
+            "at": 1794918245.015,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 844.0,
+            "completed": 820
+          },
+          {
+            "at": 1794918250.216,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 893.0,
+            "completed": 880
+          },
+          {
+            "at": 1794918255.360,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 942.0,
+            "completed": 920
+          },
+          {
+            "at": 1794918260.517,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 991.0,
+            "completed": 980
+          },
+          {
+            "at": 1794918265.677,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1050.0,
+            "completed": 1030
+          },
+          {
+            "at": 1794918270.908,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1099.0,
+            "completed": 1080
+          },
+          {
+            "at": 1794918276.096,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1148.0,
+            "completed": 1140
+          },
+          {
+            "at": 1794918281.319,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1197.0,
+            "completed": 1180
+          },
+          {
+            "at": 1794918286.517,
+            "container": "maestro-perf-node-1",
+            "running": 32.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1247.0,
+            "completed": 1240
+          },
+          {
+            "at": 1794918291.706,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1295.0,
+            "completed": 1280
+          },
+          {
+            "at": 1794918296.899,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1354.0,
+            "completed": 1340
+          },
+          {
+            "at": 1794918302.099,
+            "container": "maestro-perf-node-1",
+            "running": 32.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1404.0,
+            "completed": 1400
+          },
+          {
+            "at": 1794918307.295,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1452.0,
+            "completed": 1440
+          },
+          {
+            "at": 1794918312.477,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1511.0,
+            "completed": 1500
+          },
+          {
+            "at": 1794918317.669,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1550.0,
+            "completed": 1540
+          },
+          {
+            "at": 1794918322.827,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1609.0,
+            "completed": 1600
+          },
+          {
+            "at": 1794918328.008,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1648.0,
+            "completed": 1640
+          },
+          {
+            "at": 1794918333.193,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1707.0,
+            "completed": 1700
+          },
+          {
+            "at": 1794918338.379,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1766.0,
+            "completed": 1760
+          },
+          {
+            "at": 1794918343.544,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1805.0,
+            "completed": 1800
+          },
+          {
+            "at": 1794918348.708,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1864.0,
+            "completed": 1860
+          },
+          {
+            "at": 1794918353.892,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1903.0,
+            "completed": 1900
+          },
+          {
+            "at": 1794918359.085,
+            "container": "maestro-perf-node-1",
+            "running": 25.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1946.0,
+            "completed": 1960
+          },
+          {
+            "at": 1794918364.253,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2001.0,
+            "completed": 2020
+          },
+          {
+            "at": 1794918369.417,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2060.0,
+            "completed": 2060
+          },
+          {
+            "at": 1794918374.599,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2099.0,
+            "completed": 2120
+          },
+          {
+            "at": 1794918379.778,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2158.0,
+            "completed": 2160
+          },
+          {
+            "at": 1794918385.058,
+            "container": "maestro-perf-node-1",
+            "running": 22.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2198.0,
+            "completed": 2220
+          },
+          {
+            "at": 1794918390.223,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2256.0,
+            "completed": 2260
+          },
+          {
+            "at": 1794918395.388,
+            "container": "maestro-perf-node-1",
+            "running": 30.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2298.0,
+            "completed": 2320
+          },
+          {
+            "at": 1794918400.579,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2354.0,
+            "completed": 2380
+          },
+          {
+            "at": 1794918405.783,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2412.0,
+            "completed": 2420
+          },
+          {
+            "at": 1794918410.988,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2455.0,
+            "completed": 2480
+          },
+          {
+            "at": 1794918416.189,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2511.0,
+            "completed": 2520
+          },
+          {
+            "at": 1794918421.584,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2553.0,
+            "completed": 2580
+          },
+          {
+            "at": 1794918426.735,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2609.0,
+            "completed": 2640
+          },
+          {
+            "at": 1794918431.886,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2667.0,
+            "completed": 2680
+          },
+          {
+            "at": 1794918437.044,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2707.0,
+            "completed": 2740
+          },
+          {
+            "at": 1794918442.223,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2766.0,
+            "completed": 2780
+          },
+          {
+            "at": 1794918447.383,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2808.0,
+            "completed": 2840
+          },
+          {
+            "at": 1794918452.540,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2864.0,
+            "completed": 2880
+          },
+          {
+            "at": 1794918457.752,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2922.0,
+            "completed": 2940
+          },
+          {
+            "at": 1794918463.146,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2962.0,
+            "completed": 3000
+          },
+          {
+            "at": 1794918469.070,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3023.0,
+            "completed": 3043
+          },
+          {
+            "at": 1794918475.513,
+            "container": "maestro-perf-node-1",
+            "running": 38.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3080.0,
+            "completed": 3103
+          },
+          {
+            "at": 1794918482.146,
+            "container": "maestro-perf-node-1",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3141.0,
+            "completed": 3180
+          },
+          {
+            "at": 1794918488.614,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3200.0,
+            "completed": 3240
+          },
+          {
+            "at": 1794918494.301,
+            "container": "maestro-perf-node-1",
+            "running": 22.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3257.0,
+            "completed": 3300
+          },
+          {
+            "at": 1794918499.684,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3316.0,
+            "completed": 3341
+          },
+          {
+            "at": 1794918505.024,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3374.0,
+            "completed": 3400
+          },
+          {
+            "at": 1794918510.473,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 19,
+            "adopted": 3414.0,
+            "completed": 3453
+          },
+          {
+            "at": 1794918515.819,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3473.0,
+            "completed": 3501
+          },
+          {
+            "at": 1794918521.153,
+            "container": "maestro-perf-node-1",
+            "running": 27.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3517.0,
+            "completed": 3560
+          },
+          {
+            "at": 1794918526.430,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3574.0,
+            "completed": 3605
+          },
+          {
+            "at": 1794918531.599,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3629.0,
+            "completed": 3660
+          },
+          {
+            "at": 1794918536.882,
+            "container": "maestro-perf-node-1",
+            "running": 25.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3672.0,
+            "completed": 3720
+          },
+          {
+            "at": 1794918542.163,
+            "container": "maestro-perf-node-1",
+            "running": 38.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3727.0,
+            "completed": 3763
+          },
+          {
+            "at": 1794918547.479,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3786.0,
+            "completed": 3820
+          },
+          {
+            "at": 1794918552.670,
+            "container": "maestro-perf-node-1",
+            "running": 34.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3828.0,
+            "completed": 3870
+          },
+          {
+            "at": 1794918557.857,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3884.0,
+            "completed": 3920
+          },
+          {
+            "at": 1794918563.012,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3926.0,
+            "completed": 3980
+          },
+          {
+            "at": 1794918568.252,
+            "container": "maestro-perf-node-1",
+            "running": 38.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 3982.0,
+            "completed": 4023
+          },
+          {
+            "at": 1794918573.470,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4041.0,
+            "completed": 4080
+          },
+          {
+            "at": 1794918578.655,
+            "container": "maestro-perf-node-1",
+            "running": 38.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4083.0,
+            "completed": 4126
+          },
+          {
+            "at": 1794918583.895,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4139.0,
+            "completed": 4180
+          },
+          {
+            "at": 1794918589.151,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4181.0,
+            "completed": 4240
+          },
+          {
+            "at": 1794918594.383,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4239.0,
+            "completed": 4283
+          },
+          {
+            "at": 1794918599.947,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4296.0,
+            "completed": 4340
+          },
+          {
+            "at": 1794918605.121,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4338.0,
+            "completed": 4394
+          },
+          {
+            "at": 1794918610.308,
+            "container": "maestro-perf-node-1",
+            "running": 38.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4394.0,
+            "completed": 4443
+          },
+          {
+            "at": 1794918615.532,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4452.0,
+            "completed": 4500
+          },
+          {
+            "at": 1794918620.827,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4495.0,
+            "completed": 4543
+          },
+          {
+            "at": 1794918626.048,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4550.0,
+            "completed": 4600
+          },
+          {
+            "at": 1794918631.703,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4610.0,
+            "completed": 4660
+          },
+          {
+            "at": 1794918636.892,
+            "container": "maestro-perf-node-1",
+            "running": 38.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4652.0,
+            "completed": 4706
+          },
+          {
+            "at": 1794918642.107,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4698.0,
+            "completed": 4760
+          },
+          {
+            "at": 1794918648.018,
+            "container": "maestro-perf-node-1",
+            "running": 35.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4747.0,
+            "completed": 4820
+          },
+          {
+            "at": 1794918653.249,
+            "container": "maestro-perf-node-1",
+            "running": 30.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4805.0,
+            "completed": 4870
+          },
+          {
+            "at": 1794918658.465,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4864.0,
+            "completed": 4920
+          },
+          {
+            "at": 1794918663.832,
+            "container": "maestro-perf-node-1",
+            "running": 30.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4913.0,
+            "completed": 4980
+          },
+          {
+            "at": 1794918669.182,
+            "container": "maestro-perf-node-1",
+            "running": 34.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 4962.0,
+            "completed": 5026
+          },
+          {
+            "at": 1794918674.471,
+            "container": "maestro-perf-node-1",
+            "running": 19.0,
+            "parked": 0.0,
+            "slotsWorkflow": 19,
+            "adopted": 5000.0,
+            "completed": 5080
+          },
+          {
+            "at": 1794918679.701,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 5000.0,
+            "completed": 5100
+          },
+          {
+            "at": 1794918684.971,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 5000.0,
+            "completed": 5101
+          },
+          {
+            "at": 1794918690.222,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 5000.0,
+            "completed": 5102
+          }
+        ],
+        "probes": {
+          "prefix": "r20261117t122039z-p2a-",
+          "started": 102,
+          "status": {
+            "total": 102,
+            "byStatus": {
+              "COMPLETED": 102
+            }
+          },
+          "timedOut": false,
+          "latency": {
+            "completed": 102,
+            "p50Ms": 4221.1,
+            "p95Ms": 5201.8,
+            "p99Ms": 5803.1,
+            "maxMs": 5841.5
+          }
+        },
+        "perMinute": null,
+        "drainSecs": 520.908
+      },
+      {
+        "name": "B",
+        "prefix": "r20261117t122039z-s2b-",
+        "rows": 5000,
+        "rolling": true,
+        "seed": {
+          "seeded": 5000,
+          "events": 5000,
+          "at": "2026-11-17T12:31:38.648007+00:00"
+        },
+        "seeded": {
+          "total": 5000,
+          "byStatus": {
+            "RUNNING": 5000
+          },
+          "outputs": {},
+          "events": 5000,
+          "lockRows": 0,
+          "firstStartedAt": "2026-11-17T12:22:13.020901+00:00",
+          "lastCompletedAt": null,
+          "dbNow": "2026-11-17T12:31:38.877953+00:00"
+        },
+        "pgssReset": {
+          "resetAt": "2026-11-17T12:31:39.151625+00:00"
+        },
+        "t0": "2026-11-17T12:31:39.386444+00:00",
+        "starts": [
+          {
+            "node": 1,
+            "container": "maestro-perf-node-1",
+            "startIssuedAt": 1794918699.508,
+            "dbStartIssuedAt": "2026-11-17T12:31:39.735938+00:00",
+            "jvmStartMillis": 1794918700036,
+            "pid": 1,
+            "infoAt": 1794918706.270,
+            "readyAt": 1794918706.571,
+            "readinessDelaySecs": 7.063
+          },
+          {
+            "node": 2,
+            "container": "maestro-perf-node-2",
+            "startIssuedAt": 1794918711.616,
+            "dbStartIssuedAt": "2026-11-17T12:31:51.800145+00:00",
+            "jvmStartMillis": 1794918712133,
+            "pid": 1,
+            "infoAt": 1794918718.580,
+            "readyAt": 1794918718.835,
+            "readinessDelaySecs": 7.219
+          }
+        ],
+        "drain": {
+          "waitedSecs": 254,
+          "timedOut": false
+        },
+        "status": {
+          "total": 5000,
+          "byStatus": {
+            "COMPLETED": 5000
+          },
+          "outputs": {
+            "2": 5000
+          },
+          "events": 15000,
+          "lockRows": 0,
+          "firstStartedAt": "2026-11-17T12:22:13.020901+00:00",
+          "lastCompletedAt": "2026-11-17T12:36:08.440472+00:00",
+          "dbNow": "2026-11-17T12:36:33.817532+00:00"
+        },
+        "window": {
+          "resetAt": "2026-11-17T12:31:39.151625+00:00",
+          "snapshotAt": "2026-11-17T12:36:33.177848+00:00",
+          "windowSecs": 294.026,
+          "dealloc": 0,
+          "maestroCalls": 68169,
+          "maestroCallsTopLevel": 58061,
+          "maestroStatements": 40,
+          "sweepCalls": {
+            "lockCleaner": 0,
+            "lockCleanerStatements": 0,
+            "signalJanitor": 2,
+            "retention": 3
+          },
+          "harnessCalls": 55,
+          "top": [
+            {
+              "calls": 10108,
+              "rows": 10108,
+              "toplevel": false,
+              "totalMs": 289.045,
+              "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+            },
+            {
+              "calls": 10054,
+              "rows": 10054,
+              "toplevel": true,
+              "totalMs": 485.975,
+              "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+            },
+            {
+              "calls": 10054,
+              "rows": 5000,
+              "toplevel": true,
+              "totalMs": 338.778,
+              "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+            },
+            {
+              "calls": 5676,
+              "rows": 5054,
+              "toplevel": true,
+              "totalMs": 533.542,
+              "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+            },
+            {
+              "calls": 5121,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 4.538,
+              "query": "BEGIN"
+            },
+            {
+              "calls": 5054,
+              "rows": 5054,
+              "toplevel": true,
+              "totalMs": 690.886,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 5054,
+              "rows": 5054,
+              "toplevel": true,
+              "totalMs": 560.409,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            },
+            {
+              "calls": 5054,
+              "rows": 5054,
+              "toplevel": true,
+              "totalMs": 251.185,
+              "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+            },
+            {
+              "calls": 5000,
+              "rows": 5000,
+              "toplevel": true,
+              "totalMs": 295.512,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 4374,
+              "rows": 4374,
+              "toplevel": true,
+              "totalMs": 908.175,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 712,
+              "rows": 4508,
+              "toplevel": true,
+              "totalMs": 92.359,
+              "query": "SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY($1) AND expires_at > now()"
+            },
+            {
+              "calls": 703,
+              "rows": 38922,
+              "toplevel": true,
+              "totalMs": 137.833,
+              "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+            },
+            {
+              "calls": 680,
+              "rows": 680,
+              "toplevel": true,
+              "totalMs": 289.592,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 118,
+              "rows": 59,
+              "toplevel": true,
+              "totalMs": 23.341,
+              "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+            },
+            {
+              "calls": 108,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 2.911,
+              "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+            },
+            {
+              "calls": 56,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 2.143,
+              "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+            },
+            {
+              "calls": 54,
+              "rows": 54,
+              "toplevel": true,
+              "totalMs": 6.047,
+              "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+            },
+            {
+              "calls": 51,
+              "rows": 1701,
+              "toplevel": true,
+              "totalMs": 28.259,
+              "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+            },
+            {
+              "calls": 20,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.274,
+              "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+            },
+            {
+              "calls": 20,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.021,
+              "query": "COMMIT"
+            },
+            {
+              "calls": 18,
+              "rows": 18,
+              "toplevel": true,
+              "totalMs": 3.673,
+              "query": "SELECT pg_type.oid, typname FROM pg_catalog.pg_type LEFT JOIN (select ns.oid as nspoid, ns.nspname, r.r from pg_namespace as ns join ( select s.r, (current_schemas($2))[s.r] as nspname from generate_s"
+            },
+            {
+              "calls": 12,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.184,
+              "query": "SET ROLE 'maestro'"
+            },
+            {
+              "calls": 10,
+              "rows": 2000,
+              "toplevel": true,
+              "totalMs": 11.723,
+              "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+            },
+            {
+              "calls": 8,
+              "rows": 0,
+              "toplevel": true,
+              "totalMs": 0.071,
+              "query": "SHOW search_path"
+            },
+            {
+              "calls": 6,
+              "rows": 6,
+              "toplevel": true,
+              "totalMs": 0.144,
+              "query": "SELECT EXISTS ( SELECT $3 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = $4 )"
+            }
+          ]
+        },
+        "components": {
+          "componentsAt": "2026-11-17T12:36:33.351131+00:00",
+          "components": {
+            "clockSkew": {
+              "calls": 2,
+              "entries": 1,
+              "totalMs": 0.023
+            },
+            "lockRenewAll": {
+              "calls": 51,
+              "entries": 1,
+              "totalMs": 28.259
+            },
+            "instanceRead": {
+              "calls": 10054,
+              "entries": 1,
+              "totalMs": 485.975
+            },
+            "recoveryPage": {
+              "calls": 713,
+              "entries": 2,
+              "totalMs": 149.556
+            },
+            "lockAcquire": {
+              "calls": 5676,
+              "entries": 1,
+              "totalMs": 533.542
+            },
+            "heldKeys": {
+              "calls": 712,
+              "entries": 1,
+              "totalMs": 92.359
+            },
+            "leaderElection": {
+              "calls": 118,
+              "entries": 1,
+              "totalMs": 23.341
+            },
+            "timerDuePoll": {
+              "calls": 56,
+              "entries": 1,
+              "totalMs": 2.143
+            },
+            "lockRelease": {
+              "calls": 5054,
+              "entries": 1,
+              "totalMs": 251.185
+            },
+            "other": {
+              "calls": 35625,
+              "entries": 29,
+              "totalMs": 3101.913
+            }
+          },
+          "otherTop": [
+            {
+              "calls": 10054,
+              "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+            },
+            {
+              "calls": 5121,
+              "query": "BEGIN"
+            },
+            {
+              "calls": 5054,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            },
+            {
+              "calls": 5054,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 5000,
+              "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+            },
+            {
+              "calls": 4374,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 680,
+              "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+            },
+            {
+              "calls": 108,
+              "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+            },
+            {
+              "calls": 54,
+              "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+            },
+            {
+              "calls": 20,
+              "query": "COMMIT"
+            }
+          ],
+          "nestedCalls": 10108
+        },
+        "recovery": {
+          "adoptCas": {
+            "calls": 5000,
+            "entries": 1
+          },
+          "fencedUpdate": {
+            "calls": 5054
+          }
+        },
+        "nodesEnd": [
+          {
+            "at": 1794918994.102,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2553.0,
+            "completed": 2583
+          },
+          {
+            "at": 1794918994.347,
+            "container": "maestro-perf-node-2",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2447.0,
+            "completed": 2471
+          }
+        ],
+        "hoardSamples": [
+          {
+            "at": 1794918706.604,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 40.0,
+            "completed": null
+          },
+          {
+            "at": 1794918711.845,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 79.0,
+            "completed": 40
+          },
+          {
+            "at": 1794918717.125,
+            "container": "maestro-perf-node-1",
+            "running": 36.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 123.0,
+            "completed": 100
+          },
+          {
+            "at": 1794918722.478,
+            "container": "maestro-perf-node-1",
+            "running": 26.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 182.0,
+            "completed": 160
+          },
+          {
+            "at": 1794918722.866,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 80.0,
+            "completed": 40
+          },
+          {
+            "at": 1794918728.146,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 236.0,
+            "completed": 200
+          },
+          {
+            "at": 1794918728.646,
+            "container": "maestro-perf-node-2",
+            "running": 37.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 120.0,
+            "completed": 85
+          },
+          {
+            "at": 1794918734.064,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 295.0,
+            "completed": 260
+          },
+          {
+            "at": 1794918734.236,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 180.0,
+            "completed": 140
+          },
+          {
+            "at": 1794918739.963,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 354.0,
+            "completed": 320
+          },
+          {
+            "at": 1794918740.677,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 240.0,
+            "completed": 200
+          },
+          {
+            "at": 1794918745.928,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 413.0,
+            "completed": 380
+          },
+          {
+            "at": 1794918746.097,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 299.0,
+            "completed": 260
+          },
+          {
+            "at": 1794918751.439,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 453.0,
+            "completed": 440
+          },
+          {
+            "at": 1794918751.612,
+            "container": "maestro-perf-node-2",
+            "running": 26.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 345.0,
+            "completed": 320
+          },
+          {
+            "at": 1794918756.789,
+            "container": "maestro-perf-node-1",
+            "running": 28.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 520.0,
+            "completed": 500
+          },
+          {
+            "at": 1794918757.042,
+            "container": "maestro-perf-node-2",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 399.0,
+            "completed": 380
+          },
+          {
+            "at": 1794918762.226,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 571.0,
+            "completed": 540
+          },
+          {
+            "at": 1794918762.470,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 458.0,
+            "completed": 420
+          },
+          {
+            "at": 1794918767.683,
+            "container": "maestro-perf-node-1",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 614.0,
+            "completed": 600
+          },
+          {
+            "at": 1794918767.937,
+            "container": "maestro-perf-node-2",
+            "running": 26.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 498.0,
+            "completed": 480
+          },
+          {
+            "at": 1794918773.119,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 671.0,
+            "completed": 660
+          },
+          {
+            "at": 1794918773.292,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 560.0,
+            "completed": 540
+          },
+          {
+            "at": 1794918778.493,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 730.0,
+            "completed": 700
+          },
+          {
+            "at": 1794918778.630,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 616.0,
+            "completed": 580
+          },
+          {
+            "at": 1794918783.819,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 773.0,
+            "completed": 760
+          },
+          {
+            "at": 1794918783.968,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 676.0,
+            "completed": 640
+          },
+          {
+            "at": 1794918789.147,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 849.0,
+            "completed": 820
+          },
+          {
+            "at": 1794918789.316,
+            "container": "maestro-perf-node-2",
+            "running": 26.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 721.0,
+            "completed": 700
+          },
+          {
+            "at": 1794918794.491,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 888.0,
+            "completed": 860
+          },
+          {
+            "at": 1794918794.639,
+            "container": "maestro-perf-node-2",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 775.0,
+            "completed": 740
+          },
+          {
+            "at": 1794918799.917,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 948.0,
+            "completed": 920
+          },
+          {
+            "at": 1794918800.181,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 834.0,
+            "completed": 800
+          },
+          {
+            "at": 1794918805.419,
+            "container": "maestro-perf-node-1",
+            "running": 20.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 987.0,
+            "completed": 980
+          },
+          {
+            "at": 1794918805.628,
+            "container": "maestro-perf-node-2",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 874.0,
+            "completed": 860
+          },
+          {
+            "at": 1794918810.807,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1047.0,
+            "completed": 1020
+          },
+          {
+            "at": 1794918810.959,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 933.0,
+            "completed": 900
+          },
+          {
+            "at": 1794918816.327,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1106.0,
+            "completed": 1080
+          },
+          {
+            "at": 1794918816.646,
+            "container": "maestro-perf-node-2",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 993.0,
+            "completed": 960
+          },
+          {
+            "at": 1794918821.858,
+            "container": "maestro-perf-node-1",
+            "running": 22.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1147.0,
+            "completed": 1140
+          },
+          {
+            "at": 1794918822.013,
+            "container": "maestro-perf-node-2",
+            "running": 28.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1040.0,
+            "completed": 1020
+          },
+          {
+            "at": 1794918827.324,
+            "container": "maestro-perf-node-1",
+            "running": 33.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1205.0,
+            "completed": 1191
+          },
+          {
+            "at": 1794918827.502,
+            "container": "maestro-perf-node-2",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1092.0,
+            "completed": 1080
+          },
+          {
+            "at": 1794918832.688,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1265.0,
+            "completed": 1240
+          },
+          {
+            "at": 1794918832.888,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1151.0,
+            "completed": 1120
+          },
+          {
+            "at": 1794918838.059,
+            "container": "maestro-perf-node-1",
+            "running": 20.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1304.0,
+            "completed": 1300
+          },
+          {
+            "at": 1794918838.213,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1210.0,
+            "completed": 1180
+          },
+          {
+            "at": 1794918843.397,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1364.0,
+            "completed": 1340
+          },
+          {
+            "at": 1794918843.555,
+            "container": "maestro-perf-node-2",
+            "running": 35.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1253.0,
+            "completed": 1230
+          },
+          {
+            "at": 1794918848.727,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1423.0,
+            "completed": 1400
+          },
+          {
+            "at": 1794918848.887,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1309.0,
+            "completed": 1280
+          },
+          {
+            "at": 1794918854.094,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1463.0,
+            "completed": 1460
+          },
+          {
+            "at": 1794918854.253,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1352.0,
+            "completed": 1340
+          },
+          {
+            "at": 1794918859.511,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1522.0,
+            "completed": 1500
+          },
+          {
+            "at": 1794918859.796,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1411.0,
+            "completed": 1400
+          },
+          {
+            "at": 1794918865.025,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1582.0,
+            "completed": 1560
+          },
+          {
+            "at": 1794918865.231,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1468.0,
+            "completed": 1440
+          },
+          {
+            "at": 1794918870.409,
+            "container": "maestro-perf-node-1",
+            "running": 25.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1626.0,
+            "completed": 1620
+          },
+          {
+            "at": 1794918870.571,
+            "container": "maestro-perf-node-2",
+            "running": 22.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1508.0,
+            "completed": 1500
+          },
+          {
+            "at": 1794918875.746,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1685.0,
+            "completed": 1665
+          },
+          {
+            "at": 1794918875.906,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1570.0,
+            "completed": 1560
+          },
+          {
+            "at": 1794918881.077,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1740.0,
+            "completed": 1720
+          },
+          {
+            "at": 1794918881.235,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1626.0,
+            "completed": 1600
+          },
+          {
+            "at": 1794918886.454,
+            "container": "maestro-perf-node-1",
+            "running": 20.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1779.0,
+            "completed": 1780
+          },
+          {
+            "at": 1794918886.611,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1669.0,
+            "completed": 1660
+          },
+          {
+            "at": 1794918891.865,
+            "container": "maestro-perf-node-1",
+            "running": 36.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1839.0,
+            "completed": 1827
+          },
+          {
+            "at": 1794918892.175,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1728.0,
+            "completed": 1720
+          },
+          {
+            "at": 1794918897.443,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1898.0,
+            "completed": 1880
+          },
+          {
+            "at": 1794918897.604,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1785.0,
+            "completed": 1760
+          },
+          {
+            "at": 1794918902.772,
+            "container": "maestro-perf-node-1",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1941.0,
+            "completed": 1940
+          },
+          {
+            "at": 1794918902.939,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1844.0,
+            "completed": 1820
+          },
+          {
+            "at": 1794918908.092,
+            "container": "maestro-perf-node-1",
+            "running": 31.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2008.0,
+            "completed": 2000
+          },
+          {
+            "at": 1794918908.253,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1887.0,
+            "completed": 1880
+          },
+          {
+            "at": 1794918913.419,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2057.0,
+            "completed": 2040
+          },
+          {
+            "at": 1794918913.559,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 1943.0,
+            "completed": 1920
+          },
+          {
+            "at": 1794918918.731,
+            "container": "maestro-perf-node-1",
+            "running": 35.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2111.0,
+            "completed": 2100
+          },
+          {
+            "at": 1794918918.921,
+            "container": "maestro-perf-node-2",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2003.0,
+            "completed": 1980
+          },
+          {
+            "at": 1794918924.220,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2176.0,
+            "completed": 2160
+          },
+          {
+            "at": 1794918924.596,
+            "container": "maestro-perf-node-2",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2045.0,
+            "completed": 2040
+          },
+          {
+            "at": 1794918929.970,
+            "container": "maestro-perf-node-1",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2215.0,
+            "completed": 2200
+          },
+          {
+            "at": 1794918930.340,
+            "container": "maestro-perf-node-2",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2105.0,
+            "completed": 2100
+          },
+          {
+            "at": 1794918935.623,
+            "container": "maestro-perf-node-1",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2275.0,
+            "completed": 2260
+          },
+          {
+            "at": 1794918935.826,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2161.0,
+            "completed": 2140
+          },
+          {
+            "at": 1794918941.059,
+            "container": "maestro-perf-node-1",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2315.0,
+            "completed": 2320
+          },
+          {
+            "at": 1794918941.269,
+            "container": "maestro-perf-node-2",
+            "running": 41.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2221.0,
+            "completed": 2200
+          },
+          {
+            "at": 1794918946.858,
+            "container": "maestro-perf-node-1",
+            "running": 39.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2374.0,
+            "completed": 2380
+          },
+          {
+            "at": 1794918947.131,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2280.0,
+            "completed": 2260
+          },
+          {
+            "at": 1794918952.680,
+            "container": "maestro-perf-node-1",
+            "running": 23.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2436.0,
+            "completed": 2440
+          },
+          {
+            "at": 1794918953.142,
+            "container": "maestro-perf-node-2",
+            "running": 25.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2320.0,
+            "completed": 2320
+          },
+          {
+            "at": 1794918958.988,
+            "container": "maestro-perf-node-1",
+            "running": 24.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2496.0,
+            "completed": 2500
+          },
+          {
+            "at": 1794918959.445,
+            "container": "maestro-perf-node-2",
+            "running": 40.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2399.0,
+            "completed": 2380
+          },
+          {
+            "at": 1794918964.722,
+            "container": "maestro-perf-node-1",
+            "running": 36.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2553.0,
+            "completed": 2545
+          },
+          {
+            "at": 1794918964.976,
+            "container": "maestro-perf-node-2",
+            "running": 21.0,
+            "parked": 0.0,
+            "slotsWorkflow": 20,
+            "adopted": 2439.0,
+            "completed": 2440
+          },
+          {
+            "at": 1794918970.227,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2553.0,
+            "completed": 2582
+          },
+          {
+            "at": 1794918970.451,
+            "container": "maestro-perf-node-2",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2447.0,
+            "completed": 2469
+          },
+          {
+            "at": 1794918975.731,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2553.0,
+            "completed": 2582
+          },
+          {
+            "at": 1794918975.938,
+            "container": "maestro-perf-node-2",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2447.0,
+            "completed": 2470
+          },
+          {
+            "at": 1794918981.518,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2553.0,
+            "completed": 2583
+          },
+          {
+            "at": 1794918981.967,
+            "container": "maestro-perf-node-2",
+            "running": 1.0,
+            "parked": 0.0,
+            "slotsWorkflow": 1,
+            "adopted": 2447.0,
+            "completed": 2470
+          },
+          {
+            "at": 1794918987.378,
+            "container": "maestro-perf-node-1",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2553.0,
+            "completed": 2583
+          },
+          {
+            "at": 1794918987.941,
+            "container": "maestro-perf-node-2",
+            "running": 0.0,
+            "parked": 0.0,
+            "slotsWorkflow": 0,
+            "adopted": 2447.0,
+            "completed": 2471
+          }
+        ],
+        "probes": {
+          "prefix": "r20261117t122039z-p2b-",
+          "started": 54,
+          "status": {
+            "total": 54,
+            "byStatus": {
+              "COMPLETED": 54
+            }
+          },
+          "timedOut": false,
+          "latency": {
+            "completed": 54,
+            "p50Ms": 4281.6,
+            "p95Ms": 5555.8,
+            "p99Ms": 5730.1,
+            "maxMs": 5794.9
+          }
+        },
+        "perMinute": null,
+        "drainSecs": 269.054
+      }
+    ],
+    "windows": [
+      {
+        "resetAt": "2026-11-17T12:22:34.542554+00:00",
+        "snapshotAt": "2026-11-17T12:31:35.373802+00:00",
+        "windowSecs": 540.831,
+        "dealloc": 0,
+        "maestroCalls": 67889,
+        "maestroCallsTopLevel": 57685,
+        "maestroStatements": 40,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 1,
+          "retention": 3
+        },
+        "harnessCalls": 104,
+        "top": [
+          {
+            "calls": 10204,
+            "rows": 10204,
+            "toplevel": false,
+            "totalMs": 272.498,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 10102,
+            "rows": 10102,
+            "toplevel": true,
+            "totalMs": 541.554,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 10102,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 362.704,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 5212,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 4.977,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 5102,
+            "rows": 5102,
+            "toplevel": true,
+            "totalMs": 643.690,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 5102,
+            "rows": 5102,
+            "toplevel": true,
+            "totalMs": 534.021,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 5102,
+            "rows": 5102,
+            "toplevel": true,
+            "totalMs": 415.410,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 5102,
+            "rows": 5102,
+            "toplevel": true,
+            "totalMs": 206.480,
+            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 300.621,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 4642,
+            "rows": 4642,
+            "toplevel": true,
+            "totalMs": 1026.470,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 559,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 66.444,
+            "query": "SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY($1) AND expires_at > now()"
+          },
+          {
+            "calls": 551,
+            "rows": 33431,
+            "toplevel": true,
+            "totalMs": 123.639,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 460,
+            "rows": 460,
+            "toplevel": true,
+            "totalMs": 69.548,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 204,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 5.030,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 110,
+            "rows": 110,
+            "toplevel": true,
+            "totalMs": 27.048,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 107,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 3.811,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 102,
+            "rows": 102,
+            "toplevel": true,
+            "totalMs": 12.392,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 51,
+            "rows": 1774,
+            "toplevel": true,
+            "totalMs": 37.294,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 10,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.410,
+            "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+          },
+          {
+            "calls": 10,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.007,
+            "query": "COMMIT"
+          },
+          {
+            "calls": 9,
+            "rows": 1800,
+            "toplevel": true,
+            "totalMs": 7.390,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 9,
+            "rows": 9,
+            "toplevel": true,
+            "totalMs": 0.789,
+            "query": "SELECT pg_type.oid, typname FROM pg_catalog.pg_type LEFT JOIN (select ns.oid as nspoid, ns.nspname, r.r from pg_namespace as ns join ( select s.r, (current_schemas($2))[s.r] as nspname from generate_s"
+          },
+          {
+            "calls": 6,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.106,
+            "query": "SET ROLE 'maestro'"
+          },
+          {
+            "calls": 4,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.030,
+            "query": "SHOW search_path"
+          },
+          {
+            "calls": 3,
+            "rows": 3,
+            "toplevel": true,
+            "totalMs": 0.090,
+            "query": "SELECT EXISTS ( SELECT $3 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = $4 )"
+          }
+        ]
+      },
+      {
+        "resetAt": "2026-11-17T12:31:39.151625+00:00",
+        "snapshotAt": "2026-11-17T12:36:33.177848+00:00",
+        "windowSecs": 294.026,
+        "dealloc": 0,
+        "maestroCalls": 68169,
+        "maestroCallsTopLevel": 58061,
+        "maestroStatements": 40,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 2,
+          "retention": 3
+        },
+        "harnessCalls": 55,
+        "top": [
+          {
+            "calls": 10108,
+            "rows": 10108,
+            "toplevel": false,
+            "totalMs": 289.045,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 10054,
+            "rows": 10054,
+            "toplevel": true,
+            "totalMs": 485.975,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 10054,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 338.778,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 5676,
+            "rows": 5054,
+            "toplevel": true,
+            "totalMs": 533.542,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 5121,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 4.538,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 5054,
+            "rows": 5054,
+            "toplevel": true,
+            "totalMs": 690.886,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 5054,
+            "rows": 5054,
+            "toplevel": true,
+            "totalMs": 560.409,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+          },
+          {
+            "calls": 5054,
+            "rows": 5054,
+            "toplevel": true,
+            "totalMs": 251.185,
+            "query": "DELETE FROM maestro_distributed_lock WHERE lock_key = $1 AND token = $2"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 295.512,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 4374,
+            "rows": 4374,
+            "toplevel": true,
+            "totalMs": 908.175,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 712,
+            "rows": 4508,
+            "toplevel": true,
+            "totalMs": 92.359,
+            "query": "SELECT lock_key FROM maestro_distributed_lock WHERE lock_key = ANY($1) AND expires_at > now()"
+          },
+          {
+            "calls": 703,
+            "rows": 38922,
+            "toplevel": true,
+            "totalMs": 137.833,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 680,
+            "rows": 680,
+            "toplevel": true,
+            "totalMs": 289.592,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 118,
+            "rows": 59,
+            "toplevel": true,
+            "totalMs": 23.341,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 108,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 2.911,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 56,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 2.143,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 54,
+            "rows": 54,
+            "toplevel": true,
+            "totalMs": 6.047,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 51,
+            "rows": 1701,
+            "toplevel": true,
+            "totalMs": 28.259,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 20,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.274,
+            "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+          },
+          {
+            "calls": 20,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.021,
+            "query": "COMMIT"
+          },
+          {
+            "calls": 18,
+            "rows": 18,
+            "toplevel": true,
+            "totalMs": 3.673,
+            "query": "SELECT pg_type.oid, typname FROM pg_catalog.pg_type LEFT JOIN (select ns.oid as nspoid, ns.nspname, r.r from pg_namespace as ns join ( select s.r, (current_schemas($2))[s.r] as nspname from generate_s"
+          },
+          {
+            "calls": 12,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.184,
+            "query": "SET ROLE 'maestro'"
+          },
+          {
+            "calls": 10,
+            "rows": 2000,
+            "toplevel": true,
+            "totalMs": 11.723,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 8,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.071,
+            "query": "SHOW search_path"
+          },
+          {
+            "calls": 6,
+            "rows": 6,
+            "toplevel": true,
+            "totalMs": 0.144,
+            "query": "SELECT EXISTS ( SELECT $3 FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind = $4 )"
+          }
+        ]
+      }
+    ],
+    "phaseTable": [
+      {
+        "phase": "A",
+        "rows": 5000,
+        "drainSecs": 520.908,
+        "nodes": 1,
+        "readinessDelaySecs": [
+          6.217
+        ],
+        "adopted": [
+          5000.0
+        ],
+        "hoardMax": [
+          21
+        ],
+        "probeP95Ms": 5201.8,
+        "adoptCas": 5000
+      },
+      {
+        "phase": "B",
+        "rows": 5000,
+        "drainSecs": 269.054,
+        "nodes": 2,
+        "readinessDelaySecs": [
+          7.063,
+          7.219
+        ],
+        "adopted": [
+          2553.0,
+          2447.0
+        ],
+        "hoardMax": [
+          21,
+          21
+        ],
+        "probeP95Ms": 5555.8,
+        "adoptCas": 5000
+      }
+    ]
+  },
+  "checks": [
+    {
+      "id": "validity.identity",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "buildCommits": [
+          "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+          "8aeb7ec0d5dd21796d3169fd425cd2926563db7d"
+        ],
+        "nodes": 2,
+        "distinctHostnames": 2,
+        "hostnames": [
+          "bde7e05558b0",
+          "e020100381ff"
+        ],
+        "plannedJvms": [
+          {
+            "container": "maestro-perf-node-1",
+            "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d"
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d"
+          },
+          {
+            "container": "maestro-perf-node-1",
+            "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d"
+          },
+          {
+            "container": "maestro-perf-node-1",
+            "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d"
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "buildCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d"
+          }
+        ]
+      },
+      "limit": {
+        "expectedCommit": "8aeb7ec0d5dd21796d3169fd425cd2926563db7d",
+        "replicas": 2
+      },
+      "detail": "every node runs the stamped jar on a distinct host; so does the JVM of each of the 5 planned start(s)"
+    },
+    {
+      "id": "validity.noRestart",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "before": [
+          {
+            "hostname": "bde7e05558b0",
+            "jvmStartMillis": 1794918058508,
+            "pid": 1
+          },
+          {
+            "hostname": "e020100381ff",
+            "jvmStartMillis": 1794918058403,
+            "pid": 1
+          }
+        ],
+        "expectedAfter": [
+          {
+            "hostname": "bde7e05558b0",
+            "jvmStartMillis": 1794918700036,
+            "pid": 1
+          },
+          {
+            "hostname": "e020100381ff",
+            "jvmStartMillis": 1794918712133,
+            "pid": 1
+          }
+        ],
+        "after": [
+          {
+            "hostname": "bde7e05558b0",
+            "jvmStartMillis": 1794918700036,
+            "pid": 1
+          },
+          {
+            "hostname": "e020100381ff",
+            "jvmStartMillis": 1794918712133,
+            "pid": 1
+          }
+        ]
+      },
+      "limit": "per container, the last JVM the topology log recorded",
+      "detail": "every node's final JVM is the last one the topology log recorded (5 planned start(s)): no unplanned restart"
+    },
+    {
+      "id": "validity.adminEvents",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "requested": false,
+        "effectiveByNode": [
+          false,
+          false
+        ],
+        "adminTopicEndOffset": 0
+      },
+      "limit": "requested == /perf/info.adminEventsEnabled == (maestro.admin.events end offset > 0)",
+      "detail": "admin events off as requested"
+    },
+    {
+      "id": "validity.pgssComplete",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windows": 3,
+        "dealloc": [
+          0,
+          0,
+          0
+        ]
+      },
+      "limit": {
+        "dealloc": 0
+      },
+      "detail": "no statement entry evicted"
+    },
+    {
+      "id": "validity.k6",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "warmup",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-0",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-1",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-2",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-3",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-4",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-5",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-6",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-7",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-8",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-9",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-10",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-11",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-12",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-13",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-14",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-15",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probea-16",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-0",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-1",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-2",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-3",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-4",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-5",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-6",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-7",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probeb-8",
+          "exitCode": 0,
+          "summary": true
+        }
+      ],
+      "limit": {
+        "exitCode": [
+          0,
+          99
+        ],
+        "summary": true
+      },
+      "detail": "every k6 phase exited 0 with a summary"
+    },
+    {
+      "id": "validity.droppedIterations",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "warmup",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-0",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-1",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-2",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-3",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-4",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-5",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-6",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-7",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-8",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-9",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-10",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-11",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-12",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-13",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-14",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-15",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probea-16",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-0",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-1",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-2",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-3",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-4",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-5",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-6",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-7",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probeb-8",
+          "droppedIterations": 0
+        }
+      ],
+      "limit": {
+        "droppedIterations": 0
+      },
+      "detail": "no k6 phase dropped an iteration"
+    },
+    {
+      "id": "validity.warmup",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "count": 40,
+        "total": 40,
+        "byStatus": {
+          "COMPLETED": 40
+        },
+        "timedOut": false,
+        "waitedSecs": 0
+      },
+      "limit": {
+        "timedOut": false,
+        "completed": 40
+      },
+      "detail": "40/40 warm-up runs COMPLETED in 0 s, before the idle window"
+    },
+    {
+      "id": "advisory.dirtyTree",
+      "class": "advisory",
+      "status": "PASS",
+      "value": false,
+      "limit": false,
+      "detail": "clean tree"
+    },
+    {
+      "id": "validity.sweeps",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windows": [
+          {
+            "name": "background",
+            "sinceEarliestNodeStartSecs": [
+              14,
+              74
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[0]",
+            "sinceEarliestNodeStartSecs": [
+              96,
+              637
+            ],
+            "plannedStarts": 2,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 1,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 2
+            },
+            "retention": {
+              "observedCalls": 3,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 6
+            }
+          },
+          {
+            "name": "windows[1]",
+            "sinceEarliestNodeStartSecs": [
+              641,
+              935
+            ],
+            "plannedStarts": 2,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 2,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 2
+            },
+            "retention": {
+              "observedCalls": 3,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 6
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "container": "maestro-perf-node-1",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 10.38,
+            "planned": false,
+            "lifetimeEndSecs": 80.64
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 10.63,
+            "planned": false,
+            "lifetimeEndSecs": 81.78
+          },
+          {
+            "container": "maestro-perf-node-1",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 4.75,
+            "planned": true,
+            "lifetimeEndSecs": 11.65
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 4.79,
+            "planned": true,
+            "lifetimeEndSecs": 7.36
+          },
+          {
+            "container": "maestro-perf-node-1",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 5.5,
+            "planned": true,
+            "lifetimeEndSecs": 542.57
+          },
+          {
+            "container": "maestro-perf-node-1",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 6.17,
+            "planned": true,
+            "lifetimeEndSecs": null
+          },
+          {
+            "container": "maestro-perf-node-2",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 6.39,
+            "planned": true,
+            "lifetimeEndSecs": null
+          }
+        ]
+      },
+      "limit": {
+        "lockCleanerCalls": "within 2 x [certain, possible] passes predicted from each node's reported interval, jvmStartMillis and reportedAtMillis (+5 s drift per pass); subtracted exactly from the window's calls",
+        "signalJanitorCalls": 0,
+        "retentionCalls": 0,
+        "signalJanitorOrRetentionPassesPredicted": 0
+      },
+      "detail": "every measured window's sweeps are accounted for: no signal-janitor or retention statement in any window, none predicted; lock-cleaner calls as predicted from the reported intervals (none in any window)"
+    },
+    {
+      "id": "correctness.s2",
+      "class": "correctness",
+      "status": "ERROR",
+      "value": null,
+      "limit": null,
+      "detail": "evaluator not written"
+    }
+  ],
+  "verdict": "ERROR"
+}

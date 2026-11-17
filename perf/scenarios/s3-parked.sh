@@ -235,6 +235,7 @@ scenario_run() {
     done
   ) &
   sampler=$!
+  bg_register "$sampler"
 
   local warmCount=$((40 * REPLICAS)) warmup background
   log "s3: warm-up, ${warmCount} chain runs"
@@ -351,7 +352,7 @@ scenario_run() {
   fi
 
   touch "$stop"
-  wait "$sampler" || true
+  bg_wait "$sampler"
   rm -f "$stop"
   local host_end final foreign
   host_end=$(host_load)

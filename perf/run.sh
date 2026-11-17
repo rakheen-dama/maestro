@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Maestro k6 load harness driver.
 #
-# Usage: perf/run.sh <smoke|s1-throughput|s3-parked> [--profile local|full]
-#                    [--replicas N] [--record-baseline]
+# Usage: perf/run.sh <smoke|s1-throughput|s3-parked|s2-recovery-drain|s4-signals|s5-pool-health|s6-retention>
+#                    [--profile local|full] [--replicas N] [--record-baseline]
+#
+# --replicas defaults to 1; s2-recovery-drain and s6-retention run exactly 2
+#       (their default; any other count is refused), s4-signals defaults to 2
+#       and refuses 1 (it needs a cross-node phase).
 #
 # --record-baseline (S1, S3; clean tree only): judges the run WITHOUT the
 #       existing perf/baselines/<scenario>.json, so that an intended change
@@ -24,6 +28,8 @@
 #       a baseline of other settings to replace the old one)
 #       PERF_PARK_MODE (s3-parked: signal | sleep, default signal; sleep
 #       measured once, local profile, one node: perf/eval/s3-parked.jq)
+#       K6_NODES (scenario-internal: comma-separated node URLs a k6 phase
+#       sends to instead of every replica; lib/common.sh k6_run)
 #       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
 #       PERF_WARMUP_TIMEOUT / PERF_WARMUP_ACTIVITY_MILLIS (force an unfinished
 #       warm-up: validity.warmup INVALID). The run lock's
@@ -151,6 +157,8 @@
 set -Eeuo pipefail
 
 PERF_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# This harness's own pid: background loops end when it is gone (lib/common.sh).
+export PERF_MAIN_PID=$$
 ROOT=$(cd "${PERF_DIR}/.." && pwd)
 COMPOSE_PROJECT=maestro-perf
 # Host-wide, not per worktree or per TMPDIR: the compose project and the
@@ -164,9 +172,11 @@ STACK_TOUCHED=0
 
 # shellcheck source=lib/common.sh
 source "${PERF_DIR}/lib/common.sh"
+# shellcheck source=lib/topology.sh
+source "${PERF_DIR}/lib/topology.sh"
 
 usage() {
-  sed -n '4,6p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '4,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
 }
 
 # on_err and on_exit run from traps (SC2317: invoked indirectly).
@@ -180,6 +190,8 @@ on_exit() {
   local rc=$?
   set +e
   trap - EXIT ERR
+  # Background loops a scenario started end first, by pid (lib/common.sh).
+  bg_kill_all
   if ((STACK_TOUCHED)) && [[ -n "$RESULTS" ]]; then
     dc logs --no-color --timestamps >"${RESULTS}/compose.log" 2>&1
     if [[ "${PERF_KEEP_UP:-0}" == "1" ]]; then
@@ -210,7 +222,7 @@ SCENARIO="${1:-}"
 [[ -n "$SCENARIO" && "$SCENARIO" != -* ]] || { usage; die "missing scenario"; }
 shift
 PROFILE=local
-REPLICAS=1
+REPLICAS=""
 RECORD_BASELINE=0
 while (($#)); do
   case "$1" in
@@ -220,8 +232,23 @@ while (($#)); do
     *) usage; die "unknown argument: $1" ;;
   esac
 done
-case "$SCENARIO" in smoke | s1-throughput | s3-parked) ;; *) usage; die "unknown scenario: $SCENARIO" ;; esac
+case "$SCENARIO" in
+  smoke | s1-throughput | s3-parked | s2-recovery-drain | s4-signals | s5-pool-health | s6-retention) ;;
+  *) usage; die "unknown scenario: $SCENARIO" ;;
+esac
 case "$PROFILE" in local | full) ;; *) die "--profile must be local or full, got '$PROFILE'" ;; esac
+# Per-scenario replica rule (WP12), before anything is touched: S2 and S6
+# stop and start node 2 by name, so they run exactly 2; S4 needs a node
+# other than a run's owner.
+case "$SCENARIO" in
+  s2-recovery-drain | s6-retention)
+    REPLICAS="${REPLICAS:-2}"
+    [[ "$REPLICAS" == 2 ]] || die "${SCENARIO} needs exactly 2 replicas, got '${REPLICAS}'" ;;
+  s4-signals)
+    REPLICAS="${REPLICAS:-2}"
+    [[ "$REPLICAS" != 1 ]] || die "s4-signals needs at least 2 replicas (a cross-node phase), got 1" ;;
+  *) REPLICAS="${REPLICAS:-1}" ;;
+esac
 [[ "$REPLICAS" =~ ^[1-9][0-9]*$ ]] || die "--replicas must be a positive integer, got '$REPLICAS'"
 # The engine's default since 3.11c is false; the standard profile runs it. Set
 # PERF_ADMIN_EVENTS=true to measure the cost of publishing lifecycle events.

@@ -12,7 +12,9 @@ name: Perf (k6)
 # Pull requests that touch perf/**, sample-perf or this file run only the
 # `selftest` job: the harness's no-Docker self-tests on committed files
 # (evidence privacy guard, evaluator self-test rebuilt from
-# perf/.evidence/wp11/, the baseline-record self-test), a few minutes, with
+# perf/.evidence/wp11/ and, for the WP12 finding-linked scenarios,
+# perf/.evidence/wp12/, the baseline-record self-test, the background-loop
+# self-test), a few minutes, with
 # contents: read. The run-lock race test (perf/lib/lock-selftest.sh) is not
 # in it: it is timing-based and meant for a local shell.
 #
@@ -32,7 +34,15 @@ name: Perf (k6)
 #   - Scenario 3's plateau wait: each plateau must park within 600 s
 #     (correctness.plateauReached -> FAIL);
 #   - drain timeouts: S1 300 s (local) / 1200 s (full), S3 probes 120 s, the
-#     S3 release 120 s + Pmax / 10 s (correctness.* -> FAIL).
+#     S3 release 120 s + Pmax / 10 s (correctness.* -> FAIL);
+#   - the WP12 finding-linked scenarios (docs/test-plan.md § Finding-linked
+#     scenarios): S2 (s2-recovery-drain) its 1,800 s drain timeout per phase
+#     (correctness.allRecovered -> FAIL; about 20 min a run); S4 (s4-signals)
+#     dropped iterations at 100 signals/s on 2 nodes (INVALID), which is why
+#     it is dispatch-only; S5 (s5-pool-health) none: the pool is exhausted by
+#     hold activities, not by load, and its gates are answer counts; S6
+#     (s6-retention) its 180 s sweep allowance (validity.windows -> INVALID).
+#     Their gates are counts and within-run ratios, never absolute latency.
 # So read a FAIL's detail before calling it an engine regression.
 #
 # The schedule is subject to GitHub's 60-day inactivity disable. build-test.yml's
@@ -43,7 +53,10 @@ name: Perf (k6)
 # FAIL and ERROR fail the job on every trigger. INVALID (the measurement could
 # not be trusted, typically the runner, see above) fails a dispatched job, but
 # on the schedule it is a warning annotation and the job succeeds: a weekly
-# run on a noisy neighbour must not read as a red build. A gate that had no
+# run on a noisy neighbour must not read as a red build. Except when the
+# INVALID comes from a statement classifier (S2's validity.recoveryClassifier,
+# S6's validity.statementsClassified: the engine's SQL text no longer matches
+# what the scenario counts): that fails the scheduled job too. A gate that had no
 # usable baseline (status NO_BASELINE; the verdict can still be PASS) is
 # reported as a warning annotation and in the step summary, never silently
 # counted as passed. Admin events default to false, the engine's default and the setting
@@ -55,7 +68,7 @@ on:
       scenario:
         description: Scenario to run
         type: choice
-        options: [smoke, s1-throughput, s3-parked]
+        options: [smoke, s1-throughput, s3-parked, s2-recovery-drain, s4-signals, s5-pool-health, s6-retention]
         default: s1-throughput
       profile:
         description: Load profile
@@ -63,9 +76,9 @@ on:
         options: [local, full]
         default: local
       replicas:
-        description: Node replicas (a positive integer)
+        description: Node replicas (a positive integer; empty = the scenario's default, 2 for s2/s4/s6, else 1)
         type: string
-        default: '1'
+        default: ''
       admin_events:
         description: maestro.admin.events.enabled on the nodes
         type: choice
@@ -78,7 +91,9 @@ on:
       - '.github/workflows/perf.yml'
   schedule:
     # 04:00 UTC Saturday: clear of the 02:30 nightly E2E and the Sunday 01:00
-    # soak (e2e-nightly.yml).
+    # soak (e2e-nightly.yml). Runs s1-throughput, s3-parked, s5-pool-health,
+    # s2-recovery-drain and s6-retention (the matrix below) at their local
+    # profile and default replicas, in parallel jobs.
     - cron: '0 4 * * 6'
 
 permissions:
@@ -98,7 +113,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # jq is preinstalled on ubuntu-latest (jq 1.7.1; the evaluator
       # self-test passes on 1.7.1 and 1.8.1).
@@ -111,6 +126,9 @@ jobs:
       - name: Baseline-record self-test
         run: perf/lib/baseline-selftest.sh
 
+      - name: Background loops never outlive the harness
+        run: perf/lib/bgloop-selftest.sh
+
   perf:
     name: k6 ${{ matrix.scenario }}
     if: github.event_name != 'pull_request'
@@ -119,24 +137,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: ${{ github.event_name == 'schedule' && fromJSON('["s1-throughput","s3-parked"]') || fromJSON(format('["{0}"]', inputs.scenario)) }}
+        # Weekly: S5 from WP12's merge (MD-9); S2 and S6 since their fixes
+        # (WP6, WP8) are on main, so their fix-linked gates are expected to
+        # PASS. S4 stays dispatch-only (see Hardware-sensitive above).
+        scenario: ${{ github.event_name == 'schedule' && fromJSON('["s1-throughput","s3-parked","s5-pool-health","s2-recovery-drain","s6-retention"]') || fromJSON(format('["{0}"]', inputs.scenario)) }}
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # The run's identity stamp reads the last commit touching the engine
           # and harness paths (git log -- <paths>): it needs the history.
           fetch-depth: 0
 
       - name: Set up Java 25
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           java-version: '25'
           distribution: 'temurin'
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v5
 
       - name: Run the scenario
         # Inputs reach the shell as environment variables, never spliced into
@@ -144,7 +165,7 @@ jobs:
         env:
           PERF_SCENARIO: ${{ matrix.scenario }}
           PERF_PROFILE: ${{ inputs.profile || 'local' }}
-          PERF_REPLICAS: ${{ inputs.replicas || '1' }}
+          PERF_REPLICAS: ${{ inputs.replicas || '' }}
           PERF_ADMIN_EVENTS: ${{ inputs.admin_events || 'false' }}
         # jq (which run.sh needs) is preinstalled on ubuntu-latest (the
         # runner image's tool list, actions/runner-images Ubuntu2404-Readme).
@@ -152,8 +173,26 @@ jobs:
         # every other non-zero exit fails it (header: Verdicts).
         run: |
           rc=0
-          perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" --replicas "$PERF_REPLICAS" || rc=$?
+          # A scheduled INVALID is a warning (a slow or noisy runner), EXCEPT
+          # when a statement classifier could not match the engine's SQL: a
+          # changed statement text is exactly what must not go unnoticed.
+          classifier_checks='["validity.recoveryClassifier","validity.statementsClassified"]'
+          # An empty replica count leaves the scenario's own default (run.sh:
+          # 2 for s2-recovery-drain, s4-signals and s6-retention, else 1).
+          replicas=()
+          if [[ -n "$PERF_REPLICAS" ]]; then replicas=(--replicas "$PERF_REPLICAS"); fi
+          perf/run.sh "$PERF_SCENARIO" --profile "$PERF_PROFILE" "${replicas[@]}" || rc=$?
           if [[ "$rc" == 2 && "$GITHUB_EVENT_NAME" == schedule ]]; then
+            shopt -s nullglob
+            unmatched=""
+            for r in perf/results/*/result.json; do
+              unmatched+=$(jq -r --argjson ids "$classifier_checks" \
+                '.checks[] | select(.id as $i | $ids | index([$i])) | select(.status != "PASS") | .id + " "' "$r")
+            done
+            if [[ -n "$unmatched" ]]; then
+              echo "::error title=Perf INVALID (${PERF_SCENARIO})::a statement classifier did not match the engine's SQL (${unmatched% }): a changed statement text; the job fails"
+              exit 2
+            fi
             echo "::warning title=Perf INVALID (${PERF_SCENARIO})::the measurement could not be trusted (see the validity checks in the step summary); a scheduled INVALID does not fail the job"
             exit 0
           fi
@@ -177,9 +216,9 @@ jobs:
           done
 
       - name: Upload results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: perf-${{ matrix.scenario }}-${{ github.run_id }}
+          name: perf-${{ matrix.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: perf/results/
           retention-days: 14
