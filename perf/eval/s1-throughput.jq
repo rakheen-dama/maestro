@@ -333,8 +333,9 @@ $identity[0] as $id
 | ($by.FAILED // 0) as $failed
 | (($m.runStatus.total // 0) - $done - $failed - ($by.TERMINATED // 0)) as $open
 | ($m.accepted // 0) as $accepted
-| $m.window as $w
-| statement_figures($m.background; $w; $done; $replicas) as $s
+| load_window_problems($m.window) as $wProblems
+| ($m.window | if type == "object" then . else {} end) as $w
+| statement_figures($m.background; $m.window; $done; $replicas) as $s
 | bg_rate($m.background; $replicas) as $rate
 | ($m.levelProm // [] | map({key: (.level | tostring), value: .}) | from_entries) as $prom
 | ([($m.levelRows // [])[] | . as $r
@@ -433,6 +434,11 @@ $identity[0] as $id
 | (if $noBase == null then $b.statementsPerWorkflowNet else null end) as $expected
 | [
     background_check($m.background; $replicas),
+    check("validity.loadWindow"; "validity"; if ($wProblems | length) == 0 then "PASS" else "INVALID" end;
+          ($m.window | if type == "object" then {windowSecs, maestroCalls, maestroCallsTopLevel} else . end);
+          {windowSecs: "> 0", maestroCalls: "a number", maestroCallsTopLevel: "a number"};
+          if ($wProblems | length) == 0 then "load window of \($w.windowSecs) s recorded with its engine calls"
+          else "the statement figures cannot be computed: \($wProblems | join("; "))" end),
     check("validity.roleSplit"; "validity";
           if ($w.maestroCalls | isnum) and $w.maestroCalls > 0 and ($w.harnessCalls | isnum) and $w.harnessCalls > 0
           then "PASS" else "INVALID" end;

@@ -222,8 +222,9 @@ status, an advisory reports anything but PASS/WARN, or there are no checks;
 **INVALID** (exit 2) — a *validity* check is not PASS (the measurement cannot
 be trusted: identity of the jar on every node, no restart, admin events as
 requested, no `pg_stat_statements` eviction, k6 exit and dropped iterations,
-warm-up drained, the background window, periodic sweeps accounted for, the
-executed plan); **FAIL** (exit 1) — a *correctness* check is not PASS or
+warm-up drained, the background window, the load window's record (smoke, S1;
+S3: `validity.record`), periodic sweeps accounted for, the executed plan);
+**FAIL** (exit 1) — a *correctness* check is not PASS or
 NO_BASELINE, or a *gate* is FAIL or WARN; **INVALID** — a gate could not be
 judged; otherwise **PASS** (NO_BASELINE gates count as pass). *Advisory*
 checks (latency, ceiling, contention, heap, slots, decomposition, …) only

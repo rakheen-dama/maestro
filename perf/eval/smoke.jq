@@ -14,10 +14,16 @@ $identity[0] as $id
 | ($m.runStatus.byStatus // {}) as $by
 | ($by.COMPLETED // 0) as $done
 | ($by.FAILED // 0) as $failed
-| $m.window as $w
-| statement_figures($m.background; $w; $done; $id.config.replicas) as $s
+| load_window_problems($m.window) as $wProblems
+| ($m.window | if type == "object" then . else {} end) as $w
+| statement_figures($m.background; $m.window; $done; $id.config.replicas) as $s
 | [
     background_check($m.background; $id.config.replicas),
+    check("validity.loadWindow"; "validity"; if ($wProblems | length) == 0 then "PASS" else "INVALID" end;
+          ($m.window | if type == "object" then {windowSecs, maestroCalls, maestroCallsTopLevel} else . end);
+          {windowSecs: "> 0", maestroCalls: "a number", maestroCallsTopLevel: "a number"};
+          if ($wProblems | length) == 0 then "load window of \($w.windowSecs) s recorded with its engine calls"
+          else "the statement figures cannot be computed: \($wProblems | join("; "))" end),
     check("validity.roleSplit"; "validity";
           if $w.maestroCalls > 0 and $w.harnessCalls > 0 then "PASS" else "INVALID" end;
           {maestroCalls: $w.maestroCalls, harnessCalls: $w.harnessCalls};

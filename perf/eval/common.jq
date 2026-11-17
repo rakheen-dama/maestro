@@ -211,19 +211,37 @@ def pgss_windows($m):
 # Lock-cleaner calls a window recorded (pgss-window.sql sweepCalls), 0 when
 # it has no classification (validity.sweeps is then INVALID), and how many
 # distinct statements they are.
-def lock_cleaner_calls($w): ($w.sweepCalls.lockCleaner // 0 | if isnum then . else 0 end);
-def lock_cleaner_statements($w): ($w.sweepCalls.lockCleanerStatements // 0 | if isnum then . else 0 end);
-def statement_figures($bg; $w; $completed; $replicas):
+def sweep_calls_field($w; $k):
+  ($w | if type == "object" then .sweepCalls else null end
+      | if type == "object" then .[$k] else null end) // 0 | if isnum then . else 0 end;
+def lock_cleaner_calls($w): sweep_calls_field($w; "lockCleaner");
+def lock_cleaner_statements($w): sweep_calls_field($w; "lockCleanerStatements");
+# Why a load window's record cannot carry statement figures, or [] if it can.
+def load_window_problems($w):
+  if $w == null then ["the load window (measurements.window) is missing"]
+  elif ($w | type) != "object" then ["the load window (measurements.window) is a \($w | type), not an object"]
+  else [
+    (if ($w.windowSecs | isnum) and $w.windowSecs > 0 then null
+     else "the load window's windowSecs is \($w.windowSecs | tojson), not a positive number" end),
+    (if ($w.maestroCalls | isnum) then null else "the load window's maestroCalls is \($w.maestroCalls | tojson), not a number" end),
+    (if ($w.maestroCallsTopLevel | isnum) then null
+     else "the load window's maestroCallsTopLevel is \($w.maestroCallsTopLevel | tojson), not a number" end)
+  ] | map(select(. != null)) end;
+# A load window whose record is unusable (load_window_problems) gives null
+# figures here, never an error.
+def statement_figures($bg; $w0; $completed; $replicas):
   (background_problem($bg; $replicas) == null) as $bgOk
+  | ((load_window_problems($w0) | length) == 0) as $wOk
+  | (if $wOk then $w0 else {} end) as $w
   | (if $bgOk then $bg.window else {} end) as $b
   | (if $bgOk then lock_cleaner_calls($b) else 0 end) as $bSweep
   | lock_cleaner_calls($w) as $wSweep
   | (if $bgOk then ($b.maestroCalls - $bSweep) / $b.windowSecs else null end) as $rate
   | (if $bgOk then ($b.maestroCallsTopLevel - $bSweep) / $b.windowSecs else null end) as $rateTop
-  | (if $bgOk then $rate * $w.windowSecs else null end) as $bgInLoad
-  | (if $bgOk then $rateTop * $w.windowSecs else null end) as $bgInLoadTop
+  | (if $bgOk and $wOk then $rate * $w.windowSecs else null end) as $bgInLoad
+  | (if $bgOk and $wOk then $rateTop * $w.windowSecs else null end) as $bgInLoadTop
   | (if $bgOk then ($b.maestroStatements - lock_cleaner_statements($b)) * $replicas else null end) as $tol
-  | ($completed > 0) as $any
+  | ($completed > 0 and $wOk) as $any
   | {
       note: "gross = every engine (role maestro) call in the load window / completed workflows, including background engine statements (timer-poller leader election and due-timer poll, recovery poll; lock-cleaner passes when due); net = (calls - lockCleanerCalls - backgroundRatePerSec x loadWindowSecs) / completed, the background rate itself measured without lock-cleaner calls. Lock-cleaner calls are identified by statement text and subtracted exactly; signal-janitor and retention statements must be absent from every window (validity.sweeps). TopLevel variants exclude statements nested in others (track=all, e.g. foreign-key trigger queries).",
       lockCleanerCallsSubtracted: {background: (if $bgOk then $bSweep else null end), load: $wSweep},

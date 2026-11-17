@@ -79,6 +79,13 @@ expect "k6 exit 0 without a summary: validity.droppedIterations" INVALID "$(jq -
 out=$(evaluate_with nofield '.k6[-1] |= del(.droppedIterations, .summaryMissing)')
 expect "k6 record without droppedIterations: verdict" INVALID "$(jq -r .verdict <<<"$out")"
 
+# The smoke's load window missing or malformed: INVALID, never a crash.
+for f in 'del(.window)' '.window = "x"' '.window.windowSecs = null'; do
+  out=$(evaluate_with smoke-window '. | '"$f")
+  expect "smoke, load window ${f}: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  rm -rf "${work}/smoke-window"
+done
+
 out=$(evaluate_with k6exit '.k6[-1].exitCode = 107')
 expect "k6 exit 107: validity.k6" INVALID "$(jq -r '.checks["validity.k6"]' <<<"$out")"
 
@@ -386,7 +393,7 @@ probe() { # <case> <checks: class:status,…> [<jq filter doctoring measurements
   printf '%s %s %s' "$v" "$rc" "$listed"
 }
 common_checks=$(jq '.checks | length' "${work}/pass/result.json")
-common_checks=$((common_checks - $(jq '[.checks[] | select(.id | test("^(validity\\.(background|roleSplit)|correctness\\.|gate\\.|advisory\\.latency)"))] | length' "${work}/pass/result.json")))
+common_checks=$((common_checks - $(jq '[.checks[] | select(.id | test("^(validity\\.(background|roleSplit|loadWindow)|correctness\\.|gate\\.|advisory\\.latency)"))] | length' "${work}/pass/result.json")))
 expect "precedence: no scenario check (f)" "PASS 0 yes" "$(probe p-none '')"
 expect "precedence: correctness FAIL + gate INVALID (c beats e)" "FAIL 1 yes" "$(probe p-cfail-ginv correctness:FAIL,gate:INVALID)"
 expect "precedence: gate INVALID alone (e)" "INVALID 2 yes" "$(probe p-ginv gate:INVALID)"
@@ -514,6 +521,20 @@ if [[ -n "$s1src" ]]; then
   expect "s1, no load vus_max and warm-up below the plan's maxVUs: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
   out=$(s1_eval s1-wu-count '.warmup.count = 39')
   expect "s1, warm-up below 2 x the workflow slots: validity.warmupSize" INVALID "$(st "$out" validity.warmupSize)"
+  # The load window's record: missing or malformed is INVALID with a detail,
+  # never a crash (jq exit 5).
+  n=0
+  for f in 'del(.window)' '.window = null' '.window = "x"' '.window = {}' '.window.windowSecs = null' \
+    '.window.windowSecs = 0' '.window.maestroCalls = "many"' '.window.maestroCallsTopLevel = null' \
+    '.window.sweepCalls = "x"' '.window.harnessCalls = null'; do
+    n=$((n + 1))
+    out=$(s1_eval "s1-window-${n}" "$f")
+    expect "s1, load window ${f}: verdict (no crash)" INVALID "$(jq -r .verdict <<<"$out")"
+  done
+  for k in 1 3 4; do
+    expect "s1, load window case ${k}: validity.loadWindow says what is wrong" yes \
+      "$(s1_field "s1-window-${k}" '.checks[] | select(.id == "validity.loadWindow") | .detail' | grep -q 'load window' && echo yes || echo no)"
+  done
 
   # Correctness.
   out=$(s1_eval s1-failed '.runStatus.byStatus.COMPLETED -= 1 | .runStatus.byStatus.FAILED = 1')
