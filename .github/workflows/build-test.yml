@@ -59,6 +59,9 @@ jobs:
         run: gh workflow enable e2e-nightly.yml
 
       - name: Enable Perf (k6) if GitHub disabled it
+        # Independent of the step above: a failure to re-enable one schedule
+        # must not leave the other disabled.
+        if: always()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
