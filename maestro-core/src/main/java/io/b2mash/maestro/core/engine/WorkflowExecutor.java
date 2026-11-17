@@ -591,6 +591,14 @@ public final class WorkflowExecutor {
      * @return the workflow instance UUID
      * @throws IllegalStateException        if the executor is shutting down
      * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     * @throws RuntimeException             (or an {@code Error}) from the store
+     *         while the instance row is created or pre-delivered signals are
+     *         adopted, propagated unchanged, with the instance lock released
+     *         first. If it came after the row was created, the {@code RUNNING}
+     *         row remains: the recovery poller adopts and runs it on its next
+     *         pass, and a retry of the same start throws
+     *         {@link WorkflowAlreadyExistsException}
+     *         ({@code AdoptionLockLeakTest.startWorkflow_aFailureAfterTheRowIsCreated_…})
      * @throws WorkflowInstantiationException if the factory throws — the
      *         instance row already exists and is left {@code RUNNING} for the
      *         recovery poller to adopt; no {@code WORKFLOW_STARTED} event or

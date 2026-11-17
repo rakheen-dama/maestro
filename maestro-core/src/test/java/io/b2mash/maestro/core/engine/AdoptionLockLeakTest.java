@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
+import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -9,6 +10,8 @@ import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import tools.jackson.databind.json.JsonMapper;
 
 import java.lang.reflect.Method;
@@ -164,6 +167,51 @@ class AdoptionLockLeakTest {
         assertEquals("injected in adoptOrphanedSignals", thrown.getMessage(), "the Error propagates unchanged");
         assertEquals(List.of("maestro:lock:workflow:wf-d1"), lock.released,
                 "the handle acquired for the failed start is released");
+
+        executor.startRecoveryPoller(registrations(), Duration.ofMillis(50));
+        assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass adopted and ran the workflow");
+    }
+
+    /**
+     * Fix wave e12, pinning {@code startWorkflow}'s {@code @throws} contract:
+     * a failure after the {@code RUNNING} row is created — an {@code Error} or
+     * a {@code RuntimeException} — leaves the row {@code RUNNING}, releases the
+     * lock and propagates unchanged; a retry of the same start is
+     * {@code WorkflowAlreadyExistsException}; the next recovery pass adopts
+     * and runs the workflow.
+     */
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = {"Error", "RuntimeException"})
+    void startWorkflow_aFailureAfterTheRowIsCreated_leavesItForRecoveryAndARetryOfTheStartAlreadyExists(String kind)
+            throws Exception {
+        var thrownOnce = new AtomicBoolean();
+        var failingStore = new VersionedInMemoryStore() {
+            @Override
+            public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
+                if (thrownOnce.compareAndSet(false, true)) {
+                    if (kind.equals("Error")) {
+                        throw new AssertionError("injected " + kind);
+                    }
+                    throw new IllegalStateException("injected " + kind);
+                }
+                super.adoptOrphanedSignals(workflowId, instanceId);
+            }
+        };
+        executor = WorkflowExecutor.builder(failingStore, serializer, "svc")
+                .distributedLock(lock)
+                .lifecycleEventsEnabled(false)
+                .build();
+
+        var thrown = assertThrows(Throwable.class, () -> executor.startWorkflow("wf-e12", "LeakWorkflow",
+                "default", null, () -> new LeakWorkflow(ran), workflowMethod()));
+        assertEquals("injected " + kind, thrown.getMessage(), "the failure propagates unchanged");
+        assertEquals(WorkflowStatus.RUNNING, failingStore.getInstance("wf-e12").orElseThrow().status(),
+                "the row created before the failure remains RUNNING");
+        assertEquals(List.of("maestro:lock:workflow:wf-e12"), lock.released, "the lock is released");
+
+        assertThrows(WorkflowAlreadyExistsException.class, () -> executor.startWorkflow("wf-e12", "LeakWorkflow",
+                "default", null, () -> new LeakWorkflow(ran), workflowMethod()),
+                "a retry of the same start finds the row");
 
         executor.startRecoveryPoller(registrations(), Duration.ofMillis(50));
         assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass adopted and ran the workflow");
