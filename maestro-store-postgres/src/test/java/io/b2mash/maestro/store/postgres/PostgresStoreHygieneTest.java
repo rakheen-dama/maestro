@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 
@@ -220,6 +221,56 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                 assertEquals(2, result.instances());
                 conn2.rollback();
             }
+            assertEquals(List.of(1L, 2L, 2L, 2L), List.of(rowsOfWorkflow("orders-c-0"),
+                            childRowsOfWorkflow("maestro_workflow_event", "orders-c-0"),
+                            childRowsOfWorkflow("maestro_workflow_signal", "orders-c-0"),
+                            childRowsOfWorkflow("maestro_workflow_timer", "orders-c-0")),
+                    "the skipped instance keeps its row and its whole history");
+        }
+
+        /**
+         * A Retry that reaches a FAILED candidate while the scoped purge's
+         * batch holds it waits for the batch to commit, then finds no row:
+         * the purge took the whole history, and the Retry wrote nothing.
+         */
+        @Test
+        void aRetryOfACandidateTheScopedPurgeHoldsWaitsAndThenFindsNoRow() throws Exception {
+            var failed = finished("orders-f", "orders", WorkflowStatus.FAILED, 10);
+            attachHistory(failed);
+            var selected = new CountDownLatch(1);
+            var go = new CountDownLatch(1);
+            var purging = new PostgresWorkflowStore(
+                    pausingAt(dataSource, "DELETE FROM maestro_workflow_signal", selected, go), objectMapper);
+            var purge = CompletableFuture.supplyAsync(
+                    () -> purging.purgeTerminalInstancesBefore("orders", WorkflowStatus.FAILED, cutoff, 500));
+            Boolean retriedWhileHeld;
+            CompletableFuture<Boolean> retry;
+            try {
+                assertTrue(selected.await(5, SECONDS), "the purge selected its candidates");
+                retry = CompletableFuture.supplyAsync(() -> retry(failed));
+                retriedWhileHeld = retry.copy().completeOnTimeout(null, 1, SECONDS).get();
+            } finally {
+                go.countDown();
+            }
+            var purged = purge.get(10, SECONDS);
+            boolean retried = retry.get(10, SECONDS);
+            assertEquals(List.of("retriedWhileHeld=null", "purged=1", "retried=false", "row=0", "orphans=0"),
+                    List.of("retriedWhileHeld=" + retriedWhileHeld, "purged=" + purged.instances(),
+                            "retried=" + retried, "row=" + rowsOfWorkflow("orders-f"),
+                            "orphans=" + orphanedChildRows()));
+        }
+
+        /** A Retry that committed before the scoped purge ran leaves nothing for it to take. */
+        @Test
+        void aRetryCommittedBeforeTheScopedPurgeKeepsTheWorkflowAndItsHistory() throws Exception {
+            var failed = finished("orders-f", "orders", WorkflowStatus.FAILED, 10);
+            attachHistory(failed);
+            assertTrue(retry(failed));
+            var purged = store.purgeTerminalInstancesBefore("orders", WorkflowStatus.FAILED, cutoff, 500);
+            assertEquals(List.of(0, 1L, 2L, 2L, 2L), List.of(purged.instances(), rowsOfWorkflow("orders-f"),
+                    childRowsOfWorkflow("maestro_workflow_event", "orders-f"),
+                    childRowsOfWorkflow("maestro_workflow_signal", "orders-f"),
+                    childRowsOfWorkflow("maestro_workflow_timer", "orders-f")));
         }
 
         /** Guard: the load suite classifies the retention sweep by this leading text. */
@@ -571,6 +622,31 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                         (p, m, a) -> {
                             if (m.getName().equals("prepareStatement") && a != null && a[0] instanceof String s) {
                                 sql.add(s);
+                            }
+                            return invoke(m, conn, a);
+                        });
+            }
+            return result;
+        };
+        return (DataSource) Proxy.newProxyInstance(DataSource.class.getClassLoader(),
+                new Class<?>[]{DataSource.class}, connections);
+    }
+
+    /**
+     * A {@link DataSource} whose connections, on the first
+     * {@code prepareStatement} whose SQL starts with {@code prefix}, count
+     * {@code reached} down and wait for {@code go} before preparing it.
+     */
+    static DataSource pausingAt(DataSource delegate, String prefix, CountDownLatch reached, CountDownLatch go) {
+        InvocationHandler connections = (proxy, method, args) -> {
+            var result = invoke(method, delegate, args);
+            if (result instanceof Connection conn) {
+                return Proxy.newProxyInstance(Connection.class.getClassLoader(), new Class<?>[]{Connection.class},
+                        (p, m, a) -> {
+                            if (m.getName().equals("prepareStatement") && a != null && a[0] instanceof String s
+                                    && s.strip().startsWith(prefix) && reached.getCount() > 0) {
+                                reached.countDown();
+                                go.await(30, SECONDS);
                             }
                             return invoke(m, conn, a);
                         });
