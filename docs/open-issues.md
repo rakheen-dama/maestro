@@ -368,6 +368,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | Open |
 | [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
 | [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
+| [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -5011,6 +5012,43 @@ detail is new health surface that deserves its own review.
 **Done when.** `/actuator/health` shows `startupRecovery: "running"` while
 the first pass is in progress and `"complete"` afterwards, pinned by a
 starter test.
+
+---
+
+### Issue 74 — Without a lock backend, a recovery pass can adopt a run this node is starting {#issue-74}
+
+> **Open.** Filed while fixing a CI failure of `StoreOutageMidStepIT`
+> (2026-11-17, branch `fix/recovery-capacity`). Recorded, not fixed.
+> Pinned by `NoLockStartRecoveryRaceTest`.
+
+**Kind:** Library gap — at-least-once window. **Severity:** Low.
+
+**What happens.** `WorkflowExecutor.startWorkflow` writes the `RUNNING` row
+(`WorkflowExecutor.java:701`) and only later registers the run in this node's
+running set (`launchWorkflow`, `WorkflowExecutor.java:2873`). With a lock
+backend the start takes the instance lock before the row exists, so a recovery
+pass cannot adopt it. With **no** lock backend the running set is the only
+guard: a pass that reads the new row between the two adopts it (lease epoch
++1) and launches a second run of the same workflow on the same node. The
+lease fence and the terminal compare-and-set keep one persisted outcome — the
+fresh run's writes are fenced, or it converges on the twin's outcome — but
+the first activity can run twice: once in each run.
+
+**Harm.** One extra execution of an activity, which the at-least-once contract
+already allows (activities must be idempotent). Only on a node with no lock
+backend, and only when a pass coincides with a start. Since the recovery
+poller's first pass runs as soon as it starts, a start issued at the same
+moment as the poller starts can meet it; that is how `StoreOutageMidStepIT`
+(which started the poller just before its workflow) failed once in CI with
+`reserve` run twice. That test now starts the run before the poller.
+
+**How to tackle it.** On the no-lock path, register the run (a placeholder
+entry) in the running set before `createInstance`, and remove it if the write
+fails; or have a pass skip a row whose `started_at` is within a few seconds of
+now when no lock backend is configured.
+
+**Done when.** `NoLockStartRecoveryRaceTest`'s interleaving no longer adopts
+the just-started row.
 
 ---
 
