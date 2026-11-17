@@ -20,7 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 /**
  * The housekeeping defaults of {@link WorkflowStore}: a third-party store that
  * overrides none of them behaves exactly as before — the unscoped, unbounded
- * janitor delete.
+ * janitor delete and the unscoped retention purge.
  */
 class WorkflowStoreHygieneDefaultsTest {
 
@@ -45,15 +45,29 @@ class WorkflowStoreHygieneDefaultsTest {
         assertEquals(List.of(), store.cutoffs(), "an invalid call never reaches the delegate");
     }
 
+    @Test
+    void theScopedPurgesDefaultIsTheUnscopedPurge() {
+        var scripted = new PurgeResult(2, 6, 1, 1);
+        store.purges(scripted);
+        assertEquals(scripted, store.purgeTerminalInstancesBefore("orders", WorkflowStatus.FAILED, cutoff, 250));
+        assertEquals(List.of(new Purge(WorkflowStatus.FAILED, cutoff, 250)), store.purgeCalls());
+    }
+
+    private record Purge(WorkflowStatus status, Instant cutoff, int batchSize) {
+    }
+
     /**
      * Implements only the abstract methods. The one-argument janitor delete
-     * records its cutoff and returns a scripted count; every other method
-     * throws.
+     * records its cutoff and returns a scripted count, and the unscoped purge
+     * records its arguments and returns a scripted result; every other
+     * method throws.
      */
     private static final class MinimalStore implements WorkflowStore {
 
         private final List<Instant> cutoffs = new CopyOnWriteArrayList<>();
         private volatile int returns;
+        private final List<Purge> purgeCalls = new CopyOnWriteArrayList<>();
+        private volatile PurgeResult purges = PurgeResult.EMPTY;
 
         void returns(int deleted) {
             this.returns = deleted;
@@ -61,6 +75,20 @@ class WorkflowStoreHygieneDefaultsTest {
 
         List<Instant> cutoffs() {
             return cutoffs;
+        }
+
+        void purges(PurgeResult result) {
+            this.purges = result;
+        }
+
+        List<Purge> purgeCalls() {
+            return purgeCalls;
+        }
+
+        @Override
+        public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+            purgeCalls.add(new Purge(status, cutoff, batchSize));
+            return purges;
         }
 
         @Override
@@ -71,8 +99,6 @@ class WorkflowStoreHygieneDefaultsTest {
 
         // ── Out of scope ────────────────────────────────────────────────
 
-        @Override public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff,
-                                                                  int batchSize) { throw unsupported(); }
         @Override public WorkflowInstance createInstance(WorkflowInstance instance) { throw unsupported(); }
         @Override public Optional<WorkflowInstance> getInstance(String workflowId) { throw unsupported(); }
         @Override public List<WorkflowInstance> getRecoverableInstances() { throw unsupported(); }

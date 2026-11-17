@@ -124,6 +124,9 @@ import java.util.stream.Collectors;
  *       purge's candidate rows (Postgres: {@code LIMIT ? FOR UPDATE SKIP
  *       LOCKED}); the portable default uses {@code FETCH FIRST ? ROWS ONLY}
  *       and relies on the batch's count check instead.</li>
+ *   <li>{@link #getServicePurgeCandidatesSql()} — the same for the
+ *       service-scoped retention purge, which the engine's sweeper uses;
+ *       override it alongside {@link #getPurgeCandidatesSql()}.</li>
  *   <li>{@link #setJsonParameter(PreparedStatement, int, JsonNode)} — override
  *       to use database-native JSON types (e.g., Postgres JSONB via PGobject).</li>
  *   <li>{@link #getJsonValue(ResultSet, String)} — override if the database
@@ -324,6 +327,32 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     protected String getPurgeCandidatesSql() {
         return "SELECT id FROM " + tableName("workflow_instance")
                 + " WHERE status = ? AND completed_at < ?"
+                + " ORDER BY completed_at ASC"
+                + " FETCH FIRST ? ROWS ONLY";
+    }
+
+    /**
+     * Returns the SQL selecting one batch of one service's retention-purge
+     * candidates: {@link #getPurgeCandidatesSql()} restricted to the instances
+     * whose {@code service_name} equals a parameter.
+     *
+     * <p>The SQL must take exactly four parameters, in order: the status name
+     * ({@code VARCHAR}), the cutoff ({@code TIMESTAMP}), the service name
+     * ({@code VARCHAR}), and the batch size ({@code INT}); select {@code id}
+     * only; filter on {@code status = ? AND completed_at < ? AND
+     * service_name = ?}; and order by {@code completed_at} ascending. The
+     * default is the portable {@code ORDER BY completed_at ASC FETCH FIRST ?
+     * ROWS ONLY}, which locks nothing; the locking trade-offs of
+     * {@link #getPurgeCandidatesSql()} apply unchanged, and a dialect that
+     * overrides one should override both (Postgres:
+     * {@code LIMIT ? FOR UPDATE SKIP LOCKED}).
+     *
+     * @return the parameterized SQL string
+     * @see #purgeTerminalInstancesBefore(String, WorkflowStatus, Instant, int)
+     */
+    protected String getServicePurgeCandidatesSql() {
+        return "SELECT id FROM " + tableName("workflow_instance")
+                + " WHERE status = ? AND completed_at < ? AND service_name = ?"
                 + " ORDER BY completed_at ASC"
                 + " FETCH FIRST ? ROWS ONLY";
     }
@@ -1177,6 +1206,47 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        return purge(status, cutoff, batchSize,
+                conn -> selectPurgeCandidates(conn, getPurgeCandidatesSql(), ps -> {
+                    ps.setString(1, status.name());
+                    ps.setTimestamp(2, Timestamp.from(cutoff));
+                    ps.setInt(3, batchSize);
+                }));
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The same single transaction as the unscoped form, with the candidate
+     * select {@link #getServicePurgeCandidatesSql()}. The instance delete
+     * re-checks status and cutoff only: an instance's {@code service_name}
+     * never changes.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purge(status, cutoff, batchSize,
+                conn -> selectPurgeCandidates(conn, getServicePurgeCandidatesSql(), ps -> {
+                    ps.setString(1, status.name());
+                    ps.setTimestamp(2, Timestamp.from(cutoff));
+                    ps.setString(3, serviceName);
+                    ps.setInt(4, batchSize);
+                }));
+    }
+
+    /** Selects one batch of purge candidate ids on the caller's transaction. */
+    @FunctionalInterface
+    private interface CandidateSelect {
+        List<UUID> select(Connection conn) throws SQLException;
+    }
+
+    /**
+     * One purge batch: validates the arguments, then selects the candidates
+     * with {@code select} and deletes them with their history in one
+     * transaction (see {@link #purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)}).
+     */
+    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize, CandidateSelect select) {
         Objects.requireNonNull(status, "status");
         Objects.requireNonNull(cutoff, "cutoff");
         if (!status.isTerminal()) {
@@ -1191,7 +1261,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             conn.setAutoCommit(false);
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
-                var ids = selectPurgeCandidates(conn, status, cutoff, batchSize);
+                var ids = select.select(conn);
                 if (ids.isEmpty()) {
                     conn.rollback();
                     settled = true;
@@ -1240,13 +1310,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         }
     }
 
-    /** The candidate select of {@link #purgeTerminalInstancesBefore}, on the caller's transaction. */
-    private List<UUID> selectPurgeCandidates(Connection conn, WorkflowStatus status, Instant cutoff,
-                                             int batchSize) throws SQLException {
-        try (var ps = conn.prepareStatement(getPurgeCandidatesSql())) {
-            ps.setString(1, status.name());
-            ps.setTimestamp(2, Timestamp.from(cutoff));
-            ps.setInt(3, batchSize);
+    /** Runs a purge candidate select on the caller's transaction and returns the selected ids. */
+    private List<UUID> selectPurgeCandidates(Connection conn, String sql, StatementSetter params)
+            throws SQLException {
+        try (var ps = conn.prepareStatement(sql)) {
+            params.set(ps);
             try (var rs = ps.executeQuery()) {
                 var ids = new ArrayList<UUID>();
                 while (rs.next()) {

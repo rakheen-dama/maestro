@@ -120,6 +120,12 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        return delegate.purgeTerminalInstancesBefore(serviceName, status, cutoff, batchSize);
+    }
+
+    @Override
     public void saveTimer(WorkflowTimer timer) {
         delegate.saveTimer(timer);
     }

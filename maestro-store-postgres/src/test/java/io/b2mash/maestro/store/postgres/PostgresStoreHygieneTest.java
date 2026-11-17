@@ -1,8 +1,13 @@
 package io.b2mash.maestro.store.postgres;
 
+import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.TimerStatus;
+import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -19,16 +24,20 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.stream.IntStream;
 
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The store halves of the housekeeping paths, against a real Postgres: the
- * signal janitor's bounded, service-scoped delete; and the guards that pin the
+ * signal janitor's bounded, service-scoped delete; the service-scoped
+ * retention purge and the documented manual purge; and the guards that pin the
  * leading text of each housekeeping statement, which the load suite's
  * {@code perf/sql/pgss-window.sql} matches.
  */
@@ -125,6 +134,155 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
                     return rs.next() && rs.getBoolean(1);
                 }
             }
+        }
+    }
+
+    /**
+     * {@code orders}: 3 COMPLETED finished 10 days ago; {@code billing}: 2
+     * COMPLETED finished 10 days ago. Each has two events, a PENDING and a
+     * FIRED timer, and a consumed and an unconsumed signal. The cutoff is 7
+     * days ago.
+     */
+    @Nested
+    class ScopedPurge {
+
+        /**
+         * The manual purge {@code docs/operations.md} §11.5 gives for the
+         * history of a service name no node runs any more: one transaction
+         * per batch of at most 500 terminal instances finished over 30 days
+         * ago, children before the instances. Repeat until the last
+         * statement deletes no row. The one parameter is the service name.
+         */
+        static final List<String> MANUAL_PURGE_SQL = List.of(
+                "CREATE TEMPORARY TABLE maestro_purge_ids ON COMMIT DROP AS"
+                        + " SELECT id FROM maestro_workflow_instance"
+                        + " WHERE service_name = ? AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')"
+                        + " AND completed_at < now() - interval '30 days'"
+                        + " ORDER BY completed_at LIMIT 500",
+                "DELETE FROM maestro_workflow_signal WHERE workflow_instance_id IN (SELECT id FROM maestro_purge_ids)",
+                "DELETE FROM maestro_workflow_timer WHERE workflow_instance_id IN (SELECT id FROM maestro_purge_ids)",
+                "DELETE FROM maestro_workflow_event WHERE workflow_instance_id IN (SELECT id FROM maestro_purge_ids)",
+                "DELETE FROM maestro_workflow_instance WHERE id IN (SELECT id FROM maestro_purge_ids)");
+
+        @BeforeEach
+        void fixture() {
+            for (int i = 0; i < 3; i++) {
+                attachHistory(finished("orders-c-" + i, "orders", WorkflowStatus.COMPLETED, 10));
+            }
+            for (int i = 0; i < 2; i++) {
+                attachHistory(finished("billing-c-" + i, "billing", WorkflowStatus.COMPLETED, 10));
+            }
+        }
+
+        @Test
+        void purgesOnlyThisServicesInstancesWithTheirHistory() throws Exception {
+            var result = store.purgeTerminalInstancesBefore("orders", WorkflowStatus.COMPLETED, cutoff, 500);
+            assertEquals(new PurgeResult(3, 6, 6, 6), result);
+            assertEquals(2, instancesOf("billing"));
+            assertEquals(4, childRowsOf("maestro_workflow_event", "billing"));
+            assertEquals(4, childRowsOf("maestro_workflow_signal", "billing"));
+            assertEquals(4, childRowsOf("maestro_workflow_timer", "billing"));
+        }
+
+        @Test
+        void aRowLockedElsewhereIsSkippedNotWaitedOn() throws Exception {
+            try (Connection conn2 = dataSource.getConnection()) {
+                conn2.setAutoCommit(false);
+                try (var ps = conn2.prepareStatement(
+                        "SELECT id FROM maestro_workflow_instance WHERE workflow_id = 'orders-c-0' FOR UPDATE");
+                     var rs = ps.executeQuery()) {
+                    assertTrue(rs.next());
+                }
+                var result = CompletableFuture.supplyAsync(
+                                () -> store.purgeTerminalInstancesBefore("orders", WorkflowStatus.COMPLETED, cutoff, 500))
+                        .completeOnTimeout(null, 5, SECONDS).get();
+                assertNotNull(result, "the purge waited on a locked candidate");
+                assertEquals(2, result.instances());
+                conn2.rollback();
+            }
+        }
+
+        /** Guard: the load suite classifies the retention sweep by this leading text. */
+        @Test
+        void theScopedCandidateSelectKeepsTheLeadingTextThePerfHarnessMatches() {
+            var sql = new CopyOnWriteArrayList<String>();
+            new PostgresWorkflowStore(recording(dataSource, sql), objectMapper)
+                    .purgeTerminalInstancesBefore("orders", WorkflowStatus.COMPLETED, cutoff, 500);
+            var select = sql.stream().map(s -> s.replaceAll("\\s+", " ").strip())
+                    .filter(s -> s.startsWith("SELECT id FROM maestro_workflow_instance")).findFirst().orElseThrow();
+            assertTrue(select.startsWith("SELECT id FROM maestro_workflow_instance WHERE status = ? AND completed_at < "),
+                    select);
+        }
+
+        @Test
+        void theDocumentedManualPurgeRemovesAnAbandonedServicesHistory() throws Exception {
+            for (int i = 0; i < 3; i++) {
+                attachHistory(finished("orders-old-" + i, "orders-old", WorkflowStatus.COMPLETED, 40));
+            }
+            int rounds = 0;
+            int deleted;
+            do {
+                deleted = runManualPurge("orders-old");
+                rounds++;
+            } while (deleted > 0 && rounds < 10);
+            assertEquals(0, deleted, "the manual purge ran dry");
+            assertEquals(0, instancesOf("orders-old"));
+            assertEquals(0, orphanedChildRows());
+            assertEquals(3, instancesOf("orders"), "another service's rows are untouched");
+            assertEquals(2, instancesOf("billing"), "another service's rows are untouched");
+        }
+
+        /** Runs {@link #MANUAL_PURGE_SQL} as one transaction; returns the instance rows it deleted. */
+        private int runManualPurge(String serviceName) throws Exception {
+            try (Connection conn = dataSource.getConnection()) {
+                conn.setAutoCommit(false);
+                int last = 0;
+                for (int i = 0; i < MANUAL_PURGE_SQL.size(); i++) {
+                    try (var ps = conn.prepareStatement(MANUAL_PURGE_SQL.get(i))) {
+                        if (i == 0) {
+                            ps.setString(1, serviceName);
+                        }
+                        last = ps.executeUpdate();
+                    }
+                }
+                conn.commit();
+                return last;
+            }
+        }
+
+        /** Two events, a PENDING and a FIRED timer, an unconsumed and a consumed signal. */
+        private void attachHistory(WorkflowInstance instance) {
+            for (int seq = 1; seq <= 2; seq++) {
+                store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), seq,
+                        seq == 1 ? EventType.ACTIVITY_COMPLETED : EventType.WORKFLOW_COMPLETED, "step-" + seq,
+                        jsonNode("{\"result\":\"ok\"}"), now));
+            }
+            for (var status : List.of(TimerStatus.PENDING, TimerStatus.FIRED)) {
+                store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instance.id(), instance.workflowId(),
+                        "timer-" + UUID.randomUUID(), now.plusSeconds(60), status, now));
+            }
+            store.saveSignal(newSignal(instance.workflowId(), instance.id()));
+            var consumed = newSignal(instance.workflowId(), instance.id());
+            store.saveSignal(consumed);
+            assertTrue(store.markSignalConsumed(consumed.id()));
+        }
+
+        private long instancesOf(String serviceName) throws Exception {
+            return count("SELECT count(*) FROM maestro_workflow_instance WHERE service_name = ?", serviceName);
+        }
+
+        private long childRowsOf(String table, String serviceName) throws Exception {
+            return count("SELECT count(*) FROM " + table + " c JOIN maestro_workflow_instance i"
+                    + " ON i.id = c.workflow_instance_id WHERE i.service_name = ?", serviceName);
+        }
+
+        private long orphanedChildRows() throws Exception {
+            long total = 0;
+            for (var table : List.of("maestro_workflow_event", "maestro_workflow_signal", "maestro_workflow_timer")) {
+                total += count("SELECT count(*) FROM " + table + " c WHERE c.workflow_instance_id IS NOT NULL"
+                        + " AND NOT EXISTS (SELECT 1 FROM maestro_workflow_instance i WHERE i.id = c.workflow_instance_id)");
+            }
+            return total;
         }
     }
 

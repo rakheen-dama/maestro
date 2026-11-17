@@ -29,6 +29,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 
 /**
@@ -685,6 +686,24 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      */
     @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
+        return purge(status, cutoff, batchSize, instance -> true);
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>The unscoped form's body, with candidates restricted to
+     * {@code serviceName}'s instances.
+     */
+    @Override
+    public PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff,
+                                                    int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purge(status, cutoff, batchSize, instance -> serviceName.equals(instance.serviceName()));
+    }
+
+    private PurgeResult purge(WorkflowStatus status, Instant cutoff, int batchSize,
+                              Predicate<WorkflowInstance> scope) {
         if (!status.isTerminal()) {
             throw new IllegalArgumentException("Only terminal statuses can be purged, got " + status);
         }
@@ -695,6 +714,7 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
             synchronized (timerLock) {
                 var candidates = instances.values().stream()
                         .filter(i -> qualifies(i, status, cutoff))
+                        .filter(scope)
                         .sorted(Comparator.comparing(WorkflowInstance::completedAt))
                         .limit(batchSize)
                         .toList();

@@ -1,8 +1,13 @@
 package io.b2mash.maestro.test;
 
+import io.b2mash.maestro.core.model.EventType;
+import io.b2mash.maestro.core.model.TimerStatus;
+import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.spi.PurgeResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
@@ -91,6 +96,49 @@ class InMemoryStoreHygieneTest {
                     .filter(s -> store.getInstance(s.workflowId())
                             .filter(i -> i.serviceName().equals(serviceName)).isPresent())
                     .count();
+        }
+    }
+
+    /** The fixture of {@code PostgresStoreHygieneTest.ScopedPurge}. */
+    @Nested
+    class ScopedPurge {
+
+        @BeforeEach
+        void fixture() {
+            for (int i = 0; i < 3; i++) {
+                attachHistory(finished("orders-c-" + i, "orders", WorkflowStatus.COMPLETED, 10));
+            }
+            for (int i = 0; i < 2; i++) {
+                attachHistory(finished("billing-c-" + i, "billing", WorkflowStatus.COMPLETED, 10));
+            }
+        }
+
+        @Test
+        void purgesOnlyThisServicesInstancesWithTheirHistory() {
+            var result = store.purgeTerminalInstancesBefore("orders", WorkflowStatus.COMPLETED, cutoff, 500);
+            assertEquals(new PurgeResult(3, 6, 6, 6), result);
+            var billing = List.of("billing-c-0", "billing-c-1").stream()
+                    .map(id -> store.getInstance(id).orElseThrow().id()).toList();
+            assertEquals(4, billing.stream().mapToInt(id -> store.getEvents(id).size()).sum());
+            assertEquals(4, store.getAllSignals().stream().filter(s -> billing.contains(s.workflowInstanceId())).count());
+            assertEquals(4, store.getAllTimers().stream().filter(t -> billing.contains(t.workflowInstanceId())).count());
+        }
+
+        /** Two events, a PENDING and a FIRED timer, an unconsumed and a consumed signal. */
+        private void attachHistory(WorkflowInstance instance) {
+            for (int seq = 1; seq <= 2; seq++) {
+                store.appendEvent(new WorkflowEvent(UUID.randomUUID(), instance.id(), seq,
+                        seq == 1 ? EventType.ACTIVITY_COMPLETED : EventType.WORKFLOW_COMPLETED, "step-" + seq,
+                        JsonMapper.builder().build().readTree("{\"result\":\"ok\"}"), now));
+            }
+            for (var status : List.of(TimerStatus.PENDING, TimerStatus.FIRED)) {
+                store.saveTimer(new WorkflowTimer(UUID.randomUUID(), instance.id(), instance.workflowId(),
+                        "timer-" + UUID.randomUUID(), now.plusSeconds(60), status, now));
+            }
+            store.saveSignal(newSignal(instance.workflowId(), instance.id()));
+            var consumed = newSignal(instance.workflowId(), instance.id());
+            store.saveSignal(consumed);
+            assertTrue(store.markSignalConsumed(consumed.id()));
         }
     }
 

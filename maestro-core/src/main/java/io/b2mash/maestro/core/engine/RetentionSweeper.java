@@ -17,12 +17,14 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Background sweeper that purges long-finished workflows — instance, events,
- * signals and timers — so the store does not grow without bound.
+ * Background sweeper that purges this service's ({@code serviceName})
+ * long-finished workflows — instance, events, signals and timers — so the
+ * store does not grow without bound. Another service's workflows in the same
+ * tables are left to that service's own sweeper and its own retention.
  *
  * <p>Every {@code interval} the leader calls
- * {@link WorkflowStore#purgeTerminalInstancesBefore(WorkflowStatus, Instant, int)}
- * once per terminal status, each with its own cutoff
+ * {@link WorkflowStore#purgeTerminalInstancesBefore(String, WorkflowStatus, Instant, int)}
+ * with its service name once per terminal status, each with its own cutoff
  * ({@code now - completedRetention}, {@code now - terminatedRetention},
  * {@code now - failedRetention}), in batches of {@code batchSize} until a
  * batch comes back short or {@code maxBatchesPerSweep} batches have run for
@@ -331,8 +333,8 @@ final class RetentionSweeper implements StoppableLoop {
                     }
                     leader = true;
                     var t0 = pacer.now();
-                    var result = store.purgeTerminalInstancesBefore(target.status(), target.cutoff(),
-                            settings.batchSize());
+                    var result = store.purgeTerminalInstancesBefore(serviceName, target.status(),
+                            target.cutoff(), settings.batchSize());
                     previous = pacer.now() - t0;
                     batches++;
                     total = total.plus(result);

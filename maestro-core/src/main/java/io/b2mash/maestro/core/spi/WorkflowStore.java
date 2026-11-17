@@ -916,6 +916,41 @@ public interface WorkflowStore {
     PurgeResult purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus status,
                                              Instant cutoff, int batchSize);
 
+    /**
+     * {@link #purgeTerminalInstancesBefore(io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)}
+     * restricted to the instances of {@code serviceName} only: the same
+     * contract — one all-or-nothing batch, children before parent, the same
+     * survivors — over the instances whose {@link WorkflowInstance#serviceName()}
+     * equals {@code serviceName}. Every other service's instances and history
+     * survive, so in tables several services share, each service's own
+     * retention governs its own rows.
+     *
+     * <p>The engine's retention sweeper calls this, with its own service
+     * name. A terminal instance recorded under a service name that no node
+     * runs any more is therefore purged by no sweeper.
+     *
+     * <p><b>The default</b> delegates to the unscoped form, so a store that
+     * does not override it purges every service's rows, as before. The
+     * shipped JDBC store and the in-memory test store override it.
+     *
+     * @param serviceName the service whose instances are purged
+     * @param status      the terminal status to purge; must satisfy
+     *                    {@link io.b2mash.maestro.core.model.WorkflowStatus#isTerminal()}
+     * @param cutoff      instances with {@code completedAt} strictly before
+     *                    this instant are candidates
+     * @param batchSize   the most instances to delete in this call; must be positive
+     * @return how many rows of each table were deleted; never {@code null}
+     * @throws NullPointerException     if {@code serviceName} is {@code null}
+     * @throws IllegalArgumentException if {@code status} is not terminal or
+     *                                  {@code batchSize} is not positive
+     */
+    default PurgeResult purgeTerminalInstancesBefore(String serviceName,
+                                                     io.b2mash.maestro.core.model.WorkflowStatus status,
+                                                     Instant cutoff, int batchSize) {
+        Objects.requireNonNull(serviceName, "serviceName");
+        return purgeTerminalInstancesBefore(status, cutoff, batchSize);
+    }
+
     // ── Timer operations ─────────────────────────────────────────────────
 
     /**
