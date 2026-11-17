@@ -5125,9 +5125,11 @@ every node start, although the other's workflows are not stranded.
 (`maestro-core/src/main/java/io/b2mash/maestro/core/engine/ForeignServiceCheck.java`);
 `AbstractJdbcWorkflowStore.getActiveInstanceCountsUnderOtherServices`.
 
-**Harm.** One misleading `WARN` per such name per node start. The wording is
-conditional ("unless a node runs with maestro.service-name=…"), so it does
-not tell the operator to act wrongly.
+**Harm.** One misleading `WARN` per such name per node start. Its remedy is
+conditional — "if no node runs that name any more, start one under it or
+correct the rows" — so it does not direct an operator at a live co-tenant's
+rows; an operator who skips that condition could still correct rows that
+are not stranded.
 
 **How to tackle it.** Suppress names that hold an unexpired
 `maestro:leader:timer-poller:<name>` row: a new `DistributedLock` default

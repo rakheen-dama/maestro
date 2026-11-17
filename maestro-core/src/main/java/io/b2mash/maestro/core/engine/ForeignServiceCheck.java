@@ -106,7 +106,7 @@ final class ForeignServiceCheck {
         return count + " active workflow instance(s) of a type this node runs are recorded under "
                 + "maestro.service-name '" + foreignService + "', not '" + ownService + "'. Recovery adopts only '"
                 + ownService + "' instances, so unless a node runs with maestro.service-name=" + foreignService
-                + " these workflows never resume: start one under that name, or correct the rows "
-                + "(docs/operations.md §11.5).";
+                + " these workflows never resume; if no node runs that name any more, start one under it or correct "
+                + "the rows (docs/operations.md §11.5).";
     }
 }

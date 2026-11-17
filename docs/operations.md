@@ -1285,7 +1285,7 @@ per other service name that holds **active** instances (`RUNNING`,
 registers:
 
 ```text
-3 active workflow instance(s) of a type this node runs are recorded under maestro.service-name 'orders-old', not 'orders'. Recovery adopts only 'orders' instances, so unless a node runs with maestro.service-name=orders-old these workflows never resume: start one under that name, or correct the rows (docs/operations.md §11.5).
+3 active workflow instance(s) of a type this node runs are recorded under maestro.service-name 'orders-old', not 'orders'. Recovery adopts only 'orders' instances, so unless a node runs with maestro.service-name=orders-old these workflows never resume; if no node runs that name any more, start one under it or correct the rows (docs/operations.md §11.5).
 ```
 
 - It counts neither terminal rows (they are not stranded work) nor other
