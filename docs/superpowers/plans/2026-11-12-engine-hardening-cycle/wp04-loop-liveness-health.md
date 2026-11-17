@@ -286,7 +286,7 @@ The second test is parameterized over R1 and R2. R1 alone is redundant with R2, 
   - `StoreUnavailableException` and `FencedWriteException` are never recorded as workflow outcomes (loop threads record none, D-2);
   - no new `catch` inside workflow, activity or saga code.
 - **No log line or meter tag** carries a workflow id, a run id or a payload. `maestro.loop.errors` has the single tag `loop`, with five values bounded by code.
-- **Branch and worktree.** Branch `fix/loop-liveness-health`, cut from `origin/main` after WP3 has merged (Lane A order), in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp4-loop-liveness-health`. Task 5 also needs WP10 merged (see Before you start). Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`. Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
+- **Branch and worktree.** Branch `fix/loop-liveness-health`, cut from `origin/main` after WP3 has merged (Lane A order), in `.claude/worktrees/wp4-loop-liveness-health`. Task 5 also needs WP10 merged (see Before you start). Before the first edit, run `git -C <worktree> status` and `git status`. Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.** Commit at every checkpoint named below. Chain git steps with `&&`. Pass messages as `-m "$(cat <<'EOF' … EOF)"`. Never run git-mutating commands in parallel. Every message ends with the attribution line your own session supplies.
 - **Long runs** (`./gradlew --no-watch-fs build`, the whole `:maestro-integration-tests:test`, `e2eTest`) are **coordinator gates**, launched detached with a log whose header records `pwd`, `git rev-parse HEAD` and a timestamp. Implementers run only the targeted commands in the steps.
@@ -325,12 +325,12 @@ Do not grep for changed `assert` lines: that misses the continuation lines of mu
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='admin-retry\|WP3' && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='wake-listener-shutdown\|WP10' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b fix/loop-liveness-health \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp4-loop-liveness-health origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp4-loop-liveness-health status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='admin-retry\|WP3' && \
+git log origin/main --oneline -1 --grep='wake-listener-shutdown\|WP10' && \
+git worktree add -b fix/loop-liveness-health \
+    .claude/worktrees/wp4-loop-liveness-health origin/main && \
+git -C .claude/worktrees/wp4-loop-liveness-health status
 ```
 
 The first log must print WP3's merge; if it prints nothing, stop. If the second prints nothing, WP10 has not merged. Tasks 1–4 and 6–9 can still go ahead. Task 5 waits, and the coordinator decides whether WP4 waits for it or ships Task 5's lock-cleaner half alone.

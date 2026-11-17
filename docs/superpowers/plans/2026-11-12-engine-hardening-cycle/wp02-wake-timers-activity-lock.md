@@ -190,8 +190,8 @@ Three CURRENT-BUILD pins in `recoveryReplaysEveryActiveSeededRunToItsEnd` exerci
 - **`StoreUnavailableException`** is a store fault, never a workflow failure. The skew check swallows it only because it runs on the poller thread, outside any run, and records no outcome (D-3). No other new `catch` may swallow, record or convert it.
 - **No log line or meter tag** carries a workflow id, a run id or a payload. The new gauge has no tags.
 - **Branch and worktree.**
-  - Branch `fix/wake-timers-activity-lock`, cut from `origin/main` after PR #53 (WP1) has merged, in the worktree `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wake-timers-activity-lock`.
-  - Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`.
+  - Branch `fix/wake-timers-activity-lock`, cut from `origin/main` after PR #53 (WP1) has merged, in the worktree `.claude/worktrees/wake-timers-activity-lock`.
+  - Before the first edit, run `git -C <worktree> status` and `git status`.
   - Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, run from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.**
@@ -282,10 +282,10 @@ A self-contained commit with no behaviour change, so that WP12's scenario 4 "bef
 - [ ] **Step 1: Create the worktree.**
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='replay-fidelity' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add .claude/worktrees/wake-timers-activity-lock -b fix/wake-timers-activity-lock origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wake-timers-activity-lock status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='replay-fidelity' && \
+git worktree add .claude/worktrees/wake-timers-activity-lock -b fix/wake-timers-activity-lock origin/main && \
+git -C .claude/worktrees/wake-timers-activity-lock status
 ```
 
 Expected: the log prints the PR #53 merge, and the worktree is clean on `fix/wake-timers-activity-lock`. If the log prints nothing, stop: WP1 has not merged.

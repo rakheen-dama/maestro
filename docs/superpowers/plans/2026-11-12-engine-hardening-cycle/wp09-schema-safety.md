@@ -75,11 +75,11 @@ Tooling and docs: `scripts/capture-upgrade-fixture.sh` (new top-level `scripts/`
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b test/schema-upgrade-safety \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp9-schema-safety origin/main
-WT=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp9-schema-safety
-git -C "$WT" status && git -C /Users/rakheendama/Projects/2026/maestro status   # prove which tree you are in
+git fetch origin
+git worktree add -b test/schema-upgrade-safety \
+    .claude/worktrees/wp9-schema-safety origin/main
+WT=.claude/worktrees/wp9-schema-safety
+git -C "$WT" status && git status   # prove which tree you are in
 ```
 
 Run every command from `$WT`. Never `cd` into the main checkout (lessons, 2026-07-31). All paths below are relative to `$WT`.

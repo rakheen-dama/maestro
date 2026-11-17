@@ -335,8 +335,8 @@ The purge's four child deletes and its leader upsert are unchanged. A `PostgresS
   - `StoreUnavailableException` from a janitor batch is a `RuntimeException`: it is logged and ends the sweep, as today. It never reaches a workflow.
 - **No log line or meter tag** carries a workflow id, a run id or a payload.
 - **Branch and worktree.**
-  - Branch `fix/store-hygiene`, cut from `origin/main` after WP6 has merged (Lane B order: WP9 → WP7 → WP10 → WP8; WP8 also waits for WP6), in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp8-store-hygiene`.
-  - Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`.
+  - Branch `fix/store-hygiene`, cut from `origin/main` after WP6 has merged (Lane B order: WP9 → WP7 → WP10 → WP8; WP8 also waits for WP6), in `.claude/worktrees/wp8-store-hygiene`.
+  - Before the first edit, run `git -C <worktree> status` and `git status`.
   - Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.**
@@ -399,11 +399,11 @@ The purge's four child deletes and its leader upsert are unchanged. A `PostgresS
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='recovery-capacity\|WP6\|Issue 30' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b fix/store-hygiene \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp8-store-hygiene origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp8-store-hygiene status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='recovery-capacity\|WP6\|Issue 30' && \
+git worktree add -b fix/store-hygiene \
+    .claude/worktrees/wp8-store-hygiene origin/main && \
+git -C .claude/worktrees/wp8-store-hygiene status
 ```
 
 The log must print WP6's merge. If it prints nothing, stop: WP8 shares `StartupRecoveryRunner` with WP6, and the sweeper and janitor loops with WP4 and WP5.
@@ -1004,7 +1004,7 @@ Task 4 is MD-1's. If the maintainer rules MD-1 "no", skip Task 4 and the MD-1 pa
   - `./gradlew --no-watch-fs :maestro-integration-tests:test --tests '*MultiNodeRetentionPurgeIT' --tests '*EnginePostgresSignalIT'`.
 
   Expected: all PASS.
-- [ ] **Step 8: The perf patterns, at merge time.** Run `git -C /Users/rakheendama/Projects/2026/maestro fetch origin && git -C /Users/rakheendama/Projects/2026/maestro show origin/main:perf/sql/pgss-window.sql | grep -n "maestro_workflow_signal WHERE consumed\|completed_at < "`.
+- [ ] **Step 8: The perf patterns, at merge time.** Run `git fetch origin && git show origin/main:perf/sql/pgss-window.sql | grep -n "maestro_workflow_signal WHERE consumed\|completed_at < "`.
   - If it prints D-9's two patterns, the guards in Tasks 2 and 4 cover them. Record "unchanged" in the review section.
   - If WP12 changed either pattern, set the guards' expected prefixes to the new regex's literal text, re-run `:maestro-store-postgres:test --tests '*PostgresStoreHygieneTest'`, and note it.
   - If WP8's statements cannot match the new pattern, add a commit on this branch updating `perf/sql/pgss-window.sql` and the self-test case WP12 Task 9 Step 1 names. That is the only `perf/` edit allowed here, and it is made only in this case.

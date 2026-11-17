@@ -168,7 +168,7 @@ There is no history, wire or SPI change. A `NOTIFY` lost while a node shuts down
 - **Code rules.** Javadoc on every public member, with the thread-safety note updated as in the surface table. JSpecify `@Nullable`. No Lombok. No Spring in `maestro-core` (this package does not touch core).
 - **Control-flow `Error`s.** This package adds no `catch` of `Throwable` or `Error`; WP4 owns that. `releaseConnection` catches `SQLException | RuntimeException` only.
 - **No log line** carries a workflow id. The new `INFO` names the channel only, as the existing lines do.
-- **Branch and worktree.** Branch `fix/wake-listener-shutdown`, cut from `origin/main` (WP7 has merged at `525b287`), in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp10-wake-listener-shutdown`. Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`. Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
+- **Branch and worktree.** Branch `fix/wake-listener-shutdown`, cut from `origin/main` (WP7 has merged at `525b287`), in `.claude/worktrees/wp10-wake-listener-shutdown`. Before the first edit, run `git -C <worktree> status` and `git status`. Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.** Commit at every checkpoint named below. Chain git steps with `&&`. Pass messages as `-m "$(cat <<'EOF' … EOF)"`. Never run git-mutating commands in parallel. Every message ends with the attribution line your own session supplies.
 - **Red tests** fail on the unfixed code on a positive fact (a `WARN` line, a backend pid, an event list), never on a `ConditionTimeoutException`. Paste the FAIL lines into the commit body. Each fix gets at least one mutation check that a reviewer can repeat, and the mutation is reverted in the same step.
@@ -187,11 +187,11 @@ There is no history, wire or SPI change. A `NOTIFY` lost while a node shuts down
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b fix/wake-listener-shutdown \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp10-wake-listener-shutdown origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp10-wake-listener-shutdown status && \
-git -C /Users/rakheendama/Projects/2026/maestro status
+git fetch origin && \
+git worktree add -b fix/wake-listener-shutdown \
+    .claude/worktrees/wp10-wake-listener-shutdown origin/main && \
+git -C .claude/worktrees/wp10-wake-listener-shutdown status && \
+git status
 ```
 
 Run every command from the worktree; all paths below are relative to it. Never `cd` into the main checkout.

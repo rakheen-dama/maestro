@@ -285,8 +285,8 @@ Sibling branches of any lane on the path, and the subtrees of forks *before* the
 - **"Never discard a signal."** No step of this plan deletes or flips a signal row (D-6).
 - **No log line or meter tag** carries a payload. The new INFO line carries the workflow id (as every retry line does today), the basis and two counts. The sequence list goes at DEBUG.
 - **Branch and worktree.**
-  - Branch `fix/admin-retry`, cut from `origin/main` at or after `525b287` (WP2 and WP7 merged; WP9's seeded fixture and WP1 are on `main`), in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/admin-retry`.
-  - Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`.
+  - Branch `fix/admin-retry`, cut from `origin/main` at or after `525b287` (WP2 and WP7 merged; WP9's seeded fixture and WP1 are on `main`), in `.claude/worktrees/admin-retry`.
+  - Before the first edit, run `git -C <worktree> status` and `git status`.
   - Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.**
@@ -399,10 +399,10 @@ Sibling branches of any lane on the path, and the subtrees of forks *before* the
 - [ ] **Step 1: Create the worktree.**
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='kafka-coexistence' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add .claude/worktrees/admin-retry -b fix/admin-retry origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/admin-retry status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='kafka-coexistence' && \
+git worktree add .claude/worktrees/admin-retry -b fix/admin-retry origin/main && \
+git -C .claude/worktrees/admin-retry status
 ```
 
   Expected: the log prints PR #55's merge, and the tree is clean on `fix/admin-retry`.

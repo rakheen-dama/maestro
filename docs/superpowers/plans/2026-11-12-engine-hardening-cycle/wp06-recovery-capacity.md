@@ -281,8 +281,8 @@ The only difference from today is pass-first. An unbounded queue under a bounded
 - **Exactly-once.** No path may release a reservation by calling `releaseWorkflowSlot(workflowId)` before the claim. That method is the run's own release, and before the claim it could free a concurrently launched run's slot (D-1).
 - **No log line or meter tag** carries a workflow id, a run id or a payload. The deferral line carries queue names and counts only.
 - **Branch and worktree.**
-  - Branch `fix/recovery-capacity`, cut from `origin/main` after WP5 has merged (Lane A order: WP4 → WP5 → WP6), in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp6-recovery-capacity`.
-  - Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`.
+  - Branch `fix/recovery-capacity`, cut from `origin/main` after WP5 has merged (Lane A order: WP4 → WP5 → WP6), in `.claude/worktrees/wp6-recovery-capacity`.
+  - Before the first edit, run `git -C <worktree> status` and `git status`.
   - Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.**
@@ -334,12 +334,12 @@ The only difference from today is pass-first. An unbounded queue under a bounded
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='loop-liveness\|WP4' && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='shutdown\|WP5\|Issue 29' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b fix/recovery-capacity \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp6-recovery-capacity origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp6-recovery-capacity status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='loop-liveness\|WP4' && \
+git log origin/main --oneline -1 --grep='shutdown\|WP5\|Issue 29' && \
+git worktree add -b fix/recovery-capacity \
+    .claude/worktrees/wp6-recovery-capacity origin/main && \
+git -C .claude/worktrees/wp6-recovery-capacity status
 ```
 
 Both logs must print a merge. If either prints nothing, stop: WP6 depends on WP4 (the loop guard around the pass) and WP5 (the governor's close and poison permit).

@@ -75,7 +75,7 @@ Traced only, not pinned: with `spring.kafka.retry.topic.enabled=true`, Boot's `R
 
 ## Global Constraints
 
-- Branch `fix/kafka-coexistence`, cut from `origin/main`, in the dedicated worktree `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp7-kafka-coexistence` (see "Before you start"). This plan file lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
+- Branch `fix/kafka-coexistence`, cut from `origin/main`, in the dedicated worktree `.claude/worktrees/wp7-kafka-coexistence` (see "Before you start"). This plan file lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - `./gradlew --no-watch-fs` always, from the worktree root. No two Gradle runs on one module in one tree. No `git stash`. Never run git commands that mutate the repository in parallel.
 - Commit at every checkpoint named below. Chain each git sequence with `&&`. Pass messages as `-m "$(cat <<'EOF' … EOF)"`. End each message with the attribution line the implementer's own session supplies. `git status` must show only the intended files before every commit.
 - Any run over about 5 minutes (`./gradlew --no-watch-fs build`, the whole of `:maestro-integration-tests:test`, `:maestro-integration-tests:e2eTest`, `run-e2e.sh`) is a **coordinator gate**. The coordinator launches it detached, with a log whose header records `pwd`, `git rev-parse HEAD` and a timestamp. The implementer runs only the targeted commands in the steps.
@@ -107,11 +107,11 @@ Traced only, not pinned: with `spring.kafka.retry.topic.enabled=true`, Boot's `R
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b fix/kafka-coexistence \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp7-kafka-coexistence origin/main
-WT=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp7-kafka-coexistence
-git -C "$WT" status && git -C /Users/rakheendama/Projects/2026/maestro status   # prove which tree you are in
+git fetch origin
+git worktree add -b fix/kafka-coexistence \
+    .claude/worktrees/wp7-kafka-coexistence origin/main
+WT=.claude/worktrees/wp7-kafka-coexistence
+git -C "$WT" status && git status   # prove which tree you are in
 ```
 
 Run every command from `$WT`; all paths below are relative to it. Never `cd` into the main checkout.

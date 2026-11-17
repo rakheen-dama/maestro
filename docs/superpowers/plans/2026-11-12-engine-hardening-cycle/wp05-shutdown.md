@@ -413,7 +413,7 @@ The benefit is that the new `CLAUDE.md` rule would hold everywhere at once. The 
 - **No interrupt is added anywhere.** The only interrupt removed is the renewer's.
 - **Lifecycle events** still go through `LifecycleEventSink`; the publisher's flush is the only change there.
 - **No log line or meter tag** carries a payload. Workflow ids appear only in D-7's deadline line, capped at 10.
-- **Branch and worktree.** Branch `fix/shutdown`, cut from `origin/main` after WP4 has merged (Lane A order: WP4 → WP5 → WP6), in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp5-shutdown`. Before the first edit, run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`. Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
+- **Branch and worktree.** Branch `fix/shutdown`, cut from `origin/main` after WP4 has merged (Lane A order: WP4 → WP5 → WP6), in `.claude/worktrees/wp5-shutdown`. Before the first edit, run `git -C <worktree> status` and `git status`. Never `cd` into the main checkout. This plan lives on `docs/engine-hardening-cycle`; read it from the main checkout's absolute path.
 - **Gradle.** Always `./gradlew --no-watch-fs`, from the worktree root. Never two Gradle runs on one module at once. No `git stash`. Never `pkill`, `killall` or `kill` by name or pattern; never stop a Gradle daemon. A 2 h soak and other agents share the machine.
 - **Commits.** Commit at every checkpoint named below. Chain git steps with `&&`. Pass messages as `-m "$(cat <<'EOF' … EOF)"`. Never run git-mutating commands in parallel. Every message ends with the attribution line your own session supplies.
 - **Long runs** (`build`, the whole `:maestro-integration-tests:test`, `e2eTest`, the soak) are coordinator gates, launched detached with a log whose header records `pwd`, `git rev-parse HEAD` and a timestamp. Implementers run only the targeted commands in the steps.
@@ -455,12 +455,12 @@ The benefit is that the new `CLAUDE.md` rule would hold everywhere at once. The 
 ## Before you start
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='admin-retry\|WP3' && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='loop-liveness\|WP4' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add -b fix/shutdown \
-    /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp5-shutdown origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp5-shutdown status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='admin-retry\|WP3' && \
+git log origin/main --oneline -1 --grep='loop-liveness\|WP4' && \
+git worktree add -b fix/shutdown \
+    .claude/worktrees/wp5-shutdown origin/main && \
+git -C .claude/worktrees/wp5-shutdown status
 ```
 
 Both logs must print a merge. If either prints nothing, stop: this plan is written against WP4's `BackgroundLoopGuard`, its loop names and its renewer accessors.

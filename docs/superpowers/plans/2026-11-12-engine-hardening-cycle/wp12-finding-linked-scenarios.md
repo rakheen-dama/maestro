@@ -422,14 +422,14 @@ New issue numbers, filed only if the runs confirm them:
 - **Only these paths:** `perf/**`, `maestro-samples/sample-perf/**`, `.github/workflows/perf.yml`, `docs/test-plan.md` and this plan's Review section. No `maestro-*` module changes, no meters, no `CLAUDE.md` changes. If a step seems to need one, stop and ask.
 - **Engine APIs:** `sample-perf` code references no engine API newer than `0c710a1e`. Task 2 proves it by compiling the overlay at `0c710a1e` and `bdcc074d`.
 - **Commits:** every harness commit is `test(perf): …`, CI is `ci(perf): …`, docs are `docs(…)`, evidence is `docs(perf): WP12 run evidence …`.
-- **Branch:** `test/finding-scenarios` from `origin/main`, in worktree `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/finding-scenarios` (`$WT`). Run `git -C /Users/rakheendama/Projects/2026/maestro status` before the first edit and after every commit; it must stay clean.
+- **Branch:** `test/finding-scenarios` from `origin/main`, in worktree `.claude/worktrees/finding-scenarios` (`$WT`). Run `git status` before the first edit and after every commit; it must stay clean.
 - **Process rules:** `./gradlew --no-watch-fs` always. No `git stash`. No two Gradle runs on one module in one tree. Commit at every checkpoint. Pass messages with `-m "$MSG"`.
 - **Machine:**
   - long runs under `nohup caffeinate -i -m -s …`;
   - one Docker suite at a time: the perf lock covers only perf runs, so before any `local`/`full` run, confirm with a read-only `docker ps` that no Testcontainers suite (`testcontainers-ryuk-*`) is live, and wait if one is;
   - never `pkill`/`killall`, never stop a Gradle daemon;
   - touch only `maestro-perf` project containers, by exact name (`maestro-perf-node-<i>`), never by pattern.
-- **Throwaway worktrees:** before-engine overlays live in `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp12-<fix>-<role>`, detached, never pushed. Each is removed with `git worktree remove` (its own call) once its `result.json` is copied.
+- **Throwaway worktrees:** before-engine overlays live in `.claude/worktrees/wp12-<fix>-<role>`, detached, never pushed. Each is removed with `git worktree remove` (its own call) once its `result.json` is copied.
 - **Evidence:** committed as run: `perf/.evidence/wp12/<runId>.result.json` (plus `.prometheus.json` where a self-test needs it). `perf/lib/evidence-selftest.sh` must pass: no path, no host name. Every result identifies itself:
   - `identity.repo.engineCommit` and `harnessCommit`;
   - `PERF_ENGINE_REF="<WPn> <before|after|preview>: engine <sha> (<what it is>); harness <H>"`, which must contain no path.
@@ -510,7 +510,7 @@ maestro-samples/sample-perf/src/test/…  PerfWorkflowsTest  StartRequestValidat
   - a window flagged `sweepWindow: true` is exempt from the janitor and retention upper bounds. The lock-cleaner rule stays.
 - **`evaluate.sh`**: renders `.measurements.phaseTable` (an array of flat objects) as a markdown table under "## Phases".
 
-- [ ] **Step 0: Create the worktree.** `git -C /Users/rakheendama/Projects/2026/maestro fetch origin && git -C /Users/rakheendama/Projects/2026/maestro worktree add -b test/finding-scenarios /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/finding-scenarios origin/main`. Both trees clean.
+- [ ] **Step 0: Create the worktree.** `git fetch origin && git worktree add -b test/finding-scenarios .claude/worktrees/finding-scenarios origin/main`. Both trees clean.
 
 - [ ] **Step 1: Write the failing self-test cases** in `perf/eval/selftest.sh`, doctoring the smoke source run:
   - `topology: planned restart, same commit` → PASS (append a topology start for `maestro-perf-node-1` with a new `jvmStartMillis`, and set `nodesAfter[0]` to it);
@@ -574,7 +574,7 @@ The `type` error becomes `type must be chain, park, hold or signals`.
 - [ ] **Step 2: Implement.** Same command. Expected: PASS. Then `./gradlew --no-watch-fs verifyModuleTestCoverage`. Expected: SUCCESS.
 
 - [ ] **Step 3: Older engines compile it (MD-1 feasibility).** For each `B` in `0c710a1e` and `bdcc074d`:
-  - `git -C /Users/rakheendama/Projects/2026/maestro worktree add --detach /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/wp12-compile-$B $B`;
+  - `git worktree add --detach .claude/worktrees/wp12-compile-$B $B`;
   - in it, `git checkout <this branch's HEAD> -- perf maestro-samples/sample-perf settings.gradle.kts`, then `./gradlew --no-watch-fs :maestro-samples:sample-perf:bootJar -PperfGitCommit=probe`;
   - expected: BUILD SUCCESSFUL, and `unzip -p …/sample-perf.jar META-INF/build-info.properties | grep -x 'build.gitCommit=probe'`;
   - remove the worktree (`git worktree remove --force` is acceptable here: it holds only build output and the uncommitted overlay).

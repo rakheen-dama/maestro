@@ -119,7 +119,7 @@ Each live activity costs one extra deserialization, plus a text render and parse
 - **Control-flow `Error`s** (`CLAUDE.md` "Exceptions"): no new `catch` may intercept a `MaestroControlFlowError`. Every new `catch` names `SerializationException` only. Anywhere an outcome is unwrapped, check `instanceof Error` before `Exception`.
 - **`StoreUnavailableException`** is a store fault, never a workflow failure. No new `catch` may record it, swallow it or turn it into a returned value. The read-back `try` contains no store call.
 - No log line or meter tag carries a payload value, a workflow id or a run id. Meter tags are only `workflow` and `activity`.
-- **Branch and worktree.** Branch `fix/replay-fidelity`, cut from `origin/main` **after PR #50 (WP0) has merged**, in the worktree `/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/replay-fidelity`. Before the first edit run `git -C <worktree> status` and `git -C /Users/rakheendama/Projects/2026/maestro status`. Never `cd` into the main checkout. This plan is read from the main checkout's absolute path. Task 8 needs WP9 on `main`, and the PR merges only after WP9 has.
+- **Branch and worktree.** Branch `fix/replay-fidelity`, cut from `origin/main` **after PR #50 (WP0) has merged**, in the worktree `.claude/worktrees/replay-fidelity`. Before the first edit run `git -C <worktree> status` and `git status`. Never `cd` into the main checkout. This plan is read from the main checkout's absolute path. Task 8 needs WP9 on `main`, and the PR merges only after WP9 has.
 - **Gradle.** Always `./gradlew --no-watch-fs`, run from the worktree root. Never two Gradle runs on one module at once. No `git stash`.
 - **Commits.** Commit at every checkpoint named below. Chain git steps with `&&`. Pass messages as `-m "$(cat <<'EOF' … EOF)"`. Never run git-mutating commands in parallel. Every message ends with `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
 - **Long runs.** Any run longer than ~5 minutes (`build`, the whole `:maestro-integration-tests:test`, `e2eTest`, the soak) is a **coordinator gate**. The coordinator launches it detached, with a log whose header records `pwd`, `git rev-parse HEAD` and a timestamp. Implementers do not start them.
@@ -185,10 +185,10 @@ A grep for changed `assert` lines is not used, because it misses the continuatio
 - [ ] **Step 1: Create the worktree.**
 
 ```bash
-git -C /Users/rakheendama/Projects/2026/maestro fetch origin && \
-git -C /Users/rakheendama/Projects/2026/maestro log origin/main --oneline -1 --grep='executor-builder\|#50' && \
-git -C /Users/rakheendama/Projects/2026/maestro worktree add .claude/worktrees/replay-fidelity -b fix/replay-fidelity origin/main && \
-git -C /Users/rakheendama/Projects/2026/maestro/.claude/worktrees/replay-fidelity status
+git fetch origin && \
+git log origin/main --oneline -1 --grep='executor-builder\|#50' && \
+git worktree add .claude/worktrees/replay-fidelity -b fix/replay-fidelity origin/main && \
+git -C .claude/worktrees/replay-fidelity status
 ```
 
 Expected: the log line shows the WP0 merge, and the worktree is clean on `fix/replay-fidelity`. If the log shows nothing, stop: WP0 has not merged.
@@ -605,7 +605,7 @@ Mutations, each reverted:
 - [ ] **Step 1: Bring WP9 in.**
 
 ```bash
-WT=/Users/rakheendama/Projects/2026/maestro/.claude/worktrees/replay-fidelity
+WT=.claude/worktrees/replay-fidelity
 git -C "$WT" fetch origin && git -C "$WT" status --short && \
 git -C "$WT" log origin/main --oneline -1 -- maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/SeededHistory.java && \
 git -C "$WT" rebase origin/main
