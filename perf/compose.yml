@@ -6,15 +6,21 @@
 # for humans; the harness reaches everything in-network through `curl`, `k6`
 # and `docker compose exec`.
 #
-# Every image tag is exact (never `latest`); run.sh records them, with their
-# digests, in each run's identity.json.
+# Every image is pinned: an exact version tag (never `latest`), or, for the two
+# images whose upstream tag floats (postgres:16-alpine moves with every 16.x
+# patch, eclipse-temurin:25-jre with every 25.x update), the tag plus the
+# digest of the multi-arch index that every committed run used
+# (perf/.evidence/wp11/*: identity.imageDigests, one digest per image across
+# all 37 runs; linux/amd64 and linux/arm64 both in the index). Moving one is a
+# deliberate edit here. run.sh records every image, with its digest, in each
+# run's identity.json.
 
 name: maestro-perf
 
 services:
 
   postgres:
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -93,7 +99,7 @@ services:
   # The system under test: N replicas (`--scale node=N`), named
   # maestro-perf-node-<i>, each running the jar run.sh just built and stamped.
   node:
-    image: eclipse-temurin:25-jre
+    image: eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699
     command: ["java", "-jar", "/app/app.jar"]
     volumes:
       - ../maestro-samples/sample-perf/build/libs/sample-perf.jar:/app/app.jar:ro
