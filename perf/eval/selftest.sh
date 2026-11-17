@@ -282,6 +282,81 @@ out=$(evaluate_with aux-dealloc '.auxWindows = [.window | .dealloc = 2]')
 expect "auxWindows: evicted entries in an auxiliary window: validity.pgssComplete" INVALID "$(jq -r '.checks["validity.pgssComplete"]' <<<"$out")"
 out=$(evaluate_with aux-unclassified '.auxWindows = [.window | del(.sweepCalls)]')
 expect "auxWindows: auxiliary window without sweepCalls: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+
+# Planned topology (WP12, perf/lib/topology.sh): node stops and starts a
+# scenario records in measurements.topology ({at, dbNow, action, container,
+# jvm}). A planned restart is judged against the JVM the log recorded; an
+# unplanned one stays INVALID. tp_* times are epoch seconds; the new JVM is
+# node 1's /perf/info with another pid, jvmStartMillis and reportedAtMillis.
+tp_node=$(jq -c '.nodes[0]' "${src}/identity.json")
+tp_container=$(jq -r '.nodes[0].container' "${src}/identity.json")
+tp_reset=$(jq '.window.resetAt[0:19] + "Z" | fromdate' "${src}/measurements.json")
+tp_snap=$(jq '.window.snapshotAt[0:19] + "Z" | fromdate' "${src}/measurements.json")
+tp_jvm() { # <start epoch s> <commit or ""> : the new JVM record
+  jq -c --argjson s "$1" --arg c "$2" '. + {pid: 4242, jvmStartMillis: ($s * 1000), reportedAtMillis: ($s * 1000 + 8000)}
+    | if $c == "" then . else .buildCommit = $c end' <<<"$tp_node"
+}
+tp_restart() { # <stop epoch s> <start epoch s> [<commit>]: measurements filter recording a stop and a start of node 1
+  local j
+  j=$(tp_jvm "$2" "${3:-}")
+  printf '.topology = [{at: %s, dbNow: null, action: "stop", container: "%s", jvm: null},
+                       {at: %s, dbNow: null, action: "start", container: "%s", jvm: %s}]' "$1" "$tp_container" "$2" "$tp_container" "$j"
+}
+tp_after() { # <start epoch s> [<commit>]: identity filter, nodesAfter[0] = that JVM
+  printf '.nodesAfter[0] = %s' "$(tp_jvm "$1" "${2:-}")"
+}
+out=$(evaluate_with tp-planned "$(tp_restart "$((tp_snap + 1))" "$((tp_snap + 2))")" "$(tp_after "$((tp_snap + 2))")")
+expect "topology: planned restart, same commit: verdict" PASS "$(jq -r .verdict <<<"$out")"
+expect "topology: planned restart, same commit: validity.noRestart" PASS "$(jq -r '.checks["validity.noRestart"]' <<<"$out")"
+out=$(evaluate_with tp-foreign "$(tp_restart "$((tp_snap + 1))" "$((tp_snap + 2))" deadbeef)" "$(tp_after "$((tp_snap + 2))" deadbeef)")
+expect "topology: planned restart, foreign commit: validity.identity" INVALID "$(jq -r '.checks["validity.identity"]' <<<"$out")"
+expect "topology: planned restart, foreign commit: verdict" INVALID "$(jq -r .verdict <<<"$out")"
+out=$(evaluate_with tp-unplanned '.' '.nodesAfter[0].jvmStartMillis += 5000')
+expect "topology: unplanned restart (no topology record): validity.noRestart" INVALID "$(jq -r '.checks["validity.noRestart"]' <<<"$out")"
+out=$(evaluate_with tp-not-last "$(tp_restart "$((tp_snap + 1))" "$((tp_snap + 2))")" "$(tp_after "$((tp_snap + 7))")")
+expect "topology: final JVM is not the last recorded: validity.noRestart" INVALID "$(jq -r '.checks["validity.noRestart"]' <<<"$out")"
+out=$(evaluate_with tp-stopped "$(tp_restart "$((tp_snap + 1))" "$((tp_snap + 2))") | .topology |= .[0:1]")
+expect "topology: last record a stop, yet a JVM answered after: validity.noRestart" INVALID "$(jq -r '.checks["validity.noRestart"]' <<<"$out")"
+# Sweeps around a planned start: the load window widened to 60 s, node 1
+# stopped 1 s and restarted 2 s after it opened. Each planned JVM start
+# inside a window allows its startup sweep: 1 signal-janitor call and 3
+# retention calls (one candidates select per terminal status).
+tp_in="$(tp_restart "$((tp_reset + 1))" "$((tp_reset + 2))") | .window.snapshotAt = (${tp_reset} + 60 | todate)"
+tp_in_after=$(tp_after "$((tp_reset + 2))")
+out=$(evaluate_with sw-one-retention '.window.sweepCalls.retention = 1')
+expect "sweeps: one retention call in a window with no planned start: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-planned-3-1 "${tp_in} | .window.sweepCalls.retention = 3 | .window.sweepCalls.signalJanitor = 1" "$tp_in_after")
+expect "sweeps: 3 retention + 1 janitor calls, one planned start in the window: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+expect "sweeps: 3 retention + 1 janitor calls, one planned start in the window: verdict" PASS "$(jq -r .verdict <<<"$out")"
+expect "sweeps: the planned start is counted in the window" 1 \
+  "$(check_field sw-planned-3-1 validity.sweeps '.value.windows[] | select(.name == "window") | .plannedStarts')"
+out=$(evaluate_with sw-planned-4 "${tp_in} | .window.sweepCalls.retention = 4" "$tp_in_after")
+expect "sweeps: 4 retention calls, one planned start: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-planned-janitor-2 "${tp_in} | .window.sweepCalls.signalJanitor = 2" "$tp_in_after")
+expect "sweeps: 2 janitor calls, one planned start: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-planned-elsewhere "$(tp_restart "$((tp_snap + 1))" "$((tp_snap + 2))") | .window.sweepCalls.retention = 3" "$(tp_after "$((tp_snap + 2))")")
+expect "sweeps: 3 retention calls, the planned start after the window: validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-sweep-window '.window.sweepWindow = true | .window.sweepCalls.retention = 600 | .window.sweepCalls.signalJanitor = 2')
+expect "sweeps: sweepWindow with 600 retention calls: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+out=$(evaluate_with sw-sweep-window-lc '.window.sweepWindow = true | .window.sweepCalls.lockCleaner = 2')
+expect "sweeps: sweepWindow keeps the lock-cleaner rule (2 calls, no pass due): validity.sweeps" INVALID "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# Lifetimes: node 1's first JVM stopped at +100 s and replaced at +120 s, so
+# its lock-cleaner pass at +600 s never happens, and the new JVM's first pass
+# is due at +720 s at the earliest: a window over [+500 s, report + 700 s]
+# predicts none (today's model, without the topology, requires one).
+out=$(evaluate_with sw-stopped-jvm "$(move_window 500 "$rep + 700" 0) | $(tp_restart "$(jq -n "$jvm + 100")" "$(jq -n "$jvm + 120")")" \
+  "$(tp_after "$(jq -n "$jvm + 120")")")
+expect "sweeps: lock-cleaner passes of a JVM stopped before the window are not predicted: validity.sweeps" PASS "$(jq -r '.checks["validity.sweeps"]' <<<"$out")"
+# summary.md renders measurements.phaseTable (WP12) under "## Phases":
+# columns in the order the keys first appear, a missing cell empty.
+evaluate_with phase-table '.phaseTable = [{phase: "A", drainSecs: 515}, {phase: "B", drainSecs: 290, note: "a|b"}]' >/dev/null
+expect "phaseTable: rendered under ## Phases, keys in first-seen order, pipes escaped" yes \
+  "$(grep -qxF '## Phases' "${work}/phase-table/summary.md" \
+     && grep -qxF '| phase | drainSecs | note |' "${work}/phase-table/summary.md" \
+     && grep -qxF '| A | 515 |  |' "${work}/phase-table/summary.md" \
+     && grep -qxF '| B | 290 | a\|b |' "${work}/phase-table/summary.md" && echo yes || echo no)"
+evaluate_with no-phase-table '.' >/dev/null
+expect "phaseTable: absent, no ## Phases section" no "$(grep -qxF '## Phases' "${work}/no-phase-table/summary.md" && echo yes || echo no)"
 # Shared contention helper: load per CPU of well-formed host_load records only.
 expect "load_per_cpu: malformed records skipped" '[0.5,2.5]' \
   "$(jq -nc -L "${PERF_DIR}/eval" 'include "common"; load_per_cpu([{load1: 5, hostCpus: 10}, null, {load1: "x", hostCpus: 2}, {load1: 5, hostCpus: 0}, {load1: 25, hostCpus: 10}])')"

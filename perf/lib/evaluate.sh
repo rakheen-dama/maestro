@@ -87,6 +87,17 @@ jq -r '
       "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|",
       (.[] | "| \(.P) | \(.timeToParkSecs | cell) | \(.windowSecs | cell) | \(.perParkedCallsPerMin | cell) | \(.perParkedCallsPer30s | cell) | \(.grossPerParkedPerMin | cell) | \(.recheckReadsPerParkedPerInterval | cell) | \(.renewalStatementsPerPass | cell) | \(.recoveryPagesPerPass | cell) | \(.heldKeysPerPass | cell) | \(.otherCalls | cell) | \(.heapUsedAvgMiB | cell) | \(.liveThreadsMax | cell) | \(.workflowSlotsMax | cell) | \(.probeP50Ms | cell) / \(.probeP95Ms | cell) |")
       else empty end),
+    # WP12: the per-phase table of a scenario (measurements.phaseTable, an array of
+    # flat objects); columns in the order the keys first appear.
+    (.measurements.phaseTable // null | if type == "array" and length > 0 then
+      (reduce (.[] | objects | keys_unsorted[]) as $k ([]; if index([$k]) == null then . + [$k] else . end)) as $cols
+      | "",
+        "## Phases",
+        "",
+        "| \($cols | join(" | ")) |",
+        "|\($cols | map("---") | join("|"))|",
+        (.[] | objects | . as $r | "| \($cols | map($r[.] | cell) | join(" | ")) |")
+      else empty end),
     "",
     "## Checks",
     "",

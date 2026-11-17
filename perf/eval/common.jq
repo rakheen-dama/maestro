@@ -416,42 +416,6 @@ def warmup_check($m):
           ] | reasons end)
     end;
 
-# validity.identity: every node runs the jar this run built and stamped, and
-# there are exactly --replicas distinct JVM hosts.
-def identity_check($id):
-  $id.build.expectedCommit as $exp
-  | ($id.nodes // []) as $nodes
-  | $id.config.replicas as $r
-  | ($nodes | map(.hostname) | unique | length) as $distinct
-  | ($nodes | map(.buildCommit)) as $commits
-  | ($exp != null and ($nodes | length) == $r and $distinct == $r and ($commits | all(. == $exp))) as $ok
-  | check("validity.identity"; "validity"; if $ok then "PASS" else "INVALID" end;
-      {buildCommits: $commits, nodes: ($nodes | length), distinctHostnames: $distinct,
-       hostnames: ($nodes | map(.hostname))};
-      {expectedCommit: $exp, replicas: $r};
-      if $ok then "every node runs the stamped jar on a distinct host"
-      else [
-        (if ($nodes | length) != $r then "\($nodes | length) node(s) answered, \($r) expected" else null end),
-        (if $distinct != ($nodes | length) then "hostnames are not distinct" else null end),
-        ($nodes[] | select(.buildCommit != $exp) | "\(.container) runs \(.buildCommit), expected \($exp)")
-      ] | reasons end);
-
-# validity.noRestart: the same JVMs answered before and after the scenario.
-def no_restart_check($id):
-  def jvms: map({hostname, jvmStartMillis, pid}) | sort_by(.hostname);
-  ($id.nodes // [] | jvms) as $before
-  | ($id.nodesAfter // null) as $after
-  | if $after == null then
-      check("validity.noRestart"; "validity"; "INVALID"; {before: $before, after: null}; "same JVMs";
-            "no post-run /perf/info was collected")
-    else
-      ($after | jvms) as $a
-      | (($before | length) > 0 and $before == $a) as $ok
-      | check("validity.noRestart"; "validity"; if $ok then "PASS" else "INVALID" end;
-              {before: $before, after: $a}; "same hostnames and jvmStartMillis";
-              if $ok then "no node restarted during the run" else "a node restarted or was replaced during the run" end)
-    end;
-
 # validity.adminEvents: requested == every node's bound value == (topic end offset > 0).
 def admin_events_check($id):
   $id.config.adminEventsRequested as $req
@@ -557,6 +521,105 @@ def duration_secs:
       end
   end;
 
+# ── Planned topology (WP12) ─────────────────────────────────────────────────
+# A scenario that stops and starts nodes on purpose (perf/lib/topology.sh)
+# records each event in measurements.topology, in the order they happened:
+#   {at: <host epoch s>, dbNow: <database now(), RFC 3339>, action: "stop" |
+#    "start", container: "maestro-perf-node-<i>", jvm: <the new JVM's
+#    /perf/info + container on a start; null on a stop>}
+# validity.identity holds every planned JVM to the stamped commit too;
+# validity.noRestart expects, per container, the LAST JVM the log recorded
+# (the initial one when it recorded none), so a planned restart passes and an
+# unplanned one, before or after it, does not; validity.sweeps gives every JVM
+# its own lifetime and allows each planned start's startup sweep. A run
+# without measurements.topology is judged by exactly the rules it was before.
+def topology_records($m):
+  ($m.topology // []) | if type == "array" then map(select(type == "object")) else [] end;
+# The time of a topology record: the database clock when it parses, else the
+# host epoch the harness wrote.
+def topology_secs: (.dbNow | ts_secs) // (.at | if type == "number" then . else null end);
+# Every JVM of the run, per container in log order: the initial ones
+# ($id.nodes) and each planned start's, each with its lifetime end (the
+# container's next stop in the log; null while it was still up at the end).
+def run_jvms($id; $m):
+  (topology_records($m) | to_entries) as $te
+  | ([($id.nodes // [])[] | {container, jvm: ., planned: false, from: -1}]
+     + [$te[] | select(.value.action == "start")
+        | {container: .value.container, jvm: .value.jvm, planned: true, from: .key}])
+  | map(. as $j
+        | ([$te[] | select(.key > $j.from and .value.container == $j.container and .value.action == "stop")]
+           | first) as $stop
+        | . + {end: (if $stop == null then null else ($stop.value | topology_secs) end)});
+
+# validity.identity: every node runs the jar this run built and stamped, and
+# there are exactly --replicas distinct JVM hosts. Every JVM a planned start
+# recorded must run the stamped jar too, on one of those containers.
+def identity_check($id; $m):
+  $id.build.expectedCommit as $exp
+  | ($id.nodes // []) as $nodes
+  | $id.config.replicas as $r
+  | ($nodes | map(.hostname) | unique | length) as $distinct
+  | ($nodes | map(.buildCommit)) as $commits
+  | ($nodes | map(.container)) as $containers
+  | ([run_jvms($id; $m)[] | select(.planned)]) as $planned
+  | ([$planned[] | select((.jvm | type) != "object" or .jvm.buildCommit != $exp
+                          or (.container as $c | $containers | index([$c]) | not))]) as $badPlanned
+  | ($exp != null and ($nodes | length) == $r and $distinct == $r and ($commits | all(. == $exp))
+     and ($badPlanned | length) == 0) as $ok
+  | check("validity.identity"; "validity"; if $ok then "PASS" else "INVALID" end;
+      {buildCommits: $commits, nodes: ($nodes | length), distinctHostnames: $distinct,
+       hostnames: ($nodes | map(.hostname))}
+      + (if ($planned | length) > 0
+         then {plannedJvms: ($planned | map({container, buildCommit: (.jvm | if type == "object" then .buildCommit else null end)}))}
+         else {} end);
+      {expectedCommit: $exp, replicas: $r};
+      if $ok then "every node runs the stamped jar on a distinct host"
+                  + (if ($planned | length) > 0 then "; so does the JVM of each of the \($planned | length) planned start(s)" else "" end)
+      else [
+        (if ($nodes | length) != $r then "\($nodes | length) node(s) answered, \($r) expected" else null end),
+        (if $distinct != ($nodes | length) then "hostnames are not distinct" else null end),
+        ($nodes[] | select(.buildCommit != $exp) | "\(.container) runs \(.buildCommit), expected \($exp)"),
+        ($badPlanned[]
+         | if (.jvm | type) != "object" then "a planned start of \(.container) recorded no JVM"
+           elif (.container as $c | $containers | index([$c]) | not) then "a planned start names \(.container), not one of this run's nodes"
+           else "the planned start of \(.container) runs \(.jvm.buildCommit), expected \($exp)" end)
+      ] | reasons end);
+
+# validity.noRestart: the same JVMs answered before and after the scenario;
+# with a planned topology, each container's final JVM is the last one the
+# log recorded for it, and a container whose last record is a stop must not
+# have answered at the end.
+def no_restart_check($id; $m):
+  def jvms: map({hostname, jvmStartMillis, pid}) | sort_by(.hostname);
+  topology_records($m) as $topo
+  | ($id.nodes // []) as $nodes
+  | ($nodes | jvms) as $before
+  | [$nodes[] | . as $n | ([$topo[] | select(.container == $n.container)] | last) as $l
+     | if $l == null then {container: $n.container, jvm: $n}
+       elif $l.action == "start" and ($l.jvm | type) == "object" then {container: $n.container, jvm: $l.jvm}
+       else {container: $n.container, jvm: null} end] as $expected
+  | ($expected | map(select(.jvm == null) | .container)) as $stopped
+  | ($expected | map(select(.jvm != null) | .jvm) | jvms) as $exp
+  | ($topo | length > 0) as $hasTopo
+  | (if $hasTopo then {expectedAfter: $exp} else {} end) as $planned
+  | ($id.nodesAfter // null) as $after
+  | if $after == null then
+      check("validity.noRestart"; "validity"; "INVALID"; {before: $before} + $planned + {after: null}; "same JVMs";
+            "no post-run /perf/info was collected")
+    else
+      ($after | jvms) as $a
+      | (($before | length) > 0 and ($stopped | length) == 0 and $exp == $a) as $ok
+      | check("validity.noRestart"; "validity"; if $ok then "PASS" else "INVALID" end;
+              {before: $before} + $planned + {after: $a};
+              if $hasTopo then "per container, the last JVM the topology log recorded" else "same hostnames and jvmStartMillis" end;
+              if $ok then
+                (if $hasTopo then "every node's final JVM is the last one the topology log recorded (\($topo | map(select(.action == "start")) | length) planned start(s)): no unplanned restart"
+                 else "no node restarted during the run" end)
+              elif ($stopped | length) > 0 then "the topology log's last record for \($stopped | join(", ")) is a stop, yet the run ended with it answering"
+              elif $hasTopo then "a node's final JVM is not the last one the topology log recorded: an unplanned restart or replacement"
+              else "a node restarted or was replaced during the run" end)
+    end;
+
 # ── Periodic sweeps (validity.sweeps) ───────────────────────────────────────
 # The background model (idle-window rate, one-tick tolerance) covers only the
 # pollers. The engine's periodic sweeps are accounted for EXPLICITLY, in every
@@ -605,44 +668,69 @@ def named_windows($m):
   + ($m.windows // [] | to_entries | map({name: "windows[\(.key)]", w: .value}))
   + ($m.auxWindows // [] | to_entries | map({name: "auxWindows[\(.key)]", w: .value}))
   | map(select(.w | type == "object"));
+# Every JVM of the run (run_jvms: the initial nodes and each planned start's
+# JVM) predicts passes only inside its own lifetime: from its start to the
+# container's next recorded stop (the window is clipped to [a, min(b, end)]).
+# A planned start whose start-up span [jvmStart, reportedAt + drift] meets a
+# window is counted in that window's plannedStarts, and each allows its
+# startup sweep there: planned_start_janitor_calls signal-janitor calls and
+# planned_start_retention_calls retention calls (an empty-backlog sweep: one
+# candidates select per terminal status). A window flagged sweepWindow: true
+# (a scenario that measures a sweep on purpose) is exempt from the
+# signal-janitor and retention bounds, observed and predicted; the
+# lock-cleaner rule holds in every window.
+def planned_start_janitor_calls: 1;
+def planned_start_retention_calls: 3;
 def sweeps_problems_and_value($id; $m):
-  ($id.nodes // [] | map({container, start: (.jvmStartMillis | if type == "number" then . / 1000 else null end),
-                           reported: (.reportedAtMillis | if type == "number" then . / 1000 else null end),
-                           lock: (.lockCleanupInterval | duration_secs),
-                           janitor: (.signalJanitorInterval | duration_secs),
-                           retentionEnabled: .retentionEnabled,
-                           retention: (.retentionInterval | duration_secs)})) as $nodes
+  (run_jvms($id; $m) | map(.jvm as $n | {container, planned, end,
+                           start: ($n | if type == "object" then .jvmStartMillis else null end | if type == "number" then . / 1000 else null end),
+                           reported: ($n | if type == "object" then .reportedAtMillis else null end | if type == "number" then . / 1000 else null end),
+                           lock: ($n | if type == "object" then .lockCleanupInterval else null end | duration_secs),
+                           janitor: ($n | if type == "object" then .signalJanitorInterval else null end | duration_secs),
+                           retentionEnabled: ($n | if type == "object" then .retentionEnabled else null end),
+                           retention: ($n | if type == "object" then .retentionInterval else null end | duration_secs)})) as $nodes
   | ($nodes | map(select((.start | isnum | not) or (.reported | isnum | not) or .reported < .start
                          or (.lock | isnum | not) or .lock <= 0 or (.janitor | isnum | not) or .janitor <= 0
                          or (.retentionEnabled | type) != "boolean"
-                         or (.retention | isnum | not) or .retention <= 0))) as $badNodes
+                         or (.retention | isnum | not) or .retention <= 0
+                         or (.end != null and (.end | isnum | not))))) as $badNodes
   | (named_windows($m) | map({name, a: (.w.resetAt | ts_secs), b: (.w.snapshotAt | ts_secs),
-                              sweeps: .w.sweepCalls})) as $ws
+                              sweeps: .w.sweepCalls, sweepWindow: (.w.sweepWindow == true)})) as $ws
   | ($ws | map(select(.a == null or .b == null or .b < .a))) as $unparsed
   | ($ws | map(select((.sweeps | type) != "object"
                       or ([.sweeps.lockCleaner, .sweeps.signalJanitor, .sweeps.retention] | all(isnum) | not)))) as $unclassified
   | (($nodes | length) > 0 and ($badNodes | length) == 0) as $nodesOk
   | (if $nodesOk then
        [$ws[] | select(.a != null and .b != null and .b >= .a) | . as $w
-        | ([$nodes[] | sweep_passes(.start; .reported; .lock; $w.a; $w.b)]) as $lp
-        | ([$nodes[] | sweep_passes(.start; .reported; .janitor; $w.a; $w.b).possible] | add) as $jp
-        | ([$nodes[] | select(.retentionEnabled) | sweep_passes(.start; .reported; .retention; $w.a; $w.b).possible] | add // 0) as $rp
+        # each JVM sees the window clipped to its lifetime
+        | ([$nodes[] | ([$w.b, (.end // $w.b)] | min) as $b
+            | if $b < $w.a then {lp: {certain: 0, possible: 0}, jp: 0, rp: 0}
+              else {lp: sweep_passes(.start; .reported; .lock; $w.a; $b),
+                    jp: sweep_passes(.start; .reported; .janitor; $w.a; $b).possible,
+                    rp: (if .retentionEnabled then sweep_passes(.start; .reported; .retention; $w.a; $b).possible else 0 end)}
+              end]) as $per
+        | ([$nodes[] | select(.planned and .start <= $w.b and .reported + sweep_drift_secs >= $w.a)] | length) as $ps
         | {name: $w.name,
            sinceEarliestNodeStartSecs: [($w.a - ($nodes | map(.start) | min) | round),
                                         ($w.b - ($nodes | map(.start) | min) | round)],
+           plannedStarts: $ps,
+           sweepWindow: $w.sweepWindow,
            lockCleaner: {observedCalls: ($w.sweeps.lockCleaner // null),
-                         predictedPasses: {certain: ($lp | map(.certain) | add), possible: ($lp | map(.possible) | add)}},
-           signalJanitor: {observedCalls: ($w.sweeps.signalJanitor // null), predictedPasses: $jp},
-           retention: {observedCalls: ($w.sweeps.retention // null), predictedPasses: $rp}}]
+                         predictedPasses: {certain: ($per | map(.lp.certain) | add), possible: ($per | map(.lp.possible) | add)}},
+           signalJanitor: {observedCalls: ($w.sweeps.signalJanitor // null), predictedPasses: ($per | map(.jp) | add),
+                           allowedForPlannedStarts: ($ps * planned_start_janitor_calls)},
+           retention: {observedCalls: ($w.sweeps.retention // null), predictedPasses: ($per | map(.rp) | add),
+                       allowedForPlannedStarts: ($ps * planned_start_retention_calls)}}]
      else [] end) as $per
   | {value: {windows: $per,
              nodes: ($nodes | map({container, lockCleanupSecs: .lock, signalJanitorSecs: .janitor,
                                    retentionEnabled, retentionSecs: .retention,
-                                   schedulerStartBoundSecs: (if (.start | isnum) and (.reported | isnum) then (.reported - .start | round2) else null end)}))},
+                                   schedulerStartBoundSecs: (if (.start | isnum) and (.reported | isnum) then (.reported - .start | round2) else null end)}
+                                  + (if .planned or .end != null then {planned, lifetimeEndSecs: (if .end != null and (.start | isnum) then (.end - .start | round2) else null end)} else {} end)))},
      problems: [
        (if ($nodes | length) == 0 then "no node recorded" else null end),
        (if ($badNodes | length) > 0
-        then "node(s) \($badNodes | map(.container) | join(", ")) do not report a usable jvmStartMillis / reportedAtMillis / lockCleanupInterval / signalJanitorInterval / retentionEnabled / retentionInterval in /perf/info: sweeps cannot be accounted for"
+        then "node(s) \($badNodes | map(.container) | join(", ")) do not report a usable jvmStartMillis / reportedAtMillis / lockCleanupInterval / signalJanitorInterval / retentionEnabled / retentionInterval in /perf/info (or a planned stop without a time): sweeps cannot be accounted for"
         else null end),
        (if ($ws | length) == 0 then "no measured window" else null end),
        (if ($unparsed | length) > 0
@@ -657,14 +745,17 @@ def sweeps_problems_and_value($id; $m):
                    or $p.lockCleaner.observedCalls > lock_cleaner_calls_per_pass * $p.lockCleaner.predictedPasses.possible)
            then "\($p.name): \($p.lockCleaner.observedCalls) lock-cleaner call(s) where the nodes' reported interval predicts \($p.lockCleaner.predictedPasses.certain)..\($p.lockCleaner.predictedPasses.possible) pass(es) of \(lock_cleaner_calls_per_pass) calls: the cleaner does not run as the nodes report"
            else null end),
-          (if ($p.signalJanitor.observedCalls | isnum) and $p.signalJanitor.observedCalls > 0
-           then "\($p.name): \($p.signalJanitor.observedCalls) signal-janitor call(s) inside the window (not modelled)" else null end),
-          (if $p.signalJanitor.predictedPasses > 0
-           then "\($p.name): a signal-janitor pass may fall inside the window (not modelled)" else null end),
-          (if ($p.retention.observedCalls | isnum) and $p.retention.observedCalls > 0
-           then "\($p.name): \($p.retention.observedCalls) retention-sweep call(s) inside the window (not modelled: its leader election is the timer poller's upsert)" else null end),
-          (if $p.retention.predictedPasses > 0
-           then "\($p.name): a retention-sweep pass may fall inside the window (not modelled)" else null end))
+          (if $p.sweepWindow then empty
+           else
+             (if ($p.signalJanitor.observedCalls | isnum) and $p.signalJanitor.observedCalls > $p.signalJanitor.allowedForPlannedStarts
+              then "\($p.name): \($p.signalJanitor.observedCalls) signal-janitor call(s) inside the window (not modelled\(if $p.plannedStarts > 0 then "; its \($p.plannedStarts) planned start(s) allow \($p.signalJanitor.allowedForPlannedStarts)" else "" end))" else null end),
+             (if $p.signalJanitor.predictedPasses > 0
+              then "\($p.name): a signal-janitor pass may fall inside the window (not modelled)" else null end),
+             (if ($p.retention.observedCalls | isnum) and $p.retention.observedCalls > $p.retention.allowedForPlannedStarts
+              then "\($p.name): \($p.retention.observedCalls) retention-sweep call(s) inside the window (not modelled: its leader election is the timer poller's upsert\(if $p.plannedStarts > 0 then "; its \($p.plannedStarts) planned start(s) allow \($p.retention.allowedForPlannedStarts)" else "" end))" else null end),
+             (if $p.retention.predictedPasses > 0
+              then "\($p.name): a retention-sweep pass may fall inside the window (not modelled)" else null end)
+           end))
      ] | map(select(. != null))};
 def sweeps_check($id; $m):
   (try sweeps_problems_and_value($id; $m)
@@ -702,7 +793,7 @@ def dirty_tree_check($id):
             else "the run did not record whether the tree was clean (\($d | tojson))" end));
 
 def common_checks($id; $m):
-  [identity_check($id), no_restart_check($id), admin_events_check($id),
+  [identity_check($id; $m), no_restart_check($id; $m), admin_events_check($id),
    pgss_complete_check($m), k6_check($m), dropped_iterations_check($m), warmup_check($m),
    dirty_tree_check($id), sweeps_check($id; $m)];
 

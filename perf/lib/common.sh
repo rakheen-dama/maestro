@@ -87,17 +87,22 @@ collect_nodes() {
 # Runs one k6 phase and records its exit code and key summary values in
 # k6-runs.jsonl. A non-zero exit never aborts the harness: 99 (advisory
 # thresholds crossed) is recorded as such, anything else makes validity.k6
-# INVALID.
+# INVALID. k6 sends to every replica (PERF_NODES = node_urls), or, when
+# K6_NODES is set and non-empty, to exactly those comma-separated base URLs
+# (WP12: a scenario whose other nodes are stopped). Each record names the
+# nodes it used (nodes).
 # k6_run <phase> <script> [KEY=VALUE env for the script…]
 k6_run() {
   local phase=$1 script=$2
   shift 2
-  local args=(-e "PERF_NODES=$(node_urls)" -e "PERF_PHASE=${phase}")
+  local targets="${K6_NODES:-}"
+  [[ -n "$targets" ]] || targets=$(node_urls)
+  local args=(-e "PERF_NODES=${targets}" -e "PERF_PHASE=${phase}")
   local kv
   for kv in "$@"; do
     args+=(-e "$kv")
   done
-  log "k6 ${phase}: ${script} $*"
+  log "k6 ${phase}: ${script} $* (nodes ${targets})"
   local rc=0
   local summary="${RESULTS}/k6-${phase}.json"
   rm -f "$summary"
@@ -111,9 +116,9 @@ k6_run() {
   # droppedIterations at all, and validity.k6 / validity.droppedIterations
   # are INVALID for it.
   if [[ -s "$summary" ]]; then
-    jq -c --arg phase "$phase" --arg script "$script" --argjson rc "$rc" '
+    jq -c --arg phase "$phase" --arg script "$script" --argjson rc "$rc" --arg nodes "$targets" '
       def v($m; $k): (.metrics[$m].values[$k] // null);
-      {phase: $phase, script: $script, exitCode: $rc, summaryMissing: false,
+      {phase: $phase, script: $script, exitCode: $rc, summaryMissing: false, nodes: ($nodes | split(",")),
        iterations: v("iterations"; "count"),
        droppedIterations: (v("dropped_iterations"; "count") // 0),
        httpReqs: v("http_reqs"; "count"),
@@ -128,8 +133,8 @@ k6_run() {
                  | if . then {p50: .med, p95: .["p(95)"], p99: .["p(99)"], max: .max} else null end)}' \
       "$summary" >>"${RESULTS}/k6-runs.jsonl"
   else
-    jq -nc --arg phase "$phase" --arg script "$script" --argjson rc "$rc" \
-      '{phase: $phase, script: $script, exitCode: $rc, summaryMissing: true}' >>"${RESULTS}/k6-runs.jsonl"
+    jq -nc --arg phase "$phase" --arg script "$script" --argjson rc "$rc" --arg nodes "$targets" \
+      '{phase: $phase, script: $script, exitCode: $rc, summaryMissing: true, nodes: ($nodes | split(","))}' >>"${RESULTS}/k6-runs.jsonl"
   fi
   return 0
 }

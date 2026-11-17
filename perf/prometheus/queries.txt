@@ -10,3 +10,9 @@ sum by (instance) (jvm_memory_used_bytes{area="heap"})
 process_cpu_usage
 # Wake permits held per node (3.2; an engine older than 525b287 has no series)
 maestro_wake_permits
+# WP12 (S2: adoptions per node and recovery deferrals; S5: Hikari timeouts;
+# S6: rows purged per kind). Absent on an engine without the meter.
+sum by (instance) (increase(maestro_recovery_adopted_total[1m]))
+maestro_recovery_deferred
+sum by (instance) (increase(hikaricp_connections_timeout_total[1m]))
+sum by (kind) (increase(maestro_retention_purged_total[1m]))
