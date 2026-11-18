@@ -44,9 +44,13 @@ jobs:
   # database, and runs parked by either are adopted and woken by the other. It
   # resolves the previous releases from this repository's GitHub Packages
   # registry, which asks for a token on every download, so it is a job of its
-  # own with `packages: read` and is not part of `./gradlew build`. On a pull
-  # request from a fork the token may not be granted the registry; the job
-  # then fails at dependency resolution, not in a test.
+  # own with `packages: read` and is not part of `./gradlew build`.
+  #
+  # A pull request from a fork, and a Dependabot run, may get a token that
+  # cannot read the registry. Rather than fail at dependency resolution, the
+  # job skips the test there and says so in a notice. It must not become a
+  # required check until that path has been seen working (RELEASING.md, "The
+  # rolling test against previous releases").
   rolling-upgrade:
     name: Rolling upgrade (previous release beside this build)
     runs-on: ubuntu-latest
@@ -56,30 +60,80 @@ jobs:
       packages: read
 
     steps:
+      - name: Decide whether this run can read GitHub Packages
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPOSITORY: ${{ github.repository }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          reason=""
+          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPO" != "$REPOSITORY" ]]; then
+            reason="a pull request from a fork"
+          elif [[ "$ACTOR" == "dependabot[bot]" ]]; then
+            reason="a Dependabot run"
+          fi
+          if [[ -n "$reason" ]]; then
+            echo "::notice title=Rolling upgrade skipped::${reason} may not read the GitHub Packages registry the previous releases come from; the rolling test did not run"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Checkout
+        if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@v7
 
       - name: Set up Java 25
+        if: steps.gate.outputs.run == 'true'
         uses: actions/setup-java@v6
         with:
           java-version: '25'
           distribution: 'temurin'
 
       - name: Set up Gradle
+        if: steps.gate.outputs.run == 'true'
         uses: gradle/actions/setup-gradle@v5
 
       - name: Run the two-build rolling test
+        if: steps.gate.outputs.run == 'true'
         env:
           # Read by rolling-node/build.gradle.kts with GITHUB_ACTOR, which
           # Actions sets; never echoed.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: ./gradlew :maestro-integration-tests:rollingUpgradeTest
 
-      # Uploaded unconditionally: each node's log and results.txt (what every
-      # scenario observed, including any stand-down) are the evidence.
+      # results.txt holds one line per scenario (PASSED, FAILED or ABORTED, and
+      # what it observed). A rollback stand-down passes the test, since the
+      # previous release may stand down rather than finish (docs/operations.md
+      # §10.3), so it is surfaced here as a warning on the run instead.
+      - name: Summarise the rolling-upgrade results
+        if: always() && steps.gate.outputs.run == 'true'
+        run: |
+          results=maestro-integration-tests/build/rolling-upgrade/results.txt
+          if [[ ! -f "$results" ]]; then
+            echo "::warning title=Rolling upgrade::no results.txt: the rolling test did not get as far as a scenario"
+            exit 0
+          fi
+          {
+            echo "### Rolling upgrade"
+            echo
+            echo '```'
+            cat "$results"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # % CR LF escaped as workflow commands require.
+          grep -F 'STOOD DOWN' "$results" | sed -e 's/%/%25/g' -e 's/\r/%0D/g' |
+            while IFS= read -r line; do
+              echo "::warning title=Rollback stand-down::${line}"
+            done || true
+
+      # Uploaded unconditionally: each node's log and results.txt are the
+      # evidence.
       - name: Upload rolling-upgrade logs
         uses: actions/upload-artifact@v7
-        if: always()
+        if: always() && steps.gate.outputs.run == 'true'
         with:
           name: rolling-upgrade-logs
           path: |

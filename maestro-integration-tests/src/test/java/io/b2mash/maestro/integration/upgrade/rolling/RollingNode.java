@@ -33,7 +33,8 @@ import java.util.stream.Collectors;
  * for assertions ({@link #events()}).
  *
  * <p>Stopping is by this node's own {@link Process} handle only, never by
- * name or pattern: {@link #stopGracefully()} sends SIGTERM (Spring's shutdown
+ * name or pattern (also from the JVM shutdown hook that kills every node a
+ * stopped test worker leaves behind): {@link #stopGracefully()} sends SIGTERM (Spring's shutdown
  * hook runs the engine's graceful shutdown, as a deploy does) and
  * {@link #kill()} SIGKILL (a crash: nothing runs, the instance lock expires).
  *
@@ -53,6 +54,19 @@ final class RollingNode implements AutoCloseable {
             var parts = line.split("\\|", -1);
             return new Event(parts[1], parts[2], parts[3], parts.length > 4 ? parts[4] : "");
         }
+    }
+
+    /**
+     * Every node process this JVM launched. A test worker stopped from outside
+     * (Ctrl-C, a cancelled Gradle run) never reaches {@code @AfterEach}; this
+     * JVM's shutdown hook kills them instead, through their own handles, so no
+     * node outlives the test.
+     */
+    private static final List<Process> LAUNCHED = new CopyOnWriteArrayList<>();
+
+    static {
+        Runtime.getRuntime().addShutdownHook(new Thread(
+                () -> LAUNCHED.forEach(Process::destroyForcibly), "rolling-node-reaper"));
     }
 
     private final String name;
@@ -96,6 +110,7 @@ final class RollingNode implements AutoCloseable {
         try {
             Files.createDirectories(logDir);
             process = new ProcessBuilder(command).redirectErrorStream(true).start();
+            LAUNCHED.add(process);
         } catch (IOException e) {
             throw new IllegalStateException("Cannot launch node " + name, e);
         }
@@ -186,9 +201,26 @@ final class RollingNode implements AutoCloseable {
         post("/start", Map.of("type", workflowType, "id", workflowId, "input", input));
     }
 
-    /** Signals a workflow through this node. */
+    /** Signals a workflow through this node, with no message id. */
     void signal(String workflowId, String signalName, String payload) {
         post("/signal", Map.of("id", workflowId, "name", signalName, "payload", payload));
+    }
+
+    /**
+     * Signals a workflow through this node with a client-supplied message id
+     * ({@code WorkflowHandle.signal(name, payload, messageId)}).
+     *
+     * @return {@code true} if the node stored the signal, {@code false} if it
+     *         suppressed it as a duplicate
+     */
+    boolean signal(String workflowId, String signalName, String payload, String messageId) {
+        var body = post("/signal", Map.of("id", workflowId, "name", signalName, "payload", payload,
+                "messageId", messageId));
+        return switch (body) {
+            case "persisted=true" -> true;
+            case "persisted=false" -> false;
+            default -> throw new IllegalStateException("Node " + name + " answered " + body);
+        };
     }
 
     /**
@@ -246,7 +278,7 @@ final class RollingNode implements AutoCloseable {
         }
     }
 
-    private void post(String path, Map<String, String> params) {
+    private String post(String path, Map<String, String> params) {
         var query = params.entrySet().stream()
                 .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "="
                         + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
@@ -268,5 +300,6 @@ final class RollingNode implements AutoCloseable {
             throw new IllegalStateException("Node " + name + " refused " + path + "?" + query + ": "
                     + response.body());
         }
+        return response.body();
     }
 }

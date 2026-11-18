@@ -26,15 +26,18 @@ import java.util.Map;
  * The test's handle on this node: a JDK {@link HttpServer} on the loopback
  * interface, started once the application is ready (after the engine's
  * recovery and timer pollers have started). Every request is a {@code POST}
- * with URL-encoded query parameters and answers {@code 200 ok} or
- * {@code 500 <exception>}.
+ * with URL-encoded query parameters and answers {@code 200 ok} (or the body
+ * named below) or {@code 500 <exception>}.
  *
  * <ul>
  *   <li>{@code /start?type=<workflow type>&id=<workflowId>&input=<string>} —
  *       {@code MaestroClient.newWorkflow(...).startAsync(input)} on this node.</li>
  *   <li>{@code /signal?id=<workflowId>&name=<signal>&payload=<string>} —
  *       {@code MaestroClient.getWorkflow(id).signal(name, payload)} through this
- *       node.</li>
+ *       node. With {@code &messageId=<id>} it calls
+ *       {@code signal(name, payload, messageId)} instead and answers
+ *       {@code persisted=true} or {@code persisted=false} (a suppressed
+ *       duplicate).</li>
  * </ul>
  *
  * <p>The JDK server keeps the node free of a web stack, so its classpath is the
@@ -74,7 +77,7 @@ public class NodeControlServer {
     @EventListener(ApplicationReadyEvent.class)
     public void start() throws IOException {
         server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
-        server.createContext("/start", exchange -> handle(exchange, this::startWorkflow));
+        server.createContext("/start", exchange -> handle(exchange, this::startWorkflowOk));
         server.createContext("/signal", exchange -> handle(exchange, this::signal));
         server.start();
         // Where the engine and the starter were loaded from: the test checks
@@ -107,21 +110,31 @@ public class NodeControlServer {
         }
     }
 
-    private void signal(Map<String, String> params) {
-        client.getWorkflow(require(params, "id")).signal(require(params, "name"), require(params, "payload"));
+    private String startWorkflowOk(Map<String, String> params) {
+        startWorkflow(params);
+        return "ok";
+    }
+
+    private String signal(Map<String, String> params) {
+        var handle = client.getWorkflow(require(params, "id"));
+        var messageId = params.get("messageId");
+        if (messageId == null) {
+            handle.signal(require(params, "name"), require(params, "payload"));
+            return "ok";
+        }
+        return "persisted=" + handle.signal(require(params, "name"), require(params, "payload"), messageId);
     }
 
     private interface Action {
-        void run(Map<String, String> params);
+        String run(Map<String, String> params);
     }
 
     private static void handle(HttpExchange exchange, Action action) throws IOException {
         int status;
         String body;
         try {
-            action.run(query(exchange));
+            body = action.run(query(exchange));
             status = 200;
-            body = "ok";
         } catch (RuntimeException e) {
             status = 500;
             body = e.toString();

@@ -42,6 +42,9 @@ final class RollingDatabase {
     /** A live activity execution, as {@code JdbcRollingActivities} recorded it. */
     record SideEffect(String activity, String phase, String node) {}
 
+    /** One stored signal row. */
+    record Signal(String name, boolean consumed, String messageId) {}
+
     /** One persisted event. */
     record Event(int sequence, String type, String step, String payload) {}
 
@@ -141,6 +144,27 @@ final class RollingDatabase {
                 }
             }
         } catch (SQLException e) {
+            throw new IllegalStateException(e);
+        }
+        return rows;
+    }
+
+    /** @return every signal row stored for the workflow, oldest first */
+    List<Signal> signals(String workflowId) {
+        var rows = new ArrayList<Signal>();
+        try (var conn = connect();
+             var ps = conn.prepareStatement("SELECT signal_name, consumed, message_id FROM maestro_workflow_signal "
+                     + "WHERE workflow_id = ? ORDER BY received_at, id")) {
+            ps.setString(1, workflowId);
+            try (var rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(new Signal(rs.getString(1), rs.getBoolean(2), rs.getString(3)));
+                }
+            }
+        } catch (SQLException e) {
+            if ("42P01".equals(e.getSQLState())) {
+                return rows;
+            }
             throw new IllegalStateException(e);
         }
         return rows;
