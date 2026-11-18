@@ -2353,7 +2353,9 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start background loop '" + spec.name() + "'");
         }
-        // Registered unstarted first: a loop name claims its entry once.
+        // A name claims its entry once, and the loop is in the map from the
+        // moment its thread starts (the start runs no executor code). An
+        // ended loop keeps its entry: a name is supervised once per executor.
         var holder = new LoopSupervisor[1];
         var claimed = supervised.computeIfAbsent(spec.name(), name -> {
             holder[0] = LoopSupervisor.start(spec, body, observer);
