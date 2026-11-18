@@ -48,9 +48,10 @@ jobs:
   #
   # A pull request from a fork, and a Dependabot run, may get a token that
   # cannot read the registry. Rather than fail at dependency resolution, the
-  # job skips the test there and says so in a notice. It must not become a
-  # required check until that path has been seen working (RELEASING.md, "The
-  # rolling test against previous releases").
+  # job skips the test there and says so in a notice; the skipped job reports
+  # success, which says nothing about rolling upgrades. Before making it a
+  # required check, see RELEASING.md, "The rolling test against previous
+  # releases".
   rolling-upgrade:
     name: Rolling upgrade (previous release beside this build)
     runs-on: ubuntu-latest

@@ -17,6 +17,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
@@ -44,6 +47,8 @@ import java.util.stream.Collectors;
 final class RollingNode implements AutoCloseable {
 
     private static final String READY = "ROLLING-NODE READY ";
+    private static final String SYNC = "ROLLING-SYNC ";
+    private static final Duration SETTLE_TIMEOUT = Duration.ofSeconds(15);
     private static final String MAIN_CLASS = "io.b2mash.maestro.rollingnode.RollingNodeApplication";
     private static final Duration READY_TIMEOUT = Duration.ofSeconds(120);
     private static final Duration STOP_TIMEOUT = Duration.ofSeconds(60);
@@ -74,6 +79,8 @@ final class RollingNode implements AutoCloseable {
     private final Path log;
     private final List<Event> events = new CopyOnWriteArrayList<>();
     private final CompletableFuture<Integer> port = new CompletableFuture<>();
+    private final Set<String> syncTokens = ConcurrentHashMap.newKeySet();
+    private Thread reader;
     private volatile String engine;
     private volatile String starter;
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
@@ -126,7 +133,7 @@ final class RollingNode implements AutoCloseable {
     }
 
     private void startReader() {
-        var reader = new Thread(() -> {
+        reader = new Thread(() -> {
             try (var in = new BufferedReader(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
                  var out = new PrintWriter(Files.newBufferedWriter(log, StandardCharsets.UTF_8), true)) {
                 String line;
@@ -134,6 +141,8 @@ final class RollingNode implements AutoCloseable {
                     out.println(line);
                     if (line.startsWith("ROLLING-EVENT|")) {
                         events.add(Event.parse(line));
+                    } else if (line.startsWith(SYNC)) {
+                        syncTokens.add(line.substring(SYNC.length()).strip());
                     } else if (line.startsWith(READY)) {
                         var fields = new java.util.HashMap<String, String>();
                         for (var field : line.substring("ROLLING-NODE READY ".length()).split(" ")) {
@@ -189,11 +198,83 @@ final class RollingNode implements AutoCloseable {
     }
 
     /**
+     * The callbacks read so far. The node prints them on its own threads and
+     * this JVM reads them on another, so a callback can arrive after a state
+     * the test waited for in the database. Use this only while polling; assert
+     * a callback's presence with {@link #awaitEvent} and its absence on
+     * {@link #settledEvents}.
+     *
      * @param workflowId a workflow
-     * @return the callbacks the node reported for it
+     * @return the callbacks the node reported for it, as read so far
      */
     List<Event> events(String workflowId) {
         return events.stream().filter(e -> e.workflowId().equals(workflowId)).toList();
+    }
+
+    /**
+     * Waits until the node has reported {@code callback} for the workflow.
+     *
+     * @return the first such callback
+     * @throws AssertionError if it does not arrive within the settle timeout
+     */
+    Event awaitEvent(String workflowId, String callback) {
+        var deadline = System.nanoTime() + SETTLE_TIMEOUT.toNanos();
+        while (true) {
+            var found = events(workflowId).stream().filter(e -> e.callback().equals(callback)).findFirst();
+            if (found.isPresent()) {
+                return found.get();
+            }
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("Node " + name + " did not report " + callback + " for " + workflowId
+                        + " within " + SETTLE_TIMEOUT + "; it reported " + events(workflowId) + "; see " + log);
+            }
+            pause();
+        }
+    }
+
+    /**
+     * Every callback the node printed before this call, for asserting that one
+     * did <em>not</em> happen. For a node that has exited, the reader is joined
+     * at end of stream, so the list is complete. For a live node, a
+     * {@code /sync} token is printed through the same stream the observer
+     * prints on and awaited, so every callback printed before it has been
+     * read.
+     *
+     * @param workflowId a workflow
+     * @return the callbacks the node reported for it
+     */
+    List<Event> settledEvents(String workflowId) {
+        if (process.isAlive()) {
+            var token = UUID.randomUUID().toString();
+            post("/sync", Map.of("token", token));
+            var deadline = System.nanoTime() + SETTLE_TIMEOUT.toNanos();
+            while (!syncTokens.contains(token)) {
+                if (System.nanoTime() > deadline) {
+                    throw new AssertionError("Node " + name + " did not echo sync token within " + SETTLE_TIMEOUT);
+                }
+                pause();
+            }
+        } else {
+            try {
+                reader.join(SETTLE_TIMEOUT.toMillis());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new AssertionError("Interrupted draining node " + name, e);
+            }
+            if (reader.isAlive()) {
+                throw new AssertionError("Node " + name + "'s output was not drained within " + SETTLE_TIMEOUT);
+            }
+        }
+        return events(workflowId);
+    }
+
+    private static void pause() {
+        try {
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new AssertionError("interrupted", e);
+        }
     }
 
     /** Starts a workflow on this node. */

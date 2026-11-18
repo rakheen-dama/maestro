@@ -295,10 +295,15 @@ class RollingUpgradeIT {
         awaitStatus(wf, "WAITING_SIGNAL", PARK_TIMEOUT, owner, other);
         var epoch = db.leaseEpoch(wf);
 
+        // The wake limit counts from the moment the signal is sent, so a slow
+        // /signal request cannot stretch it to the 30 s recheck.
         var sent = System.nanoTime();
         other.signal(wf, "go", "across");
-        awaitStatus(wf, "COMPLETED", WAKE_TIMEOUT, owner, other);
+        var left = WAKE_TIMEOUT.minusNanos(System.nanoTime() - sent);
+        assertThat(left).as("time left of the wake limit after /signal returned").isPositive();
+        awaitStatus(wf, "COMPLETED", left, owner, other);
         var wakeMillis = Duration.ofNanos(System.nanoTime() - sent).toMillis();
+        assertThat(wakeMillis).as("signal sent to run completed, ms").isLessThanOrEqualTo(WAKE_TIMEOUT.toMillis());
 
         assertCompletedCleanly(wf, "\"signalled:across\"", List.of(
                 Expected.on("before", "done", List.of(owner)),
@@ -521,7 +526,7 @@ class RollingUpgradeIT {
         assertThat(left).as("history the stand-down left\n" + diagnostics(wf))
                 .noneMatch(e -> e.type().equals("WORKFLOW_FAILED") || e.type().equals("COMPENSATION_STEP_FAILED")
                         || (!compensates && e.type().startsWith("COMPENSATION_")));
-        assertThat(stoodDown.events(wf)).as("callbacks on the node that stood down")
+        assertThat(stoodDown.settledEvents(wf)).as("callbacks on the node that stood down")
                 .noneMatch(e -> e.callback().equals("workflowFailed")
                         || e.callback().equals("activityResultUnreadable"));
 
@@ -582,8 +587,9 @@ class RollingUpgradeIT {
                 .contains("ship refused for " + wf);
         assertThat(eventTypes(wf)).as(diagnostics).doesNotContain("COMPENSATION_STEP_FAILED", "UNKNOWN");
         assertSideEffects(wf, sideEffects, diagnostics);
-        assertThat(finisher.events(wf)).as("the node that recorded the failure reported it")
-                .anyMatch(e -> e.callback().equals("workflowFailed"));
+        // The callback follows the terminal write on the node's own thread and
+        // reaches this JVM through its output, so it may trail the FAILED row.
+        finisher.awaitEvent(wf, "workflowFailed");
     }
 
     private void assertSideEffects(String wf, List<Expected> expected, String diagnostics) {
@@ -613,7 +619,7 @@ class RollingUpgradeIT {
      */
     private void assertNoAlarms(String wf, boolean failureExpected, RollingNode... nodesToCheck) {
         for (var node : nodesToCheck) {
-            assertThat(node.events(wf)).as("callbacks on " + node.name() + "\n" + diagnostics(wf))
+            assertThat(node.settledEvents(wf)).as("callbacks on " + node.name() + "\n" + diagnostics(wf))
                     .noneMatch(e -> e.callback().equals("standDown"))
                     .noneMatch(e -> e.callback().equals("activityResultUnreadable"))
                     .noneMatch(e -> e.callback().equals("runAbandoned") && !e.reason().equals("SHUTDOWN"))

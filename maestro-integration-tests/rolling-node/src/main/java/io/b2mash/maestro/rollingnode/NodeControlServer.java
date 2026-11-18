@@ -23,8 +23,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * The test's handle on this node: a JDK {@link HttpServer} on the loopback
- * interface, started once the application is ready (after the engine's
+ * The test's handle on this node: a JDK {@link HttpServer} on 127.0.0.1, started once the application is ready (after the engine's
  * recovery and timer pollers have started). Every request is a {@code POST}
  * with URL-encoded query parameters and answers {@code 200 ok} (or the body
  * named below) or {@code 500 <exception>}.
@@ -38,6 +37,8 @@ import java.util.Map;
  *       {@code signal(name, payload, messageId)} instead and answers
  *       {@code persisted=true} or {@code persisted=false} (a suppressed
  *       duplicate).</li>
+ *   <li>{@code /sync?token=<string>} — prints {@code ROLLING-SYNC <token>} on
+ *       standard output, behind every observer line printed before it.</li>
  * </ul>
  *
  * <p>The JDK server keeps the node free of a web stack, so its classpath is the
@@ -76,8 +77,12 @@ public class NodeControlServer {
      */
     @EventListener(ApplicationReadyEvent.class)
     public void start() throws IOException {
-        server = HttpServer.create(new InetSocketAddress(InetAddress.getLoopbackAddress(), port), 0);
+        // 127.0.0.1 explicitly, the address the test connects to:
+        // getLoopbackAddress() is ::1 under java.net.preferIPv6Addresses=true.
+        var loopback = InetAddress.getByAddress(new byte[] {127, 0, 0, 1});
+        server = HttpServer.create(new InetSocketAddress(loopback, port), 0);
         server.createContext("/start", exchange -> handle(exchange, this::startWorkflowOk));
+        server.createContext("/sync", exchange -> handle(exchange, NodeControlServer::sync));
         server.createContext("/signal", exchange -> handle(exchange, this::signal));
         server.start();
         // Where the engine and the starter were loaded from: the test checks
@@ -112,6 +117,16 @@ public class NodeControlServer {
 
     private String startWorkflowOk(Map<String, String> params) {
         startWorkflow(params);
+        return "ok";
+    }
+
+    /**
+     * Prints {@code ROLLING-SYNC <token>} on the stream the observer prints on:
+     * once the test has read it, it has read every callback printed before.
+     */
+    private static String sync(Map<String, String> params) {
+        System.out.println("ROLLING-SYNC " + require(params, "token"));
+        System.out.flush();
         return "ok";
     }
 
