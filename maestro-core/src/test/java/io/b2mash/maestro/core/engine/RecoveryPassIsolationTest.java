@@ -286,7 +286,11 @@ class RecoveryPassIsolationTest {
 
         assertAll(
                 () -> assertEquals(List.of(1, 0, 0), adopted, "a-1 on the first pass, nothing after"),
-                () -> assertEquals(List.of("a-1"), lock.acquiredKeys.stream().map(RecoveryPassIsolationTest::idOf).toList(),
+                // Every attempt is on a-1 and there is at least one. Not "exactly one": a-1's run can
+                // finish between two passes, and a later pass that still reads its row as active takes
+                // the lock, re-reads it terminal and adopts nothing (the list above pins that).
+                () -> assertEquals(Set.of("a-1"),
+                        lock.acquiredKeys.stream().map(RecoveryPassIsolationTest::idOf).collect(Collectors.toSet()),
                         "b-1 never costs even a lock attempt"),
                 () -> assertEquals(WorkflowStatus.RUNNING, store.getInstance("b-1").orElseThrow().status(),
                         "b-1 is left exactly as svc-b's own nodes will find it"));
