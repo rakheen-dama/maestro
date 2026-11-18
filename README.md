@@ -62,7 +62,7 @@ dependencies {
 }
 ```
 
-Replace `<version>` with the Maestro release you are adopting (`gradle.properties` on `main` holds the snapshot under development). Nothing is published to Maven Central yet; build and `publishToMavenLocal` from source.
+Replace `<version>` with the Maestro release you are adopting (`gradle.properties` on `main` holds the snapshot under development). Nothing is published to Maven Central yet. Pre-releases are published to this repository's GitHub Packages registry, which needs a repository entry and a token ([RELEASING.md](RELEASING.md#pre-releases-on-github-packages)); or build and `publishToMavenLocal` from source.
 
 > `maestro-store-postgres` provides the workflow store, the distributed lock and the cross-node signal wake (Postgres `LISTEN/NOTIFY`) from one dependency; there is no separate lock module. See [Configuration](docs/configuration.md) for details.
 

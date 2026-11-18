@@ -2,7 +2,8 @@ name: Javadoc
 
 on:
   push:
-    tags: ['v*.*.*']
+    # Final releases only: a pre-release tag (v0.3.0-rc.1) does not replace the published Javadoc.
+    tags: ['v*.*.*', '!v*.*.*-*']
 
 permissions:
   contents: read

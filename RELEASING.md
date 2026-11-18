@@ -165,6 +165,66 @@ So a fixture cannot be edited or regenerated without changing one of these four 
 
 ---
 
+## Pre-releases on GitHub Packages
+
+Until Maven Central is set up, and for pilot builds after that, a pre-release goes to this repository's GitHub Packages Maven registry. It needs none of the prerequisites above: no namespace, no publishing token, no GPG key.
+
+### Publishing one
+
+1. Choose a version with a hyphen suffix: `0.3.0-rc.1`. The suffix is what routes the tag: `v0.3.0-rc.1` runs `publish-github-packages.yml`; a tag without one (`v0.3.0`) runs `release.yml` (Maven Central) and `javadoc.yml`.
+2. Tag the commit on `main` and push the tag:
+
+   ```bash
+   git tag v0.3.0-rc.1
+   git push origin v0.3.0-rc.1
+   ```
+
+3. The workflow builds and tests at that version, publishes the BOM and every module listed under [Published Modules](#published-modules), and creates a GitHub pre-release.
+
+A published version cannot be overwritten. To replace a bad pre-release, publish the next suffix (`-rc.2`); delete the bad version under the repository's **Packages** if nobody should resolve it. The artifacts are not signed.
+
+### Consuming one
+
+GitHub Packages asks for a token on every Maven download, from a public repository too. Each developer and each CI job needs a GitHub token with the `read:packages` scope (a workflow in another repository of the same owner can use its own `GITHUB_TOKEN` once the package grants that repository access).
+
+Gradle (`settings.gradle.kts` or the build's `repositories` block):
+
+```kotlin
+repositories {
+    mavenCentral()
+    maven {
+        name = "maestro"
+        url = uri("https://maven.pkg.github.com/rakheen-dama/maestro")
+        credentials {
+            username = providers.gradleProperty("gpr.user").orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
+            password = providers.gradleProperty("gpr.token").orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
+        }
+        content { includeGroup("io.b2mash.maestro") }
+    }
+}
+```
+
+Put `gpr.user` and `gpr.token` in `~/.gradle/gradle.properties`, never in the project. Maven users add the same URL as a `<repository>` and the token as a `<server>` with the matching id in `~/.m2/settings.xml`.
+
+Then depend on the BOM at the pre-release version, as in the [README](README.md#1-add-dependencies):
+
+```kotlin
+implementation(platform("io.b2mash.maestro:maestro-bom:0.3.0-rc.1"))
+```
+
+### Publishing by hand
+
+From a checkout of the tag, with a token that has `write:packages`:
+
+```bash
+./gradlew build -Pversion=0.3.0-rc.1
+./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=0.3.0-rc.1 -PgprUser=<login> -PgprToken=<token>
+```
+
+`-PgprRepository=<owner>/<repo>` publishes to another repository's registry (a fork).
+
+---
+
 ## Published Modules
 
 The following modules are published to Maven Central:

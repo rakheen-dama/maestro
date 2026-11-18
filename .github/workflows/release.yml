@@ -2,7 +2,9 @@ name: Release to Maven Central
 
 on:
   push:
-    tags: ['v*.*.*']
+    # Final releases only. A pre-release tag (v0.3.0-rc.1) carries a hyphen
+    # and is published by publish-github-packages.yml instead.
+    tags: ['v*.*.*', '!v*.*.*-*']
 
 concurrency:
   group: release
