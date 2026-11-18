@@ -1,3 +1,77 @@
+# Milestone: Pilot readiness (planned 2026-11-18) — AWAITING APPROVAL
+
+Goal: `main` is fit to run in one real service. That means four things: it shuts down completely, its health tells the truth, it supports only what we intend to support, and a run parked by one build provably resumes on the next.
+
+Starting point: `0.3.0-rc.1` is published to GitHub Packages (PR #69, tag at `d715e9ef`). Decisions already taken by the maintainer (2026-11-18): services never share Maestro tables; a `DistributedLock` is mandatory; a rolling upgrade is not expected to carry a backlog of failed or recovering runs, but parked runs spanning a deploy are core and must be proven.
+
+## Working rules for this milestone (changed from the last cycle)
+
+- [ ] **Support matrix first.** P3 writes it. A review finding outside the matrix is closed with a reason, not filed.
+- [ ] **Issue budget.** A package may not merge leaving more new open issues than it closes, unless the maintainer agrees to the exception.
+- [ ] **Severity at filing:** `blocks-pilot`, `blocks-1.0` or `limitation`.
+- [ ] **Fix the class, not the instance.** A weakness found in one loop or one shutdown path is fixed in all of them, or by the structure.
+- [ ] **One reviewer per package** with a narrow brief, plus one whole-branch review. No multi-reviewer audits.
+- [ ] **Design before code for P1 and P2:** a short design note the maintainer approves.
+- [ ] **Scope questions go to the maintainer before the work,** not as a flagged ruling after it.
+- [ ] Unchanged: failing test first; uncached full build on the final head; review comments read after the review check finishes; 2 h soak for packages that touch shutdown, recovery or locks.
+
+## Packages
+
+### P3 — Scope cuts and support matrix (first: it shrinks the others)
+
+- [ ] `docs/support-matrix.md`: supported and not supported (shared tables, lock-less nodes, store implementations other than Postgres, engine-version skew beyond the previous release, pools, Postgres versions).
+- [ ] **Mandatory lock:** startup fails without a `DistributedLock`; the unlocked code paths and their tests go (closes Issue 74; the "acquire failed, proceeded unlocked" window is re-examined and either removed or documented).
+- [ ] **No shared tables:** the startup check for another service's active rows fails startup instead of warning (escape hatch property for a rename in progress); closes Issues 78, 79; Issue 77 becomes a runbook note.
+- [ ] Triage every open issue against the matrix: close what is out of scope, label the rest by severity. Target: the open list is ranked and visibly shorter.
+- Decision needed: **is the `WorkflowStore` SPI internal until 1.0?** (Recommended: yes. Closes Issue 62 and removes "a third-party store may not override this" from future designs. The in-memory test store stays.)
+- Decision needed: **ShedLock** for the leader-elected jobs. (Recommended: no. It fits the timer and retention leaders but not the renewed, fenced instance lock, so it adds a dependency without removing our lock code.)
+
+### P1 — One lifecycle owner (shutdown completeness)
+
+Problem: runs, loops, Kafka containers and the pool are stopped by separate hand-written code; nothing knows everything that is still running. Issues 80, 70, 69, and the rest of 64.
+
+- [ ] Design note: one registry every run, loop and listener container joins before it starts and leaves after it has released what it holds; shutdown closes the registry (nothing new can join), then stops and joins everything in it against the one `ShutdownDeadline`.
+- [ ] A launch that loses the race with shutdown is refused at the registry, not asked to stop afterwards (Issue 80).
+- [ ] Maestro's Kafka containers become lifecycle-managed and stop before the drain ends (Issue 69).
+- [ ] A run still executing at the deadline cannot record a failure caused by teardown: its outcome writes are fenced once shutdown has given up on it (Issue 70).
+- [ ] The four core pollers and the lock cleaner stop by latch and bounded join, not interrupt (rest of Issue 64); the health probe's interrupt (Issue 66) is decided in the design note.
+- [ ] Gate: uncached build, chaos PR-gate ×3, 2 h soak.
+
+### P2 — One loop supervisor (health that tells the truth)
+
+Problem: seven background loops report health and errors seven ways; two sit outside the guard. Issues 67, 68, 65, 81, 86.
+
+- [ ] Design note: every loop runs under one supervisor that owns its thread, its failure streak, its last-success time and its stop; health and meters read the supervisor, not each loop.
+- [ ] Health is `DOWN` (or a documented degraded status) for a loop failing every pass, and for a renewer that failed to start while locks are held (Issues 67, 68).
+- [ ] The lock cleaner and wake listener are supervised, in health, and counted (Issue 65).
+- [ ] An observer `Error` cannot end an engine pass (Issue 81).
+- [ ] A store fault that retries absorb is counted and logged at `WARN` once per episode (Issue 86).
+- [ ] Decide with the maintainer: what the root health endpoint should do on an exhausted pool (Issue 75).
+- [ ] Gate: uncached build, load scenario S5 (pool exhaustion) still passes, chaos PR-gate ×3.
+
+### P4 — Upgrade safety (a parked run survives a deploy)
+
+Problem: only `cbf5a2a` → today is tested; nothing since has a fixture; old and new nodes together are untested (Issue 41); changed workflow code is thinly covered.
+
+- [ ] **Two-build rolling test** (first): `0.3.0-rc.1`, resolved from GitHub Packages, runs as a separate process beside the current build on one database. Runs parked on either are woken on the other. An old node must continue correctly or stand down, never fail the run (Issue 41; Issue 88's Retry window is pinned or documented).
+- [ ] **Multi-fixture harness:** parameterise `SeededHistory`; capture a second seeded-history fixture at `v0.3.0-rc.1`; `cbf5a2a` tests pass unchanged.
+- [ ] **Workflow-code change tests:** runs parked under old workflow code resume under edited code, for each change the versioning playbook calls safe; each unsafe change stands down as documented.
+- [ ] **Release gate:** `RELEASING.md` and the release workflows require a fixture and a green rolling test against the previous release.
+- [ ] **Consumer smoke test:** a standalone project resolves the BOM from GitHub Packages and runs one workflow.
+- [ ] **API compatibility check** against the last release's jars, reported on each PR.
+- [ ] **Experimental releases:** naming rule `X.Y.Z-exp.<topic>.<n>`, published from a branch tag, required for any PR that changes events, payloads or migrations; deleted when the branch closes; never run against a database that matters.
+- [ ] **Written compatibility promise** in `docs/operations.md`: build N resumes anything parked by N-1; rolling N-1 → N is supported; what rollback guarantees.
+
+## Order and exit
+
+Order: P3, then P1 and P2 in parallel (different files: shutdown paths against loop supervision; P2 follows P1 where they meet in the pollers), P4 alongside from the start (tests and build only, until its findings need engine changes).
+
+Exit: all four merged; nightly E2E, chaos ×3 and a 2 h soak green on the final `main`; `0.3.0-rc.2` published; the open-issue list holds no `blocks-pilot` item.
+
+Not in this milestone: Maven Central, the engine-version stamp design (after the pilot), quiet-host load figures (needs a quiet host), the remaining Kafka coexistence and Retry-planner issues unless triage marks one `blocks-pilot`.
+
+---
+
 # Milestone: Engine-hardening cycle (planned 2026-11-12)
 
 Spec, evidence and plans: `docs/superpowers/plans/2026-11-12-engine-hardening-cycle/`.
