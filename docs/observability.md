@@ -60,28 +60,43 @@ the recovering node's adoption.
 
 Both adapters wrap each emission: a `RuntimeException` thrown by the registry
 or the tracer is caught and logged **once per meter name / callback name**,
-never propagated into the engine. `Error`s — the engine's control-flow signals
-(`MaestroControlFlowError`) — deliberately propagate, because swallowing one
-would convert a stand-down or a terminate into a workflow failure. One
-callback is wider: `CompositeEngineObserver.backgroundLoopError` fires while a
-loop is already containing an `Error`, so it contains every `Throwable` from a
-delegate except a control-flow `Error`, logging `WARN` with the stack trace
-once per delegate and loop until that delegate succeeds again
+never propagated into the engine.
+
+Around every observer, `CompositeEngineObserver` contains what a delegate
+throws, per callback and per delegate (Issue 81): every `Throwable` — a
+`RuntimeException`, a `LinkageError` from an adapter built against another
+library version, an `AssertionError` — is contained, the delegates after it
+still run, and the engine path that made the call carries on, **except** a
+`MaestroControlFlowError` (the engine's control-flow signals, which observers
+must never throw: swallowing one would convert a stand-down or a terminate into
+a workflow failure) and a `VirtualMachineError` (the JVM's distress, which
+propagates as if the engine had hit it). The first containment for a
+(callback, delegate) pair is logged at `WARN` with the stack trace; repeats at
+`DEBUG` until a call of that callback to that delegate succeeds again. Every
+containment is counted on **`maestro.observer.errors`**. One callback is wider:
+`backgroundLoopError` fires while a loop is already containing an `Error`, so
+it contains a `VirtualMachineError` too, and keeps its quiet period per loop
 (`CompositeEngineObserverLoopErrorTest`).
 
 Observers are composed through `CompositeEngineObserver.of(...)`, which always
-wraps even a single observer, so containment is structural at every emission
-site.
+wraps even a single observer, and every engine type that takes an observer
+(the executor, the instance-lock manager, the saga, signal and operation
+managers, the activity proxy, the loops) applies `CompositeEngineObserver.contain`
+to it, so containment holds at every emission site for every observer,
+including one wired by hand (`ObserverErrorIsolationTest`,
+`CompositeEngineObserverTest`).
 
 ---
 
 ## Meter catalog
 
-Twenty-five meters: **18 counters and 2 timers**, registered by
+Twenty-seven meters: **19 counters and 2 timers**, registered by
 `MicrometerEngineObserver`, plus **5 gauges** — four registered by
 `MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
-bounded task queue and kind) by `MaestroTaskQueueGauges` — all in the
-`io.b2mash.maestro.spring.observe` package of `maestro-spring-boot-starter`.
+bounded task queue and kind) by `MaestroTaskQueueGauges` — and **one function
+counter**, `maestro.observer.errors`, registered by `MaestroEngineGauges` — all
+in the `io.b2mash.maestro.spring.observe` package of
+`maestro-spring-boot-starter`.
 
 **Cardinality rule:** no meter is ever tagged with `workflowId`, `runId`, or a
 timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
@@ -115,7 +130,9 @@ type is known (the instance exists).
 | `maestro.retention.sweeps` | *(none)* | — | A retention sweep finished on this node as the elected leader (non-leaders never increment it) |
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
-| `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
+| `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
+| `maestro.store.retries` | `operation` | `append_event`, `append_event_returning_payload`, `get_event_by_sequence` | The store guard retried a run's store call in place after the store reported itself unavailable (`StoreUnavailableException`; Issue 86). A retry that absorbed the fault leaves no other trace: alert on a sustained rate — a database that drops connections often but briefly. The first retry after 60 s without one logs one `WARN` (`Store unavailable on <op> — retrying in place (attempt 1/3): <diagnosis>; …`), the rest of that episode `DEBUG`. Advisory reads and background-loop store calls are never retried, so never counted. A fault that outlasts the retries is the `STORE_UNAVAILABLE` stand-down (`maestro.run.abandoned{reason="store_unavailable"}`) |
+| `maestro.observer.errors` | *(none)* | — | An observer callback threw and was contained (Issue 81) — a function counter over `WorkflowExecutor.observerErrorCount()`, counted by the executor rather than through an observer, since the observer that failed may be the Micrometer one. The `WARN` log names the callback and the delegate class. Any increase is an observer bug |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
 | `maestro.run.abandoned` | `reason` | `shutdown`, `terminated`, `converged`, `terminal_write_failed`, `node_error`, `store_unavailable` | A local run ended on the workflow's own thread without this node recording a terminal outcome (`runAbandoned`) — see [below](#which-callbacks-the-meter-adapter-implements) |
 
@@ -127,12 +144,15 @@ recovery poller's capacity passes — run as task-queue capacity frees while a
 recovery backlog drains — count too, but only those that read rows, so during
 a drain `scanned` grows by the rows each capacity pass reads.
 
-`maestro.loop.errors` counts the five engine loops only. The two
+`maestro.loop.errors` counts the six engine loops only. The one-shot startup
+recovery (a node with `maestro.recovery.enabled=false`) counts as
+`startup-recovery`; before pilot readiness P2 it counted as
+`recovery-poller`. The two
 `maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)
 and the wake listener (`maestro-pg-wake-listener`) — contain an `Error` the
 same way and log it at `ERROR`, but they reach no `EngineObserver`, so they
 are logged and **not counted** ([Issue 65](open-issues.md#issue-65)). Unlike
-the other counters here, its five series are registered at zero when
+the other counters here, its six series are registered at zero when
 `MicrometerEngineObserver` is created, so a rate query sees the first `Error`
 rather than a series that appears already at 1. Alert on
 `increase(maestro_loop_errors_total[15m]) > 0`: it fires on a new `Error` and
@@ -281,7 +301,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 19 of the 28 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 20 of the 29 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,
