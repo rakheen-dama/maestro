@@ -331,8 +331,11 @@ public final class PostgresDistributedLock implements DistributedLock {
                 return isLeader;
             }
         } catch (SQLException e) {
-            logger.warn("Leader election failed for '{}': {}", electionKey, e.getMessage());
-            return false;
+            // A failed election is "unknown", not "another node leads": it
+            // propagates, so the calling loop counts it in its failure streak
+            // and logs it at its own cadence (pilot readiness P2).
+            throw new LockBackendException(
+                    "Leader election failed for '" + electionKey + "'", electionKey, e);
         }
     }
 

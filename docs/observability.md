@@ -84,7 +84,11 @@ wraps even a single observer, and every engine type that takes an observer
 managers, the activity proxy, the loops) applies `CompositeEngineObserver.contain`
 to it, so containment holds at every emission site for every observer,
 including one wired by hand (`ObserverErrorIsolationTest`,
-`CompositeEngineObserverTest`).
+`CompositeEngineObserverTest`). The starter's activity proxies take the
+executor's own contained observer (`WorkflowExecutor.observer()`), so
+containments from the activity callbacks count on `maestro.observer.errors`
+too (`ActivityPathObservabilityTest`); a proxy built by hand with another
+observer is contained by its own composite, which that counter does not read.
 
 ---
 
@@ -131,7 +135,7 @@ type is known (the instance exists).
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
 | `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
-| `maestro.store.retries` | `operation` | `append_event`, `append_event_returning_payload`, `get_event_by_sequence` | The store guard retried a run's store call in place after the store reported itself unavailable (`StoreUnavailableException`; Issue 86). A retry that absorbed the fault leaves no other trace: alert on a sustained rate — a database that drops connections often but briefly. The first retry after 60 s without one logs one `WARN` (`Store unavailable on <op> — retrying in place (attempt 1/3): <diagnosis>; …`), the rest of that episode `DEBUG`. Advisory reads and background-loop store calls are never retried, so never counted. A fault that outlasts the retries is the `STORE_UNAVAILABLE` stand-down (`maestro.run.abandoned{reason="store_unavailable"}`) |
+| `maestro.store.retries` | `operation` | `append_event`, `append_event_returning_payload`, `get_event_by_sequence` | The store guard retried a run's store call in place after the store reported itself unavailable (`StoreUnavailableException`; Issue 86). Activity memo reads and outcome appends count here too: the starter's activity proxies use the executor's guarded store (`WorkflowExecutor.guardedStore()`), so one node has one episode. A retry that absorbed the fault leaves no other trace: alert on a sustained rate — a database that drops connections often but briefly. The first retry after 60 s without one logs one `WARN` (`Store unavailable on <op> — retrying in place (attempt 1/3): <diagnosis>; …`), the rest of that episode `DEBUG`. Advisory reads and background-loop store calls are never retried, so never counted. A fault that outlasts the retries is the `STORE_UNAVAILABLE` stand-down (`maestro.run.abandoned{reason="store_unavailable"}`) |
 | `maestro.observer.errors` | *(none)* | — | An observer callback threw and was contained (Issue 81) — a function counter over `WorkflowExecutor.observerErrorCount()`, counted by the executor rather than through an observer, since the observer that failed may be the Micrometer one. The `WARN` log names the callback and the delegate class. Any increase is an observer bug |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
 | `maestro.run.abandoned` | `reason` | `shutdown`, `terminated`, `converged`, `terminal_write_failed`, `node_error`, `store_unavailable` | A local run ended on the workflow's own thread without this node recording a terminal outcome (`runAbandoned`) — see [below](#which-callbacks-the-meter-adapter-implements) |
