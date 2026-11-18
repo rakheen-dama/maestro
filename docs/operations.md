@@ -114,7 +114,13 @@ startup pass runs on its own thread (`maestro-startup-recovery-<service>`),
 ungated — it adopts every orphan it can lock, and the runs beyond a queue's
 bound wait for their slots holding their locks, as every pass did before
 this release. Nothing adopts orphans after it, so a node that dies later
-strands its workflows until a node restarts (traced, not tested). A pass that fails (a store
+strands its workflows until a node restarts (traced, not tested). Since pilot
+readiness P3 the poller also runs *deferred starts* (a start whose instance
+lock could not be taken), so without it such a start is **refused** with
+`LockAcquisitionException`, persisting nothing (`MandatoryInstanceLockTest`),
+and a resume this pass skips because the lock backend failed waits until a
+node starts with recovery (its `INFO` line says so; a resume skipped because
+the lock is held elsewhere is that holder's to run). A pass that fails (a store
 outage) is logged — one `ERROR`, then an `ERROR` reminder every 5 minutes —
 and retried every `maestro.recovery.poll-interval`, **with no limit**, until
 one pass completes (`OneShotRecoveryTest`). A store fault there is not

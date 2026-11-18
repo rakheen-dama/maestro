@@ -23,7 +23,7 @@ resolved; issues 40–79 were filed along the way (no Issue 71 was filed; 75
 and 76 are held for the load-test package), and 80 onward by its
 housekeeping package.
 **Updated:** 2026-11-18, pilot-readiness P3 — every open issue triaged against
-`docs/support-matrix.md`: six closed (31, 62, 74, 77, 78, 79), the rest
+`docs/support-matrix.md`: five closed (31, 62, 74, 78, 79), the rest
 labelled `blocks-pilot`, `blocks-1.0` or `limitation`; see the ranked index
 below.
 
@@ -35,10 +35,10 @@ Every open issue carries one label, set against `docs/support-matrix.md`:
 - **`blocks-1.0`** — must be fixed or decided before the 1.0 API and behaviour freeze.
 - **`limitation`** — known and documented; acceptable for the pilot.
 
-Within a label the list is ranked, most important first. Six issues were closed by this
-triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [77](#issue-77) (runbook note), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Nothing below was deleted or renumbered; each section keeps its text and anchor.
+Within a label the list is ranked, most important first. Five issues were closed by this
+triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Nothing below was deleted or renumbered; each section keeps its text and anchor.
 
-**`blocks-pilot`** (13)
+**`blocks-pilot`** (12)
 
 1. [41](#issue-41) — An older node replaying history appended by a newer node is untested
 2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
@@ -51,8 +51,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 9. [68](#issue-68) — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass
 10. [65](#issue-65) — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors`
 11. [81](#issue-81) — An `Error` from an observer callback escapes the engine's guard
-12. [86](#issue-86) — A store fault the guard retries away is logged at `DEBUG` only and counted nowhere
-13. [75](#issue-75) — On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN`
+12. [75](#issue-75) — On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN`
 
 **`blocks-1.0`** (10)
 
@@ -67,29 +66,31 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 9. [52](#issue-52) — `maestro-admin-client` has no wired component
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
 
-**`limitation`** (21)
+**`limitation`** (23)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
 3. [28](#issue-28) — ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth
 4. [73](#issue-73) — No health or readiness detail says the startup recovery pass is still running
-5. [63](#issue-63) — The dashboard reports "Retry command sent" for a Retry the engine refused
-6. [59](#issue-59) — Retry refuses when the failure's handling consumed a signal
-7. [61](#issue-61) — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry
-8. [60](#issue-60) — Two independently failed `parallel()` branches need two Retries
-9. [51](#issue-51) — Timer deadlines are armed on the scheduling node's clock
-10. [40](#issue-40) — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration
-11. [46](#issue-46) — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay
-12. [47](#issue-47) — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws
-13. [72](#issue-72) — The test kit is unbounded by default and its `recover()` is ungated
-14. [82](#issue-82) — Two `parallel()` branches awaiting the same signal name at once collide on one park key
-15. [84](#issue-84) — The wake listener turns autocommit on for its pooled connection and never restores it
-16. [53](#issue-53) — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails`
-17. [54](#issue-54) — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists
-18. [55](#issue-55) — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis
-19. [56](#issue-56) — An unqualified `byte[]` template point that several templates match is never failed at startup
-20. [57](#issue-57) — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once
-21. [58](#issue-58) — The `byte[]` template check runs before Maestro's consumers only by bean-registration order
+5. [86](#issue-86) — A store fault the guard retries away is logged at `DEBUG` only and counted nowhere
+6. [63](#issue-63) — The dashboard reports "Retry command sent" for a Retry the engine refused
+7. [77](#issue-77) — Terminal workflows recorded under a `service_name` no node runs are never purged
+8. [59](#issue-59) — Retry refuses when the failure's handling consumed a signal
+9. [61](#issue-61) — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry
+10. [60](#issue-60) — Two independently failed `parallel()` branches need two Retries
+11. [51](#issue-51) — Timer deadlines are armed on the scheduling node's clock
+12. [40](#issue-40) — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration
+13. [46](#issue-46) — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay
+14. [47](#issue-47) — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws
+15. [72](#issue-72) — The test kit is unbounded by default and its `recover()` is ungated
+16. [82](#issue-82) — Two `parallel()` branches awaiting the same signal name at once collide on one park key
+17. [84](#issue-84) — The wake listener turns autocommit on for its pooled connection and never restores it
+18. [53](#issue-53) — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails`
+19. [54](#issue-54) — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists
+20. [55](#issue-55) — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis
+21. [56](#issue-56) — An unqualified `byte[]` template point that several templates match is never failed at startup
+22. [57](#issue-57) — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once
+23. [58](#issue-58) — The `byte[]` template check runs before Maestro's consumers only by bean-registration order
 
 ---
 
@@ -491,7 +492,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | **Closed** (P3: fixed) |
 | [75](#issue-75) | On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN` | Docs gap — health and probes | Low–Medium | `blocks-pilot` — Open |
 | [76](#issue-76) | Retention purged other services' rows with this service's cutoffs | Library bug — store hygiene | Medium | **Resolved** |
-| [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | **Closed** (P3: runbook note) |
+| [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | `limitation` — Open (reopened after the P3 review) |
 | [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | **Closed** (P3: out of scope) |
 | [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | **Closed** (P3: fixed) |
 | [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | `blocks-pilot` — Open |
@@ -500,7 +501,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | `blocks-1.0` — Open |
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | `limitation` — Open |
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | `blocks-1.0` — Open |
-| [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | `blocks-pilot` — Open |
+| [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | `limitation` — Open |
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
 
@@ -4958,7 +4959,7 @@ renewal failure.
 
 ### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
 
-> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Loop supervision, P2.
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Loop supervision, P2. Kept `blocks-pilot` after the P3 review: a dead wake listener leaves an operator blind to a real fault — every cross-node signal then waits the 30 s recheck — though the lock-cleaner half alone would be a `limitation`.
 
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
 > `fix/loop-liveness`). Recorded, not fixed.
@@ -5499,7 +5500,7 @@ The same before run also deleted all 10,000 unconsumed signals of
 
 ### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
 
-> **Closed (pilot-readiness P3, 2026-11-18): runbook note.** With services no longer sharing tables, rows under a name no node runs come only from a rename or a misconfigured node. They are not a code fix: `docs/operations.md` §11.5 now says how to finish a rename (drain or move the active rows, purge the old name's terminal history with the documented statement, then drop `maestro.store.foreign-service-check=warn`).
+> **Label (pilot-readiness P3 triage, 2026-11-18, reopened after review): `limitation`.** A service rename is supported (`docs/support-matrix.md`), and during one the old name's terminal history is still purged by no sweeper, while the startup check does not see terminal-only rows. Workaround: `docs/operations.md` §11.5, "Finishing a rename". (First closed in this triage as a runbook note; the P3 review reopened it: a runbook is a workaround, not a fix.)
 
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
 > `fix/store-hygiene`): the consequence of the maintainer's decision that a
@@ -5899,7 +5900,7 @@ git's stderr when parsing its output.
 
 ### Issue 86 — A store fault the guard retries away is logged at `DEBUG` only and counted nowhere {#issue-86}
 
-> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Invisible store faults, P2.
+> **Label (pilot-readiness P3 triage, 2026-11-18, revised after review): `limitation`.** A fault the guard retried away was absorbed, so no run was harmed; the fault that is not absorbed is visible (`STORE_UNAVAILABLE` stand-down and abandon, `docs/operations.md` §10.9). An operator is not blind to a real fault, only to its near misses. P2 still plans the counter.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the
 > host-safety cycle's handover (§4.2, "not filed yet").

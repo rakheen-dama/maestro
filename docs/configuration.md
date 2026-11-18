@@ -45,7 +45,7 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 |----------------------------|----------|-------------|----------------------------------------------------------------------------------------------------------|
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
 | `maestro.store.schema.mode`| `String` | `"flyway"`  | `flyway` applies pending Maestro migrations; `validate` fails startup if any are pending; `none` skips — you own the DDL. Case-insensitive. See [Schema management](#schema-management). |
-| `maestro.store.foreign-service-check` | `fail` \| `warn` \| `off` | `fail` | What startup does when Maestro's tables hold active workflow instances under another `maestro.service-name`, of any workflow type: `fail` stops startup with `ForeignServiceRowsException` (services never share Maestro tables); `warn` logs one `WARN` per other name and starts — for a service rename in progress only; `off` reads nothing. The read is bounded to 5 seconds; a read that fails or times out is inconclusive (one `WARN`) and never fails startup. See [Isolating services](#store-configuration) below and `docs/operations.md` §11.5. |
+| `maestro.store.foreign-service-check` | `fail` \| `warn` \| `off` | `fail` | What startup does when Maestro's tables hold active workflow instances under another `maestro.service-name`, of any workflow type: `fail` stops startup with `ForeignServiceRowsException` (services never share Maestro tables); `warn` logs one `WARN` per other name and starts — for a service rename in progress only; `off` reads nothing. The read is bounded to 5 seconds; a read that fails or times out is inconclusive (one `WARN`) and never fails startup. The check runs at context refresh, after every singleton exists: a workflow that host code starts earlier — from a `@PostConstruct` or an earlier `SmartInitializingSingleton` calling `MaestroClient` — is written before the check runs. Recovery cannot run earlier (it starts in an `ApplicationRunner`). See [Isolating services](#store-configuration) below and `docs/operations.md` §11.5. |
 
 **Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table — it is not supported ([support matrix](support-matrix.md)), and since pilot readiness P3 startup fails when the tables hold another service's active instances (`maestro.store.foreign-service-check` above) — so give each service its own database, or its own Postgres schema with its datasource pointed at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup. To give the engine a connection pool of its own rather than the application's, see [A dedicated connection pool](#a-dedicated-connection-pool).
 
@@ -490,9 +490,14 @@ nothing extra to deploy.
 **The lock is mandatory** (pilot readiness P3). There is no lock-less mode:
 startup fails without a `DistributedLock` bean (the message names
 `maestro-store-postgres`, which provides one), and a run whose instance-lock
-acquire fails does not start unlocked — a fresh start is persisted and the
-recovery poller adopts it once the lock can be taken; a resume is skipped until
-a later pass. Tests use `maestro-test`'s `InMemoryDistributedLock`.
+acquire fails does not start unlocked. A fresh start is persisted, reported
+(`maestro.workflow.start.deferred`) and run by the recovery poller, which is
+prompted at once and runs it about a second later if the lock can be taken by
+then, otherwise at its next full pass; when this node runs no recovery poller
+(`maestro.recovery.enabled=false`, or before startup recovery has begun) the
+start is refused instead with `LockAcquisitionException` and nothing is
+persisted. A resume is skipped until a later pass. Tests use `maestro-test`'s
+`InMemoryDistributedLock`.
 
 | Property                        | Type       | Default          | Description                                                                                  |
 |---------------------------------|------------|------------------|----------------------------------------------------------------------------------------------|
@@ -711,7 +716,7 @@ instances are never read or adopted, even when services share one table set:
 
 | Property                         | Type       | Default | Description                                                                 |
 |----------------------------------|------------|---------|-----------------------------------------------------------------------------|
-| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs. `false`: a one-shot startup pass still runs, without a capacity check, retried every `poll-interval` until it completes. |
+| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs. `false`: a one-shot startup pass still runs, without a capacity check, retried every `poll-interval` until it completes. With `false`, a start whose instance lock cannot be taken (held elsewhere, or the lock backend failed) is **refused** with `LockAcquisitionException` and persists nothing — nothing on the node would run a deferred start — and a resume the startup pass skips because the lock backend failed waits until a node starts with recovery (one whose lock is held elsewhere is that node's to run). The same holds between context refresh and the moment `StartupRecoveryRunner` starts the poller. |
 | `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
 
 Migration `V101__recovery_scan_index.sql` adds the partial index the paged scan

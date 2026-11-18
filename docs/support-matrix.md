@@ -27,6 +27,7 @@ with a reason, not filed (`tasks/todo.md`, pilot-readiness working rules).
 | Two or more services sharing one set of `maestro_*` tables | **Not supported** | Startup fails when the tables hold active workflow instances under another `maestro.service-name` (`maestro.store.foreign-service-check`, default `fail`; see below). The engine was never designed for co-tenancy: timers, purges and the shared-table costs in Issues 31, 77, 78 and 79 follow from it. |
 | A service rename in progress (old name's rows still active) | **Supported, temporarily** | Set `maestro.store.foreign-service-check=warn` until the old name's instances are drained or moved; `docs/operations.md` §11.5. |
 | Nodes of one service running with different `maestro.service-name` values | **Not supported** | Recovery adopts only its own name's rows; workflows under another name are stranded. The startup check reports them like a co-tenant. |
+| A node with the recovery poller disabled (`maestro.recovery.enabled=false`) | **Supported, with limits** | A start whose instance lock cannot be taken is refused (`LockAcquisitionException`, nothing persisted) rather than deferred, because nothing on the node would run it; a resume the one-shot startup pass skips because the lock backend failed waits until a node starts with recovery; a node that dies strands its workflows until a node restarts (`docs/operations.md` §2). |
 | A node without a `DistributedLock` (lock-less mode) | **Not supported** | Startup fails: the starter needs a `DistributedLock` bean (`maestro-store-postgres` provides one), and `WorkflowExecutor.Builder.build()` rejects a missing lock. No run executes without its instance lock. |
 
 ### The shared-table startup check
@@ -42,7 +43,9 @@ under any other `maestro.service-name`, of any workflow type. Rows found:
 
 The read is bounded: if the store does not answer within 5 seconds, or the read
 fails, the result is *inconclusive* — one `WARN`, startup continues, the next
-start re-checks. An unreachable store therefore never turns into a restart
+start re-checks. It runs at context refresh, after every singleton exists, so a
+workflow host code starts earlier (from a `@PostConstruct`, say) is written
+before the check; recovery never runs before it. An unreachable store therefore never turns into a restart
 loop. Terminal rows under another name are not read (there is no index for
 them; reading them would scan the table), so a co-tenant with no active
 instance at that moment is not detected — see `docs/operations.md` §11.5 for
@@ -74,7 +77,7 @@ finding them by hand.
 | Component | Status | Notes |
 |---|---|---|
 | Java 25 | **Supported** | The build toolchain; virtual threads are required. Other JDKs are untested. |
-| Spring Boot 4.0.x (built against 4.0.5) | **Supported** | Spring Boot 3.x is not supported. |
+| Spring Boot 4.0.5 | **Supported** | The version the build and every suite use. Other 4.0.x patch releases are untested; Spring Boot 3.x is not supported. |
 | Embedding `maestro-core` without Spring (`WorkflowExecutor.builder(...)`) | **Supported as an API** | Exercised by the integration suites' `MaestroEngineHarness`. The starter is the primary path; the embedder must also call `checkForeignServices(...)` and start the loops the starter starts. |
 
 ## PostgreSQL
