@@ -164,6 +164,13 @@ final class StoreFaultGuard {
                 new Handler(delegate, List.copyOf(backoff)));
     }
 
+    /** Stub: the episode accounting lands with the fix. */
+    static WorkflowStore wrap(WorkflowStore delegate, List<Duration> backoff,
+                              io.b2mash.maestro.core.observe.EngineObserver observer,
+                              java.util.function.LongSupplier nanoTime) {
+        return wrap(delegate, backoff);
+    }
+
     /**
      * Runs an advisory store read: one whose failure the caller skips, so the
      * guard neither retries it nor latches the run. The store exception, if

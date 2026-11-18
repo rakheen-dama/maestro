@@ -294,6 +294,11 @@ public interface EngineObserver {
      */
     default void backgroundLoopError(String loop, String errorType) {}
 
+    // ── Store faults ──────────────────────────────────────────────────
+
+    /** Stub: documented with the fix. */
+    default void storeRetried(String operation) {}
+
     // ── Stand-down ────────────────────────────────────────────────────
 
     /** A local run stood down without recording a workflow outcome. */

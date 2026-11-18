@@ -8,13 +8,16 @@ import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
+import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.RunLease;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
+import org.slf4j.event.Level;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 
@@ -25,6 +28,7 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -108,6 +112,65 @@ class StoreFaultGuardTest {
         assertEquals(3, delegate.calls("appendEvent"));
         assertEquals(1, delegate.getEvents(instanceId).size(), "the event is stored exactly once");
         assertNull(ctx.cancellation().cause());
+    }
+
+    // ── Absorbed faults are counted and logged once per episode (Issue 86) ──
+
+    /** Issue 86's done-when: one absorbed fault moves the counter by one and the run continues. */
+    @Test
+    @DisplayName("an in-place retry that absorbs a fault is counted once and the run continues")
+    void anAbsorbedRetryIsCountedOnceAndTheRunContinues() {
+        var observer = new RecordingEngineObserver();
+        var store = new FaultyStore();
+        var counted = StoreFaultGuard.wrap(store, NO_WAIT, observer, System::nanoTime);
+        store.failNext("appendEvent", 1);
+
+        inRun(() -> counted.appendEvent(event(1)));
+
+        assertAll(
+                () -> assertEquals(List.of("append_event"), observer.storeRetries(), "one retry, one count"),
+                () -> assertEquals(1, store.getEvents(instanceId).size(), "the event is stored"),
+                () -> assertNull(ctx.cancellation().cause(), "the run is not latched"));
+    }
+
+    /**
+     * An episode is node-wide: it starts with the first in-place retry after
+     * 60 s without one. Its first retry logs one WARN; later retries in the
+     * episode log at DEBUG; every retry is counted.
+     */
+    @Test
+    @DisplayName("one WARN per 60 s episode of in-place retries; every retry counted")
+    void oneWarnPerEpisode() {
+        var observer = new RecordingEngineObserver();
+        var nanos = new AtomicLong(Duration.ofHours(1).toNanos());
+        var store = new FaultyStore();
+        var counted = StoreFaultGuard.wrap(store, NO_WAIT, observer, nanos::get);
+        try (var logs = CapturingSlf4jProvider.watch(StoreFaultGuard.class)) {
+            store.failNext("appendEvent", 1);
+            inRun(() -> counted.appendEvent(event(1)));
+            nanos.addAndGet(Duration.ofSeconds(1).toNanos());
+            store.failNext("getEventBySequence", 1);
+            inRun(() -> counted.getEventBySequence(instanceId, 1));
+
+            assertEquals(1, warns(logs), "the second retry, 1 s later, is in the same episode: " + logs.records());
+            assertEquals(List.of("append_event", "get_event_by_sequence"), observer.storeRetries());
+            var warn = logs.records().stream().filter(r -> r.level() == Level.WARN).findFirst().orElseThrow();
+            assertTrue(warn.message().startsWith("Store unavailable on appendEvent — retrying in place "
+                    + "(attempt 1/3): "), warn.message());
+            assertTrue(warn.message().endsWith("; further in-place retries are counted on maestro.store.retries "
+                    + "and logged at DEBUG until 60 s pass without one"), warn.message());
+
+            nanos.addAndGet(Duration.ofSeconds(61).toNanos());
+            store.failNext("appendEvent", 1);
+            inRun(() -> counted.appendEvent(event(2)));
+
+            assertEquals(2, warns(logs), "61 s without a retry ended the episode: " + logs.records());
+            assertEquals(3, observer.storeRetries().size());
+        }
+    }
+
+    private static long warns(CapturingSlf4jProvider.Capture logs) {
+        return logs.records().stream().filter(r -> r.level() == Level.WARN).count();
     }
 
     @Test
