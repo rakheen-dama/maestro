@@ -181,13 +181,15 @@ Until Maven Central is set up, and for pilot builds after that, a pre-release go
 
 3. The workflow builds and tests at that version, publishes the BOM and every module listed under [Published Modules](#published-modules), and creates a GitHub pre-release.
 
-A published version cannot be overwritten. To replace a bad pre-release, publish the next suffix (`-rc.2`); delete the bad version under the repository's **Packages** if nobody should resolve it. The artifacts are not signed.
+A published version cannot be overwritten, so a failed run cannot simply be re-run once any module has uploaded: the re-run's upload of that module is refused. If every module uploaded and only the last step failed, check under the repository's **Packages** that the BOM and all seven modules show the version, then create the release by hand: `gh release create v0.3.0-rc.1 --title "Maestro 0.3.0-rc.1" --generate-notes --prerelease`. If only some modules uploaded, publish the next suffix.
+
+To replace a bad pre-release, publish the next suffix (`-rc.2`); delete the bad version under the repository's **Packages** if nobody should resolve it. The artifacts are not signed.
 
 ### Consuming one
 
 GitHub Packages asks for a token on every Maven download, from a public repository too. Each developer and each CI job needs a GitHub token with the `read:packages` scope (a workflow in another repository of the same owner can use its own `GITHUB_TOKEN` once the package grants that repository access).
 
-Gradle (`settings.gradle.kts` or the build's `repositories` block):
+Gradle, in the consuming project's `build.gradle.kts` (a build that declares its repositories in `settings.gradle.kts` puts the same `maven { … }` entry inside `dependencyResolutionManagement { repositories { … } }`):
 
 ```kotlin
 repositories {
@@ -204,7 +206,7 @@ repositories {
 }
 ```
 
-Put `gpr.user` and `gpr.token` in `~/.gradle/gradle.properties`, never in the project. Maven users add the same URL as a `<repository>` and the token as a `<server>` with the matching id in `~/.m2/settings.xml`.
+Put `gpr.user` and `gpr.token` in `~/.gradle/gradle.properties`, never in the project. Maven users add the same URL as a `<repository>`, and in `~/.m2/settings.xml` a `<server>` with the matching `<id>`, their GitHub login as `<username>` and the token as `<password>`.
 
 Then depend on the BOM at the pre-release version, as in the [README](README.md#1-add-dependencies):
 
@@ -214,14 +216,17 @@ implementation(platform("io.b2mash.maestro:maestro-bom:0.3.0-rc.1"))
 
 ### Publishing by hand
 
-From a checkout of the tag, with a token that has `write:packages`:
+From a checkout of the tag, with a token that has `write:packages`. Give the token through the environment, not on the command line, where it would land in shell history and the process list:
 
 ```bash
 ./gradlew build -Pversion=0.3.0-rc.1
-./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=0.3.0-rc.1 -PgprUser=<login> -PgprToken=<token>
+export GITHUB_ACTOR=<login>
+read -rs GITHUB_TOKEN && export GITHUB_TOKEN   # paste the token, press Enter
+./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=0.3.0-rc.1
+unset GITHUB_TOKEN
 ```
 
-`-PgprRepository=<owner>/<repo>` publishes to another repository's registry (a fork).
+`gprUser` and `gprToken` in `~/.gradle/gradle.properties` work too. `-PgprRepository=<owner>/<repo>` publishes to another repository's registry (a fork).
 
 ---
 

@@ -12,7 +12,8 @@ on:
     tags: ['v*.*.*-*']
 
 concurrency:
-  group: publish-github-packages
+  # One group per tag: a re-run of the same tag waits, another tag is never cancelled.
+  group: publish-github-packages-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -43,12 +44,16 @@ jobs:
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build and test
-        run: ./gradlew build -Pversion=${{ steps.version.outputs.VERSION }}
+        # The version reaches the shell as data (an environment variable), never as script text.
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: ./gradlew build "-Pversion=$VERSION"
 
       - name: Publish to GitHub Packages
-        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository -Pversion=${{ steps.version.outputs.VERSION }}
         env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew publishAllPublicationsToGitHubPackagesRepository "-Pversion=$VERSION"
 
       - name: Create GitHub pre-release
         env:
