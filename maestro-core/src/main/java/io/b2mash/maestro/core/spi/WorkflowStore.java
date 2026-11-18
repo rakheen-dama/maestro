@@ -27,6 +27,19 @@ import java.util.UUID;
  * Implementations must provide durable, transactional storage — Postgres is
  * the reference implementation.
  *
+ * <h2>Internal until 1.0</h2>
+ * <p><b>This SPI is internal until Maestro 1.0</b> (decided 2026-11-18; see
+ * {@code docs/support-matrix.md}). It is public only so that Maestro's own
+ * modules can implement and decorate it: {@code PostgresWorkflowStore}
+ * ({@code maestro-store-postgres}, on {@code maestro-store-jdbc}'s
+ * {@code AbstractJdbcWorkflowStore}) is the only supported store, and
+ * {@code maestro-test}'s {@code InMemoryWorkflowStore} is the test kit's fake.
+ * Until 1.0, methods are added, changed and removed between releases —
+ * defaults included — without deprecation or notice, and a third-party
+ * implementation is not supported: the engine's correctness rests on
+ * contracts (atomic fenced writes, the store's clock, exact deletes) that
+ * only the shipped stores are tested against.
+ *
  * <h2>Implementation Requirements</h2>
  * <ul>
  *   <li>All write operations must be durable (committed to disk) before returning.</li>
@@ -63,8 +76,8 @@ import java.util.UUID;
  * them carries progress on its own — the memo written by a loud fenced append
  * in the same step is the truth, and a flip that lost to an adoption is at
  * worst a row the adopter's run re-reads and settles. This is what makes an
- * instance lock that expired, was lost or was never configured unable to let
- * a stale node persist progress (Issue 11).
+ * instance lock that expired or was lost unable to let a stale node persist
+ * progress (Issue 11).
  *
  * <p>The unfenced forms stay for writes that are <em>not</em> a run's own:
  * {@link #createInstance} (no lease exists yet), {@link #saveSignal} and
@@ -594,7 +607,8 @@ public interface WorkflowStore {
      * already deleted by type before its compare-and-set fails. A store with
      * concurrent operators should override it, and a decorating store should
      * forward it. The shipped JDBC store and the in-memory test store override
-     * it.
+     * it; a store that keeps the default is not a supported store (the SPI is
+     * internal until 1.0 — Issue 62, closed).
      *
      * <p><b>Thread safety:</b> as every store method — callable concurrently
      * from any thread. Two concurrent reopens of one instance: at most one
