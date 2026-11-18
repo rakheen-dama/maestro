@@ -1,4 +1,4 @@
-# Milestone: Pilot readiness (planned 2026-11-18) — AWAITING APPROVAL
+# Milestone: Pilot readiness (planned 2026-11-18, approved by the maintainer 2026-11-18)
 
 Goal: `main` is fit to run in one real service. That means four things: it shuts down completely, its health tells the truth, it supports only what we intend to support, and a run parked by one build provably resumes on the next.
 
@@ -23,8 +23,8 @@ Starting point: `0.3.0-rc.1` is published to GitHub Packages (PR #69, tag at `d7
 - [ ] **Mandatory lock:** startup fails without a `DistributedLock`; the unlocked code paths and their tests go (closes Issue 74; the "acquire failed, proceeded unlocked" window is re-examined and either removed or documented).
 - [ ] **No shared tables:** the startup check for another service's active rows fails startup instead of warning (escape hatch property for a rename in progress); closes Issues 78, 79; Issue 77 becomes a runbook note.
 - [ ] Triage every open issue against the matrix: close what is out of scope, label the rest by severity. Target: the open list is ranked and visibly shorter.
-- Decision needed: **is the `WorkflowStore` SPI internal until 1.0?** (Recommended: yes. Closes Issue 62 and removes "a third-party store may not override this" from future designs. The in-memory test store stays.)
-- Decision needed: **ShedLock** for the leader-elected jobs. (Recommended: no. It fits the timer and retention leaders but not the renewed, fenced instance lock, so it adds a dependency without removing our lock code.)
+- [ ] Decided (maintainer, 2026-11-18): **the `WorkflowStore` SPI is internal until 1.0.** Say so in its Javadoc and the matrix; closes Issue 62; the in-memory test store stays.
+- Decided (maintainer, 2026-11-18): **no ShedLock.** It fits the timer and retention leaders but not the renewed, fenced instance lock, so it would add a dependency without removing our lock code.
 
 ### P1 — One lifecycle owner (shutdown completeness)
 
