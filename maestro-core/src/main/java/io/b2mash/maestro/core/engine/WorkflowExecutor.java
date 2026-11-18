@@ -742,13 +742,14 @@ public final class WorkflowExecutor {
                     "WorkflowExecutor is shutting down — cannot start workflow '%s'".formatted(workflowId));
         }
         var instanceId = UUID.randomUUID();
-        var handedOff = false;
+        // Set the moment the run's thread has started, which then owns the membership.
+        var handedOff = new boolean[1];
         try {
-            handedOff = startWorkflow(instanceId, workflowId, workflowType, taskQueue, input, workflowFactory,
-                    workflowMethod, cancellation, membership);
+            startWorkflow(instanceId, workflowId, workflowType, taskQueue, input, workflowFactory,
+                    workflowMethod, cancellation, membership, handedOff);
             return instanceId;
         } finally {
-            if (!handedOff) {
+            if (!handedOff[0]) {
                 // Last, after every lock release on the paths that did not
                 // start a run thread (a started run leaves on its own thread).
                 membership.leave();
@@ -758,10 +759,10 @@ public final class WorkflowExecutor {
 
     /**
      * {@link #startWorkflow}'s body, run under the start's registry membership.
-     *
-     * @return {@code true} iff a run thread was started, which then owns the membership
+     * Sets {@code handedOff[0]} once a run thread has started, which then
+     * owns the membership.
      */
-    private boolean startWorkflow(
+    private void startWorkflow(
             UUID instanceId,
             String workflowId,
             String workflowType,
@@ -770,7 +771,8 @@ public final class WorkflowExecutor {
             Supplier<Object> workflowFactory,
             Method workflowMethod,
             RunCancellation cancellation,
-            LifecycleRegistry.Membership membership
+            LifecycleRegistry.Membership membership,
+            boolean[] handedOff
     ) {
         var now = Instant.now();
         var runId = UUID.randomUUID();
@@ -846,22 +848,22 @@ public final class WorkflowExecutor {
             // lost: it is asked for a prompt pass (L3), which adopts it as soon
             // as the lock can be taken.
             deferStart(instance, heldElsewhere);
-            return false;
+            return;
         }
 
         // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
         // the run's workflow object has been built)
-        if (!launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null,
-                cancellation, membership)) {
+        handedOff[0] = launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null,
+                cancellation, membership);
+        if (!handedOff[0]) {
             // The lock was reported lost between the acquire and the run's
             // registration (a stall of a whole TTL): the row is durable; leave
             // it to recovery like any other deferral.
             deferStart(instance, false);
-            return false;
+            return;
         }
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
-        return true;
     }
 
     /**
@@ -1942,14 +1944,15 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot retry workflow '%s'".formatted(workflowId));
         }
-        @Nullable RetryOutcome outcome = null;
+        // Set the moment a relaunched run's thread has started, which then
+        // owns the membership — not inferred from the outcome, so nothing
+        // that throws after the hand-off can make this method leave too.
+        var handedOff = new boolean[1];
         try {
-            outcome = retryWorkflow(workflowId, registration, cancellation, membership);
-            return outcome;
+            return retryWorkflow(workflowId, registration, cancellation, membership, handedOff);
         } finally {
-            if (outcome != RetryOutcome.RETRIED) {
-                // Last, after any lock release: only a relaunched run hands
-                // its membership to its own thread.
+            if (!handedOff[0]) {
+                // Last, after any lock release.
                 membership.leave();
             }
         }
@@ -1957,7 +1960,8 @@ public final class WorkflowExecutor {
 
     /** {@link #retryWorkflow(String, WorkflowRegistration)}'s body, run under the retry's membership. */
     private RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration,
-                                       RunCancellation cancellation, LifecycleRegistry.Membership membership) {
+                                       RunCancellation cancellation, LifecycleRegistry.Membership membership,
+                                       boolean[] handedOff) {
         var existing = store.getInstance(workflowId);
         if (existing.isEmpty()) {
             logger.warn("Cannot retry workflow '{}' — no such instance in this service", workflowId);
@@ -2039,6 +2043,7 @@ public final class WorkflowExecutor {
 
         var launched = launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
                 running.input(), true, null, null, cancellation, membership);
+        handedOff[0] = launched;
         if (!launched) {
             logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
                     + "left for the recovery poller to adopt", workflowId);
