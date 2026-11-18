@@ -621,6 +621,7 @@ final class SignalManager {
         // it consumes a signal it could not durably record.
         ctx.cancellation().throwIfStale(ctx.workflowId());
         ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+        ctx.cancellation().throwIfAbandoned(ctx.workflowId());
         var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = STEP_PREFIX + signalName;
 

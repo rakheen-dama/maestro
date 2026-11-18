@@ -344,6 +344,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         // (R2) and swallowed: it is abandoned here, before it arms a timer.
         ctx.cancellation().throwIfStale(ctx.workflowId());
         ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+        ctx.cancellation().throwIfAbandoned(ctx.workflowId());
         var seq = WorkflowContextInternals.nextSequence(ctx);
         var stepName = "$maestro:sleep";
 
@@ -914,6 +915,9 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             }
             if (errors.stream().anyMatch(error -> error.get() != null)) {
                 ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+                // Likewise a branch that caught a given-up run's refusal and
+                // threw something else (P1, Issue 70).
+                ctx.cancellation().throwIfAbandoned(ctx.workflowId());
             }
 
             // Otherwise fail fast with the first error, in branch-index order.

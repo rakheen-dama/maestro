@@ -33,6 +33,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static io.b2mash.maestro.core.TestEventLogs.removeFailureEvents;
 import static org.awaitility.Awaitility.await;
@@ -504,15 +505,26 @@ class WorkflowExecutorShutdownTest {
     void runRegisteredAfterShutdownLoop_stillAbandonsItsBackoff() throws Exception {
         var invocations = new AtomicInteger();
         var workflow = new WorkflowExecutorTerminateTest.BackoffWorkflow(failingProxy(invocations));
-        // startWorkflow has passed its shuttingDown check when createInstance
-        // runs; shutting down here completes shutdown's requestShutdown() loop
-        // before launchWorkflow registers the run — the exact window M1 closes.
-        store.afterCreateInstance = executor::shutdown;
+        // startWorkflow has been admitted when createInstance runs; shutdown
+        // begins here, on another thread, and has run its request pass before
+        // launchWorkflow registers the run — the window R22(1) closed. Since
+        // P1 the launch joined the lifecycle registry first, so that pass
+        // already reached its cancellation, and the drain waits for it.
+        // (Before P1 the hook called shutdown() on this launching thread; the
+        // drain now waits for this very launch, so that would wait out the
+        // whole deadline.)
+        var shutter = new AtomicReference<Thread>();
+        store.afterCreateInstance = () -> {
+            shutter.set(Thread.ofVirtual().start(executor::shutdown));
+            await().atMost(Duration.ofSeconds(5))
+                    .until(() -> executor.lifecycle().state() != LifecycleRegistry.State.OPEN);
+        };
 
         executor.startWorkflow("late-registered", "BackoffWorkflow", "default", null, () -> workflow,
                 WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run"));
 
         await().atMost(Duration.ofSeconds(5)).until(() -> !executor.isRunning("late-registered"));
+        assertTrue(shutter.get().join(Duration.ofSeconds(5)), "the drain waited for the run, not its deadline");
         assertEquals(1, invocations.get(), "the 30s backoff must be abandoned, not waited out");
         assertEquals(WorkflowStatus.RUNNING, store.getInstance("late-registered").orElseThrow().status());
         assertFalse(hasEvent("late-registered", EventType.ACTIVITY_FAILED));

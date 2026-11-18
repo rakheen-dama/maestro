@@ -32,7 +32,8 @@ import java.util.concurrent.locks.ReentrantLock;
  *       Every join is refused; members leave as they finish.</li>
  *   <li>{@link State#CLOSED} — set by {@link #terminate()} just before
  *       shutdown returns. Whatever is still registered then is reported as
- *       still running.</li>
+ *       still running; every run among it was given up at the deadline
+ *       ({@link Membership#abandon()}) and records nothing more.</li>
  * </ul>
  *
  * <h2>Why this closes Issue 80</h2>
@@ -66,7 +67,10 @@ public final class LifecycleRegistry {
         OPEN,
         /** Shutdown has begun: every join is refused, members leave as they finish. */
         DRAINING,
-        /** Shutdown has returned; whatever is still registered is reported as still running. */
+        /**
+         * Shutdown has returned; whatever is still registered is reported as
+         * still running, and every run among it has been given up.
+         */
         CLOSED
     }
 
@@ -313,6 +317,17 @@ public final class LifecycleRegistry {
                 cancellation.requestShutdown();
             } else if (member != null) {
                 member.requestStop();
+            }
+        }
+
+        /**
+         * Gives a run up at the shutdown deadline: its cancellation's sticky
+         * abandoned flag is set, so it records nothing more. A no-op for any
+         * other member.
+         */
+        void abandon() {
+            if (cancellation != null) {
+                cancellation.abandon();
             }
         }
 

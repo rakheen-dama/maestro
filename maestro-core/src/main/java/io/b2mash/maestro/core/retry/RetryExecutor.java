@@ -100,7 +100,9 @@ public final class RetryExecutor {
      *                                     ({@code STORE_UNAVAILABLE}), at the same
      *                                     points
      * @throws ExecutorShutdownException   if this node began shutting down during a
-     *                                     backoff wait
+     *                                     backoff wait, or shutdown gave the run up
+     *                                     at its deadline (checked where a store
+     *                                     fault is)
      */
     public <T> T executeWithRetry(
             RetryPolicy policy,
@@ -187,12 +189,15 @@ public final class RetryExecutor {
      * Throws if the run was terminated, then if it was asked to stand down as
      * stale or because its store is unavailable — terminate first, as the
      * stronger request (stale and store-unavailable share a rank, so at most
-     * one of them is ever set). A shutdown is not checked.
+     * one of them is ever set) — then if shutdown has given it up at its
+     * deadline. A shutdown that has not given it up is not checked: in-flight
+     * work drains.
      */
     private static void throwIfStopRequested(RunCancellation cancellation, String workflowId) {
         cancellation.throwIfTerminated(workflowId);
         cancellation.throwIfStale(workflowId);
         cancellation.throwIfStoreUnavailable(workflowId);
+        cancellation.throwIfAbandoned(workflowId);
     }
 
     /**

@@ -203,9 +203,13 @@ class WorkflowExecutorConcurrencyTest {
         start("wf-queued", "orders", new WorkWorkflow(activities));
 
         executor.shutdown(); // wf-running overruns the drain; wf-queued is still waiting
-        latch.countDown(); // wf-running finishes and hands its slot over
+        latch.countDown(); // wf-running's activity returns and its run hands its slot over
 
-        awaitStatus("wf-running", WorkflowStatus.COMPLETED);
+        // P1, Issue 70: wf-running overran the deadline, so it was given up —
+        // its late result is not recorded and it stays recoverable (it used to
+        // complete here).
+        await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-running"));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-running").orElseThrow().status());
         await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-queued"));
         assertEquals(1, started.get(), "a run that got its slot only after shutdown began must not start");
         assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-queued").orElseThrow().status(),
@@ -230,7 +234,11 @@ class WorkflowExecutorConcurrencyTest {
         executor.shutdown(); // wf-holding overruns the drain; wf-waiting still waits for the slot
         latch.countDown(); // wf-holding's activity returns and hands the slot over
 
-        awaitStatus("wf-holding", WorkflowStatus.COMPLETED);
+        // P1, Issue 70: wf-holding overran the deadline, so it was given up —
+        // its late result is not recorded and it stays recoverable (it used to
+        // complete here).
+        await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-holding"));
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-holding").orElseThrow().status());
         await().atMost(5, SECONDS).until(() -> !executor.isRunning("wf-waiting"));
         assertEquals(1, started.get(), "an activity that got its slot only after shutdown began must not run");
         assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-waiting").orElseThrow().status(),

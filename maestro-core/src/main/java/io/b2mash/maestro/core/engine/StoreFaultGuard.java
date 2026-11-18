@@ -96,6 +96,22 @@ import java.util.function.Supplier;
  * raise the latch before any side effect or status change, and a read records
  * nothing.
  *
+ * <h2>A given-up run cannot call the store</h2>
+ * <p>Once shutdown has given up on the run bound to the calling thread
+ * ({@link io.b2mash.maestro.core.context.RunCancellation#abandon()}, at the
+ * shutdown deadline; pilot readiness P1, Issue 70), <em>every</em> call — any
+ * {@link WorkflowStore} method, read or write — is refused with an
+ * {@link io.b2mash.maestro.core.exception.ExecutorShutdownException} without
+ * reaching the store, checked on entry and again before each retry attempt.
+ * The run has no legitimate write left, and to the store a refused call is
+ * indistinguishable from the node dying just before sending it, which
+ * recovery is built for. Two scopes are exempt: {@link #advisory(Supplier)}
+ * reads (the handlers' log-line reads, whose {@code catch (RuntimeException)}
+ * an {@code Error} would escape) and {@link #passThrough(Callable)} (an
+ * activity body's own calls on behalf of other workflows). A call already past
+ * its entry check when the run is given up reaches the store: it is a
+ * legitimate result, and replay returns it.
+ *
  * <h2>Everything else passes through</h2>
  * <p>Any other throwable from the delegate is rethrown unwrapped from the
  * reflective {@link InvocationTargetException}, an {@link Error} checked
@@ -230,6 +246,9 @@ final class StoreFaultGuard {
                 return invokeDelegate(method, args);
             }
             var advisory = ADVISORY.isBound();
+            if (!advisory) {
+                refuseIfGivenUp();
+            }
             if (!advisory && method.getName().startsWith("appendEvent")) {
                 refuseIfLatched(method);
             }
@@ -239,6 +258,9 @@ final class StoreFaultGuard {
                     return invokeDelegate(method, args);
                 } catch (StoreUnavailableException e) {
                     if (attempt < attempts && waitBeforeRetry(method, attempt, e)) {
+                        // A run given up while this call waited out its backoff
+                        // sends nothing more.
+                        refuseIfGivenUp();
                         continue;
                     }
                     if (!advisory) {
@@ -275,6 +297,14 @@ final class StoreFaultGuard {
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
                 return false;
+            }
+        }
+
+        /** Refuses any call of a run shutdown has given up on (class Javadoc). */
+        private static void refuseIfGivenUp() {
+            var bound = WorkflowContext.scopedValue();
+            if (bound.isBound()) {
+                bound.get().cancellation().throwIfAbandoned(bound.get().workflowId());
             }
         }
 

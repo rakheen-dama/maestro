@@ -817,6 +817,13 @@ public final class WorkflowExecutor {
                     + "retry the start");
         }
         try {
+            // A start still taking its lock when shutdown gave it up at the
+            // deadline (P1, Issue 70) writes nothing: it is refused like a
+            // start that arrived after shutdown began.
+            if (cancellation.isAbandoned()) {
+                throw new IllegalStateException(("WorkflowExecutor is shutting down — the start of workflow '%s' "
+                        + "was given up at the shutdown deadline; nothing was persisted").formatted(workflowId));
+            }
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
             // signals sent before workflow starts are stored with null instanceId)
             store.createInstance(instance);
@@ -1998,6 +2005,12 @@ public final class WorkflowExecutor {
                 .updatedAt(now)
                 .version(latest.version() + 1)
                 .build();
+        // A retry still reading the history when shutdown gave it up at the
+        // deadline (P1, Issue 70) writes nothing: refused, not acknowledged.
+        if (cancellation.isAbandoned()) {
+            throw new IllegalStateException(("WorkflowExecutor is shutting down — the retry of workflow '%s' was "
+                    + "given up at the shutdown deadline; nothing was written").formatted(workflowId));
+        }
         // The deletes and the single-attempt CAS are one transaction (D-7):
         // a crash or a lost CAS leaves the history and the row untouched.
         // OptimisticLockException (a stale version, or a row no longer
@@ -2474,8 +2487,14 @@ public final class WorkflowExecutor {
      * action — cannot intercept it and mistake it for a real failure.
      *
      * <p>Workflows still executing an activity are <em>not</em> interrupted;
-     * they drain up to the shutdown timeout. Any that overrun it are left
-     * running, and their instance locks expire by TTL. A retry backoff in
+     * they drain up to the shutdown timeout. Any that overrun it are
+     * <em>given up</em> (Issue 70): still not interrupted, but nothing they do
+     * from then on is recorded — every store call they make is refused and
+     * every stop point raises {@link ExecutorShutdownException} — so an
+     * activity that fails because the host is tearing its beans down records
+     * no failure and runs no compensation, and one that succeeds late is run
+     * again by the node that adopts the workflow. Their instance locks are
+     * released when they end, or expire by TTL. A retry backoff in
      * progress is abandoned too, with {@link ExecutorShutdownException},
      * leaving the instance {@code RUNNING} and recoverable; the attempt counter
      * restarts on the next node.
@@ -2557,6 +2576,16 @@ public final class WorkflowExecutor {
         }
         var drainMs = millisSince(drainStart);
 
+        // S4: give up every run still registered (Issue 70): from here each
+        // records nothing more — the store-fault guard refuses every store
+        // call it makes and every stop point stops it — so a failure caused
+        // by the host tearing its beans down after this returns is never
+        // recorded, and a peer recovers the run as after a crash now. In
+        // memory, no wait, no store write: the deadline has no budget left.
+        for (var member : lifecycle.remaining()) {
+            member.abandon();
+        }
+
         // Step 6: join the loops asked to stop at step 2, against what is left.
         var loopsStart = System.nanoTime();
         for (var loop : loops) {
@@ -2610,7 +2639,8 @@ public final class WorkflowExecutor {
             var recoveredBy = "their instance locks expire after " + instanceLockTtl.toMillis()
                     + " ms (maestro.lock.ttl) and a peer recovers them";
             logger.warn("Maestro shutdown hit its {} ms deadline (maestro.shutdown.timeout): {} of {} run(s) still "
-                            + "running {}; shutdown does not interrupt them and records nothing for them; {} ({})",
+                            + "running {}; shutdown does not interrupt them and records nothing for them: it gave "
+                            + "them up, so nothing they do from now on is recorded; {} ({})",
                     deadline.budget().toMillis(), stillRunning.size(), inFlightAtStart,
                     workflowIdList(stillRunning.stream().distinct().toList()), recoveredBy, steps);
         }
@@ -3069,6 +3099,15 @@ public final class WorkflowExecutor {
             // would answer HELD_ELSEWHERE, and the workflow would be
             // unrecoverable on this node until a JVM restart.
             try {
+                // A resume still taking its lock when shutdown gave it up at
+                // the deadline (P1, Issue 70) adopts nothing: no CAS, no epoch
+                // bump, no run. It yields exactly like a lock held elsewhere.
+                if (cancellation.isAbandoned()) {
+                    logger.debug("Workflow '{}' resume was given up at the shutdown deadline — skipping",
+                            snapshot.workflowId());
+                    instanceLockManager.release(snapshot.workflowId(), handle);
+                    return false;
+                }
                 // Close the recovery-query→resume race: the previous owner may
                 // have finished the workflow after the recovery snapshot was
                 // taken and released the lock this node just acquired.
@@ -3370,6 +3409,9 @@ public final class WorkflowExecutor {
             // store-unavailable arm, so the run is abandoned, not COMPLETED.
             ctx.cancellation().throwIfStale(ctx.workflowId());
             ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+            // A run given up at the shutdown deadline does not complete here:
+            // a peer replays its memos and completes it (P1, Issue 70).
+            ctx.cancellation().throwIfAbandoned(ctx.workflowId());
             boolean completed;
             try {
                 completed = transitionToTerminal(ctx, instance, WorkflowStatus.COMPLETED,
@@ -3518,6 +3560,12 @@ public final class WorkflowExecutor {
                 // turned it into something else — this throwable is a
                 // consequence of the outage, not the workflow's failure.
                 handleStoreUnavailable(ctx, e);
+            } else if (ctx.cancellation().isAbandoned()) {
+                // P1, Issue 70: shutdown gave this run up at its deadline and
+                // workflow code turned the refusal into something else (or
+                // the host's teardown made it fail). Sticky: suspended, never
+                // failed or compensated.
+                handleShutdownSuspension(ctx);
             } else {
                 failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
             }
@@ -3528,6 +3576,10 @@ public final class WorkflowExecutor {
                 // carried on into a failure the outage caused). Sticky: the
                 // run is abandoned, never failed or compensated.
                 handleStoreUnavailable(ctx, e);
+            } else if (ctx.cancellation().isAbandoned()) {
+                // P1, Issue 70: as above — a failure of a run shutdown has
+                // given up on is never recorded.
+                handleShutdownSuspension(ctx);
             } else {
                 failAndCompensate(ctx, instance, e, compensationStack, parallelCompensation);
             }
@@ -3616,11 +3668,11 @@ public final class WorkflowExecutor {
 
     /**
      * Records that a workflow's local run ended because this node is shutting
-     * down. Deliberately writes nothing: the instance is already in the
-     * {@code WAITING_*} status of the park it was interrupted in,
-     * {@code RUNNING} if it was in an activity's retry backoff, or
-     * {@code COMPENSATING} if shutdown landed mid-saga — exactly the state
-     * recovery needs to find.
+     * down, or gave the run up at its shutdown deadline. Deliberately writes
+     * nothing: the instance is already in the {@code WAITING_*} status of the
+     * park it was interrupted in, {@code RUNNING} if it was in an activity or
+     * its retry backoff, or {@code COMPENSATING} if shutdown landed mid-saga —
+     * exactly the state recovery needs to find.
      */
     private void handleShutdownSuspension(WorkflowContext ctx) {
         var status = statusForLog(ctx.workflowId());
@@ -3955,6 +4007,9 @@ public final class WorkflowExecutor {
         // StoreUnavailableException reaches failAndCompensate's abandon arm.
         ctx.cancellation().throwIfStale(ctx.workflowId());
         ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+        // And a run shutdown has given up on (P1, Issue 70): its
+        // ExecutorShutdownException reaches failAndCompensate's shutdown arm.
+        ctx.cancellation().throwIfAbandoned(ctx.workflowId());
 
         // Logged after the stale check: a stand-down loser is not a failure worth
         // an ERROR line (its stand-down is logged by its own handler).
@@ -3993,6 +4048,7 @@ public final class WorkflowExecutor {
         // during the unwind: abandon, never write FAILED.
         ctx.cancellation().throwIfStale(ctx.workflowId());
         ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+        ctx.cancellation().throwIfAbandoned(ctx.workflowId());
 
         // Update instance to FAILED
         try {

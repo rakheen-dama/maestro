@@ -100,9 +100,21 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@link StoreUnavailableException} and {@link ExecutorShutdownException} — no
  * latch-specific exception type is introduced.
  *
+ * <h2>Given up (abandoned)</h2>
+ * <p>Separate from the causes and their precedence, {@link #abandon()} sets a
+ * sticky flag: shutdown's deadline passed while the run was still executing,
+ * and this node has given up on it (pilot readiness P1, Issue 70). From then
+ * on the run must record nothing more — the store-fault guard refuses every
+ * store call made under its context, and every stop point that checks for a
+ * store fault checks {@link #throwIfAbandoned(String)} too — so a failure
+ * caused by the host tearing down its beans is never recorded, and the
+ * workflow is recovered by a peer exactly as after a crash at the deadline.
+ * Because it is not a cause, no later request — not even
+ * {@link Cause#TERMINATED} — clears it.
+ *
  * <p>The latch is in-memory only and never persisted: the durable record of a
  * terminate is the instance row, the durable record of a stale run is the
- * winner's event, and a shutdown or a store fault writes nothing.
+ * winner's event, and a shutdown, a give-up or a store fault writes nothing.
  *
  * <p><b>Thread safety:</b> thread-safe. Any thread may request a cause or read
  * the state concurrently with the run's own threads; every transition is one
@@ -143,6 +155,8 @@ public final class RunCancellation {
 
     private final CountDownLatch latch = new CountDownLatch(1);
     private final AtomicReference<@Nullable Request> request = new AtomicReference<>();
+    /** Sticky; see the class Javadoc, "Given up (abandoned)". */
+    private volatile boolean abandoned;
 
     /** Creates a latch with nothing requested. */
     public RunCancellation() {
@@ -227,6 +241,51 @@ public final class RunCancellation {
                 return true;
             }
         }
+    }
+
+    /**
+     * Gives the run up: shutdown's deadline passed while it was still
+     * executing. Sets the sticky {@linkplain #isAbandoned() abandoned} flag,
+     * then requests {@link Cause#SHUTDOWN} (a no-op if a cause is already set),
+     * so a retry backoff in progress ends at once. Idempotent.
+     */
+    public void abandon() {
+        abandoned = true;
+        requestShutdown();
+    }
+
+    /**
+     * Returns whether shutdown has given this run up.
+     *
+     * @return {@code true} once {@link #abandon()} was called; never reset
+     */
+    public boolean isAbandoned() {
+        return abandoned;
+    }
+
+    /**
+     * Throws if — and only if — shutdown has given this run up.
+     *
+     * @param workflowId the workflow ID, for the exception
+     * @throws ExecutorShutdownException if {@link #abandon()} was called
+     */
+    public void throwIfAbandoned(String workflowId) {
+        if (abandoned) {
+            throw givenUp(workflowId);
+        }
+    }
+
+    /**
+     * The signal a given-up run unwinds with: an {@link ExecutorShutdownException}
+     * naming the workflow.
+     *
+     * @param workflowId the workflow ID
+     * @return the exception, not thrown
+     */
+    public static ExecutorShutdownException givenUp(String workflowId) {
+        return new ExecutorShutdownException(("Executor gave up on workflow '%s' at its shutdown deadline — "
+                + "nothing more is recorded for this run; the workflow keeps its durable state and a peer "
+                + "recovers it").formatted(workflowId));
     }
 
     /**
