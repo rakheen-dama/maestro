@@ -2710,6 +2710,11 @@ public final class WorkflowExecutor {
         return taskQueueGovernor;
     }
 
+    /** Stub: the count lands with the fix. */
+    public long observerErrorCount() {
+        return 0;
+    }
+
     /**
      * Returns the sink through which this executor — and every component it
      * built — publishes lifecycle events <em>off</em> the workflow thread.

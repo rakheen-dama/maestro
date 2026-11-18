@@ -76,6 +76,17 @@ public final class CompositeEngineObserver implements EngineObserver {
         return observers.isEmpty() ? EngineObserver.NOOP : new CompositeEngineObserver(observers);
     }
 
+    /** Stub: the containment rule lands with the fix. */
+    public static CompositeEngineObserver contain(EngineObserver observer) {
+        return observer instanceof CompositeEngineObserver composite
+                ? composite : new CompositeEngineObserver(List.of(observer));
+    }
+
+    /** Stub: the count lands with the fix. */
+    public long containedErrorCount() {
+        return 0;
+    }
+
     /**
      * Runs one callback against every delegate in order, containing
      * {@link RuntimeException} per delegate. {@link Error}s deliberately

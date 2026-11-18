@@ -13,6 +13,7 @@ import java.time.Instant;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -401,6 +402,42 @@ class WorkflowInstanceLockManagerTest {
         assertEquals(0, lock.renewCalls.get());
     }
 
+    /**
+     * Issue 68, part 2: an observer that throws an {@code Error} from
+     * {@code instanceLockLost} is contained per lost handle, so every handle a
+     * pass reports lost is dropped and its run stood down in that same pass,
+     * not one renew interval apart.
+     */
+    @Test
+    @DisplayName("an observer Error on one lost lock does not delay the others")
+    void anObserverErrorOnOneLostLockDoesNotDelayTheOthers() {
+        var lock = new BatchRecordingLock();
+        lock.lostKeys.addAll(Set.of("maestro:lock:workflow:wf-3", "maestro:lock:workflow:wf-7",
+                "maestro:lock:workflow:wf-9"));
+        var observer = new io.b2mash.maestro.core.observe.EngineObserver() {
+            @Override
+            public void instanceLockLost(String workflowId) {
+                throw new AssertionError("observer bug");
+            }
+        };
+        manager = new WorkflowInstanceLockManager(lock, "svc", DEFAULT_PREFIX, BATCH_TTL, BATCH_RENEW, observer);
+        for (int i = 0; i < 50; i++) {
+            assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("wf-" + i));
+        }
+        var passOfEachLoss = new ConcurrentHashMap<String, Integer>();
+        manager.onLockLost((workflowId, _) -> passOfEachLoss.put(workflowId, lock.renewAllCalls.get()));
+
+        // The renewer is one thread: a second renewAll means the first pass's
+        // result has been fully processed.
+        await().atMost(Duration.ofSeconds(5)).until(() -> lock.renewAllCalls.get() >= 2);
+
+        assertEquals(Map.of("wf-3", 1, "wf-7", 1, "wf-9", 1), Map.copyOf(passOfEachLoss),
+                "every lost handle was handled by the first pass");
+        assertEquals(47, heldCount());
+    }
+
+    private static final String DEFAULT_PREFIX = WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX;
+
     // ── heldElsewhere ──────────────────────────────────────────────────
 
     @Test
@@ -510,6 +547,8 @@ class WorkflowInstanceLockManagerTest {
         final AtomicInteger renewAllCalls = new AtomicInteger();
         final CopyOnWriteArrayList<Integer> renewAllSizes = new CopyOnWriteArrayList<>();
         final AtomicReference<String> lostKey = new AtomicReference<>("");
+        /** Further keys renewAll reports lost, every pass. */
+        final Set<String> lostKeys = ConcurrentHashMap.newKeySet();
         final AtomicBoolean throwOnRenewAll = new AtomicBoolean(false);
 
         int backendCalls() {
@@ -540,7 +579,7 @@ class WorkflowInstanceLockManagerTest {
             }
             var lost = new HashSet<LockHandle>();
             for (var handle : handles) {
-                if (handle.key().equals(lostKey.get())) {
+                if (handle.key().equals(lostKey.get()) || lostKeys.contains(handle.key())) {
                     lost.add(handle);
                 }
             }

@@ -217,7 +217,7 @@ class CompositeEngineObserverTest {
     }
 
     @Test
-    @DisplayName("an Error (engine control-flow signal) propagates and is never swallowed")
+    @DisplayName("an engine control-flow signal (an Error) propagates and is never swallowed")
     void errorPropagates() {
         EngineObserver hostile = new EngineObserver() {
             @Override public void workflowStarted(WorkflowInfo w) {
@@ -232,7 +232,7 @@ class CompositeEngineObserverTest {
     }
 
     @Test
-    @DisplayName("an Error from a LONE delegate propagates too — Ruling 4's wrapper must not widen containment")
+    @DisplayName("a control-flow signal from a LONE delegate propagates too — Ruling 4's wrapper must not swallow it")
     void errorPropagatesThroughTheSingleDelegateWrapper() {
         EngineObserver hostile = new EngineObserver() {
             @Override public void workflowStarted(WorkflowInfo w) {
@@ -244,16 +244,117 @@ class CompositeEngineObserverTest {
         };
         var wrapped = CompositeEngineObserver.of(List.of(hostile));
 
-        // Ruling 4 added a wrapper where there was none. It contains
-        // RuntimeException ONLY: ExecutorShutdownException and
+        // Ruling 4 added a wrapper where there was none, and Issue 81 widened
+        // what it contains to every Throwable but a VirtualMachineError and a
+        // MaestroControlFlowError: ExecutorShutdownException and
         // WorkflowTerminatedException are Errors precisely so no "log and
-        // continue" layer can swallow them, and the new wrapper is such a
-        // layer. If it ever caught Throwable, a routine deploy would be
-        // recorded as a workflow failure and a terminated workflow would keep
-        // executing activities.
+        // continue" layer can swallow them, and the wrapper is such a layer.
+        // If it ever contained them, a routine deploy would be recorded as a
+        // workflow failure and a terminated workflow would keep executing
+        // activities.
         assertThrows(ExecutorShutdownException.class, () -> wrapped.workflowStarted(WF));
         assertThrows(WorkflowTerminatedException.class,
                 () -> wrapped.activityCompleted(ACT, Duration.ofMillis(1), false));
+    }
+
+    // ── Error containment (Issue 81) ──────────────────────────────────
+
+    /**
+     * Issue 81: an observer's own {@code Error} — a {@link LinkageError} from
+     * a metrics adapter built against another library version, an
+     * {@link AssertionError} — is the observer's fault, not the engine's. It is
+     * contained per delegate like a {@code RuntimeException}, the delegates
+     * after it still run, and every containment is counted.
+     */
+    @Test
+    @DisplayName("an Error that is neither a VirtualMachineError nor a control-flow signal is contained and counted")
+    void aNonVmNonControlFlowErrorIsContained() {
+        EngineObserver hostile = new EngineObserver() {
+            @Override public void workflowStarted(WorkflowInfo w) {
+                throw new NoClassDefFoundError("io/micrometer/Missing");
+            }
+            @Override public void workflowResumed(WorkflowInfo w) {
+                throw new AssertionError("observer bug");
+            }
+        };
+        var after = new RecordingEngineObserver();
+        var composite = CompositeEngineObserver.contain(CompositeEngineObserver.of(List.of(hostile, after)));
+
+        assertDoesNotThrow(() -> composite.workflowStarted(WF));
+        assertDoesNotThrow(() -> composite.workflowResumed(WF));
+
+        assertEquals(1, after.started().size(), "the delegate after the throwing one still ran");
+        assertEquals(1, after.resumed().size());
+        assertEquals(2, composite.containedErrorCount(), "each containment is counted");
+    }
+
+    /**
+     * A {@link VirtualMachineError} is the JVM's distress, not the observer's:
+     * it propagates as if the engine had hit it.
+     */
+    @Test
+    @DisplayName("a VirtualMachineError from a delegate propagates")
+    void aVirtualMachineErrorPropagates() {
+        EngineObserver hostile = new EngineObserver() {
+            @Override public void workflowStarted(WorkflowInfo w) {
+                throw new OutOfMemoryError("observer allocation");
+            }
+        };
+        var composite = CompositeEngineObserver.of(List.of(hostile, new RecordingEngineObserver()));
+
+        assertThrows(OutOfMemoryError.class, () -> composite.workflowStarted(WF));
+    }
+
+    @Test
+    @DisplayName("contain() wraps a bare observer once and returns a composite unchanged")
+    void containIsIdempotent() {
+        var bare = new RecordingEngineObserver();
+        var contained = CompositeEngineObserver.contain(bare);
+        assertNotSame(bare, contained);
+        assertSame(contained, CompositeEngineObserver.contain(contained));
+        contained.workflowStarted(WF);
+        assertEquals(1, bare.started().size());
+    }
+
+    /**
+     * A delegate that keeps throwing from one callback is logged at {@code WARN}
+     * with the stack trace once, then at {@code DEBUG} until a call to that
+     * delegate from that callback succeeds again.
+     */
+    @Test
+    @DisplayName("a delegate that keeps throwing is WARNed once per callback until it succeeds again")
+    void aDelegateThatKeepsThrowingIsWarnedOncePerCallbackUntilItSucceeds() {
+        var failing = new java.util.concurrent.atomic.AtomicBoolean(true);
+        EngineObserver flaky = new EngineObserver() {
+            @Override public void workflowStarted(WorkflowInfo w) {
+                if (failing.get()) {
+                    throw new IllegalStateException("observer bug");
+                }
+            }
+            @Override public void workflowResumed(WorkflowInfo w) {
+                throw new IllegalStateException("observer bug");
+            }
+        };
+        var composite = CompositeEngineObserver.contain(flaky);
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(
+                CompositeEngineObserver.class)) {
+            composite.workflowStarted(WF);
+            composite.workflowStarted(WF);
+            composite.workflowResumed(WF);         // another callback: its own WARN
+            failing.set(false);
+            composite.workflowStarted(WF);         // succeeds: ends the quiet period
+            failing.set(true);
+            composite.workflowStarted(WF);         // WARN again
+
+            var warns = logs.records().stream()
+                    .filter(r -> r.level() == org.slf4j.event.Level.WARN).toList();
+            assertEquals(3, warns.size(), "one WARN per callback per streak: " + logs.records());
+            assertTrue(warns.stream().allMatch(r -> r.throwable() instanceof IllegalStateException),
+                    "each WARN carries the stack trace");
+            assertEquals(1, logs.records().stream()
+                    .filter(r -> r.level() == org.slf4j.event.Level.DEBUG).count(), "the repeat is DEBUG");
+        }
+        assertEquals(4, composite.containedErrorCount());
     }
 
     // ── No-op default ─────────────────────────────────────────────────
