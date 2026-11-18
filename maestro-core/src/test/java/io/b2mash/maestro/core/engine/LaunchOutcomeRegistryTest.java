@@ -13,6 +13,9 @@ import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.LockHandle;
+import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Timeout;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -22,7 +25,13 @@ import tools.jackson.databind.json.JsonMapper;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
@@ -49,15 +58,22 @@ class LaunchOutcomeRegistryTest {
     private final CountingStore store = new CountingStore();
     private final SharedLock lock = new SharedLock();
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
-    private final RecordingEngineObserver observer = new RecordingEngineObserver();
+    private final ThrowingObserver observer = new ThrowingObserver();
+    /** Releases of wf-x's lock made when no run of wf-x was a registry member any more. */
+    private final List<String> leftBeforeRelease = new CopyOnWriteArrayList<>();
+    private final AtomicReference<@Nullable WorkflowExecutor> self = new AtomicReference<>();
     private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, SERVICE)
             .lifecycleEventsEnabled(false)
-            .distributedLock(lock)
+            .distributedLock(new ReleaseOrderCheckingLock())
             .observer(observer)
             // renewed every 100 ms, so a forced loss is reported at once
             .instanceLockTtl(Duration.ofMillis(300))
             .shutdownTimeout(Duration.ofSeconds(10))
             .build();
+
+    {
+        self.set(executor);
+    }
 
     @AfterEach
     void tearDown() {
@@ -73,6 +89,7 @@ class LaunchOutcomeRegistryTest {
         START_FACTORY_THROWS(0),
         START_THREAD_START_FAILS(0),
         START_RUN_THREAD_DIES_BEFORE_ITS_BODY(0),
+        START_LOCK_LOST_BEFORE_IT_REGISTERS(0),
         RESUME_LOCK_HELD_ELSEWHERE(0),
         RESUME_TURNED_TERMINAL(0),
         RESUME_ADOPTION_CAS_LOST(0),
@@ -81,10 +98,13 @@ class LaunchOutcomeRegistryTest {
         RESUME_THREAD_START_FAILS(0),
         RESUME_LOCK_LOST_BEFORE_IT_REGISTERS(0),
         RESUME_ALREADY_RUNNING_HERE(1),
+        RESUME_OBSERVER_ERROR_AFTER_THE_RUN_STARTED(1),
         RETRY_NOT_FOUND(0),
         RETRY_NOT_FAILED(0),
         RETRY_LOCK_HELD_ELSEWHERE(0),
-        RETRY_RELAUNCHES(0);
+        RETRY_RELAUNCHES(0),
+        RETRY_ALREADY_RUNNING_LOCALLY(1),
+        RETRY_OBSERVER_ERROR_AFTER_THE_RUN_STARTED(1);
 
         final int stillRegistered;
 
@@ -114,6 +134,8 @@ class LaunchOutcomeRegistryTest {
         }
         assertEquals(0, executor.lifecycle().remaining().size());
         assertEquals(LifecycleRegistry.State.CLOSED, executor.lifecycle().state());
+        assertEquals(List.of(), leftBeforeRelease,
+                "a launch or run left the registry before its instance lock was released");
     }
 
     private void launch(Outcome outcome) throws Exception {
@@ -153,6 +175,15 @@ class LaunchOutcomeRegistryTest {
                 };
                 start(QuickWorkflow.class, QuickWorkflow::new);
                 assertEquals(0, valueWithin(lock::heldCount, 0, Duration.ofSeconds(5)));
+            }
+            case START_LOCK_LOST_BEFORE_IT_REGISTERS -> {
+                executor.afterLaunchAdmission = () -> {
+                    lock.forceRelease(KEY);
+                    assertTrue(valueWithin(() -> observer.lockLost().contains(ID), true, Duration.ofSeconds(5)),
+                            "the renewer reported the lock lost");
+                };
+                start(QuickWorkflow.class, QuickWorkflow::new);
+                assertEquals(1, observer.startDeferrals().size(), "the start was deferred to recovery");
             }
             case RESUME_LOCK_HELD_ELSEWHERE -> {
                 var seeded = seed(WorkflowStatus.RUNNING);
@@ -204,6 +235,33 @@ class LaunchOutcomeRegistryTest {
                 assertEquals(WorkflowStatus.WAITING_SIGNAL, valueWithin(this::status, WorkflowStatus.WAITING_SIGNAL,
                         Duration.ofSeconds(5)));
                 assertFalse(resume(store.getInstance(ID).orElseThrow(), QuickWorkflow::new));
+            }
+            case RESUME_OBSERVER_ERROR_AFTER_THE_RUN_STARTED -> {
+                // The run thread has started (and parks); the observer's Error
+                // reaches the launcher afterwards. The run owns its membership.
+                var seeded = seed(WorkflowStatus.RUNNING);
+                observer.onResumed = new ObserverError();
+                assertThrows(ObserverError.class, () -> executor.resumeWorkflow(seeded, ParkWorkflow::new,
+                        method(ParkWorkflow.class)));
+                assertEquals(WorkflowStatus.WAITING_SIGNAL, valueWithin(this::status, WorkflowStatus.WAITING_SIGNAL,
+                        Duration.ofSeconds(5)));
+            }
+            case RETRY_ALREADY_RUNNING_LOCALLY -> {
+                start(ParkWorkflow.class, ParkWorkflow::new);
+                assertEquals(WorkflowStatus.WAITING_SIGNAL, valueWithin(this::status, WorkflowStatus.WAITING_SIGNAL,
+                        Duration.ofSeconds(5)));
+                store.forceStatus(ID, WorkflowStatus.FAILED);
+                assertEquals(WorkflowExecutor.RetryOutcome.ALREADY_RUNNING_LOCALLY,
+                        executor.retryWorkflow(ID, registration()));
+            }
+            case RETRY_OBSERVER_ERROR_AFTER_THE_RUN_STARTED -> {
+                runToFailed();
+                observer.onResumed = new ObserverError();
+                var parking = new WorkflowRegistration("QuickWorkflow", "default", ParkWorkflow::new,
+                        method(ParkWorkflow.class));
+                assertThrows(ObserverError.class, () -> executor.retryWorkflow(ID, parking));
+                assertEquals(WorkflowStatus.WAITING_SIGNAL, valueWithin(this::status, WorkflowStatus.WAITING_SIGNAL,
+                        Duration.ofSeconds(5)));
             }
             case RETRY_NOT_FOUND -> assertEquals(WorkflowExecutor.RetryOutcome.NOT_FOUND,
                     executor.retryWorkflow(ID, registration()));
@@ -280,6 +338,70 @@ class LaunchOutcomeRegistryTest {
             return type.getMethod("run");
         } catch (NoSuchMethodException e) {
             throw new IllegalStateException(e);
+        }
+    }
+
+    /** Thrown by {@link ThrowingObserver}: an {@code Error}, which the executor's emit does not contain. */
+    static final class ObserverError extends Error {
+        ObserverError() {
+            super("observer fails (test)");
+        }
+    }
+
+    /** Records like its parent; throws {@link #onResumed} once from {@code workflowResumed} when set. */
+    static final class ThrowingObserver extends RecordingEngineObserver {
+        volatile @Nullable Error onResumed;
+
+        @Override
+        public void workflowResumed(io.b2mash.maestro.core.observe.WorkflowInfo w) {
+            super.workflowResumed(w);
+            var error = onResumed;
+            if (error != null) {
+                onResumed = null;
+                throw error;
+            }
+        }
+    }
+
+    /**
+     * The test's {@link SharedLock}, behind a check on every release of
+     * wf-x's lock: a run of wf-x must still be a member of the registry then
+     * — join before the lock, leave after its release.
+     */
+    final class ReleaseOrderCheckingLock implements DistributedLock {
+        @Override
+        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
+            return lock.tryAcquire(key, ttl);
+        }
+
+        @Override
+        public void release(LockHandle handle) {
+            var node = self.get();
+            if (handle.key().equals(KEY) && node != null && node.lifecycle().remaining().stream()
+                    .noneMatch(m -> m.isRun() && m.name().equals(ID))) {
+                leftBeforeRelease.add(handle.toString());
+            }
+            lock.release(handle);
+        }
+
+        @Override
+        public boolean renew(LockHandle handle, Duration ttl) {
+            return lock.renew(handle, ttl);
+        }
+
+        @Override
+        public Set<LockHandle> renewAll(Collection<LockHandle> handles, Duration ttl) {
+            return lock.renewAll(handles, ttl);
+        }
+
+        @Override
+        public Set<String> heldKeys(Collection<String> keys) {
+            return lock.heldKeys(keys);
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return true;
         }
     }
 

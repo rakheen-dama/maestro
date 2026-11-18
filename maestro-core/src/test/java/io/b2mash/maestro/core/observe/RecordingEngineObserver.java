@@ -14,7 +14,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * <p>Thread-safe — callbacks arrive concurrently from workflow virtual
  * threads, poller threads and the lock renewer.
  */
-public final class RecordingEngineObserver implements EngineObserver {
+public class RecordingEngineObserver implements EngineObserver {
 
     /** One recorded callback: its name plus the arguments it carried. */
     public record Invocation(String callback, List<Object> args) {}

@@ -141,6 +141,68 @@ class ShutdownAdmissionTest {
         assertUntouched(failed, eventsBefore);
     }
 
+    /**
+     * F4: {@code shutdown()} called on a launching thread — here from an
+     * observer's {@code instanceLockAcquired}, inside the start's lock
+     * acquisition — does not wait its whole deadline for that very launch. The
+     * launch is still given up: it writes no row and is refused.
+     */
+    @Test
+    void aShutdownCalledOnALaunchingThreadDoesNotWaitForThatLaunch() throws Exception {
+        var holder = new AtomicReference<@Nullable WorkflowExecutor>();
+        var calledFromLaunch = new java.util.concurrent.atomic.AtomicBoolean();
+        var node = WorkflowExecutor.builder(store, serializer, SERVICE)
+                .lifecycleEventsEnabled(false)
+                .distributedLock(lock)
+                .shutdownTimeout(Duration.ofSeconds(10))
+                .observer(new io.b2mash.maestro.core.observe.EngineObserver() {
+                    @Override
+                    public void instanceLockAcquired(String workflowId) {
+                        if (calledFromLaunch.compareAndSet(false, true)) {
+                            java.util.Objects.requireNonNull(holder.get()).shutdown();
+                        }
+                    }
+                })
+                .build();
+        holder.set(node);
+        try {
+            var start = System.nanoTime();
+            assertThrows(IllegalStateException.class, () -> node.startWorkflow("wf-self", "QuickWorkflow", "default",
+                    null, QuickWorkflow::new, quickMethod()));
+            var tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+            assertTrue(tookMs < 3_000, "shutdown() waited " + tookMs + " ms for the launch it was called from");
+            assertTrue(store.getInstance("wf-self").isEmpty(), "the given-up start wrote its row");
+            assertEquals(0, lock.heldCount(), "the given-up start released its lock");
+        } finally {
+            node.shutdown();
+        }
+    }
+
+    /**
+     * F4: a workflow that calls {@code shutdown()} on its own run thread does
+     * not make it wait the whole deadline for itself; the run is given up and
+     * does not complete.
+     */
+    @Test
+    void aShutdownCalledFromAWorkflowsOwnThreadDoesNotWaitForThatRun() throws Exception {
+        SelfStoppingWorkflow.node.set(executor);
+        SelfStoppingWorkflow.tookMs.set(-1);
+        try {
+            executor.startWorkflow("wf-stops-itself", "SelfStoppingWorkflow", "default", null,
+                    SelfStoppingWorkflow::new, method(SelfStoppingWorkflow.class));
+
+            assertTrue(valueWithin(() -> SelfStoppingWorkflow.tookMs.get() >= 0, true, Duration.ofSeconds(15)));
+            assertTrue(SelfStoppingWorkflow.tookMs.get() < 3_000,
+                    "shutdown() waited " + SelfStoppingWorkflow.tookMs.get() + " ms for the run it was called from");
+            assertEquals(0, valueWithin(lock::heldCount, 0, Duration.ofSeconds(5)));
+            assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-stops-itself").orElseThrow().status(),
+                    "a run given up by its own shutdown() call does not complete");
+        } finally {
+            SelfStoppingWorkflow.node.set(null);
+        }
+    }
+
     private void assertUntouched(io.b2mash.maestro.core.model.WorkflowInstance failed,
                                  java.util.List<io.b2mash.maestro.core.model.WorkflowEvent> eventsBefore) {
         var now = store.getInstance("wf-failed").orElseThrow();
@@ -197,6 +259,22 @@ class ShutdownAdmissionTest {
         /** @return a constant */
         @WorkflowMethod
         public String run() {
+            return "done";
+        }
+    }
+
+    /** Calls {@code shutdown()} on its own executor, from its own run thread, and records how long it took. */
+    @DurableWorkflow(name = "SelfStoppingWorkflow")
+    public static final class SelfStoppingWorkflow {
+        static final AtomicReference<@Nullable WorkflowExecutor> node = new AtomicReference<>();
+        static final java.util.concurrent.atomic.AtomicLong tookMs = new java.util.concurrent.atomic.AtomicLong(-1);
+
+        /** @return a constant */
+        @WorkflowMethod
+        public String run() {
+            var start = System.nanoTime();
+            java.util.Objects.requireNonNull(node.get()).shutdown();
+            tookMs.set(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start));
             return "done";
         }
     }
