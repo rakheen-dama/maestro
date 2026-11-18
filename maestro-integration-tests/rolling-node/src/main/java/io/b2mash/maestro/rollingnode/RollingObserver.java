@@ -45,8 +45,16 @@ public class RollingObserver implements EngineObserver {
     }
 
     private static void emit(String callback, String workflowId, String reason, @Nullable String detail) {
-        var line = "ROLLING-EVENT|" + callback + "|" + workflowId + "|" + reason + "|"
-                + (detail == null ? "" : detail.replace('\n', ' ').replace('|', '/'));
-        System.out.println(line);
+        System.out.println(line(callback, workflowId, reason, detail));
+    }
+
+    /**
+     * The line for one callback: five {@code |}-separated fields, the detail
+     * flattened to one line with any {@code |} replaced, so the test's parser
+     * always sees exactly five fields.
+     */
+    static String line(String callback, String workflowId, String reason, @Nullable String detail) {
+        return "ROLLING-EVENT|" + callback + "|" + workflowId + "|" + reason + "|"
+                + (detail == null ? "" : detail.replace('\n', ' ').replace('\r', ' ').replace('|', '/'));
     }
 }
