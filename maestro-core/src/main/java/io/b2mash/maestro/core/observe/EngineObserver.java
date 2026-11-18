@@ -282,14 +282,17 @@ public interface EngineObserver {
 
     /**
      * A background loop (one of {@code timer-poller}, {@code recovery-poller},
-     * {@code signal-janitor}, {@code retention-sweeper},
-     * {@code instance-lock-renewer}) contained an {@code Error} that is not a
+     * {@code startup-recovery}, {@code signal-janitor},
+     * {@code retention-sweeper}, {@code instance-lock-renewer}) contained an
+     * {@code Error} that is not a
      * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError}, and
      * keeps running. Fires on the loop's own thread, never on a workflow
      * thread. {@code errorType} is the {@code Error}'s class name. Any
-     * occurrence means a bug or resource exhaustion on this node.
+     * occurrence means a bug or resource exhaustion on this node. (The
+     * one-shot startup recovery reported under {@code recovery-poller} before
+     * pilot readiness P2.)
      *
-     * @param loop      the loop's fixed name (bounded: the five names above)
+     * @param loop      the loop's fixed name (bounded: the six names above)
      * @param errorType fully-qualified class name of the contained {@code Error}
      */
     default void backgroundLoopError(String loop, String errorType) {}

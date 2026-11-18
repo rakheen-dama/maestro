@@ -98,7 +98,7 @@ class RetentionSweeperPacingTest {
             done.complete(swept);
         });
         assertTrue(entered.await(5, SECONDS), "the sweep reached its first pause");
-        sweeper.requestStop();                                           // never started: no loop thread to interrupt
+        sweeper.spec().onStop().forEach(Runnable::run);                  // what the supervisor's requestStop runs
         var result = done.completeOnTimeout(null, 1, SECONDS).get();
         assertNotNull(result, "sweepOnce was still paused 1 s after requestStop");
         assertEquals(1, store.purgeCalls(), "no batch after the stop");

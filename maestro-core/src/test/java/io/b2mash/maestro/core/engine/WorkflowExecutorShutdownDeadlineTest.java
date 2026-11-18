@@ -454,9 +454,12 @@ class WorkflowExecutorShutdownDeadlineTest {
 
     /**
      * Step 6 joins the loops for what is left of the deadline: each loop here
-     * needs about 100 ms after its interrupt to leave its store call, well
-     * inside the deadline, so every loop has ended when {@code shutdown()}
-     * returns and none is reported as not stopped.
+     * needs about 100 ms after it is asked to stop to leave its store call,
+     * well inside the deadline, so every loop has ended when {@code shutdown()}
+     * returns and none is reported as not stopped. The timer and recovery
+     * pollers are still asked by an interrupt; the supervised janitor and
+     * sweeper are never interrupted, so their store calls end on their own
+     * once the shutdown has begun (P2).
      */
     @Test
     void everyLoopHasEndedWhenShutdownReturns() throws Exception {
@@ -471,6 +474,7 @@ class WorkflowExecutorShutdownDeadlineTest {
         executor.startRetentionSweeper(new WorkflowExecutor.RetentionSettings(
                 LOOP_INTERVAL, Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1));
         assertTrue(slow.entered.await(10, SECONDS), "every loop is inside its store call");
+        executor.beforeShutdownDrain = slow.stopping::countDown;   // runs after step 2 asked every loop to stop
         try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
             executor.shutdown();
 
@@ -683,6 +687,8 @@ class WorkflowExecutorShutdownDeadlineTest {
     static final class SlowToStopStore extends VersionedInMemoryStore {
         final CountDownLatch entered = new CountDownLatch(4);
         final AtomicInteger returned = new AtomicInteger();
+        /** Counted down once shutdown has asked the loops to stop. */
+        final CountDownLatch stopping = new CountDownLatch(1);
 
         @Override
         public List<WorkflowTimer> getDueTimers(int batchSize) {
@@ -709,17 +715,19 @@ class WorkflowExecutorShutdownDeadlineTest {
             return PurgeResult.EMPTY;
         }
 
+        /** Blocks until interrupted or until shutdown has begun, then takes 100 ms more to return. */
         private void slowToStop() {
             entered.countDown();
             try {
-                new CountDownLatch(1).await();
+                stopping.await();
             } catch (InterruptedException e) {
-                var until = System.nanoTime() + Duration.ofMillis(100).toNanos();
-                for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {
-                    LockSupport.parkNanos(left); // the flag is clear, so this parks
-                }
-                returned.incrementAndGet();
+                // an interrupted poller: the flag is now clear
             }
+            var until = System.nanoTime() + Duration.ofMillis(100).toNanos();
+            for (var left = until - System.nanoTime(); left > 0; left = until - System.nanoTime()) {
+                LockSupport.parkNanos(left); // the flag is clear, so this parks
+            }
+            returned.incrementAndGet();
         }
     }
 

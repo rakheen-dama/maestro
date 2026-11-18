@@ -32,6 +32,10 @@ import io.b2mash.maestro.core.model.WorkflowFailureDetail;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTerminationDetail;
+import io.b2mash.maestro.core.loop.LoopBody;
+import io.b2mash.maestro.core.loop.LoopSnapshot;
+import io.b2mash.maestro.core.loop.LoopSpec;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.observe.AbandonReason;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
@@ -256,12 +260,14 @@ public final class WorkflowExecutor {
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
-    private final AtomicReference<OneShotRecovery> oneShotRecovery = new AtomicReference<>();
     private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
-    private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
-    private final AtomicReference<RetentionSweeper> retentionSweeper = new AtomicReference<>();
+    /**
+     * Every loop this executor supervises ({@link #supervise}), by loop name.
+     * A loop stays here once ended, so {@link #loops()} still shows it.
+     */
+    private final ConcurrentHashMap<String, LoopSupervisor> supervised = new ConcurrentHashMap<>();
     private volatile @Nullable RetentionSettings retentionSettings;
 
     /**
@@ -2071,13 +2077,13 @@ public final class WorkflowExecutor {
      * own virtual thread, {@code maestro-startup-recovery-<service>}, so the
      * caller does not wait for it.
      *
-     * <p>A pass that throws is logged like a recovery-poller failure (one
+     * <p>It runs under the loop supervisor as loop {@code startup-recovery}
+     * ({@link #loops()}). A pass that throws is a failed iteration (one
      * {@code ERROR} with the stack trace, then an {@code ERROR} reminder every
-     * 5 minutes while it continues) and retried after {@code retryInterval},
-     * with no limit, until one pass completes; then the thread ends. Only an
-     * {@link Error} it contains is counted, on
-     * {@code maestro.loop.errors{loop=recovery-poller}}; a store fault is
-     * logged, not counted. No health detail or meter reports the pass itself.
+     * 5 minutes while it continues) and is retried after {@code retryInterval},
+     * with no limit, until one pass completes; then the loop ends
+     * {@code DONE}. An {@link Error} it contains is counted on
+     * {@code maestro.loop.errors{loop=startup-recovery}}.
      * A {@code MaestroControlFlowError} ends it at once.
      * {@link #shutdown()} stops it. It does not occupy the recovery poller's
      * slot: {@link #startRecoveryPoller(Map, Duration)} may still be called,
@@ -2099,8 +2105,8 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start the one-shot startup recovery");
         }
-        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval, observer);
-        installAndStart(oneShotRecovery, recovery, "One-shot startup recovery", recovery::start, recovery::stop);
+        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval);
+        supervise(recovery.spec(), recovery);
     }
 
     // ── Signal janitor ──────────────────────────────────────────────────
@@ -2126,8 +2132,9 @@ public final class WorkflowExecutor {
      * (see its Javadoc for what survives — notably {@code FAILED} workflows,
      * which may still be retried). Every node runs one, without leader
      * election; it deletes this service's signals only, in batches of 1,000,
-     * at most 1,000 batches per sweep.
-     * A store failure is logged and retried on the next interval.
+     * at most 1,000 batches per sweep. It runs under the loop supervisor as
+     * loop {@code signal-janitor}: a failed sweep, store faults included,
+     * counts in its streak, and the next sweep runs one interval later.
      * {@link #shutdown()} stops it.
      *
      * <p>If this method is never called, nothing is purged. The Spring Boot
@@ -2148,9 +2155,10 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, serviceName, interval, retention, observer);
-        installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
+        var janitor = new SignalJanitor(store, serviceName, interval, retention);
+        supervise(janitor.spec(), janitor);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
+        logger.info("Signal janitor started ({})", janitor.describeSettings());
     }
 
     // ── Retention sweeper ───────────────────────────────────────────────
@@ -2229,9 +2237,10 @@ public final class WorkflowExecutor {
      * {@link WorkflowStore#purgeTerminalInstancesBefore(String, io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
      * in batches of {@code settings.batchSize()}. Leadership is held on
      * {@code maestro:leader:retention:<serviceName>} through the
-     * {@link DistributedLock} (always held when there is none) and re-checked
-     * before every batch. A store failure is logged and retried on the next
-     * interval. {@link #shutdown()} stops it.
+     * {@link DistributedLock} and re-checked before every batch. It runs under
+     * the loop supervisor as loop {@code retention-sweeper}: a failed sweep —
+     * a store or a leader-election fault included — counts in its streak, and
+     * the next sweep runs one interval later. {@link #shutdown()} stops it.
      *
      * <p>If this method is never called, nothing is ever purged and the store
      * grows without bound. The Spring Boot starter calls it automatically
@@ -2249,8 +2258,9 @@ public final class WorkflowExecutor {
                     "WorkflowExecutor is shutting down — cannot start retention sweeper");
         }
         var sweeper = new RetentionSweeper(store, distributedLock, serviceName, settings, observer);
-        installAndStart(retentionSweeper, sweeper, "Retention sweeper", sweeper::start, sweeper::stop);
+        supervise(sweeper.spec(), sweeper);
         retentionSettings = settings;
+        logger.info("Retention sweeper started ({})", sweeper.describeSettings());
     }
 
     // ── Service-name check ──────────────────────────────────────────────
@@ -2305,6 +2315,87 @@ public final class WorkflowExecutor {
             return;
         }
         ForeignServiceCheck.run(store, serviceName, mode, timeout);
+    }
+
+    // ── Supervised loops ────────────────────────────────────────────────
+
+    /**
+     * How long a loop started concurrently with {@link #shutdown()} is waited
+     * for before its start reports the race (the start path, not a shutdown
+     * step: shutdown's own steps take what is left of its deadline).
+     */
+    static final Duration RACED_START_JOIN = Duration.ofSeconds(5);
+
+    /**
+     * Runs a background loop under a {@link LoopSupervisor} this executor owns:
+     * started at once, given this executor's (contained) observer, listed by
+     * {@link #loops()}, and stopped by {@link #shutdown()} — asked to stop with
+     * the other loops at its step 2, and joined against what is left of the
+     * deadline at its step 6. Never interrupted. Internal until 1.0 (see
+     * {@code io.b2mash.maestro.core.loop}); {@code maestro-store-postgres}
+     * declares its loops through it.
+     *
+     * <p>A start racing a shutdown never outlives it: the loop is registered
+     * before it starts and the shutdown flag re-checked after, so whichever of
+     * the two runs last stops it.
+     *
+     * @param spec what the loop is and how it is run; its name must be unique
+     *             on this executor
+     * @param body the loop's work
+     * @return the running supervisor
+     * @throws IllegalStateException if a loop of that name was already
+     *                               supervised here, or the executor is shutting down
+     */
+    public LoopSupervisor supervise(LoopSpec spec, LoopBody body) {
+        Objects.requireNonNull(spec, "spec");
+        Objects.requireNonNull(body, "body");
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start background loop '" + spec.name() + "'");
+        }
+        // Registered unstarted first: a loop name claims its entry once.
+        var holder = new LoopSupervisor[1];
+        var claimed = supervised.computeIfAbsent(spec.name(), name -> {
+            holder[0] = LoopSupervisor.start(spec, body, observer);
+            return holder[0];
+        });
+        if (holder[0] == null || claimed != holder[0]) {
+            throw new IllegalStateException("Background loop '" + spec.name() + "' already started");
+        }
+        var supervisor = holder[0];
+        if (shuttingDown.get()) {
+            supervisor.requestStop();
+            supervisor.awaitStopped(RACED_START_JOIN);
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — background loop '" + spec.name() + "' stopped");
+        }
+        return supervisor;
+    }
+
+    /**
+     * A snapshot of every loop this executor supervises ({@link #supervise}),
+     * ended ones included, ordered by name. Safe from any thread; never blocks
+     * and never touches the store.
+     *
+     * @return one snapshot per supervised loop
+     */
+    public List<LoopSnapshot> loops() {
+        return supervised.values().stream()
+                .map(LoopSupervisor::snapshot)
+                .sorted(java.util.Comparator.comparing(LoopSnapshot::name))
+                .toList();
+    }
+
+    /** The snapshot of the supervised loop {@code name}, or {@code null} if it was never started. */
+    private @Nullable LoopSnapshot loop(String name) {
+        var supervisor = supervised.get(name);
+        return supervisor == null ? null : supervisor.snapshot();
+    }
+
+    /** Whether the supervised loop {@code name} was started and is neither stopping nor ended. */
+    private boolean loopRunning(String name) {
+        var snapshot = loop(name);
+        return snapshot != null && snapshot.running();
     }
 
     /**
@@ -2436,13 +2527,19 @@ public final class WorkflowExecutor {
         // recovery launches — and join them only after the drain (step 6),
         // so a loop stuck in a store call never delays it.
         var loops = new ArrayList<StoppableLoop>(5);
-        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(
-                timerPoller, recoveryPoller, oneShotRecovery, signalJanitor, retentionSweeper)) {
+        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(timerPoller, recoveryPoller)) {
             var loop = slot.getAndSet(null);
             if (loop != null) {
                 loop.requestStop();
                 loops.add(loop);
             }
+        }
+        // The supervised loops (startup recovery, signal janitor, retention
+        // sweeper): asked once, never interrupted; they stay in the map, so
+        // loops() reads them STOPPED afterwards.
+        for (var supervisor : supervised.values()) {
+            supervisor.requestStop();
+            loops.add(StoppableLoop.of(supervisor));
         }
         // Step 3: abandon every park so those threads exit promptly. Their
         // workflows keep the WAITING_* status they parked in and stay
@@ -2787,8 +2884,7 @@ public final class WorkflowExecutor {
      *         it down, or it was never started
      */
     boolean isOneShotRecoveryRunning() {
-        var recovery = oneShotRecovery.get();
-        return recovery != null && recovery.isRunning();
+        return loopRunning(OneShotRecovery.LOOP_NAME);
     }
 
     /**
@@ -2865,8 +2961,7 @@ public final class WorkflowExecutor {
      *         {@link #shutdown()})
      */
     public boolean isSignalJanitorRunning() {
-        var janitor = signalJanitor.get();
-        return janitor != null && janitor.isRunning();
+        return loopRunning(SignalJanitor.LOOP_NAME);
     }
 
     /**
@@ -2893,8 +2988,7 @@ public final class WorkflowExecutor {
      *         {@link #shutdown()})
      */
     public boolean isRetentionSweeperRunning() {
-        var sweeper = retentionSweeper.get();
-        return sweeper != null && sweeper.isRunning();
+        return loopRunning(RetentionSweeper.LOOP_NAME);
     }
 
     /**

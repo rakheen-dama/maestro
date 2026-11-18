@@ -364,8 +364,8 @@ class MicrometerEngineObserverTest {
         new MicrometerEngineObserver(fresh);
         var series = fresh.find("maestro.loop.errors").counters().stream()
                 .collect(java.util.stream.Collectors.toMap(c -> c.getId().getTag("loop"), Counter::count));
-        assertEquals(java.util.Map.of("timer-poller", 0.0, "recovery-poller", 0.0, "signal-janitor", 0.0,
-                "retention-sweeper", 0.0, "instance-lock-renewer", 0.0), series);
+        assertEquals(java.util.Map.of("timer-poller", 0.0, "recovery-poller", 0.0, "startup-recovery", 0.0,
+                "signal-janitor", 0.0, "retention-sweeper", 0.0, "instance-lock-renewer", 0.0), series);
     }
 
     /** Issue 86: every in-place store retry is counted by operation, a bounded snake_case tag. */
