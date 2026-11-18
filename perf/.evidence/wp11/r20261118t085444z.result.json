@@ -1,0 +1,6272 @@
+{
+  "schema": 1,
+  "identity": {
+    "runId": "r20261118t085444z",
+    "scenario": "s3-parked",
+    "profile": "full",
+    "startedAtUtc": "2026-11-18T08:54:45Z",
+    "repo": {
+      "head": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+      "dirty": false,
+      "shallow": false,
+      "engineCommit": "00a2404e3858333fcac870d085948cf90df15348",
+      "harnessCommit": "a736d13f13a1ff9d97fd558fd3e86dc10c3037aa",
+      "engineRefLabel": ""
+    },
+    "host": {
+      "uname": "Darwin 25.5.0 arm64",
+      "cpus": 10,
+      "memoryMb": 32768,
+      "dockerServer": "28.5.1",
+      "dockerCompose": "2.40.3-desktop.1",
+      "dockerMemoryMb": 7837
+    },
+    "images": [
+      "apache/kafka:3.9.0",
+      "curlimages/curl:8.11.1",
+      "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+      "grafana/k6:2.3.0",
+      "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "prom/prometheus:v3.5.0"
+    ],
+    "config": {
+      "replicas": 1,
+      "adminEventsRequested": false,
+      "nodeHeap": "1g",
+      "nodeCpus": "2",
+      "nodeMem": "1536m"
+    },
+    "notes": [],
+    "build": {
+      "bakedCommit": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+      "expectedCommit": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+      "jarCommit": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+      "jarSha256": "4f9d6206faa164f6e03e8b59ea2b5962c16229782aa6c529c3e71140bc33aa3b"
+    },
+    "imageDigests": [
+      "apache/kafka@sha256:fbc7d7c428e3755cf36518d4976596002477e4c052d1f80b5b9eafd06d0fff2f",
+      "curlimages/curl@sha256:c1fe1679c34d9784c1b0d1e5f62ac0a79fca01fb6377cdd33e90473c6f9f9a69",
+      "eclipse-temurin@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+      "grafana/k6@sha256:2dd4756ec6e14e62778916e1eb850108e4b499304c02df56760fa0bdb0fba0b8",
+      "postgres@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+      "prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996"
+    ],
+    "containers": [
+      {
+        "name": "maestro-perf-curl-1",
+        "service": "curl",
+        "image": "curlimages/curl:8.11.1",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-kafka-1",
+        "service": "kafka",
+        "image": "apache/kafka:3.9.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-kafka-init-1",
+        "service": "kafka-init",
+        "image": "apache/kafka:3.9.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-node-1",
+        "service": "node",
+        "image": "eclipse-temurin:25-jre@sha256:a640968ae55027b322cedd5f8228b01a84baff0b9e9360e47601c6a111ba1699",
+        "cpus": 2,
+        "memoryBytes": 1610612736
+      },
+      {
+        "name": "maestro-perf-postgres-1",
+        "service": "postgres",
+        "image": "postgres:16-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+        "cpus": "none",
+        "memoryBytes": "none"
+      },
+      {
+        "name": "maestro-perf-prometheus-1",
+        "service": "prometheus",
+        "image": "prom/prometheus:v3.5.0",
+        "cpus": "none",
+        "memoryBytes": "none"
+      }
+    ],
+    "nodes": [
+      {
+        "container": "maestro-perf-node-1",
+        "buildCommit": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+        "buildTime": "2026-11-18T08:54:50.021Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "935e04c04921",
+        "pid": 1,
+        "jvmStartMillis": 1794992103404,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794992118076
+      }
+    ],
+    "nodesAfter": [
+      {
+        "container": "maestro-perf-node-1",
+        "buildCommit": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+        "buildTime": "2026-11-18T08:54:50.021Z",
+        "version": "0.3.0-SNAPSHOT",
+        "hostname": "935e04c04921",
+        "pid": 1,
+        "jvmStartMillis": 1794992103404,
+        "javaVersion": "25.0.5+8-LTS",
+        "availableProcessors": 2,
+        "maxHeapBytes": 1037959168,
+        "serviceName": "perf",
+        "adminEventsEnabled": false,
+        "workerDefaultConcurrency": 20,
+        "workerDefaultActivityConcurrency": 20,
+        "workerTaskQueues": [],
+        "wakeRecheckInterval": "PT30S",
+        "recoveryPollInterval": "PT1M",
+        "timerPollInterval": "PT5S",
+        "hikariMaximumPoolSize": 10,
+        "lockCleanupInterval": "PT10M",
+        "lockTtl": "PT30S",
+        "signalJanitorInterval": "PT1H",
+        "retentionEnabled": true,
+        "retentionInterval": "PT1H",
+        "reportedAtMillis": 1794993624274
+      }
+    ],
+    "effective": {
+      "adminEventsEffective": false,
+      "adminEventsEffectiveByNode": [
+        false
+      ],
+      "adminTopicEndOffset": 0,
+      "hikariMaximumPoolSize": 10,
+      "workerDefaultConcurrency": 20,
+      "workerDefaultActivityConcurrency": 20,
+      "wakeRecheckInterval": "PT30S",
+      "recoveryPollInterval": "PT1M",
+      "timerPollInterval": "PT5S",
+      "lockCleanupInterval": "PT10M",
+      "signalJanitorInterval": "PT1H",
+      "retentionEnabled": true,
+      "retentionInterval": "PT1H"
+    },
+    "postgres": {
+      "version": "PostgreSQL 16.15 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+      "settings": {
+        "fsync": "on",
+        "full_page_writes": "on",
+        "max_connections": "300",
+        "pg_stat_statements.max": "10000",
+        "pg_stat_statements.save": "on",
+        "pg_stat_statements.track": "all",
+        "pg_stat_statements.track_planning": "off",
+        "pg_stat_statements.track_utility": "on",
+        "shared_buffers": "128MB",
+        "synchronous_commit": "on",
+        "wal_level": "replica",
+        "work_mem": "4MB"
+      }
+    }
+  },
+  "scenario": "s3-parked",
+  "profile": "full",
+  "measurements": {
+    "idPrefix": "r20261118t085444z-park-",
+    "runPrefix": "r20261118t085444z-",
+    "parkMode": "sleep",
+    "parkedStatus": "WAITING_TIMER",
+    "workflowShape": {
+      "type": "park",
+      "parkMode": "sleep",
+      "parkSeconds": 7200
+    },
+    "probeShape": {
+      "type": "chain",
+      "activities": 3,
+      "activityMillis": 20
+    },
+    "plan": {
+      "profile": "full",
+      "parkMode": "sleep",
+      "parkedStatus": "WAITING_TIMER",
+      "plateaus": [
+        1000,
+        5000,
+        10000
+      ],
+      "idleRequestedSecs": 120,
+      "idleSecs": 120,
+      "holdRequestedSecs": 300,
+      "holdSecs": 300,
+      "windowUnitSecs": 60,
+      "wakeRecheckSecs": 30,
+      "recoveryPollSecs": 60,
+      "timerPollSecs": 5,
+      "lockTtlSecs": 30,
+      "renewIntervalSecs": 10,
+      "settleSecs": 35,
+      "parkTimeoutSecs": 600,
+      "probe": {
+        "rate": 2,
+        "durationSecs": 60,
+        "body": {
+          "type": "chain",
+          "activities": 3,
+          "activityMillis": 20
+        },
+        "drainTimeoutSecs": 120
+      },
+      "seed": {
+        "executor": "constant-arrival-rate",
+        "paceSecs": 30,
+        "vus": 200,
+        "body": {
+          "type": "park",
+          "parkMode": "sleep",
+          "parkSeconds": 7200
+        }
+      },
+      "release": {
+        "signal": "perf.release",
+        "vus": 50,
+        "timeoutSecs": 1120
+      }
+    },
+    "warmup": {
+      "prefix": "r20261118t085444z-warmup-",
+      "count": 40,
+      "vus": 10,
+      "timeoutSecs": 120,
+      "drain": {
+        "waitedSecs": 0,
+        "timedOut": false
+      },
+      "runStatus": {
+        "total": 40,
+        "byStatus": {
+          "COMPLETED": 40
+        }
+      }
+    },
+    "background": {
+      "ticks": 24,
+      "timerPollSecs": 5,
+      "recoveryPollSecs": 60,
+      "idleSecs": 120,
+      "window": {
+        "resetAt": "2026-11-18T08:55:22.866949+00:00",
+        "snapshotAt": "2026-11-18T08:57:23.178621+00:00",
+        "windowSecs": 120.312,
+        "dealloc": 0,
+        "maestroCalls": 50,
+        "maestroCallsTopLevel": 50,
+        "maestroStatements": 3,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 24,
+            "rows": 24,
+            "toplevel": true,
+            "totalMs": 3.879,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 24,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.865,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 2,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.158,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ]
+      }
+    },
+    "k6": [
+      {
+        "phase": "warmup",
+        "script": "start-batch.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 40,
+        "droppedIterations": 0,
+        "httpReqs": 40,
+        "httpReqFailedRate": 0,
+        "vusMax": null,
+        "checksPassed": 40,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 91.4298125,
+          "p95": 106.1797524,
+          "p99": 112.78369438,
+          "max": 114.183583
+        }
+      },
+      {
+        "phase": "probe-p0",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 120,
+        "droppedIterations": 0,
+        "httpReqs": 120,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 120,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 7.6587295,
+          "p95": 16.374643449999997,
+          "p99": 19.495339289999997,
+          "max": 28.116042
+        }
+      },
+      {
+        "phase": "seed-p1000",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 1001,
+        "droppedIterations": 0,
+        "httpReqs": 1000,
+        "httpReqFailedRate": 0,
+        "vusMax": 200,
+        "checksPassed": 1000,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 3.732292,
+          "p95": 6.630916949999995,
+          "p99": 11.72485209,
+          "max": 38.832416
+        }
+      },
+      {
+        "phase": "probe-p1000",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 121,
+        "droppedIterations": 0,
+        "httpReqs": 121,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 121,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 5.626666,
+          "p95": 17.800375,
+          "p99": 34.8922672,
+          "max": 60.790208
+        }
+      },
+      {
+        "phase": "seed-p5000",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 4001,
+        "droppedIterations": 0,
+        "httpReqs": 4000,
+        "httpReqFailedRate": 0,
+        "vusMax": 200,
+        "checksPassed": 4000,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 2.6044585,
+          "p95": 20.605552099999993,
+          "p99": 49.29094282999998,
+          "max": 108.95
+        }
+      },
+      {
+        "phase": "probe-p5000",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 120,
+        "droppedIterations": 0,
+        "httpReqs": 120,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 120,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 4.5902505,
+          "p95": 19.00202854999999,
+          "p99": 46.18169045999999,
+          "max": 356.255417
+        }
+      },
+      {
+        "phase": "seed-p10000",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 5001,
+        "droppedIterations": 0,
+        "httpReqs": 5000,
+        "httpReqFailedRate": 0,
+        "vusMax": 200,
+        "checksPassed": 5000,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 1.9950625,
+          "p95": 12.841258349999995,
+          "p99": 30.303604169999996,
+          "max": 148.602542
+        }
+      },
+      {
+        "phase": "probe-p10000",
+        "script": "start-rate.js",
+        "exitCode": 0,
+        "summaryMissing": false,
+        "nodes": [
+          "http://maestro-perf-node-1:8080"
+        ],
+        "iterations": 121,
+        "droppedIterations": 0,
+        "httpReqs": 121,
+        "httpReqFailedRate": 0,
+        "vusMax": 10,
+        "checksPassed": 121,
+        "checksFailed": 0,
+        "startRetries": 0,
+        "startMs": {
+          "p50": 4.504542,
+          "p95": 9.004042,
+          "p99": 20.15551719999999,
+          "max": 22.725916
+        }
+      }
+    ],
+    "windows": [
+      {
+        "resetAt": "2026-11-18T08:55:22.866949+00:00",
+        "snapshotAt": "2026-11-18T08:57:23.178621+00:00",
+        "windowSecs": 120.312,
+        "dealloc": 0,
+        "maestroCalls": 50,
+        "maestroCallsTopLevel": 50,
+        "maestroStatements": 3,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 24,
+            "rows": 24,
+            "toplevel": true,
+            "totalMs": 3.879,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 24,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.865,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 2,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.158,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ],
+        "P": 0,
+        "kind": "idle",
+        "epochs": {
+          "start": 1794992122,
+          "end": 1794992243
+        },
+        "lockCleanerCalls": 0,
+        "cps": 0.4156,
+        "perParkedCallsPer30s": null,
+        "perParkedCallsPerMin": null,
+        "perParkedCallsPerRecheck": null,
+        "tolerancePerMin": null
+      },
+      {
+        "resetAt": "2026-11-18T08:59:31.570567+00:00",
+        "snapshotAt": "2026-11-18T09:04:31.935931+00:00",
+        "windowSecs": 300.365,
+        "dealloc": 0,
+        "maestroCalls": 20228,
+        "maestroCallsTopLevel": 20228,
+        "maestroStatements": 7,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 10009,
+            "rows": 10009,
+            "toplevel": true,
+            "totalMs": 994.330,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 10009,
+            "rows": 10009,
+            "toplevel": true,
+            "totalMs": 622.514,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2 ORDER BY created_at ASC, id ASC"
+          },
+          {
+            "calls": 60,
+            "rows": 30000,
+            "toplevel": true,
+            "totalMs": 277.421,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 60,
+            "rows": 60,
+            "toplevel": true,
+            "totalMs": 11.204,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 60,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 2.403,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = 'PENDING' ORDER BY fire_at ASC LIMIT $1 FOR UPDATE S"
+          },
+          {
+            "calls": 25,
+            "rows": 4000,
+            "toplevel": true,
+            "totalMs": 8.154,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 5,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 2.517,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ],
+        "componentsAt": "2026-11-18T09:04:31.942641+00:00",
+        "components": {
+          "timerRowRead": {
+            "calls": 10009,
+            "entries": 1,
+            "totalMs": 622.514
+          },
+          "lockRenewAll": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 277.421
+          },
+          "instanceRead": {
+            "calls": 10009,
+            "entries": 1,
+            "totalMs": 994.330
+          },
+          "recoveryPage": {
+            "calls": 30,
+            "entries": 2,
+            "totalMs": 10.671
+          },
+          "leaderElection": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 11.204
+          },
+          "timerDuePoll": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 2.403
+          }
+        },
+        "otherTop": [],
+        "nestedCalls": 0,
+        "P": 1000,
+        "kind": "plateau",
+        "epochs": {
+          "start": 1794992371,
+          "end": 1794992671
+        },
+        "parkedBefore": {
+          "at": "2026-11-18T08:59:31.440663+00:00",
+          "park": {
+            "total": 1000,
+            "open": 1000,
+            "byStatus": {
+              "WAITING_TIMER": 1000
+            }
+          },
+          "others": {
+            "total": 160,
+            "open": 0,
+            "byStatus": {
+              "COMPLETED": 160
+            }
+          }
+        },
+        "parkedAfter": {
+          "at": "2026-11-18T09:04:32.092825+00:00",
+          "park": {
+            "total": 1000,
+            "open": 1000,
+            "byStatus": {
+              "WAITING_TIMER": 1000
+            }
+          },
+          "others": {
+            "total": 160,
+            "open": 0,
+            "byStatus": {
+              "COMPLETED": 160
+            }
+          }
+        },
+        "lockCleanerCalls": 0,
+        "cps": 67.3447,
+        "perParkedCallsPer30s": 2.0079,
+        "perParkedCallsPerMin": 4.0157,
+        "perParkedCallsPerRecheck": 2.0079,
+        "tolerancePerMin": 0.0006
+      },
+      {
+        "resetAt": "2026-11-18T09:06:42.127583+00:00",
+        "snapshotAt": "2026-11-18T09:11:42.477673+00:00",
+        "windowSecs": 300.350,
+        "dealloc": 0,
+        "maestroCalls": 100656,
+        "maestroCallsTopLevel": 100656,
+        "maestroStatements": 7,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 50058,
+            "rows": 50058,
+            "toplevel": true,
+            "totalMs": 3802.174,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 50058,
+            "rows": 50058,
+            "toplevel": true,
+            "totalMs": 2221.424,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2 ORDER BY created_at ASC, id ASC"
+          },
+          {
+            "calls": 290,
+            "rows": 145000,
+            "toplevel": true,
+            "totalMs": 8222.175,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 125,
+            "rows": 24000,
+            "toplevel": true,
+            "totalMs": 79.862,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 60,
+            "rows": 60,
+            "toplevel": true,
+            "totalMs": 29.788,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 60,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 2.750,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = $2 ORDER BY fire_at ASC LIMIT $1 FOR UPDATE SKIP LOC"
+          },
+          {
+            "calls": 5,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 2.929,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ],
+        "componentsAt": "2026-11-18T09:11:42.485436+00:00",
+        "components": {
+          "timerRowRead": {
+            "calls": 50058,
+            "entries": 1,
+            "totalMs": 2221.424
+          },
+          "lockRenewAll": {
+            "calls": 290,
+            "entries": 1,
+            "totalMs": 8222.175
+          },
+          "instanceRead": {
+            "calls": 50058,
+            "entries": 1,
+            "totalMs": 3802.174
+          },
+          "recoveryPage": {
+            "calls": 130,
+            "entries": 2,
+            "totalMs": 82.791
+          },
+          "leaderElection": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 29.788
+          },
+          "timerDuePoll": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 2.750
+          }
+        },
+        "otherTop": [],
+        "nestedCalls": 0,
+        "P": 5000,
+        "kind": "plateau",
+        "epochs": {
+          "start": 1794992802,
+          "end": 1794993102
+        },
+        "parkedBefore": {
+          "at": "2026-11-18T09:06:41.940685+00:00",
+          "park": {
+            "total": 5000,
+            "open": 5000,
+            "byStatus": {
+              "WAITING_TIMER": 5000
+            }
+          },
+          "others": {
+            "total": 281,
+            "open": 0,
+            "byStatus": {
+              "COMPLETED": 281
+            }
+          }
+        },
+        "parkedAfter": {
+          "at": "2026-11-18T09:11:42.63071+00:00",
+          "park": {
+            "total": 5000,
+            "open": 5000,
+            "byStatus": {
+              "WAITING_TIMER": 5000
+            }
+          },
+          "others": {
+            "total": 281,
+            "open": 0,
+            "byStatus": {
+              "COMPLETED": 281
+            }
+          }
+        },
+        "lockCleanerCalls": 0,
+        "cps": 335.129,
+        "perParkedCallsPer30s": 2.0083,
+        "perParkedCallsPerMin": 4.0166,
+        "perParkedCallsPerRecheck": 2.0083,
+        "tolerancePerMin": 0.0001
+      },
+      {
+        "resetAt": "2026-11-18T09:13:52.027491+00:00",
+        "snapshotAt": "2026-11-18T09:18:52.527757+00:00",
+        "windowSecs": 300.500,
+        "dealloc": 0,
+        "maestroCalls": 201218,
+        "maestroCallsTopLevel": 201218,
+        "maestroStatements": 11,
+        "sweepCalls": {
+          "lockCleaner": 2,
+          "lockCleanerStatements": 2,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 2,
+        "top": [
+          {
+            "calls": 100139,
+            "rows": 100139,
+            "toplevel": true,
+            "totalMs": 3412.331,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2 ORDER BY created_at ASC, id ASC"
+          },
+          {
+            "calls": 100138,
+            "rows": 100138,
+            "toplevel": true,
+            "totalMs": 5395.201,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 560,
+            "rows": 280000,
+            "toplevel": true,
+            "totalMs": 15879.580,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 250,
+            "rows": 49000,
+            "toplevel": true,
+            "totalMs": 89.413,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 60,
+            "rows": 60,
+            "toplevel": true,
+            "totalMs": 10.828,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 60,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 2.107,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = 'PENDING' ORDER BY fire_at ASC LIMIT $1 FOR UPDATE S"
+          },
+          {
+            "calls": 5,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 3.341,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 3,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.059,
+            "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+          },
+          {
+            "calls": 1,
+            "rows": 1,
+            "toplevel": true,
+            "totalMs": 0.046,
+            "query": "SELECT now()"
+          },
+          {
+            "calls": 1,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.014,
+            "query": "DELETE FROM maestro_distributed_lock WHERE expires_at < now() - interval $1"
+          },
+          {
+            "calls": 1,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.005,
+            "query": "DELETE FROM maestro_leader_election WHERE expires_at < now() - interval $1"
+          }
+        ],
+        "componentsAt": "2026-11-18T09:18:52.534096+00:00",
+        "components": {
+          "lockRenewAll": {
+            "calls": 560,
+            "entries": 1,
+            "totalMs": 15879.580
+          },
+          "instanceRead": {
+            "calls": 100161,
+            "entries": 1,
+            "totalMs": 5396.421
+          },
+          "recoveryPage": {
+            "calls": 255,
+            "entries": 2,
+            "totalMs": 92.754
+          },
+          "leaderElection": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 10.828
+          },
+          "timerDuePoll": {
+            "calls": 60,
+            "entries": 1,
+            "totalMs": 2.107
+          },
+          "timerRowRead": {
+            "calls": 100159,
+            "entries": 1,
+            "totalMs": 3412.759
+          },
+          "other": {
+            "calls": 3,
+            "entries": 1,
+            "totalMs": 0.059
+          },
+          "lockCleaner": {
+            "calls": 2,
+            "entries": 2,
+            "totalMs": 0.019
+          },
+          "clockSkew": {
+            "calls": 1,
+            "entries": 1,
+            "totalMs": 0.046
+          }
+        },
+        "otherTop": [
+          {
+            "calls": 3,
+            "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+          }
+        ],
+        "nestedCalls": 0,
+        "P": 10000,
+        "kind": "plateau",
+        "epochs": {
+          "start": 1794993232,
+          "end": 1794993532
+        },
+        "parkedBefore": {
+          "at": "2026-11-18T09:13:51.853793+00:00",
+          "park": {
+            "total": 10000,
+            "open": 10000,
+            "byStatus": {
+              "WAITING_TIMER": 10000
+            }
+          },
+          "others": {
+            "total": 401,
+            "open": 0,
+            "byStatus": {
+              "COMPLETED": 401
+            }
+          }
+        },
+        "parkedAfter": {
+          "at": "2026-11-18T09:18:52.676727+00:00",
+          "park": {
+            "total": 10000,
+            "open": 10000,
+            "byStatus": {
+              "WAITING_TIMER": 10000
+            }
+          },
+          "others": {
+            "total": 401,
+            "open": 0,
+            "byStatus": {
+              "COMPLETED": 401
+            }
+          }
+        },
+        "lockCleanerCalls": 2,
+        "cps": 669.604,
+        "perParkedCallsPer30s": 2.0076,
+        "perParkedCallsPerMin": 4.0151,
+        "perParkedCallsPerRecheck": 2.0076,
+        "tolerancePerMin": 0.0001
+      }
+    ],
+    "auxWindows": [
+      {
+        "resetAt": "2026-11-18T08:58:24.564201+00:00",
+        "snapshotAt": "2026-11-18T08:58:56.017498+00:00",
+        "windowSecs": 31.453,
+        "dealloc": 0,
+        "maestroCalls": 15066,
+        "maestroCallsTopLevel": 12066,
+        "maestroStatements": 17,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 3,
+        "top": [
+          {
+            "calls": 3000,
+            "rows": 3000,
+            "toplevel": false,
+            "totalMs": 30.562,
+            "query": "SELECT 1 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 2000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 44.338,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 2000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 30.352,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 1025,
+            "rows": 1025,
+            "toplevel": true,
+            "totalMs": 27.080,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 1000,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 111.987,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 1000,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 98.688,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 1000,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 69.997,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 1000,
+            "rows": 1000,
+            "toplevel": true,
+            "totalMs": 62.805,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 1000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 1.142,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 693,
+            "rows": 693,
+            "toplevel": true,
+            "totalMs": 56.972,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 693,
+            "rows": 693,
+            "toplevel": true,
+            "totalMs": 41.578,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 307,
+            "rows": 307,
+            "toplevel": true,
+            "totalMs": 31.669,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 307,
+            "rows": 307,
+            "toplevel": true,
+            "totalMs": 24.663,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 25,
+            "rows": 25,
+            "toplevel": true,
+            "totalMs": 0.827,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2 ORDER BY created_at ASC, id ASC"
+          },
+          {
+            "calls": 6,
+            "rows": 6,
+            "toplevel": true,
+            "totalMs": 0.776,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 6,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.148,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = 'PENDING' ORDER BY fire_at ASC LIMIT $1 FOR UPDATE S"
+          },
+          {
+            "calls": 4,
+            "rows": 1448,
+            "toplevel": true,
+            "totalMs": 10.101,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          }
+        ],
+        "componentsAt": "2026-11-18T08:58:56.022631+00:00",
+        "components": {
+          "lockRenewAll": {
+            "calls": 4,
+            "entries": 1,
+            "totalMs": 10.101
+          },
+          "instanceRead": {
+            "calls": 1025,
+            "entries": 1,
+            "totalMs": 27.080
+          },
+          "lockAcquire": {
+            "calls": 1000,
+            "entries": 1,
+            "totalMs": 111.987
+          },
+          "leaderElection": {
+            "calls": 6,
+            "entries": 1,
+            "totalMs": 0.776
+          },
+          "timerDuePoll": {
+            "calls": 6,
+            "entries": 1,
+            "totalMs": 0.148
+          },
+          "timerRowRead": {
+            "calls": 25,
+            "entries": 1,
+            "totalMs": 0.827
+          },
+          "other": {
+            "calls": 10000,
+            "entries": 10,
+            "totalMs": 462.205
+          }
+        },
+        "otherTop": [
+          {
+            "calls": 2000,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 2000,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 1000,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 1000,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 1000,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 1000,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 693,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 693,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 307,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 307,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          }
+        ],
+        "nestedCalls": 3000,
+        "kind": "seed",
+        "P": 1000,
+        "Pprev": 0,
+        "epochs": {
+          "start": 1794992304,
+          "end": 1794992336
+        }
+      },
+      {
+        "resetAt": "2026-11-18T09:05:34.12552+00:00",
+        "snapshotAt": "2026-11-18T09:06:06.389739+00:00",
+        "windowSecs": 32.264,
+        "dealloc": 0,
+        "maestroCalls": 62424,
+        "maestroCallsTopLevel": 50424,
+        "maestroStatements": 17,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 3,
+        "top": [
+          {
+            "calls": 12000,
+            "rows": 12000,
+            "toplevel": false,
+            "totalMs": 114.784,
+            "query": "SELECT $2 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 8000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 176.755,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 8000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 126.740,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 5196,
+            "rows": 5196,
+            "toplevel": true,
+            "totalMs": 165.209,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 4000,
+            "rows": 4000,
+            "toplevel": true,
+            "totalMs": 354.209,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 4000,
+            "rows": 4000,
+            "toplevel": true,
+            "totalMs": 347.606,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 4000,
+            "rows": 4000,
+            "toplevel": true,
+            "totalMs": 269.703,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 4000,
+            "rows": 4000,
+            "toplevel": true,
+            "totalMs": 241.058,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 4000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 3.983,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 3691,
+            "rows": 3691,
+            "toplevel": true,
+            "totalMs": 294.685,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 3690,
+            "rows": 3690,
+            "toplevel": true,
+            "totalMs": 231.335,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 1196,
+            "rows": 1196,
+            "toplevel": true,
+            "totalMs": 45.883,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2 ORDER BY created_at ASC, id ASC"
+          },
+          {
+            "calls": 310,
+            "rows": 310,
+            "toplevel": true,
+            "totalMs": 35.260,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 309,
+            "rows": 309,
+            "toplevel": true,
+            "totalMs": 39.103,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 20,
+            "rows": 9092,
+            "toplevel": true,
+            "totalMs": 88.804,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 6,
+            "rows": 6,
+            "toplevel": true,
+            "totalMs": 0.559,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 6,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.134,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = 'PENDING' ORDER BY fire_at ASC LIMIT $1 FOR UPDATE S"
+          }
+        ],
+        "componentsAt": "2026-11-18T09:06:06.397743+00:00",
+        "components": {
+          "lockRenewAll": {
+            "calls": 20,
+            "entries": 1,
+            "totalMs": 88.804
+          },
+          "instanceRead": {
+            "calls": 5197,
+            "entries": 1,
+            "totalMs": 165.255
+          },
+          "lockAcquire": {
+            "calls": 4000,
+            "entries": 1,
+            "totalMs": 347.606
+          },
+          "leaderElection": {
+            "calls": 6,
+            "entries": 1,
+            "totalMs": 0.559
+          },
+          "timerDuePoll": {
+            "calls": 6,
+            "entries": 1,
+            "totalMs": 0.134
+          },
+          "timerRowRead": {
+            "calls": 1197,
+            "entries": 1,
+            "totalMs": 45.910
+          },
+          "other": {
+            "calls": 40000,
+            "entries": 10,
+            "totalMs": 1772.831
+          }
+        },
+        "otherTop": [
+          {
+            "calls": 8000,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 8000,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 4000,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 4000,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 4000,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 4000,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 3691,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 3690,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 310,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 309,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          }
+        ],
+        "nestedCalls": 12000,
+        "kind": "seed",
+        "P": 5000,
+        "Pprev": 1000,
+        "epochs": {
+          "start": 1794992734,
+          "end": 1794992766
+        }
+      },
+      {
+        "resetAt": "2026-11-18T09:12:44.366799+00:00",
+        "snapshotAt": "2026-11-18T09:13:16.206098+00:00",
+        "windowSecs": 31.839,
+        "dealloc": 0,
+        "maestroCalls": 86100,
+        "maestroCallsTopLevel": 71100,
+        "maestroStatements": 17,
+        "sweepCalls": {
+          "lockCleaner": 0,
+          "lockCleanerStatements": 0,
+          "signalJanitor": 0,
+          "retention": 0
+        },
+        "harnessCalls": 3,
+        "top": [
+          {
+            "calls": 15000,
+            "rows": 15000,
+            "toplevel": false,
+            "totalMs": 146.741,
+            "query": "SELECT 1 FROM ONLY \"public\".\"maestro_workflow_instance\" x WHERE \"id\" OPERATOR(pg_catalog.=) $1 FOR KEY SHARE OF x"
+          },
+          {
+            "calls": 10498,
+            "rows": 10498,
+            "toplevel": true,
+            "totalMs": 300.705,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 10000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 207.476,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 10000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 147.135,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 5496,
+            "rows": 5496,
+            "toplevel": true,
+            "totalMs": 243.592,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE workflow_instance_id = $1 AND timer_id = $2 ORDER BY created_at ASC, id ASC"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 414.262,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 403.436,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 390.165,
+            "query": "INSERT INTO maestro_distributed_lock (lock_key, token, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (lock_key) DO UPDATE SET token = EXCLUDED.token, expires_at = EXCLUDED"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 319.342,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 316.004,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 5000,
+            "rows": 5000,
+            "toplevel": true,
+            "totalMs": 280.086,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          },
+          {
+            "calls": 5000,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 4.772,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 48,
+            "rows": 23400,
+            "toplevel": true,
+            "totalMs": 238.426,
+            "query": "UPDATE maestro_distributed_lock l SET expires_at = now() + make_interval(secs => $1) FROM unnest($2::text[], $3::text[]) AS h(lock_key, token) WHERE l.lock_key = h.lock_key AND l.token = h.token AND l"
+          },
+          {
+            "calls": 43,
+            "rows": 8546,
+            "toplevel": true,
+            "totalMs": 19.645,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          },
+          {
+            "calls": 7,
+            "rows": 7,
+            "toplevel": true,
+            "totalMs": 0.772,
+            "query": "INSERT INTO maestro_leader_election (election_key, candidate_id, expires_at) VALUES ($1, $2, now() + make_interval(secs => $3)) ON CONFLICT (election_key) DO UPDATE SET candidate_id = EXCLUDED.candida"
+          },
+          {
+            "calls": 7,
+            "rows": 0,
+            "toplevel": true,
+            "totalMs": 0.222,
+            "query": "SELECT id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at FROM maestro_workflow_timer WHERE fire_at <= now() AND status = 'PENDING' ORDER BY fire_at ASC LIMIT $1 FOR UPDATE S"
+          },
+          {
+            "calls": 1,
+            "rows": 200,
+            "toplevel": true,
+            "totalMs": 1.450,
+            "query": "SELECT id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epoch FROM maestro_workflow_instanc"
+          }
+        ],
+        "componentsAt": "2026-11-18T09:13:16.222671+00:00",
+        "components": {
+          "lockRenewAll": {
+            "calls": 48,
+            "entries": 1,
+            "totalMs": 238.426
+          },
+          "instanceRead": {
+            "calls": 10504,
+            "entries": 1,
+            "totalMs": 305.473
+          },
+          "recoveryPage": {
+            "calls": 44,
+            "entries": 2,
+            "totalMs": 21.095
+          },
+          "lockAcquire": {
+            "calls": 5000,
+            "entries": 1,
+            "totalMs": 390.165
+          },
+          "leaderElection": {
+            "calls": 7,
+            "entries": 1,
+            "totalMs": 0.772
+          },
+          "timerDuePoll": {
+            "calls": 7,
+            "entries": 1,
+            "totalMs": 0.222
+          },
+          "timerRowRead": {
+            "calls": 5503,
+            "entries": 1,
+            "totalMs": 243.871
+          },
+          "other": {
+            "calls": 50000,
+            "entries": 8,
+            "totalMs": 2092.512
+          }
+        },
+        "otherTop": [
+          {
+            "calls": 10000,
+            "query": "UPDATE maestro_workflow_signal SET workflow_instance_id = $1 WHERE workflow_id = $2 AND workflow_instance_id IS NULL"
+          },
+          {
+            "calls": 10000,
+            "query": "SELECT id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash FROM maestro_workflow_event WHERE workflow_instance_id = $1 AND sequence_number = $2"
+          },
+          {
+            "calls": 5000,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 5000,
+            "query": "UPDATE maestro_workflow_instance SET run_id = $1, workflow_type = $2, task_queue = $3, status = $4, input = $5, output = $6, service_name = $7, event_sequence = $8, started_at = $9, completed_at = $10"
+          },
+          {
+            "calls": 5000,
+            "query": "BEGIN"
+          },
+          {
+            "calls": 5000,
+            "query": "INSERT INTO maestro_workflow_event (id, workflow_instance_id, sequence_number, event_type, step_name, payload, created_at, args_hash) SELECT $1, $2, $3, $4, $5, $6, $7, $8 FROM maestro_workflow_instan"
+          },
+          {
+            "calls": 5000,
+            "query": "INSERT INTO maestro_workflow_timer (id, workflow_instance_id, workflow_id, timer_id, fire_at, status, created_at) SELECT $1, $2, $3, $4, $5, $6, $7 FROM maestro_workflow_instance WHERE id = $8 AND lea"
+          },
+          {
+            "calls": 5000,
+            "query": "INSERT INTO maestro_workflow_instance (id, workflow_id, run_id, workflow_type, task_queue, status, input, output, service_name, event_sequence, started_at, completed_at, updated_at, version, lease_epo"
+          }
+        ],
+        "nestedCalls": 15000,
+        "kind": "seed",
+        "P": 10000,
+        "Pprev": 5000,
+        "epochs": {
+          "start": 1794993164,
+          "end": 1794993196
+        }
+      }
+    ],
+    "plateaus": [
+      {
+        "P": 1000,
+        "Pprev": 0,
+        "reached": true,
+        "seed": {
+          "startEpoch": 1794992304,
+          "k6EndEpoch": 1794992335,
+          "k6Secs": 31,
+          "timeToParkSecs": 31,
+          "lagSecs": 0,
+          "executedPlan": {
+            "executor": "constant-arrival-rate",
+            "rate": 1000,
+            "timeUnit": "30s",
+            "durationSecs": 30,
+            "offset": 0,
+            "count": 1000,
+            "preAllocatedVUs": 200,
+            "maxVUs": 200,
+            "idPrefix": "r20261118t085444z-park-"
+          },
+          "requested": {
+            "executor": "constant-arrival-rate",
+            "rate": 1000,
+            "timeUnit": "30s",
+            "durationSecs": 30,
+            "offset": 0,
+            "count": 1000,
+            "preAllocatedVUs": 200,
+            "maxVUs": 200,
+            "idPrefix": "r20261118t085444z-park-"
+          }
+        }
+      },
+      {
+        "P": 5000,
+        "Pprev": 1000,
+        "reached": true,
+        "seed": {
+          "startEpoch": 1794992734,
+          "k6EndEpoch": 1794992766,
+          "k6Secs": 32,
+          "timeToParkSecs": 32,
+          "lagSecs": 0,
+          "executedPlan": {
+            "executor": "constant-arrival-rate",
+            "rate": 4000,
+            "timeUnit": "30s",
+            "durationSecs": 30,
+            "offset": 1000,
+            "count": 4000,
+            "preAllocatedVUs": 200,
+            "maxVUs": 200,
+            "idPrefix": "r20261118t085444z-park-"
+          },
+          "requested": {
+            "executor": "constant-arrival-rate",
+            "rate": 4000,
+            "timeUnit": "30s",
+            "durationSecs": 30,
+            "offset": 1000,
+            "count": 4000,
+            "preAllocatedVUs": 200,
+            "maxVUs": 200,
+            "idPrefix": "r20261118t085444z-park-"
+          }
+        }
+      },
+      {
+        "P": 10000,
+        "Pprev": 5000,
+        "reached": true,
+        "seed": {
+          "startEpoch": 1794993164,
+          "k6EndEpoch": 1794993195,
+          "k6Secs": 31,
+          "timeToParkSecs": 32,
+          "lagSecs": 1,
+          "executedPlan": {
+            "executor": "constant-arrival-rate",
+            "rate": 5000,
+            "timeUnit": "30s",
+            "durationSecs": 30,
+            "offset": 5000,
+            "count": 5000,
+            "preAllocatedVUs": 200,
+            "maxVUs": 200,
+            "idPrefix": "r20261118t085444z-park-"
+          },
+          "requested": {
+            "executor": "constant-arrival-rate",
+            "rate": 5000,
+            "timeUnit": "30s",
+            "durationSecs": 30,
+            "offset": 5000,
+            "count": 5000,
+            "preAllocatedVUs": 200,
+            "maxVUs": 200,
+            "idPrefix": "r20261118t085444z-park-"
+          }
+        }
+      }
+    ],
+    "probes": [
+      {
+        "P": 0,
+        "phase": "probe-p0",
+        "prefix": "r20261118t085444z-probe-p0-",
+        "requested": {
+          "rate": 2,
+          "durationSecs": 60
+        },
+        "expected": 120,
+        "accepted": 120,
+        "executedPlan": {
+          "executor": "constant-arrival-rate",
+          "rate": 2,
+          "timeUnit": "1s",
+          "durationSecs": 60,
+          "offset": 0,
+          "count": null,
+          "preAllocatedVUs": 10,
+          "maxVUs": 50,
+          "idPrefix": "r20261118t085444z-probe-p0-"
+        },
+        "startEpoch": 1794992243,
+        "k6EndEpoch": 1794992304,
+        "drain": {
+          "waitedSecs": 0,
+          "timedOut": false
+        },
+        "status": {
+          "total": 120,
+          "byStatus": {
+            "COMPLETED": 120
+          }
+        },
+        "latency": {
+          "completed": 120,
+          "p50Ms": 83.9,
+          "p95Ms": 113.8,
+          "p99Ms": 152.9,
+          "maxMs": 166.6
+        }
+      },
+      {
+        "P": 1000,
+        "phase": "probe-p1000",
+        "prefix": "r20261118t085444z-probe-p1000-",
+        "requested": {
+          "rate": 2,
+          "durationSecs": 60
+        },
+        "expected": 120,
+        "accepted": 121,
+        "executedPlan": {
+          "executor": "constant-arrival-rate",
+          "rate": 2,
+          "timeUnit": "1s",
+          "durationSecs": 60,
+          "offset": 0,
+          "count": null,
+          "preAllocatedVUs": 10,
+          "maxVUs": 50,
+          "idPrefix": "r20261118t085444z-probe-p1000-"
+        },
+        "startEpoch": 1794992672,
+        "k6EndEpoch": 1794992733,
+        "drain": {
+          "waitedSecs": 0,
+          "timedOut": false
+        },
+        "status": {
+          "total": 121,
+          "byStatus": {
+            "COMPLETED": 121
+          }
+        },
+        "latency": {
+          "completed": 121,
+          "p50Ms": 79.1,
+          "p95Ms": 122.8,
+          "p99Ms": 168.1,
+          "maxMs": 183.3
+        }
+      },
+      {
+        "P": 5000,
+        "phase": "probe-p5000",
+        "prefix": "r20261118t085444z-probe-p5000-",
+        "requested": {
+          "rate": 2,
+          "durationSecs": 60
+        },
+        "expected": 120,
+        "accepted": 120,
+        "executedPlan": {
+          "executor": "constant-arrival-rate",
+          "rate": 2,
+          "timeUnit": "1s",
+          "durationSecs": 60,
+          "offset": 0,
+          "count": null,
+          "preAllocatedVUs": 10,
+          "maxVUs": 50,
+          "idPrefix": "r20261118t085444z-probe-p5000-"
+        },
+        "startEpoch": 1794993102,
+        "k6EndEpoch": 1794993163,
+        "drain": {
+          "waitedSecs": 1,
+          "timedOut": false
+        },
+        "status": {
+          "total": 120,
+          "byStatus": {
+            "COMPLETED": 120
+          }
+        },
+        "latency": {
+          "completed": 120,
+          "p50Ms": 76.5,
+          "p95Ms": 112.5,
+          "p99Ms": 138.3,
+          "maxMs": 471.1
+        }
+      },
+      {
+        "P": 10000,
+        "phase": "probe-p10000",
+        "prefix": "r20261118t085444z-probe-p10000-",
+        "requested": {
+          "rate": 2,
+          "durationSecs": 60
+        },
+        "expected": 120,
+        "accepted": 121,
+        "executedPlan": {
+          "executor": "constant-arrival-rate",
+          "rate": 2,
+          "timeUnit": "1s",
+          "durationSecs": 60,
+          "offset": 0,
+          "count": null,
+          "preAllocatedVUs": 10,
+          "maxVUs": 50,
+          "idPrefix": "r20261118t085444z-probe-p10000-"
+        },
+        "startEpoch": 1794993532,
+        "k6EndEpoch": 1794993593,
+        "drain": {
+          "waitedSecs": 0,
+          "timedOut": false
+        },
+        "status": {
+          "total": 121,
+          "byStatus": {
+            "COMPLETED": 121
+          }
+        },
+        "latency": {
+          "completed": 121,
+          "p50Ms": 76.4,
+          "p95Ms": 117.9,
+          "p99Ms": 139.9,
+          "maxMs": 169.5
+        }
+      }
+    ],
+    "release": null,
+    "windowProm": [
+      {
+        "kind": "idle",
+        "P": 0,
+        "rangeSecs": 121,
+        "at": 1794992243,
+        "heap": {
+          "usedAvg": 38880519,
+          "usedMax": 46785600,
+          "usedMin": 30350624,
+          "committedAvg": 62980096,
+          "oldGenMax": 28999032,
+          "oldGenMin": 27356976,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 32.041666666666664,
+          "liveMax": 33
+        },
+        "parkedGauge": {
+          "avg": 0,
+          "min": 0
+        },
+        "runningGaugeMax": 8,
+        "slotsUsed": {
+          "workflowMax": 8,
+          "workflowAvg": 0.3333333333333333,
+          "activityMax": 0
+        },
+        "hikari": {
+          "activeMax": 9,
+          "activeAvg": 1.3333333333333333,
+          "pendingMax": 0
+        },
+        "nodeCpu": {
+          "processAvg": 0.019666737493646516,
+          "processMax": 0.1564102564102564,
+          "systemAvg": 0.019632520711656002
+        }
+      },
+      {
+        "kind": "plateau",
+        "P": 1000,
+        "rangeSecs": 300,
+        "at": 1794992671,
+        "heap": {
+          "usedAvg": 62611397.2,
+          "usedMax": 72113632,
+          "usedMin": 52776712,
+          "committedAvg": 71365427.2,
+          "oldGenMax": 54352392,
+          "oldGenMin": 46109208,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 34.583333333333336,
+          "liveMax": 48
+        },
+        "parkedGauge": {
+          "avg": 999.5,
+          "min": 990
+        },
+        "runningGaugeMax": 1000,
+        "slotsUsed": {
+          "workflowMax": 4,
+          "workflowAvg": 0.15,
+          "activityMax": 0
+        },
+        "hikari": {
+          "activeMax": 10,
+          "activeAvg": 1.6,
+          "pendingMax": 2
+        },
+        "nodeCpu": {
+          "processAvg": 0.022130073093067016,
+          "processMax": 0.045,
+          "systemAvg": 0.02215843889145197
+        }
+      },
+      {
+        "kind": "plateau",
+        "P": 5000,
+        "rangeSecs": 300,
+        "at": 1794993102,
+        "heap": {
+          "usedAvg": 179891533.06666666,
+          "usedMax": 230138144,
+          "usedMin": 128728600,
+          "committedAvg": 189290905.6,
+          "oldGenMax": 221947496,
+          "oldGenMin": 118084536,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 36.6,
+          "liveMax": 51
+        },
+        "parkedGauge": {
+          "avg": 4999.783333333334,
+          "min": 4996
+        },
+        "runningGaugeMax": 5000,
+        "slotsUsed": {
+          "workflowMax": 3,
+          "workflowAvg": 0.11666666666666667,
+          "activityMax": 0
+        },
+        "hikari": {
+          "activeMax": 7,
+          "activeAvg": 1.3166666666666667,
+          "pendingMax": 0
+        },
+        "nodeCpu": {
+          "processAvg": 0.05525703718968315,
+          "processMax": 0.13137254901960785,
+          "systemAvg": 0.055268967446031374
+        }
+      },
+      {
+        "kind": "plateau",
+        "P": 10000,
+        "rangeSecs": 300,
+        "at": 1794993532,
+        "heap": {
+          "usedAvg": 428665595.8666667,
+          "usedMax": 531293248,
+          "usedMin": 332934576,
+          "committedAvg": 437695283.2,
+          "oldGenMax": 515343064,
+          "oldGenMin": 320310160,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 35.666666666666664,
+          "liveMax": 50
+        },
+        "parkedGauge": {
+          "avg": 9996.783333333333,
+          "min": 9947
+        },
+        "runningGaugeMax": 10000,
+        "slotsUsed": {
+          "workflowMax": 20,
+          "workflowAvg": 1.8333333333333333,
+          "activityMax": 0
+        },
+        "hikari": {
+          "activeMax": 10,
+          "activeAvg": 2.533333333333333,
+          "pendingMax": 11
+        },
+        "nodeCpu": {
+          "processAvg": 0.06590845830756546,
+          "processMax": 0.099,
+          "systemAvg": 0.0659240708365735
+        }
+      },
+      {
+        "kind": "seed",
+        "P": 1000,
+        "rangeSecs": 32,
+        "at": 1794992336,
+        "heap": {
+          "usedAvg": 45260435.428571425,
+          "usedMax": 53958800,
+          "usedMin": 38486016,
+          "committedAvg": 62980096,
+          "oldGenMax": 42155384,
+          "oldGenMin": 28999032,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 32,
+          "liveMax": 32
+        },
+        "parkedGauge": {
+          "avg": 352.42857142857144,
+          "min": 0
+        },
+        "runningGaugeMax": 827,
+        "slotsUsed": {
+          "workflowMax": 0,
+          "workflowAvg": 0,
+          "activityMax": 0
+        },
+        "hikari": {
+          "activeMax": 2,
+          "activeAvg": 1.1428571428571428,
+          "pendingMax": 0
+        },
+        "nodeCpu": {
+          "processAvg": 0.09971428571428571,
+          "processMax": 0.152,
+          "systemAvg": 0.0993466
+        }
+      },
+      {
+        "kind": "seed",
+        "P": 5000,
+        "rangeSecs": 32,
+        "at": 1794992766,
+        "heap": {
+          "usedAvg": 83194432,
+          "usedMax": 114288488,
+          "usedMin": 61772160,
+          "committedAvg": 95954066.28571428,
+          "oldGenMax": 97653552,
+          "oldGenMin": 57593440,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 34,
+          "liveMax": 35
+        },
+        "parkedGauge": {
+          "avg": 2390.8571428571427,
+          "min": 1000
+        },
+        "runningGaugeMax": 4283,
+        "slotsUsed": {
+          "workflowMax": 6,
+          "workflowAvg": 1.1428571428571428,
+          "activityMax": 2
+        },
+        "hikari": {
+          "activeMax": 9,
+          "activeAvg": 2.7142857142857144,
+          "pendingMax": 1
+        },
+        "nodeCpu": {
+          "processAvg": 0.19664431486880465,
+          "processMax": 0.291,
+          "systemAvg": 0.19657496997084548
+        }
+      },
+      {
+        "kind": "seed",
+        "P": 10000,
+        "rangeSecs": 32,
+        "at": 1794993196,
+        "heap": {
+          "usedAvg": 276346224,
+          "usedMax": 300315792,
+          "usedMin": 259052304,
+          "committedAvg": 286635739.4285714,
+          "oldGenMax": 290798288,
+          "oldGenMin": 242338688,
+          "gcLiveDataAtEnd": 26029160
+        },
+        "threads": {
+          "liveAvg": 35,
+          "liveMax": 35
+        },
+        "parkedGauge": {
+          "avg": 6802.857142857143,
+          "min": 5000
+        },
+        "runningGaugeMax": 9187,
+        "slotsUsed": {
+          "workflowMax": 1,
+          "workflowAvg": 0.5714285714285714,
+          "activityMax": 1
+        },
+        "hikari": {
+          "activeMax": 3,
+          "activeAvg": 1.7142857142857142,
+          "pendingMax": 0
+        },
+        "nodeCpu": {
+          "processAvg": 0.18522280956786047,
+          "processMax": 0.314,
+          "systemAvg": 0.18527652532047045
+        }
+      }
+    ],
+    "runAbandonedIncrease": null,
+    "runAbandonedQueryOk": true,
+    "hostLoad": {
+      "scenarioStart": {
+        "at": 1794992118,
+        "raw": "{ 52.49 35.66 35.09 }",
+        "load1": 52.49,
+        "load5": 35.66,
+        "load15": 35.09,
+        "hostCpus": 10
+      },
+      "windows": [
+        {
+          "at": 1794992371,
+          "raw": "{ 31.31 31.25 33.13 }",
+          "load1": 31.31,
+          "load5": 31.25,
+          "load15": 33.13,
+          "hostCpus": 10,
+          "P": 1000,
+          "edge": "open"
+        },
+        {
+          "at": 1794992672,
+          "raw": "{ 38.66 45.98 40.32 }",
+          "load1": 38.66,
+          "load5": 45.98,
+          "load15": 40.32,
+          "hostCpus": 10,
+          "P": 1000,
+          "edge": "close"
+        },
+        {
+          "at": 1794992801,
+          "raw": "{ 29.79 40.13 38.77 }",
+          "load1": 29.79,
+          "load5": 40.13,
+          "load15": 38.77,
+          "hostCpus": 10,
+          "P": 5000,
+          "edge": "open"
+        },
+        {
+          "at": 1794993102,
+          "raw": "{ 47.63 40.05 38.57 }",
+          "load1": 47.63,
+          "load5": 40.05,
+          "load15": 38.57,
+          "hostCpus": 10,
+          "P": 5000,
+          "edge": "close"
+        },
+        {
+          "at": 1794993231,
+          "raw": "{ 26.75 35.22 36.89 }",
+          "load1": 26.75,
+          "load5": 35.22,
+          "load15": 36.89,
+          "hostCpus": 10,
+          "P": 10000,
+          "edge": "open"
+        },
+        {
+          "at": 1794993532,
+          "raw": "{ 23.95 31.06 34.43 }",
+          "load1": 23.95,
+          "load5": 31.06,
+          "load15": 34.43,
+          "hostCpus": 10,
+          "P": 10000,
+          "edge": "close"
+        }
+      ],
+      "end": {
+        "at": 1794993599,
+        "raw": "{ 32.01 31.74 34.39 }",
+        "load1": 32.01,
+        "load5": 31.74,
+        "load15": 34.39,
+        "hostCpus": 10
+      }
+    },
+    "containerStats": [
+      {
+        "at": 1794992118,
+        "cpuPercent": {
+          "node-1": 54.40,
+          "prometheus-1": 0.19,
+          "postgres-1": 17.82,
+          "kafka-1": 4.00,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992128,
+        "cpuPercent": {
+          "node-1": 3.16,
+          "prometheus-1": 0.10,
+          "postgres-1": 0.20,
+          "kafka-1": 93.87,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992137,
+        "cpuPercent": {
+          "node-1": 1.04,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.41,
+          "kafka-1": 13.44,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794992147,
+        "cpuPercent": {
+          "node-1": 1.07,
+          "prometheus-1": 0.00,
+          "postgres-1": 0.04,
+          "kafka-1": 4.83,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992157,
+        "cpuPercent": {
+          "node-1": 0.80,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.43,
+          "kafka-1": 2.55,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992166,
+        "cpuPercent": {
+          "node-1": 0.65,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.35,
+          "kafka-1": 2.50,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992176,
+        "cpuPercent": {
+          "node-1": 1.28,
+          "prometheus-1": 0.23,
+          "postgres-1": 0.19,
+          "kafka-1": 4.44,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992186,
+        "cpuPercent": {
+          "node-1": 1.06,
+          "prometheus-1": 0.24,
+          "postgres-1": 0.14,
+          "kafka-1": 5.69,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992195,
+        "cpuPercent": {
+          "node-1": 1.73,
+          "prometheus-1": 0.11,
+          "postgres-1": 0.04,
+          "kafka-1": 3.91,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992205,
+        "cpuPercent": {
+          "node-1": 3.01,
+          "prometheus-1": 0.32,
+          "postgres-1": 0.36,
+          "kafka-1": 21.23,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992214,
+        "cpuPercent": {
+          "node-1": 0.78,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.62,
+          "kafka-1": 5.49,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992223,
+        "cpuPercent": {
+          "node-1": 2.76,
+          "prometheus-1": 0.14,
+          "postgres-1": 0.03,
+          "kafka-1": 4.95,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794992232,
+        "cpuPercent": {
+          "node-1": 0.35,
+          "prometheus-1": 0.00,
+          "postgres-1": 0.00,
+          "kafka-1": 2.02,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992241,
+        "cpuPercent": {
+          "node-1": 4.27,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.54,
+          "kafka-1": 2.24,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992251,
+        "cpuPercent": {
+          "k6": 2.67,
+          "node-1": 6.16,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.56,
+          "kafka-1": 6.11,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992260,
+        "cpuPercent": {
+          "k6": 0.78,
+          "node-1": 5.27,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.43,
+          "kafka-1": 4.86,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992270,
+        "cpuPercent": {
+          "k6": 2.02,
+          "node-1": 6.62,
+          "prometheus-1": 0.23,
+          "postgres-1": 1.01,
+          "kafka-1": 5.88,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992280,
+        "cpuPercent": {
+          "k6": 0.90,
+          "node-1": 6.57,
+          "prometheus-1": 0.15,
+          "postgres-1": 2.74,
+          "kafka-1": 4.28,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992289,
+        "cpuPercent": {
+          "k6": 0.66,
+          "node-1": 4.65,
+          "prometheus-1": 0.00,
+          "postgres-1": 3.16,
+          "kafka-1": 2.99,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992299,
+        "cpuPercent": {
+          "k6": 0.75,
+          "node-1": 3.67,
+          "prometheus-1": 0.00,
+          "postgres-1": 0.91,
+          "kafka-1": 2.45,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992308,
+        "cpuPercent": {
+          "k6": 3.57,
+          "node-1": 26.81,
+          "prometheus-1": 0.15,
+          "postgres-1": 7.48,
+          "kafka-1": 118.21,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992318,
+        "cpuPercent": {
+          "k6": 2.93,
+          "node-1": 25.46,
+          "prometheus-1": 0.10,
+          "postgres-1": 7.98,
+          "kafka-1": 1.33,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992328,
+        "cpuPercent": {
+          "k6": 2.66,
+          "node-1": 16.73,
+          "prometheus-1": 0.09,
+          "postgres-1": 7.17,
+          "kafka-1": 80.53,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992337,
+        "cpuPercent": {
+          "node-1": 7.59,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.65,
+          "kafka-1": 3.32,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992347,
+        "cpuPercent": {
+          "node-1": 8.06,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.82,
+          "kafka-1": 6.03,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992357,
+        "cpuPercent": {
+          "node-1": 6.22,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.63,
+          "kafka-1": 2.53,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992366,
+        "cpuPercent": {
+          "node-1": 5.50,
+          "prometheus-1": 0.10,
+          "postgres-1": 2.61,
+          "kafka-1": 2.84,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992376,
+        "cpuPercent": {
+          "node-1": 5.90,
+          "prometheus-1": 0.00,
+          "postgres-1": 4.73,
+          "kafka-1": 2.79,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992385,
+        "cpuPercent": {
+          "node-1": 11.39,
+          "prometheus-1": 0.14,
+          "postgres-1": 3.05,
+          "kafka-1": 1.73,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992395,
+        "cpuPercent": {
+          "node-1": 4.98,
+          "prometheus-1": 0.00,
+          "postgres-1": 3.11,
+          "kafka-1": 4.38,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992405,
+        "cpuPercent": {
+          "node-1": 4.12,
+          "prometheus-1": 0.09,
+          "postgres-1": 4.35,
+          "kafka-1": 2.35,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992414,
+        "cpuPercent": {
+          "node-1": 4.79,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.15,
+          "kafka-1": 1.86,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992423,
+        "cpuPercent": {
+          "node-1": 7.42,
+          "prometheus-1": 0.21,
+          "postgres-1": 2.76,
+          "kafka-1": 202.16,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992432,
+        "cpuPercent": {
+          "node-1": 8.53,
+          "prometheus-1": 0.00,
+          "postgres-1": 3.74,
+          "kafka-1": 1.69,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992441,
+        "cpuPercent": {
+          "node-1": 4.06,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.91,
+          "kafka-1": 3.72,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992451,
+        "cpuPercent": {
+          "node-1": 4.49,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.25,
+          "kafka-1": 1.69,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992461,
+        "cpuPercent": {
+          "node-1": 3.56,
+          "prometheus-1": 0.09,
+          "postgres-1": 2.53,
+          "kafka-1": 13.51,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992470,
+        "cpuPercent": {
+          "node-1": 3.84,
+          "prometheus-1": 0.16,
+          "postgres-1": 3.04,
+          "kafka-1": 1.51,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992480,
+        "cpuPercent": {
+          "node-1": 3.06,
+          "prometheus-1": 1.24,
+          "postgres-1": 1.65,
+          "kafka-1": 104.18,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992490,
+        "cpuPercent": {
+          "node-1": 3.46,
+          "prometheus-1": 0.18,
+          "postgres-1": 1.94,
+          "kafka-1": 2.03,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992499,
+        "cpuPercent": {
+          "node-1": 3.80,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.84,
+          "kafka-1": 1.90,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992509,
+        "cpuPercent": {
+          "node-1": 2.60,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.44,
+          "kafka-1": 1.73,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992519,
+        "cpuPercent": {
+          "node-1": 2.84,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.28,
+          "kafka-1": 133.51,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992528,
+        "cpuPercent": {
+          "node-1": 3.41,
+          "prometheus-1": 0.13,
+          "postgres-1": 4.20,
+          "kafka-1": 4.11,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992538,
+        "cpuPercent": {
+          "node-1": 3.11,
+          "prometheus-1": 0.08,
+          "postgres-1": 2.42,
+          "kafka-1": 1.36,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992548,
+        "cpuPercent": {
+          "node-1": 2.99,
+          "prometheus-1": 0.08,
+          "postgres-1": 2.30,
+          "kafka-1": 95.98,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794992558,
+        "cpuPercent": {
+          "node-1": 2.94,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.46,
+          "kafka-1": 1.33,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992567,
+        "cpuPercent": {
+          "node-1": 4.45,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.45,
+          "kafka-1": 153.70,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992577,
+        "cpuPercent": {
+          "node-1": 2.00,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.83,
+          "kafka-1": 1.30,
+          "curl-1": 0.03
+        }
+      },
+      {
+        "at": 1794992587,
+        "cpuPercent": {
+          "node-1": 2.79,
+          "prometheus-1": 0.00,
+          "postgres-1": 3.48,
+          "kafka-1": 2.76,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992597,
+        "cpuPercent": {
+          "node-1": 2.14,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.60,
+          "kafka-1": 1.14,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992606,
+        "cpuPercent": {
+          "node-1": 2.58,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.48,
+          "kafka-1": 1.72,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992616,
+        "cpuPercent": {
+          "node-1": 8.20,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.30,
+          "kafka-1": 137.89,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992626,
+        "cpuPercent": {
+          "node-1": 3.30,
+          "prometheus-1": 0.00,
+          "postgres-1": 4.30,
+          "kafka-1": 1.89,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992635,
+        "cpuPercent": {
+          "node-1": 2.72,
+          "prometheus-1": 0.20,
+          "postgres-1": 2.72,
+          "kafka-1": 176.52,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992645,
+        "cpuPercent": {
+          "node-1": 3.66,
+          "prometheus-1": 0.00,
+          "postgres-1": 1.84,
+          "kafka-1": 2.42,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992654,
+        "cpuPercent": {
+          "node-1": 2.37,
+          "prometheus-1": 0.10,
+          "postgres-1": 3.26,
+          "kafka-1": 2.15,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992662,
+        "cpuPercent": {
+          "node-1": 2.38,
+          "prometheus-1": 0.00,
+          "postgres-1": 0.96,
+          "kafka-1": 106.83,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992671,
+        "cpuPercent": {
+          "node-1": 7.01,
+          "prometheus-1": 0.00,
+          "postgres-1": 4.03,
+          "kafka-1": 1.13,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992681,
+        "cpuPercent": {
+          "k6": 0.65,
+          "node-1": 4.20,
+          "prometheus-1": 0.00,
+          "postgres-1": 2.94,
+          "kafka-1": 52.88,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992691,
+        "cpuPercent": {
+          "k6": 1.49,
+          "node-1": 4.62,
+          "prometheus-1": 0.00,
+          "postgres-1": 3.11,
+          "kafka-1": 2.00,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992700,
+        "cpuPercent": {
+          "k6": 0.55,
+          "node-1": 3.99,
+          "prometheus-1": 0.29,
+          "postgres-1": 4.67,
+          "kafka-1": 5.69,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992710,
+        "cpuPercent": {
+          "k6": 1.00,
+          "node-1": 6.71,
+          "prometheus-1": 0.66,
+          "postgres-1": 3.38,
+          "kafka-1": 2.22,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992720,
+        "cpuPercent": {
+          "k6": 1.05,
+          "node-1": 4.42,
+          "prometheus-1": 0.02,
+          "postgres-1": 2.60,
+          "kafka-1": 3.98,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992729,
+        "cpuPercent": {
+          "k6": 0.61,
+          "node-1": 3.52,
+          "prometheus-1": 0.00,
+          "postgres-1": 3.58,
+          "kafka-1": 1.84,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992739,
+        "cpuPercent": {
+          "k6": 9.00,
+          "node-1": 50.87,
+          "prometheus-1": 0.15,
+          "postgres-1": 26.63,
+          "kafka-1": 3.80,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992749,
+        "cpuPercent": {
+          "k6": 8.74,
+          "node-1": 53.98,
+          "prometheus-1": 0.08,
+          "postgres-1": 39.27,
+          "kafka-1": 1.98,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992758,
+        "cpuPercent": {
+          "k6": 8.91,
+          "node-1": 41.34,
+          "prometheus-1": 0.16,
+          "postgres-1": 32.97,
+          "kafka-1": 2.58,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992768,
+        "cpuPercent": {
+          "node-1": 11.53,
+          "prometheus-1": 0.35,
+          "postgres-1": 5.40,
+          "kafka-1": 2.00,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992778,
+        "cpuPercent": {
+          "node-1": 14.98,
+          "prometheus-1": 0.19,
+          "postgres-1": 8.03,
+          "kafka-1": 2.14,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992787,
+        "cpuPercent": {
+          "node-1": 13.46,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.41,
+          "kafka-1": 6.10,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992797,
+        "cpuPercent": {
+          "node-1": 11.06,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.37,
+          "kafka-1": 4.80,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992807,
+        "cpuPercent": {
+          "node-1": 12.93,
+          "prometheus-1": 0.00,
+          "postgres-1": 9.05,
+          "kafka-1": 1.57,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794992817,
+        "cpuPercent": {
+          "node-1": 49.10,
+          "prometheus-1": 0.00,
+          "postgres-1": 41.14,
+          "kafka-1": 25.43,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992826,
+        "cpuPercent": {
+          "node-1": 19.05,
+          "prometheus-1": 0.11,
+          "postgres-1": 7.59,
+          "kafka-1": 2.13,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992836,
+        "cpuPercent": {
+          "node-1": 15.27,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.06,
+          "kafka-1": 5.19,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992846,
+        "cpuPercent": {
+          "node-1": 7.92,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.95,
+          "kafka-1": 1.94,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992856,
+        "cpuPercent": {
+          "node-1": 16.22,
+          "prometheus-1": 0.00,
+          "postgres-1": 9.64,
+          "kafka-1": 4.01,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992865,
+        "cpuPercent": {
+          "node-1": 10.54,
+          "prometheus-1": 0.25,
+          "postgres-1": 7.63,
+          "kafka-1": 3.38,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794992875,
+        "cpuPercent": {
+          "node-1": 9.07,
+          "prometheus-1": 0.00,
+          "postgres-1": 5.63,
+          "kafka-1": 57.73,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992884,
+        "cpuPercent": {
+          "node-1": 10.39,
+          "prometheus-1": 0.48,
+          "postgres-1": 9.05,
+          "kafka-1": 2.02,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992893,
+        "cpuPercent": {
+          "node-1": 14.91,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.72,
+          "kafka-1": 1.96,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992902,
+        "cpuPercent": {
+          "node-1": 11.09,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.86,
+          "kafka-1": 2.11,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992911,
+        "cpuPercent": {
+          "node-1": 6.49,
+          "prometheus-1": 0.00,
+          "postgres-1": 7.73,
+          "kafka-1": 1.57,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794992921,
+        "cpuPercent": {
+          "node-1": 12.02,
+          "prometheus-1": 0.26,
+          "postgres-1": 8.71,
+          "kafka-1": 3.03,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992931,
+        "cpuPercent": {
+          "node-1": 9.30,
+          "prometheus-1": 0.00,
+          "postgres-1": 13.89,
+          "kafka-1": 1.87,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992940,
+        "cpuPercent": {
+          "node-1": 9.49,
+          "prometheus-1": 0.85,
+          "postgres-1": 14.29,
+          "kafka-1": 4.78,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992950,
+        "cpuPercent": {
+          "node-1": 9.54,
+          "prometheus-1": 0.53,
+          "postgres-1": 7.67,
+          "kafka-1": 12.79,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992960,
+        "cpuPercent": {
+          "node-1": 8.01,
+          "prometheus-1": 0.01,
+          "postgres-1": 8.59,
+          "kafka-1": 4.23,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992970,
+        "cpuPercent": {
+          "node-1": 6.54,
+          "prometheus-1": 0.01,
+          "postgres-1": 6.36,
+          "kafka-1": 1.17,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992979,
+        "cpuPercent": {
+          "node-1": 5.43,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.03,
+          "kafka-1": 1.74,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992989,
+        "cpuPercent": {
+          "node-1": 7.01,
+          "prometheus-1": 0.00,
+          "postgres-1": 7.35,
+          "kafka-1": 41.09,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794992998,
+        "cpuPercent": {
+          "node-1": 6.58,
+          "prometheus-1": 0.51,
+          "postgres-1": 11.31,
+          "kafka-1": 4.20,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993008,
+        "cpuPercent": {
+          "node-1": 7.09,
+          "prometheus-1": 0.11,
+          "postgres-1": 6.80,
+          "kafka-1": 3.06,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993018,
+        "cpuPercent": {
+          "node-1": 7.25,
+          "prometheus-1": 0.13,
+          "postgres-1": 5.89,
+          "kafka-1": 2.63,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993027,
+        "cpuPercent": {
+          "node-1": 4.04,
+          "prometheus-1": 0.00,
+          "postgres-1": 104.49,
+          "kafka-1": 1.47,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993037,
+        "cpuPercent": {
+          "node-1": 9.40,
+          "prometheus-1": 0.00,
+          "postgres-1": 6.52,
+          "kafka-1": 1.97,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993047,
+        "cpuPercent": {
+          "node-1": 8.86,
+          "prometheus-1": 0.00,
+          "postgres-1": 11.72,
+          "kafka-1": 2.30,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993056,
+        "cpuPercent": {
+          "node-1": 7.36,
+          "prometheus-1": 0.00,
+          "postgres-1": 5.64,
+          "kafka-1": 2.18,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993066,
+        "cpuPercent": {
+          "node-1": 28.12,
+          "prometheus-1": 0.00,
+          "postgres-1": 34.99,
+          "kafka-1": 5.87,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794993076,
+        "cpuPercent": {
+          "node-1": 9.04,
+          "prometheus-1": 0.18,
+          "postgres-1": 6.96,
+          "kafka-1": 2.01,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993086,
+        "cpuPercent": {
+          "node-1": 7.23,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.78,
+          "kafka-1": 2.78,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993096,
+        "cpuPercent": {
+          "node-1": 13.66,
+          "prometheus-1": 0.30,
+          "postgres-1": 9.45,
+          "kafka-1": 3.57,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794993105,
+        "cpuPercent": {
+          "k6": 0.69,
+          "node-1": 6.44,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.02,
+          "kafka-1": 1.88,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993114,
+        "cpuPercent": {
+          "k6": 0.61,
+          "node-1": 9.35,
+          "prometheus-1": 0.23,
+          "postgres-1": 7.33,
+          "kafka-1": 53.43,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993123,
+        "cpuPercent": {
+          "k6": 1.44,
+          "node-1": 8.65,
+          "prometheus-1": 0.00,
+          "postgres-1": 6.83,
+          "kafka-1": 2.01,
+          "curl-1": 0.05
+        }
+      },
+      {
+        "at": 1794993132,
+        "cpuPercent": {
+          "k6": 1.12,
+          "node-1": 9.51,
+          "prometheus-1": 0.00,
+          "postgres-1": 5.96,
+          "kafka-1": 144.48,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993142,
+        "cpuPercent": {
+          "k6": 1.72,
+          "node-1": 9.09,
+          "prometheus-1": 0.00,
+          "postgres-1": 13.20,
+          "kafka-1": 7.00,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993151,
+        "cpuPercent": {
+          "k6": 2.90,
+          "node-1": 26.66,
+          "prometheus-1": 0.00,
+          "postgres-1": 7.32,
+          "kafka-1": 76.56,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993161,
+        "cpuPercent": {}
+      },
+      {
+        "at": 1794993170,
+        "cpuPercent": {
+          "k6": 11.59,
+          "node-1": 53.00,
+          "prometheus-1": 0.36,
+          "postgres-1": 37.95,
+          "kafka-1": 12.96,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993180,
+        "cpuPercent": {
+          "k6": 14.19,
+          "node-1": 34.79,
+          "prometheus-1": 0.10,
+          "postgres-1": 38.97,
+          "kafka-1": 1.20,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993190,
+        "cpuPercent": {
+          "k6": 10.45,
+          "node-1": 34.69,
+          "prometheus-1": 0.00,
+          "postgres-1": 43.56,
+          "kafka-1": 44.50,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993199,
+        "cpuPercent": {
+          "node-1": 15.30,
+          "prometheus-1": 0.00,
+          "postgres-1": 14.10,
+          "kafka-1": 2.06,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993209,
+        "cpuPercent": {
+          "node-1": 12.19,
+          "prometheus-1": 0.00,
+          "postgres-1": 110.00,
+          "kafka-1": 51.25,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993218,
+        "cpuPercent": {
+          "node-1": 17.81,
+          "prometheus-1": 0.27,
+          "postgres-1": 14.17,
+          "kafka-1": 1.40,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993228,
+        "cpuPercent": {
+          "node-1": 14.82,
+          "prometheus-1": 0.22,
+          "postgres-1": 13.72,
+          "kafka-1": 1.86,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993238,
+        "cpuPercent": {
+          "node-1": 20.56,
+          "prometheus-1": 0.47,
+          "postgres-1": 12.68,
+          "kafka-1": 4.78,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993247,
+        "cpuPercent": {
+          "node-1": 17.48,
+          "prometheus-1": 0.00,
+          "postgres-1": 12.03,
+          "kafka-1": 28.89,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993257,
+        "cpuPercent": {
+          "node-1": 17.95,
+          "prometheus-1": 0.00,
+          "postgres-1": 13.99,
+          "kafka-1": 1.58,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993266,
+        "cpuPercent": {
+          "node-1": 13.40,
+          "prometheus-1": 0.88,
+          "postgres-1": 12.25,
+          "kafka-1": 1.84,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993276,
+        "cpuPercent": {
+          "node-1": 13.84,
+          "prometheus-1": 0.00,
+          "postgres-1": 20.49,
+          "kafka-1": 2.12,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993286,
+        "cpuPercent": {
+          "node-1": 12.33,
+          "prometheus-1": 0.11,
+          "postgres-1": 17.17,
+          "kafka-1": 51.28,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993295,
+        "cpuPercent": {
+          "node-1": 10.81,
+          "prometheus-1": 0.00,
+          "postgres-1": 19.76,
+          "kafka-1": 1.42,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993304,
+        "cpuPercent": {
+          "node-1": 17.73,
+          "prometheus-1": 0.18,
+          "postgres-1": 14.44,
+          "kafka-1": 2.37,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993313,
+        "cpuPercent": {
+          "node-1": 10.82,
+          "prometheus-1": 0.00,
+          "postgres-1": 13.59,
+          "kafka-1": 2.31,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993322,
+        "cpuPercent": {
+          "node-1": 6.90,
+          "prometheus-1": 0.00,
+          "postgres-1": 107.12,
+          "kafka-1": 0.75,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993332,
+        "cpuPercent": {
+          "node-1": 12.38,
+          "prometheus-1": 0.10,
+          "postgres-1": 13.55,
+          "kafka-1": 4.75,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993341,
+        "cpuPercent": {
+          "node-1": 13.33,
+          "prometheus-1": 0.00,
+          "postgres-1": 16.10,
+          "kafka-1": 2.65,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993351,
+        "cpuPercent": {
+          "node-1": 9.88,
+          "prometheus-1": 0.00,
+          "postgres-1": 13.67,
+          "kafka-1": 1.47,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993360,
+        "cpuPercent": {
+          "node-1": 7.10,
+          "prometheus-1": 0.08,
+          "postgres-1": 8.68,
+          "kafka-1": 1.92,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993370,
+        "cpuPercent": {
+          "node-1": 10.29,
+          "prometheus-1": 0.15,
+          "postgres-1": 18.57,
+          "kafka-1": 1.62,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993380,
+        "cpuPercent": {
+          "node-1": 6.65,
+          "prometheus-1": 0.12,
+          "postgres-1": 7.69,
+          "kafka-1": 120.59,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993389,
+        "cpuPercent": {
+          "node-1": 13.79,
+          "prometheus-1": 0.00,
+          "postgres-1": 15.65,
+          "kafka-1": 3.25,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993399,
+        "cpuPercent": {
+          "node-1": 15.84,
+          "prometheus-1": 0.09,
+          "postgres-1": 42.49,
+          "kafka-1": 145.89,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993409,
+        "cpuPercent": {
+          "node-1": 13.70,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.80,
+          "kafka-1": 1.77,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993418,
+        "cpuPercent": {
+          "node-1": 11.44,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.64,
+          "kafka-1": 123.11,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993428,
+        "cpuPercent": {
+          "node-1": 10.73,
+          "prometheus-1": 0.09,
+          "postgres-1": 14.61,
+          "kafka-1": 1.59,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993438,
+        "cpuPercent": {
+          "node-1": 8.15,
+          "prometheus-1": 0.19,
+          "postgres-1": 12.31,
+          "kafka-1": 109.01,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993447,
+        "cpuPercent": {
+          "node-1": 4.74,
+          "prometheus-1": 0.01,
+          "postgres-1": 7.77,
+          "kafka-1": 0.85,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993457,
+        "cpuPercent": {
+          "node-1": 8.24,
+          "prometheus-1": 0.00,
+          "postgres-1": 8.66,
+          "kafka-1": 2.26,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993467,
+        "cpuPercent": {
+          "node-1": 17.09,
+          "prometheus-1": 0.00,
+          "postgres-1": 44.42,
+          "kafka-1": 1.89,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794993476,
+        "cpuPercent": {
+          "node-1": 5.04,
+          "prometheus-1": 0.00,
+          "postgres-1": 18.02,
+          "kafka-1": 5.20,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993486,
+        "cpuPercent": {
+          "node-1": 17.99,
+          "prometheus-1": 0.00,
+          "postgres-1": 16.26,
+          "kafka-1": 5.75,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993495,
+        "cpuPercent": {
+          "node-1": 9.12,
+          "prometheus-1": 0.00,
+          "postgres-1": 10.47,
+          "kafka-1": 3.66,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993504,
+        "cpuPercent": {
+          "node-1": 16.13,
+          "prometheus-1": 0.17,
+          "postgres-1": 15.70,
+          "kafka-1": 3.22,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993513,
+        "cpuPercent": {
+          "node-1": 7.26,
+          "prometheus-1": 0.00,
+          "postgres-1": 11.81,
+          "kafka-1": 99.32,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993522,
+        "cpuPercent": {
+          "node-1": 10.66,
+          "prometheus-1": 0.00,
+          "postgres-1": 11.10,
+          "kafka-1": 14.47,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794993532,
+        "cpuPercent": {
+          "node-1": 5.39,
+          "prometheus-1": 0.00,
+          "postgres-1": 7.28,
+          "kafka-1": 2.14,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993541,
+        "cpuPercent": {
+          "k6": 0.80,
+          "node-1": 8.66,
+          "prometheus-1": 0.00,
+          "postgres-1": 20.40,
+          "kafka-1": 1.50,
+          "curl-1": 0.02
+        }
+      },
+      {
+        "at": 1794993551,
+        "cpuPercent": {
+          "k6": 1.31,
+          "node-1": 14.13,
+          "prometheus-1": 0.14,
+          "postgres-1": 24.19,
+          "kafka-1": 1.53,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993560,
+        "cpuPercent": {
+          "k6": 2.02,
+          "node-1": 16.67,
+          "prometheus-1": 0.12,
+          "postgres-1": 10.44,
+          "kafka-1": 3.23,
+          "curl-1": 0.01
+        }
+      },
+      {
+        "at": 1794993570,
+        "cpuPercent": {
+          "k6": 0.64,
+          "node-1": 7.45,
+          "prometheus-1": 0.15,
+          "postgres-1": 9.04,
+          "kafka-1": 6.46,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993580,
+        "cpuPercent": {
+          "k6": 0.64,
+          "node-1": 7.63,
+          "prometheus-1": 0.12,
+          "postgres-1": 8.19,
+          "kafka-1": 8.72,
+          "curl-1": 0.00
+        }
+      },
+      {
+        "at": 1794993589,
+        "cpuPercent": {
+          "k6": 1.23,
+          "node-1": 9.43,
+          "prometheus-1": 0.00,
+          "postgres-1": 9.77,
+          "kafka-1": 2.78,
+          "curl-1": 0.01
+        }
+      }
+    ],
+    "runStatus": {
+      "total": 10522,
+      "byStatus": {
+        "WAITING_TIMER": 10000,
+        "COMPLETED": 522
+      }
+    },
+    "foreignRows": 0,
+    "stopped": null,
+    "idleCallsPerSec": 0.4156,
+    "decomposition": [
+      {
+        "P": 1000,
+        "windowSecs": 300.365,
+        "rows": [
+          {
+            "component": "wakeRecheck",
+            "calls": 20018,
+            "split": {
+              "instanceStatus": 10009,
+              "signals": 0,
+              "timerRow": 10009
+            },
+            "per": 1.9994,
+            "perUnit": "reads per parked run per 30 s re-check",
+            "splitPer": {
+              "instanceStatus": 0.9997,
+              "signals": 0,
+              "timerRow": 0.9997
+            },
+            "documentedPer": 2,
+            "documentedCalls": 20024.33,
+            "matches": true
+          },
+          {
+            "component": "lockRenewal",
+            "calls": 60,
+            "per": 1.9994,
+            "perUnit": "statements per renewal pass (all 1 node(s); every 10 s + the pass's own duration)",
+            "documentedPer": 2,
+            "documentedCalls": 60.02,
+            "matches": true,
+            "perNominalPass": 1.9976,
+            "statementMeanMs": 4.6237,
+            "effectivePeriodSecs": 10.0092,
+            "perLockPerMin": 0.012,
+            "singleRenewCalls": 0,
+            "note": "documented ceil(H / 500) per node per pass, H = 1000 locks per node: NOT linear per run (one statement covers up to 500 locks); passes counted at the effective period (renewSecs + the pass's measured duration)"
+          },
+          {
+            "component": "recoveryPages",
+            "calls": 30,
+            "per": 5.9927,
+            "perUnit": "page reads per recovery pass per node (every 60 s)",
+            "documentedPer": 6,
+            "documentedCalls": 30.04,
+            "matches": true,
+            "note": "documented floor(A / 200) + 1 per pass, A = 1000 active rows of the service; every node scans all of them"
+          },
+          {
+            "component": "heldKeys",
+            "calls": 0,
+            "per": 0,
+            "perUnit": "heldKeys reads per recovery pass per node",
+            "documentedPer": 0,
+            "documentedCalls": 0,
+            "matches": true,
+            "documentedMax": 5,
+            "note": "docs: at most 1 per non-empty page (<= ceil(A / 200) = 5); traced: a page whose rows all run on this node (in runningWorkflows, holding their lock) issues none, so 0 is expected at 1 replica and about one per non-empty page at 2+"
+          },
+          {
+            "component": "lockAcquire",
+            "calls": 0,
+            "per": 0,
+            "perUnit": "lock acquisitions per recovery pass per node",
+            "documentedPer": 0,
+            "documentedCalls": 0,
+            "matches": true
+          },
+          {
+            "component": "timerDuePoll",
+            "calls": 60,
+            "per": 0.9988,
+            "perUnit": "due-timer queries per 5 s tick (leader only)",
+            "documentedPer": 1,
+            "documentedCalls": 60.07,
+            "matches": true
+          },
+          {
+            "component": "leaderElection",
+            "calls": 60,
+            "per": 0.9988,
+            "perUnit": "leader-election upserts per tick (every node)",
+            "documentedPer": 1,
+            "documentedCalls": 60.07,
+            "matches": true
+          },
+          {
+            "component": "lockCleaner",
+            "calls": 0,
+            "note": "2 per pass per node (subtracted exactly; validity.sweeps)"
+          },
+          {
+            "component": "clockSkew",
+            "calls": 0,
+            "documentedMax": 1,
+            "matches": true,
+            "note": "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every 600 s, so at most replicas x (floor(windowSecs / 600) + 1) per window; not in the idle-rate model, within the tolerance"
+          },
+          {
+            "component": "lockRelease",
+            "calls": 0
+          },
+          {
+            "component": "other",
+            "calls": 0,
+            "top": [],
+            "matches": true
+          },
+          {
+            "component": "nested",
+            "calls": 0
+          }
+        ]
+      },
+      {
+        "P": 5000,
+        "windowSecs": 300.350,
+        "rows": [
+          {
+            "component": "wakeRecheck",
+            "calls": 100116,
+            "split": {
+              "instanceStatus": 50058,
+              "signals": 0,
+              "timerRow": 50058
+            },
+            "per": 2,
+            "perUnit": "reads per parked run per 30 s re-check",
+            "splitPer": {
+              "instanceStatus": 1,
+              "signals": 0,
+              "timerRow": 1
+            },
+            "documentedPer": 2,
+            "documentedCalls": 100116.67,
+            "matches": true
+          },
+          {
+            "component": "lockRenewal",
+            "calls": 290,
+            "per": 9.9292,
+            "perUnit": "statements per renewal pass (all 1 node(s); every 10 s + the pass's own duration)",
+            "documentedPer": 10,
+            "documentedCalls": 292.07,
+            "matches": true,
+            "perNominalPass": 9.6554,
+            "statementMeanMs": 28.3523,
+            "effectivePeriodSecs": 10.2835,
+            "perLockPerMin": 0.0116,
+            "singleRenewCalls": 0,
+            "note": "documented ceil(H / 500) per node per pass, H = 5000 locks per node: NOT linear per run (one statement covers up to 500 locks); passes counted at the effective period (renewSecs + the pass's measured duration)"
+          },
+          {
+            "component": "recoveryPages",
+            "calls": 130,
+            "per": 25.9697,
+            "perUnit": "page reads per recovery pass per node (every 60 s)",
+            "documentedPer": 26,
+            "documentedCalls": 130.15,
+            "matches": true,
+            "note": "documented floor(A / 200) + 1 per pass, A = 5000 active rows of the service; every node scans all of them"
+          },
+          {
+            "component": "heldKeys",
+            "calls": 0,
+            "per": 0,
+            "perUnit": "heldKeys reads per recovery pass per node",
+            "documentedPer": 0,
+            "documentedCalls": 0,
+            "matches": true,
+            "documentedMax": 25,
+            "note": "docs: at most 1 per non-empty page (<= ceil(A / 200) = 25); traced: a page whose rows all run on this node (in runningWorkflows, holding their lock) issues none, so 0 is expected at 1 replica and about one per non-empty page at 2+"
+          },
+          {
+            "component": "lockAcquire",
+            "calls": 0,
+            "per": 0,
+            "perUnit": "lock acquisitions per recovery pass per node",
+            "documentedPer": 0,
+            "documentedCalls": 0,
+            "matches": true
+          },
+          {
+            "component": "timerDuePoll",
+            "calls": 60,
+            "per": 0.9988,
+            "perUnit": "due-timer queries per 5 s tick (leader only)",
+            "documentedPer": 1,
+            "documentedCalls": 60.07,
+            "matches": true
+          },
+          {
+            "component": "leaderElection",
+            "calls": 60,
+            "per": 0.9988,
+            "perUnit": "leader-election upserts per tick (every node)",
+            "documentedPer": 1,
+            "documentedCalls": 60.07,
+            "matches": true
+          },
+          {
+            "component": "lockCleaner",
+            "calls": 0,
+            "note": "2 per pass per node (subtracted exactly; validity.sweeps)"
+          },
+          {
+            "component": "clockSkew",
+            "calls": 0,
+            "documentedMax": 1,
+            "matches": true,
+            "note": "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every 600 s, so at most replicas x (floor(windowSecs / 600) + 1) per window; not in the idle-rate model, within the tolerance"
+          },
+          {
+            "component": "lockRelease",
+            "calls": 0
+          },
+          {
+            "component": "other",
+            "calls": 0,
+            "top": [],
+            "matches": true
+          },
+          {
+            "component": "nested",
+            "calls": 0
+          }
+        ]
+      },
+      {
+        "P": 10000,
+        "windowSecs": 300.500,
+        "rows": [
+          {
+            "component": "wakeRecheck",
+            "calls": 200320,
+            "split": {
+              "instanceStatus": 100161,
+              "signals": 0,
+              "timerRow": 100159
+            },
+            "per": 1.9999,
+            "perUnit": "reads per parked run per 30 s re-check",
+            "splitPer": {
+              "instanceStatus": 0.9999,
+              "signals": 0,
+              "timerRow": 0.9999
+            },
+            "documentedPer": 2,
+            "documentedCalls": 200333.33,
+            "matches": true
+          },
+          {
+            "component": "lockRenewal",
+            "calls": 560,
+            "per": 19.6925,
+            "perUnit": "statements per renewal pass (all 1 node(s); every 10 s + the pass's own duration)",
+            "documentedPer": 20,
+            "documentedCalls": 568.74,
+            "matches": true,
+            "perNominalPass": 18.6356,
+            "statementMeanMs": 28.3564,
+            "effectivePeriodSecs": 10.5671,
+            "perLockPerMin": 0.0112,
+            "singleRenewCalls": 0,
+            "note": "documented ceil(H / 500) per node per pass, H = 10000 locks per node: NOT linear per run (one statement covers up to 500 locks); passes counted at the effective period (renewSecs + the pass's measured duration)"
+          },
+          {
+            "component": "recoveryPages",
+            "calls": 255,
+            "per": 50.9151,
+            "perUnit": "page reads per recovery pass per node (every 60 s)",
+            "documentedPer": 51,
+            "documentedCalls": 255.43,
+            "matches": true,
+            "note": "documented floor(A / 200) + 1 per pass, A = 10000 active rows of the service; every node scans all of them"
+          },
+          {
+            "component": "heldKeys",
+            "calls": 0,
+            "per": 0,
+            "perUnit": "heldKeys reads per recovery pass per node",
+            "documentedPer": 0,
+            "documentedCalls": 0,
+            "matches": true,
+            "documentedMax": 50,
+            "note": "docs: at most 1 per non-empty page (<= ceil(A / 200) = 50); traced: a page whose rows all run on this node (in runningWorkflows, holding their lock) issues none, so 0 is expected at 1 replica and about one per non-empty page at 2+"
+          },
+          {
+            "component": "lockAcquire",
+            "calls": 0,
+            "per": 0,
+            "perUnit": "lock acquisitions per recovery pass per node",
+            "documentedPer": 0,
+            "documentedCalls": 0,
+            "matches": true
+          },
+          {
+            "component": "timerDuePoll",
+            "calls": 60,
+            "per": 0.9983,
+            "perUnit": "due-timer queries per 5 s tick (leader only)",
+            "documentedPer": 1,
+            "documentedCalls": 60.1,
+            "matches": true
+          },
+          {
+            "component": "leaderElection",
+            "calls": 60,
+            "per": 0.9983,
+            "perUnit": "leader-election upserts per tick (every node)",
+            "documentedPer": 1,
+            "documentedCalls": 60.1,
+            "matches": true
+          },
+          {
+            "component": "lockCleaner",
+            "calls": 2,
+            "note": "2 per pass per node (subtracted exactly; validity.sweeps)"
+          },
+          {
+            "component": "clockSkew",
+            "calls": 1,
+            "documentedMax": 1,
+            "matches": true,
+            "note": "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every 600 s, so at most replicas x (floor(windowSecs / 600) + 1) per window; not in the idle-rate model, within the tolerance"
+          },
+          {
+            "component": "lockRelease",
+            "calls": 0
+          },
+          {
+            "component": "other",
+            "calls": 3,
+            "top": [
+              {
+                "calls": 3,
+                "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+              }
+            ],
+            "matches": false
+          },
+          {
+            "component": "nested",
+            "calls": 0
+          }
+        ]
+      }
+    ],
+    "seeds": [
+      {
+        "P": 1000,
+        "Pprev": 0,
+        "started": 1000,
+        "requested": 1000,
+        "reached": true,
+        "windowSecs": 31.453,
+        "maestroCalls": 15066,
+        "timeToParkSecs": 31,
+        "k6Secs": 31,
+        "lagSecs": 0,
+        "netPerStartedRun": 15.05,
+        "grossPerStartedRun": 15.07
+      },
+      {
+        "P": 5000,
+        "Pprev": 1000,
+        "started": 4000,
+        "requested": 4000,
+        "reached": true,
+        "windowSecs": 32.264,
+        "maestroCalls": 62424,
+        "timeToParkSecs": 32,
+        "k6Secs": 32,
+        "lagSecs": 0,
+        "netPerStartedRun": 15.06,
+        "grossPerStartedRun": 15.61
+      },
+      {
+        "P": 10000,
+        "Pprev": 5000,
+        "started": 5000,
+        "requested": 5000,
+        "reached": true,
+        "windowSecs": 31.839,
+        "maestroCalls": 86100,
+        "timeToParkSecs": 32,
+        "k6Secs": 31,
+        "lagSecs": 1,
+        "netPerStartedRun": 15.09,
+        "grossPerStartedRun": 17.22
+      }
+    ],
+    "releaseFigures": null,
+    "plateauTable": [
+      {
+        "P": 1000,
+        "timeToParkSecs": 31,
+        "windowSecs": 300.365,
+        "grossCallsPerSec": 67.3447,
+        "idleCallsPerSec": 0.4156,
+        "grossPerParkedPerMin": 4.0407,
+        "perParkedCallsPerMin": 4.0157,
+        "perParkedCallsPer30s": 2.0079,
+        "recheckReadsPerParkedPerInterval": 1.9994,
+        "renewalStatementsPerPass": 1.9994,
+        "recoveryPagesPerPass": 5.9927,
+        "heldKeysPerPass": 0,
+        "otherCalls": 0,
+        "heapUsedAvgMiB": 59.71,
+        "liveThreadsMax": 48,
+        "workflowSlotsMax": 4,
+        "probeP50Ms": 79.1,
+        "probeP95Ms": 122.8
+      },
+      {
+        "P": 5000,
+        "timeToParkSecs": 32,
+        "windowSecs": 300.350,
+        "grossCallsPerSec": 335.129,
+        "idleCallsPerSec": 0.4156,
+        "grossPerParkedPerMin": 4.0215,
+        "perParkedCallsPerMin": 4.0166,
+        "perParkedCallsPer30s": 2.0083,
+        "recheckReadsPerParkedPerInterval": 2,
+        "renewalStatementsPerPass": 9.9292,
+        "recoveryPagesPerPass": 25.9697,
+        "heldKeysPerPass": 0,
+        "otherCalls": 0,
+        "heapUsedAvgMiB": 171.56,
+        "liveThreadsMax": 51,
+        "workflowSlotsMax": 3,
+        "probeP50Ms": 76.5,
+        "probeP95Ms": 112.5
+      },
+      {
+        "P": 10000,
+        "timeToParkSecs": 32,
+        "windowSecs": 300.500,
+        "grossCallsPerSec": 669.604,
+        "idleCallsPerSec": 0.4156,
+        "grossPerParkedPerMin": 4.0176,
+        "perParkedCallsPerMin": 4.0151,
+        "perParkedCallsPer30s": 2.0076,
+        "recheckReadsPerParkedPerInterval": 1.9999,
+        "renewalStatementsPerPass": 19.6925,
+        "recoveryPagesPerPass": 50.9151,
+        "heldKeysPerPass": 0,
+        "otherCalls": 3,
+        "heapUsedAvgMiB": 408.81,
+        "liveThreadsMax": 50,
+        "workflowSlotsMax": 20,
+        "probeP50Ms": 76.4,
+        "probeP95Ms": 117.9
+      }
+    ],
+    "baselineCandidate": {
+      "parkMode": "sleep",
+      "wakeRecheckInterval": "PT30S",
+      "recoveryPollInterval": "PT1M",
+      "lockTtl": "PT30S",
+      "plateaus": [
+        1000,
+        5000,
+        10000
+      ],
+      "Pmax": 10000,
+      "perParkedCallsPerMin": 4.0151,
+      "perParkedCallsPer30s": 2.0076,
+      "perParkedTolerancePerMin": 0.0001
+    }
+  },
+  "checks": [
+    {
+      "id": "validity.identity",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "buildCommits": [
+          "0f90a990f953d28820bc72afa3a066e4f11c27da"
+        ],
+        "nodes": 1,
+        "distinctHostnames": 1,
+        "hostnames": [
+          "935e04c04921"
+        ]
+      },
+      "limit": {
+        "expectedCommit": "0f90a990f953d28820bc72afa3a066e4f11c27da",
+        "replicas": 1
+      },
+      "detail": "every node runs the stamped jar on a distinct host"
+    },
+    {
+      "id": "validity.noRestart",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "before": [
+          {
+            "hostname": "935e04c04921",
+            "jvmStartMillis": 1794992103404,
+            "pid": 1
+          }
+        ],
+        "after": [
+          {
+            "hostname": "935e04c04921",
+            "jvmStartMillis": 1794992103404,
+            "pid": 1
+          }
+        ]
+      },
+      "limit": "same hostnames and jvmStartMillis",
+      "detail": "no node restarted during the run"
+    },
+    {
+      "id": "validity.adminEvents",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "requested": false,
+        "effectiveByNode": [
+          false
+        ],
+        "adminTopicEndOffset": 0
+      },
+      "limit": "requested == /perf/info.adminEventsEnabled == (maestro.admin.events end offset > 0)",
+      "detail": "admin events off as requested"
+    },
+    {
+      "id": "validity.pgssComplete",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windows": 8,
+        "dealloc": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
+      },
+      "limit": {
+        "dealloc": 0
+      },
+      "detail": "no statement entry evicted"
+    },
+    {
+      "id": "validity.k6",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "warmup",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probe-p0",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "seed-p1000",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probe-p1000",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "seed-p5000",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probe-p5000",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "seed-p10000",
+          "exitCode": 0,
+          "summary": true
+        },
+        {
+          "phase": "probe-p10000",
+          "exitCode": 0,
+          "summary": true
+        }
+      ],
+      "limit": {
+        "exitCode": [
+          0,
+          99
+        ],
+        "summary": true
+      },
+      "detail": "every k6 phase exited 0 with a summary"
+    },
+    {
+      "id": "validity.droppedIterations",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "phase": "warmup",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probe-p0",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "seed-p1000",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probe-p1000",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "seed-p5000",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probe-p5000",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "seed-p10000",
+          "droppedIterations": 0
+        },
+        {
+          "phase": "probe-p10000",
+          "droppedIterations": 0
+        }
+      ],
+      "limit": {
+        "droppedIterations": 0
+      },
+      "detail": "no k6 phase dropped an iteration"
+    },
+    {
+      "id": "validity.warmup",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "count": 40,
+        "total": 40,
+        "byStatus": {
+          "COMPLETED": 40
+        },
+        "timedOut": false,
+        "waitedSecs": 0
+      },
+      "limit": {
+        "timedOut": false,
+        "completed": 40
+      },
+      "detail": "40/40 warm-up runs COMPLETED in 0 s, before the idle window"
+    },
+    {
+      "id": "advisory.dirtyTree",
+      "class": "advisory",
+      "status": "PASS",
+      "value": false,
+      "limit": false,
+      "detail": "clean tree"
+    },
+    {
+      "id": "validity.sweeps",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windows": [
+          {
+            "name": "background",
+            "sinceEarliestNodeStartSecs": [
+              19,
+              140
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[0]",
+            "sinceEarliestNodeStartSecs": [
+              19,
+              140
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[1]",
+            "sinceEarliestNodeStartSecs": [
+              268,
+              569
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[2]",
+            "sinceEarliestNodeStartSecs": [
+              699,
+              999
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "windows[3]",
+            "sinceEarliestNodeStartSecs": [
+              1129,
+              1429
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 2,
+              "predictedPasses": {
+                "certain": 1,
+                "possible": 1
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "auxWindows[0]",
+            "sinceEarliestNodeStartSecs": [
+              201,
+              233
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "auxWindows[1]",
+            "sinceEarliestNodeStartSecs": [
+              631,
+              663
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          },
+          {
+            "name": "auxWindows[2]",
+            "sinceEarliestNodeStartSecs": [
+              1061,
+              1093
+            ],
+            "plannedStarts": 0,
+            "sweepWindow": false,
+            "lockCleaner": {
+              "observedCalls": 0,
+              "predictedPasses": {
+                "certain": 0,
+                "possible": 0
+              }
+            },
+            "signalJanitor": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            },
+            "retention": {
+              "observedCalls": 0,
+              "predictedPasses": 0,
+              "allowedForPlannedStarts": 0
+            }
+          }
+        ],
+        "nodes": [
+          {
+            "container": "maestro-perf-node-1",
+            "lockCleanupSecs": 600,
+            "signalJanitorSecs": 3600,
+            "retentionEnabled": true,
+            "retentionSecs": 3600,
+            "schedulerStartBoundSecs": 14.67
+          }
+        ]
+      },
+      "limit": {
+        "lockCleanerCalls": "within 2 x [certain, possible] passes predicted from each node's reported interval, jvmStartMillis and reportedAtMillis (+5 s drift per pass); subtracted exactly from the window's calls",
+        "signalJanitorCalls": 0,
+        "retentionCalls": 0,
+        "signalJanitorOrRetentionPassesPredicted": 0
+      },
+      "detail": "every measured window's sweeps are accounted for: no signal-janitor or retention statement in any window, none predicted; lock-cleaner calls as predicted from the reported intervals (subtracted exactly: windows[3] 2)"
+    },
+    {
+      "id": "validity.background",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windowSecs": 120.312,
+        "maestroCalls": 50,
+        "timerPollSecs": 5,
+        "plannedTicks": 24,
+        "expectedTicks": 24,
+        "observedTicks": 24,
+        "tickStatementEntries": 1,
+        "leaderElectionCalls": 24,
+        "replicas": 1
+      },
+      "limit": {
+        "windowSecs": "> 0",
+        "expectedTicks": ">= 2 (floor(windowSecs / timerPollSecs))",
+        "observedTicks": ">= 2 and within expectedTicks +/- 1 (calls of the due-timer query)",
+        "tickStatement": "FROM maestro_workflow_timer WHERE fire_at <= (\\$[0-9]+|now\\(\\)) AND status = ",
+        "leaderElectionCalls": ">= replicas x (observedTicks - 1)"
+      },
+      "detail": "background rate measured over 120.312 s: 24 timer-poll ticks recorded (due-timer query calls), 24 expected at 5 s; 24 leader-election upserts at 1 replica(s)"
+    },
+    {
+      "id": "validity.record",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "parkMode": "sleep",
+        "parkedStatus": "WAITING_TIMER",
+        "replicas": 1,
+        "windows": 4,
+        "auxWindows": 3
+      },
+      "limit": {
+        "parkMode": "signal | sleep",
+        "parkedStatus": "WAITING_SIGNAL (signal) | WAITING_TIMER (sleep)",
+        "replicas": "a positive integer",
+        "windows": "maestroCalls a number, windowSecs > 0, plateau P > 0"
+      },
+      "detail": "park mode sleep (WAITING_TIMER), 1 replica(s), every window has its calls and a positive length"
+    },
+    {
+      "id": "validity.roleSplit",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 0,
+          "maestroCalls": 50,
+          "harnessCalls": 2
+        },
+        {
+          "P": 1000,
+          "maestroCalls": 20228,
+          "harnessCalls": 2
+        },
+        {
+          "P": 5000,
+          "maestroCalls": 100656,
+          "harnessCalls": 2
+        },
+        {
+          "P": 10000,
+          "maestroCalls": 201218,
+          "harnessCalls": 2
+        }
+      ],
+      "limit": {
+        "maestroCalls": "> 0 in every plateau window",
+        "harnessCalls": "> 0 in every window"
+      },
+      "detail": "engine (role maestro) and harness (role postgres) statements are both seen and counted apart in every window"
+    },
+    {
+      "id": "validity.parked",
+      "class": "validity",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 1000,
+          "edge": "before",
+          "parkTotal": 1000,
+          "parked": 1000,
+          "othersOpen": 0,
+          "byStatus": {
+            "WAITING_TIMER": 1000
+          },
+          "ok": true
+        },
+        {
+          "P": 1000,
+          "edge": "after",
+          "parkTotal": 1000,
+          "parked": 1000,
+          "othersOpen": 0,
+          "byStatus": {
+            "WAITING_TIMER": 1000
+          },
+          "ok": true
+        },
+        {
+          "P": 5000,
+          "edge": "before",
+          "parkTotal": 5000,
+          "parked": 5000,
+          "othersOpen": 0,
+          "byStatus": {
+            "WAITING_TIMER": 5000
+          },
+          "ok": true
+        },
+        {
+          "P": 5000,
+          "edge": "after",
+          "parkTotal": 5000,
+          "parked": 5000,
+          "othersOpen": 0,
+          "byStatus": {
+            "WAITING_TIMER": 5000
+          },
+          "ok": true
+        },
+        {
+          "P": 10000,
+          "edge": "before",
+          "parkTotal": 10000,
+          "parked": 10000,
+          "othersOpen": 0,
+          "byStatus": {
+            "WAITING_TIMER": 10000
+          },
+          "ok": true
+        },
+        {
+          "P": 10000,
+          "edge": "after",
+          "parkTotal": 10000,
+          "parked": 10000,
+          "othersOpen": 0,
+          "byStatus": {
+            "WAITING_TIMER": 10000
+          },
+          "ok": true
+        }
+      ],
+      "limit": {
+        "parkTotal": "== P",
+        "parked": "== P (WAITING_TIMER)",
+        "othersOpen": 0
+      },
+      "detail": "every plateau window opened and closed with exactly P runs WAITING_TIMER and no other row of the run open: P=1000, P=5000, P=10000"
+    },
+    {
+      "id": "validity.windows",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "windowUnitSecs": 60,
+        "nodeIntervals": [
+          {
+            "r": 30,
+            "c": 60,
+            "t": 5
+          }
+        ],
+        "idleSecs": 120,
+        "holdSecs": 300,
+        "holdRequestedSecs": 300,
+        "windows": [
+          {
+            "P": 0,
+            "kind": "idle",
+            "windowSecs": 120.312,
+            "planned": 120,
+            "ok": true
+          },
+          {
+            "P": 1000,
+            "kind": "plateau",
+            "windowSecs": 300.365,
+            "planned": 300,
+            "ok": true
+          },
+          {
+            "P": 5000,
+            "kind": "plateau",
+            "windowSecs": 300.350,
+            "planned": 300,
+            "ok": true
+          },
+          {
+            "P": 10000,
+            "kind": "plateau",
+            "windowSecs": 300.500,
+            "planned": 300,
+            "ok": true
+          }
+        ],
+        "release": []
+      },
+      "limit": {
+        "unit": "a whole multiple of every node's wake-recheck, recovery-poll and timer-poll interval",
+        "windowSecs": "planned length (idle, hold, or a whole number of units for the release) to + 5 s",
+        "plateauWindows": "exactly one window per reached plateau, in order; every entry of measurements.windows a window"
+      },
+      "detail": "window unit 60 s (recheck/recovery/timer intervals 30/60/5 s); idle 120 s, hold 300 s (requested 300 s); every window measured within + 5 s of its planned length"
+    },
+    {
+      "id": "validity.plan",
+      "class": "validity",
+      "status": "PASS",
+      "value": {
+        "profile": "full",
+        "runProfile": "full",
+        "probes": [
+          {
+            "phase": "probe-p0",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p0-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p0-"
+            },
+            "iterationsPlusDropped": 120,
+            "expected": 120,
+            "ok": true
+          },
+          {
+            "phase": "probe-p1000",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p1000-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p1000-"
+            },
+            "iterationsPlusDropped": 121,
+            "expected": 120,
+            "ok": true
+          },
+          {
+            "phase": "probe-p5000",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p5000-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p5000-"
+            },
+            "iterationsPlusDropped": 120,
+            "expected": 120,
+            "ok": true
+          },
+          {
+            "phase": "probe-p10000",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p10000-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 2,
+              "timeUnit": "1s",
+              "durationSecs": 60,
+              "offset": 0,
+              "count": null,
+              "preAllocatedVUs": 10,
+              "maxVUs": 50,
+              "idPrefix": "r20261118t085444z-probe-p10000-"
+            },
+            "iterationsPlusDropped": 121,
+            "expected": 120,
+            "ok": true
+          }
+        ],
+        "seeds": [
+          {
+            "phase": "seed-p1000",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 1000,
+              "timeUnit": "30s",
+              "durationSecs": 30,
+              "offset": 0,
+              "count": 1000,
+              "preAllocatedVUs": 200,
+              "maxVUs": 200,
+              "idPrefix": "r20261118t085444z-park-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 1000,
+              "timeUnit": "30s",
+              "durationSecs": 30,
+              "offset": 0,
+              "count": 1000,
+              "preAllocatedVUs": 200,
+              "maxVUs": 200,
+              "idPrefix": "r20261118t085444z-park-"
+            },
+            "startsAccepted": 1000,
+            "startsFailed": 0,
+            "expected": 1000,
+            "ok": true
+          },
+          {
+            "phase": "seed-p5000",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 4000,
+              "timeUnit": "30s",
+              "durationSecs": 30,
+              "offset": 1000,
+              "count": 4000,
+              "preAllocatedVUs": 200,
+              "maxVUs": 200,
+              "idPrefix": "r20261118t085444z-park-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 4000,
+              "timeUnit": "30s",
+              "durationSecs": 30,
+              "offset": 1000,
+              "count": 4000,
+              "preAllocatedVUs": 200,
+              "maxVUs": 200,
+              "idPrefix": "r20261118t085444z-park-"
+            },
+            "startsAccepted": 4000,
+            "startsFailed": 0,
+            "expected": 4000,
+            "ok": true
+          },
+          {
+            "phase": "seed-p10000",
+            "executed": {
+              "executor": "constant-arrival-rate",
+              "rate": 5000,
+              "timeUnit": "30s",
+              "durationSecs": 30,
+              "offset": 5000,
+              "count": 5000,
+              "preAllocatedVUs": 200,
+              "maxVUs": 200,
+              "idPrefix": "r20261118t085444z-park-"
+            },
+            "requested": {
+              "executor": "constant-arrival-rate",
+              "rate": 5000,
+              "timeUnit": "30s",
+              "durationSecs": 30,
+              "offset": 5000,
+              "count": 5000,
+              "preAllocatedVUs": 200,
+              "maxVUs": 200,
+              "idPrefix": "r20261118t085444z-park-"
+            },
+            "startsAccepted": 5000,
+            "startsFailed": 0,
+            "expected": 5000,
+            "ok": true
+          }
+        ],
+        "release": []
+      },
+      "limit": {
+        "probes": "executed plan == requested; iterations + dropped within max(2, 0.5 %) of rate x duration",
+        "seeds": "executed plan == requested (P - P_prev starts paced over one wake-recheck interval); starts accepted == P - P_prev",
+        "release": "iterations == count; crossNode == (replicas > 1)"
+      },
+      "detail": "k6 ran every phase as asked: 4 probe(s), 3 seed(s)"
+    },
+    {
+      "id": "correctness.plateauReached",
+      "class": "correctness",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 1000,
+          "reached": true,
+          "timeToParkSecs": 31
+        },
+        {
+          "P": 5000,
+          "reached": true,
+          "timeToParkSecs": 32
+        },
+        {
+          "P": 10000,
+          "reached": true,
+          "timeToParkSecs": 32
+        }
+      ],
+      "limit": {
+        "plateaus": [
+          1000,
+          5000,
+          10000
+        ],
+        "within": "600 s each"
+      },
+      "detail": "every plateau reached exactly P WAITING_TIMER rows: P=1000 in 31 s, P=5000 in 32 s, P=10000 in 32 s"
+    },
+    {
+      "id": "correctness.releaseWakes",
+      "class": "correctness",
+      "status": "NO_BASELINE",
+      "value": null,
+      "limit": null,
+      "detail": "not applicable: sleep-mode runs are not released by a signal; they stay WAITING_TIMER until their 7200 s timer. This NO_BASELINE is NOT proof that the parked runs were live (see advisory.liveness)"
+    },
+    {
+      "id": "correctness.noFailures",
+      "class": "correctness",
+      "status": "PASS",
+      "value": {
+        "byStatus": {
+          "WAITING_TIMER": 10000,
+          "COMPLETED": 522
+        },
+        "total": 10522
+      },
+      "limit": {
+        "FAILED": 0,
+        "TERMINATED": 0
+      },
+      "detail": "no row of the run (r20261118t085444z-) FAILED or was TERMINATED: {\"WAITING_TIMER\":10000,\"COMPLETED\":522}"
+    },
+    {
+      "id": "correctness.probesCompleted",
+      "class": "correctness",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 0,
+          "accepted": 120,
+          "completed": 120,
+          "total": 120,
+          "timedOut": false,
+          "checksFailed": 0,
+          "ok": true
+        },
+        {
+          "P": 1000,
+          "accepted": 121,
+          "completed": 121,
+          "total": 121,
+          "timedOut": false,
+          "checksFailed": 0,
+          "ok": true
+        },
+        {
+          "P": 5000,
+          "accepted": 120,
+          "completed": 120,
+          "total": 120,
+          "timedOut": false,
+          "checksFailed": 0,
+          "ok": true
+        },
+        {
+          "P": 10000,
+          "accepted": 121,
+          "completed": 121,
+          "total": 121,
+          "timedOut": false,
+          "checksFailed": 0,
+          "ok": true
+        }
+      ],
+      "limit": {
+        "completed": "== accepted",
+        "checksFailed": 0,
+        "within": "120 s"
+      },
+      "detail": "every probe start was accepted and COMPLETED: P=0 120/120, P=1000 121/121, P=5000 120/120, P=10000 121/121"
+    },
+    {
+      "id": "correctness.noForeignRows",
+      "class": "correctness",
+      "status": "PASS",
+      "value": 0,
+      "limit": 0,
+      "detail": "no instance row outside this run's id space r20261118t085444z-"
+    },
+    {
+      "id": "gate.parkedCostLinear",
+      "class": "gate",
+      "status": "PASS",
+      "value": {
+        "ratio": 0.9998,
+        "Pmin": 1000,
+        "Pmax": 10000,
+        "perParkedCallsPerMinAtPmin": 4.0157,
+        "perParkedCallsPerMinAtPmax": 4.0151,
+        "ratios": [
+          {
+            "P": 5000,
+            "ratio": 1.0002
+          },
+          {
+            "P": 10000,
+            "ratio": 0.9998
+          }
+        ],
+        "plateaus": [
+          {
+            "P": 1000,
+            "perParkedCallsPerMin": 4.0157,
+            "perParkedCallsPer30s": 2.0079
+          },
+          {
+            "P": 5000,
+            "perParkedCallsPerMin": 4.0166,
+            "perParkedCallsPer30s": 2.0083
+          },
+          {
+            "P": 10000,
+            "perParkedCallsPerMin": 4.0151,
+            "perParkedCallsPer30s": 2.0076
+          }
+        ]
+      },
+      "limit": {
+        "min": 0.75,
+        "max": 1.25,
+        "every": "plateau, against the smallest"
+      },
+      "detail": "per-parked cost against P=1000 (4.0157 statements per parked run per minute): P=5000 1.0002 x (4.0166), P=10000 0.9998 x (4.0151): linear within +/- 25 % at every plateau"
+    },
+    {
+      "id": "gate.parkedCostArithmetic",
+      "class": "gate",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 1000,
+          "perParkedCallsPerMin": 4.0157,
+          "delta": -0.0013,
+          "ok": true
+        },
+        {
+          "P": 5000,
+          "perParkedCallsPerMin": 4.0166,
+          "delta": -0.0004,
+          "ok": true
+        },
+        {
+          "P": 10000,
+          "perParkedCallsPerMin": 4.0151,
+          "delta": -0.0019,
+          "ok": true
+        }
+      ],
+      "limit": {
+        "relativeBand": 0.05,
+        "parkMode": "sleep",
+        "readsPerRecheck": 2,
+        "replicas": 1,
+        "plateaus": [
+          {
+            "P": 1000,
+            "expected": 4.017,
+            "terms": {
+              "recheck": 4,
+              "renewal": 0.012,
+              "recoveryPages": 0.005,
+              "heldKeys": 0
+            },
+            "band": 0.2014,
+            "min": 3.8155,
+            "max": 4.2185
+          },
+          {
+            "P": 5000,
+            "expected": 4.017,
+            "terms": {
+              "recheck": 4,
+              "renewal": 0.012,
+              "recoveryPages": 0.005,
+              "heldKeys": 0
+            },
+            "band": 0.2009,
+            "min": 3.8161,
+            "max": 4.2179
+          },
+          {
+            "P": 10000,
+            "expected": 4.017,
+            "terms": {
+              "recheck": 4,
+              "renewal": 0.012,
+              "recoveryPages": 0.005,
+              "heldKeys": 0
+            },
+            "band": 0.2009,
+            "min": 3.8161,
+            "max": 4.2179
+          }
+        ]
+      },
+      "detail": "every plateau within the documented arithmetic (sleep mode, 1 replica(s)) +/- 5 %: P=1000 4.0157 (expected 4.017 +/- 0.2014), P=5000 4.0166 (expected 4.017 +/- 0.2009), P=10000 4.0151 (expected 4.017 +/- 0.2009) statements per parked run per minute"
+    },
+    {
+      "id": "gate.parkedCostBaseline",
+      "class": "gate",
+      "status": "NO_BASELINE",
+      "value": {
+        "statementsPerWorkflowNet": 4.0151,
+        "netTolerancePerWorkflow": 0.0001
+      },
+      "limit": {
+        "relativeAllowance": 0.02
+      },
+      "detail": "per parked run per minute at P=10000: no usable baseline: baseline parkMode \"signal\" is not this run's \"sleep\""
+    },
+    {
+      "id": "advisory.decomposition",
+      "class": "advisory",
+      "status": "WARN",
+      "value": [
+        {
+          "P": 1000,
+          "windowSecs": 300.365,
+          "rows": [
+            {
+              "component": "wakeRecheck",
+              "calls": 20018,
+              "split": {
+                "instanceStatus": 10009,
+                "signals": 0,
+                "timerRow": 10009
+              },
+              "per": 1.9994,
+              "perUnit": "reads per parked run per 30 s re-check",
+              "splitPer": {
+                "instanceStatus": 0.9997,
+                "signals": 0,
+                "timerRow": 0.9997
+              },
+              "documentedPer": 2,
+              "documentedCalls": 20024.33,
+              "matches": true
+            },
+            {
+              "component": "lockRenewal",
+              "calls": 60,
+              "per": 1.9994,
+              "perUnit": "statements per renewal pass (all 1 node(s); every 10 s + the pass's own duration)",
+              "documentedPer": 2,
+              "documentedCalls": 60.02,
+              "matches": true,
+              "perNominalPass": 1.9976,
+              "statementMeanMs": 4.6237,
+              "effectivePeriodSecs": 10.0092,
+              "perLockPerMin": 0.012,
+              "singleRenewCalls": 0,
+              "note": "documented ceil(H / 500) per node per pass, H = 1000 locks per node: NOT linear per run (one statement covers up to 500 locks); passes counted at the effective period (renewSecs + the pass's measured duration)"
+            },
+            {
+              "component": "recoveryPages",
+              "calls": 30,
+              "per": 5.9927,
+              "perUnit": "page reads per recovery pass per node (every 60 s)",
+              "documentedPer": 6,
+              "documentedCalls": 30.04,
+              "matches": true,
+              "note": "documented floor(A / 200) + 1 per pass, A = 1000 active rows of the service; every node scans all of them"
+            },
+            {
+              "component": "heldKeys",
+              "calls": 0,
+              "per": 0,
+              "perUnit": "heldKeys reads per recovery pass per node",
+              "documentedPer": 0,
+              "documentedCalls": 0,
+              "matches": true,
+              "documentedMax": 5,
+              "note": "docs: at most 1 per non-empty page (<= ceil(A / 200) = 5); traced: a page whose rows all run on this node (in runningWorkflows, holding their lock) issues none, so 0 is expected at 1 replica and about one per non-empty page at 2+"
+            },
+            {
+              "component": "lockAcquire",
+              "calls": 0,
+              "per": 0,
+              "perUnit": "lock acquisitions per recovery pass per node",
+              "documentedPer": 0,
+              "documentedCalls": 0,
+              "matches": true
+            },
+            {
+              "component": "timerDuePoll",
+              "calls": 60,
+              "per": 0.9988,
+              "perUnit": "due-timer queries per 5 s tick (leader only)",
+              "documentedPer": 1,
+              "documentedCalls": 60.07,
+              "matches": true
+            },
+            {
+              "component": "leaderElection",
+              "calls": 60,
+              "per": 0.9988,
+              "perUnit": "leader-election upserts per tick (every node)",
+              "documentedPer": 1,
+              "documentedCalls": 60.07,
+              "matches": true
+            },
+            {
+              "component": "lockCleaner",
+              "calls": 0,
+              "note": "2 per pass per node (subtracted exactly; validity.sweeps)"
+            },
+            {
+              "component": "clockSkew",
+              "calls": 0,
+              "documentedMax": 1,
+              "matches": true,
+              "note": "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every 600 s, so at most replicas x (floor(windowSecs / 600) + 1) per window; not in the idle-rate model, within the tolerance"
+            },
+            {
+              "component": "lockRelease",
+              "calls": 0
+            },
+            {
+              "component": "other",
+              "calls": 0,
+              "top": [],
+              "matches": true
+            },
+            {
+              "component": "nested",
+              "calls": 0
+            }
+          ]
+        },
+        {
+          "P": 5000,
+          "windowSecs": 300.350,
+          "rows": [
+            {
+              "component": "wakeRecheck",
+              "calls": 100116,
+              "split": {
+                "instanceStatus": 50058,
+                "signals": 0,
+                "timerRow": 50058
+              },
+              "per": 2,
+              "perUnit": "reads per parked run per 30 s re-check",
+              "splitPer": {
+                "instanceStatus": 1,
+                "signals": 0,
+                "timerRow": 1
+              },
+              "documentedPer": 2,
+              "documentedCalls": 100116.67,
+              "matches": true
+            },
+            {
+              "component": "lockRenewal",
+              "calls": 290,
+              "per": 9.9292,
+              "perUnit": "statements per renewal pass (all 1 node(s); every 10 s + the pass's own duration)",
+              "documentedPer": 10,
+              "documentedCalls": 292.07,
+              "matches": true,
+              "perNominalPass": 9.6554,
+              "statementMeanMs": 28.3523,
+              "effectivePeriodSecs": 10.2835,
+              "perLockPerMin": 0.0116,
+              "singleRenewCalls": 0,
+              "note": "documented ceil(H / 500) per node per pass, H = 5000 locks per node: NOT linear per run (one statement covers up to 500 locks); passes counted at the effective period (renewSecs + the pass's measured duration)"
+            },
+            {
+              "component": "recoveryPages",
+              "calls": 130,
+              "per": 25.9697,
+              "perUnit": "page reads per recovery pass per node (every 60 s)",
+              "documentedPer": 26,
+              "documentedCalls": 130.15,
+              "matches": true,
+              "note": "documented floor(A / 200) + 1 per pass, A = 5000 active rows of the service; every node scans all of them"
+            },
+            {
+              "component": "heldKeys",
+              "calls": 0,
+              "per": 0,
+              "perUnit": "heldKeys reads per recovery pass per node",
+              "documentedPer": 0,
+              "documentedCalls": 0,
+              "matches": true,
+              "documentedMax": 25,
+              "note": "docs: at most 1 per non-empty page (<= ceil(A / 200) = 25); traced: a page whose rows all run on this node (in runningWorkflows, holding their lock) issues none, so 0 is expected at 1 replica and about one per non-empty page at 2+"
+            },
+            {
+              "component": "lockAcquire",
+              "calls": 0,
+              "per": 0,
+              "perUnit": "lock acquisitions per recovery pass per node",
+              "documentedPer": 0,
+              "documentedCalls": 0,
+              "matches": true
+            },
+            {
+              "component": "timerDuePoll",
+              "calls": 60,
+              "per": 0.9988,
+              "perUnit": "due-timer queries per 5 s tick (leader only)",
+              "documentedPer": 1,
+              "documentedCalls": 60.07,
+              "matches": true
+            },
+            {
+              "component": "leaderElection",
+              "calls": 60,
+              "per": 0.9988,
+              "perUnit": "leader-election upserts per tick (every node)",
+              "documentedPer": 1,
+              "documentedCalls": 60.07,
+              "matches": true
+            },
+            {
+              "component": "lockCleaner",
+              "calls": 0,
+              "note": "2 per pass per node (subtracted exactly; validity.sweeps)"
+            },
+            {
+              "component": "clockSkew",
+              "calls": 0,
+              "documentedMax": 1,
+              "matches": true,
+              "note": "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every 600 s, so at most replicas x (floor(windowSecs / 600) + 1) per window; not in the idle-rate model, within the tolerance"
+            },
+            {
+              "component": "lockRelease",
+              "calls": 0
+            },
+            {
+              "component": "other",
+              "calls": 0,
+              "top": [],
+              "matches": true
+            },
+            {
+              "component": "nested",
+              "calls": 0
+            }
+          ]
+        },
+        {
+          "P": 10000,
+          "windowSecs": 300.500,
+          "rows": [
+            {
+              "component": "wakeRecheck",
+              "calls": 200320,
+              "split": {
+                "instanceStatus": 100161,
+                "signals": 0,
+                "timerRow": 100159
+              },
+              "per": 1.9999,
+              "perUnit": "reads per parked run per 30 s re-check",
+              "splitPer": {
+                "instanceStatus": 0.9999,
+                "signals": 0,
+                "timerRow": 0.9999
+              },
+              "documentedPer": 2,
+              "documentedCalls": 200333.33,
+              "matches": true
+            },
+            {
+              "component": "lockRenewal",
+              "calls": 560,
+              "per": 19.6925,
+              "perUnit": "statements per renewal pass (all 1 node(s); every 10 s + the pass's own duration)",
+              "documentedPer": 20,
+              "documentedCalls": 568.74,
+              "matches": true,
+              "perNominalPass": 18.6356,
+              "statementMeanMs": 28.3564,
+              "effectivePeriodSecs": 10.5671,
+              "perLockPerMin": 0.0112,
+              "singleRenewCalls": 0,
+              "note": "documented ceil(H / 500) per node per pass, H = 10000 locks per node: NOT linear per run (one statement covers up to 500 locks); passes counted at the effective period (renewSecs + the pass's measured duration)"
+            },
+            {
+              "component": "recoveryPages",
+              "calls": 255,
+              "per": 50.9151,
+              "perUnit": "page reads per recovery pass per node (every 60 s)",
+              "documentedPer": 51,
+              "documentedCalls": 255.43,
+              "matches": true,
+              "note": "documented floor(A / 200) + 1 per pass, A = 10000 active rows of the service; every node scans all of them"
+            },
+            {
+              "component": "heldKeys",
+              "calls": 0,
+              "per": 0,
+              "perUnit": "heldKeys reads per recovery pass per node",
+              "documentedPer": 0,
+              "documentedCalls": 0,
+              "matches": true,
+              "documentedMax": 50,
+              "note": "docs: at most 1 per non-empty page (<= ceil(A / 200) = 50); traced: a page whose rows all run on this node (in runningWorkflows, holding their lock) issues none, so 0 is expected at 1 replica and about one per non-empty page at 2+"
+            },
+            {
+              "component": "lockAcquire",
+              "calls": 0,
+              "per": 0,
+              "perUnit": "lock acquisitions per recovery pass per node",
+              "documentedPer": 0,
+              "documentedCalls": 0,
+              "matches": true
+            },
+            {
+              "component": "timerDuePoll",
+              "calls": 60,
+              "per": 0.9983,
+              "perUnit": "due-timer queries per 5 s tick (leader only)",
+              "documentedPer": 1,
+              "documentedCalls": 60.1,
+              "matches": true
+            },
+            {
+              "component": "leaderElection",
+              "calls": 60,
+              "per": 0.9983,
+              "perUnit": "leader-election upserts per tick (every node)",
+              "documentedPer": 1,
+              "documentedCalls": 60.1,
+              "matches": true
+            },
+            {
+              "component": "lockCleaner",
+              "calls": 2,
+              "note": "2 per pass per node (subtracted exactly; validity.sweeps)"
+            },
+            {
+              "component": "clockSkew",
+              "calls": 1,
+              "documentedMax": 1,
+              "matches": true,
+              "note": "SELECT now(), each node's clock-skew check (ClockSkewCheck): at node start, then every 600 s, so at most replicas x (floor(windowSecs / 600) + 1) per window; not in the idle-rate model, within the tolerance"
+            },
+            {
+              "component": "lockRelease",
+              "calls": 0
+            },
+            {
+              "component": "other",
+              "calls": 3,
+              "top": [
+                {
+                  "calls": 3,
+                  "query": "SET application_name = 'PostgreSQL JDBC Driver'"
+                }
+              ],
+              "matches": false
+            },
+            {
+              "component": "nested",
+              "calls": 0
+            }
+          ]
+        }
+      ],
+      "limit": {
+        "documented": "docs/operations.md §13 arithmetic at the node's bound intervals"
+      },
+      "detail": "P=1000: wakeRecheck 1.9994 (doc 2), lockRenewal 1.9994 (doc 2), recoveryPages 5.9927 (doc 6), heldKeys 0 (doc 0); P=5000: wakeRecheck 2 (doc 2), lockRenewal 9.9292 (doc 10), recoveryPages 25.9697 (doc 26), heldKeys 0 (doc 0); P=10000: wakeRecheck 1.9999 (doc 2), lockRenewal 19.6925 (doc 20), recoveryPages 50.9151 (doc 51), heldKeys 0 (doc 0); FINDINGS (measured differs from the documented arithmetic): P=10000 other: measured 3 calls, documented 0"
+    },
+    {
+      "id": "advisory.probeLatency",
+      "class": "advisory",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 0,
+          "p50Ms": 83.9,
+          "p95Ms": 113.8,
+          "maxMs": 166.6,
+          "completed": 120
+        },
+        {
+          "P": 1000,
+          "p50Ms": 79.1,
+          "p95Ms": 122.8,
+          "maxMs": 183.3,
+          "completed": 121
+        },
+        {
+          "P": 5000,
+          "p50Ms": 76.5,
+          "p95Ms": 112.5,
+          "maxMs": 471.1,
+          "completed": 120
+        },
+        {
+          "P": 10000,
+          "p50Ms": 76.4,
+          "p95Ms": 117.9,
+          "maxMs": 169.5,
+          "completed": 121
+        }
+      ],
+      "limit": {
+        "p95AtPmax": "<= 2 x p95 at P = 0"
+      },
+      "detail": "probe (chain 3 x 20 ms) start-to-terminal p50 / p95: P=0 83.9 / 113.8 ms, P=1000 79.1 / 122.8 ms, P=5000 76.5 / 112.5 ms, P=10000 76.4 / 117.9 ms; p95 at P=10000 is 1.04 x that at P=0"
+    },
+    {
+      "id": "advisory.heapPerParked",
+      "class": "advisory",
+      "status": "PASS",
+      "value": {
+        "idle": {
+          "heap": {
+            "usedAvg": 38880519,
+            "usedMax": 46785600,
+            "usedMin": 30350624,
+            "committedAvg": 62980096,
+            "oldGenMax": 28999032,
+            "oldGenMin": 27356976,
+            "gcLiveDataAtEnd": 26029160
+          },
+          "threads": {
+            "liveAvg": 32.041666666666664,
+            "liveMax": 33
+          }
+        },
+        "plateaus": [
+          {
+            "P": 1000,
+            "heap": {
+              "usedAvg": 62611397.2,
+              "usedMax": 72113632,
+              "usedMin": 52776712,
+              "committedAvg": 71365427.2,
+              "oldGenMax": 54352392,
+              "oldGenMin": 46109208,
+              "gcLiveDataAtEnd": 26029160
+            },
+            "threads": {
+              "liveAvg": 34.583333333333336,
+              "liveMax": 48
+            },
+            "parkedGauge": {
+              "avg": 999.5,
+              "min": 990
+            }
+          },
+          {
+            "P": 5000,
+            "heap": {
+              "usedAvg": 179891533.06666666,
+              "usedMax": 230138144,
+              "usedMin": 128728600,
+              "committedAvg": 189290905.6,
+              "oldGenMax": 221947496,
+              "oldGenMin": 118084536,
+              "gcLiveDataAtEnd": 26029160
+            },
+            "threads": {
+              "liveAvg": 36.6,
+              "liveMax": 51
+            },
+            "parkedGauge": {
+              "avg": 4999.783333333334,
+              "min": 4996
+            }
+          },
+          {
+            "P": 10000,
+            "heap": {
+              "usedAvg": 428665595.8666667,
+              "usedMax": 531293248,
+              "usedMin": 332934576,
+              "committedAvg": 437695283.2,
+              "oldGenMax": 515343064,
+              "oldGenMin": 320310160,
+              "gcLiveDataAtEnd": 26029160
+            },
+            "threads": {
+              "liveAvg": 35.666666666666664,
+              "liveMax": 50
+            },
+            "parkedGauge": {
+              "avg": 9996.783333333333,
+              "min": 9947
+            }
+          }
+        ]
+      },
+      "limit": null,
+      "detail": "heap used (avg over the window, all nodes) idle 37.08 MiB -> P=10000 408.81 MiB: about 38979 bytes per parked run (rough: young-generation sawtooth included); old generation max 27.66 -> 491.47 MiB; live platform threads P=0 33, P=1000 48, P=5000 51, P=10000 50 (jvm_threads_live_threads counts platform threads only: parked runs are virtual threads and do not appear in it) (INFO only)"
+    },
+    {
+      "id": "advisory.parkedSlots",
+      "class": "advisory",
+      "status": "WARN",
+      "value": {
+        "workflowSlots": 20,
+        "plateaus": [
+          {
+            "P": 1000,
+            "workflowSlotsMax": 4,
+            "workflowSlotsAvg": 0.15,
+            "parkedGaugeAvg": 999.5
+          },
+          {
+            "P": 5000,
+            "workflowSlotsMax": 3,
+            "workflowSlotsAvg": 0.12,
+            "parkedGaugeAvg": 4999.78
+          },
+          {
+            "P": 10000,
+            "workflowSlotsMax": 20,
+            "workflowSlotsAvg": 1.83,
+            "parkedGaugeAvg": 9996.78
+          }
+        ]
+      },
+      "limit": {
+        "workflowSlotsMax": "< workflowSlots while P >> workflowSlots are parked"
+      },
+      "detail": "workflow slots reached the limit 20 while runs were parked: [{\"P\":1000,\"workflowSlotsMax\":4,\"workflowSlotsAvg\":0.15,\"parkedGaugeAvg\":999.5},{\"P\":5000,\"workflowSlotsMax\":3,\"workflowSlotsAvg\":0.12,\"parkedGaugeAvg\":4999.78},{\"P\":10000,\"workflowSlotsMax\":20,\"workflowSlotsAvg\":1.83,\"parkedGaugeAvg\":9996.78}]"
+    },
+    {
+      "id": "advisory.release",
+      "class": "advisory",
+      "status": "WARN",
+      "value": null,
+      "limit": null,
+      "detail": "no release figures (sleep mode, or no release window)"
+    },
+    {
+      "id": "advisory.seedCost",
+      "class": "advisory",
+      "status": "PASS",
+      "value": [
+        {
+          "P": 1000,
+          "Pprev": 0,
+          "started": 1000,
+          "requested": 1000,
+          "reached": true,
+          "windowSecs": 31.453,
+          "maestroCalls": 15066,
+          "timeToParkSecs": 31,
+          "k6Secs": 31,
+          "lagSecs": 0,
+          "netPerStartedRun": 15.05,
+          "grossPerStartedRun": 15.07
+        },
+        {
+          "P": 5000,
+          "Pprev": 1000,
+          "started": 4000,
+          "requested": 4000,
+          "reached": true,
+          "windowSecs": 32.264,
+          "maestroCalls": 62424,
+          "timeToParkSecs": 32,
+          "k6Secs": 32,
+          "lagSecs": 0,
+          "netPerStartedRun": 15.06,
+          "grossPerStartedRun": 15.61
+        },
+        {
+          "P": 10000,
+          "Pprev": 5000,
+          "started": 5000,
+          "requested": 5000,
+          "reached": true,
+          "windowSecs": 31.839,
+          "maestroCalls": 86100,
+          "timeToParkSecs": 32,
+          "k6Secs": 31,
+          "lagSecs": 1,
+          "netPerStartedRun": 15.09,
+          "grossPerStartedRun": 17.22
+        }
+      ],
+      "limit": null,
+      "detail": "P=1000: 1000 runs started paced over 31 s (k6, container start included), all parked 0 s after k6 ended (2 s poll), 15.05 statements per started-and-parked run net of the idle rate and the already-parked population (its own first re-checks included); P=5000: 4000 runs started paced over 32 s (k6, container start included), all parked 0 s after k6 ended (2 s poll), 15.06 statements per started-and-parked run net of the idle rate and the already-parked population (its own first re-checks included); P=10000: 5000 runs started paced over 31 s (k6, container start included), all parked 1 s after k6 ended (2 s poll), 15.09 statements per started-and-parked run net of the idle rate and the already-parked population (its own first re-checks included)"
+    },
+    {
+      "id": "advisory.contention",
+      "class": "advisory",
+      "status": "WARN",
+      "value": {
+        "hostLoadPerCpu": [
+          5.25,
+          3.13,
+          3.87,
+          2.98,
+          4.76,
+          2.68,
+          2.4,
+          3.2
+        ],
+        "cpuHotPlateaus": [],
+        "nodeCpu": [
+          {
+            "P": 1000,
+            "nodeCpu": {
+              "processAvg": 0.022130073093067016,
+              "processMax": 0.045,
+              "systemAvg": 0.02215843889145197
+            }
+          },
+          {
+            "P": 5000,
+            "nodeCpu": {
+              "processAvg": 0.05525703718968315,
+              "processMax": 0.13137254901960785,
+              "systemAvg": 0.055268967446031374
+            }
+          },
+          {
+            "P": 10000,
+            "nodeCpu": {
+              "processAvg": 0.06590845830756546,
+              "processMax": 0.099,
+              "systemAvg": 0.0659240708365735
+            }
+          }
+        ],
+        "hostLoad": {
+          "scenarioStart": {
+            "at": 1794992118,
+            "raw": "{ 52.49 35.66 35.09 }",
+            "load1": 52.49,
+            "load5": 35.66,
+            "load15": 35.09,
+            "hostCpus": 10
+          },
+          "windows": [
+            {
+              "at": 1794992371,
+              "raw": "{ 31.31 31.25 33.13 }",
+              "load1": 31.31,
+              "load5": 31.25,
+              "load15": 33.13,
+              "hostCpus": 10,
+              "P": 1000,
+              "edge": "open"
+            },
+            {
+              "at": 1794992672,
+              "raw": "{ 38.66 45.98 40.32 }",
+              "load1": 38.66,
+              "load5": 45.98,
+              "load15": 40.32,
+              "hostCpus": 10,
+              "P": 1000,
+              "edge": "close"
+            },
+            {
+              "at": 1794992801,
+              "raw": "{ 29.79 40.13 38.77 }",
+              "load1": 29.79,
+              "load5": 40.13,
+              "load15": 38.77,
+              "hostCpus": 10,
+              "P": 5000,
+              "edge": "open"
+            },
+            {
+              "at": 1794993102,
+              "raw": "{ 47.63 40.05 38.57 }",
+              "load1": 47.63,
+              "load5": 40.05,
+              "load15": 38.57,
+              "hostCpus": 10,
+              "P": 5000,
+              "edge": "close"
+            },
+            {
+              "at": 1794993231,
+              "raw": "{ 26.75 35.22 36.89 }",
+              "load1": 26.75,
+              "load5": 35.22,
+              "load15": 36.89,
+              "hostCpus": 10,
+              "P": 10000,
+              "edge": "open"
+            },
+            {
+              "at": 1794993532,
+              "raw": "{ 23.95 31.06 34.43 }",
+              "load1": 23.95,
+              "load5": 31.06,
+              "load15": 34.43,
+              "hostCpus": 10,
+              "P": 10000,
+              "edge": "close"
+            }
+          ],
+          "end": {
+            "at": 1794993599,
+            "raw": "{ 32.01 31.74 34.39 }",
+            "load1": 32.01,
+            "load5": 31.74,
+            "load15": 34.39,
+            "hostCpus": 10
+          }
+        }
+      },
+      "limit": {
+        "hostLoadPerCpu": "<= 2.0",
+        "nodeCpu": "process/system CPU average < 0.9 in every plateau window"
+      },
+      "detail": "contended: host load average up to 5.25 per CPU, above 2.0; the latency advisories of this run are not the engine's alone (statement counts are unaffected unless re-checks fall behind)"
+    },
+    {
+      "id": "advisory.liveness",
+      "class": "advisory",
+      "status": "WARN",
+      "value": {
+        "parkMode": "sleep",
+        "recheckReadsPerParkedPerInterval": [
+          {
+            "P": 1000,
+            "per": 1.9994
+          },
+          {
+            "P": 5000,
+            "per": 2
+          },
+          {
+            "P": 10000,
+            "per": 1.9999
+          }
+        ]
+      },
+      "limit": null,
+      "detail": "sleep mode: no parked run was woken or completed, so correctness.releaseWakes (NO_BASELINE, not applicable) is NOT proof that the parked runs were live; the only evidence of it is their re-check reads in the plateau windows (P=1000 1.9994, P=5000 2, P=10000 1.9999 reads per parked run per 30 s, 2 documented). Sleep mode was measured on one local one-node run only (perf/eval/s3-parked.jq header): not at 2+ replicas, not on the full profile"
+    },
+    {
+      "id": "advisory.crossNodeWake",
+      "class": "advisory",
+      "status": "PASS",
+      "value": {
+        "replicas": 1,
+        "drainSecs": null
+      },
+      "limit": null,
+      "detail": "one node: every signal arrived on the node that owns its run; no cross-node wake to judge"
+    },
+    {
+      "id": "advisory.runAbandoned",
+      "class": "advisory",
+      "status": "PASS",
+      "value": {
+        "runAbandonedIncrease": null,
+        "queryOk": true
+      },
+      "limit": 0,
+      "detail": "no maestro_run_abandoned_total series in a successful query: the counter registers on its first increment, and this engine exports the other WP11 meters, so none was abandoned"
+    }
+  ],
+  "verdict": "PASS"
+}

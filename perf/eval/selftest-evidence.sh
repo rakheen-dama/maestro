@@ -71,4 +71,33 @@ for entry in "${superseded[@]}"; do
     rc=1
   fi
 done
+# Scenario 3 runs that close the WP11 gaps (2026-11-18): the full profile in
+# signal mode, and sleep mode at two replicas and on the full profile. Each
+# is re-evaluated (no baseline) and must keep its verdict, its absolute
+# arithmetic gate and its linearity gate.
+s3_followups=(
+  "r20261118t081717z PASS" # S3 full, 1 replica, signal mode
+  "r20261118t084430z PASS" # S3 local, 2 replicas, sleep mode
+  "r20261118t085444z PASS" # S3 full, 1 replica, sleep mode
+)
+for entry in "${s3_followups[@]}"; do
+  run=${entry% *} want=${entry#* }
+  dir="${work}/s3-followup-${run}"
+  mkdir "$dir"
+  jq .identity "${EVIDENCE}/${run}.result.json" >"${dir}/identity.json"
+  jq .measurements "${EVIDENCE}/${run}.result.json" >"${dir}/measurements.json"
+  if bash "${PERF_DIR}/lib/evaluate.sh" "$dir" s3-parked "" >/dev/null 2>&1; then
+    got=$(jq -r '[.verdict,
+                  (.checks[] | select(.id == "gate.parkedCostArithmetic") | .status),
+                  (.checks[] | select(.id == "gate.parkedCostLinear") | .status)] | join(" ")' "${dir}/result.json")
+  else
+    got=CRASH
+  fi
+  if [[ "$got" == "$want PASS PASS" ]]; then
+    printf 'ok    %-70s %s\n' "s3 follow-up ${run}: verdict, arithmetic, linearity" "$got"
+  else
+    printf 'FAIL  %-70s expected %s, got %s\n' "s3 follow-up ${run}: verdict, arithmetic, linearity" "$want PASS PASS" "$got"
+    rc=1
+  fi
+done
 exit "$rc"

@@ -72,11 +72,17 @@
 #   Those are runs of the engine before main 525b287 was merged; on today's
 #   engine (per-activity lock removed, due timers on the database clock,
 #   clock-skew check), local, one node: 6.016 / 6.0174 (r20261116t223427z),
-#   unchanged, as the arithmetic predicts (a parked run runs no activity).
-#   Sleep mode's centre (4.000 + 0.017 = 4.017), measured once, local, one
-#   node: 4.0173 / 4.0169 at P = 1000 / 2000 (r20261116t224549z), re-checks
-#   2.0001 / 1.9999 reads per parked run per 30 s (instance status and timer
-#   row, 1:1); not measured at two replicas or on the full profile.
+#   unchanged, as the arithmetic predicts (a parked run runs no activity);
+#   full profile, one node: 6.0158 / 6.0157 / 6.0168 at P = 1000 / 5000 /
+#   10000 (r20261118t081717z, linearity 1.0002).
+#   Sleep mode's centre (4.000 + 0.017 = 4.017 at one node; + 0.005
+#   recovery + 0.010 heldKeys = 4.032 at two), measured three times:
+#   local, one node: 4.0173 / 4.0169 at P = 1000 / 2000 (r20261116t224549z),
+#   re-checks 2.0001 / 1.9999 reads per parked run per 30 s (instance status
+#   and timer row, 1:1); local, two nodes: 4.0321 / 4.0308
+#   (r20261118t084430z; heldKeys 4.9814 / 9.9771 per pass, documented 5 /
+#   10); full profile, one node: 4.0157 / 4.0166 / 4.0151 at P = 1000 /
+#   5000 / 10000 (r20261118t085444z, linearity 0.9998).
 #   Every run cited in this header has its result.json committed under
 #   perf/.evidence/wp11/<runId>.result.json (the pre-merge runs re-evaluated
 #   by the current evaluator without a baseline).
@@ -145,7 +151,7 @@
 # = P / replicas, A = active rows of the service = P):
 #   wake re-check   3 reads per parked awaitSignal (instance status, signals,
 #                   timer row), 2 per parked sleep (status, timer row;
-#                   measured once locally, r20261116t224549z),
+#                   measured: see gate.parkedCostArithmetic above),
 #                   every wakeRecheckSecs
 #   lock renewal    ceil(H / 500) UPDATE ... unnest per node every lockTtl / 3
 #                   (the renewer sleeps, then renews: the effective period is
@@ -190,8 +196,8 @@
 #   replicas > 1 when the drain took longer than one wake-recheck interval.
 #   In sleep mode the runs cannot be released by a signal: NO_BASELINE,
 #   "not applicable", which is NOT proof the parked runs were live:
-#   advisory.liveness WARNs and says so (sleep mode was measured once,
-#   locally on one node: see gate.parkedCostArithmetic above).
+#   advisory.liveness WARNs and says so (sleep mode's measurements: see
+#   gate.parkedCostArithmetic above).
 #   noFailures: FAILED and TERMINATED == 0 over the run's whole id space.
 #   probesCompleted: every accepted probe start COMPLETED within 120 s.
 #
@@ -769,7 +775,7 @@ $identity[0] as $id
         else
           check("advisory.liveness"; "advisory"; "WARN"; {parkMode: $mode, recheckReadsPerParkedPerInterval: $rc}; null;
                 if $mode == "sleep" then
-                  "sleep mode: no parked run was woken or completed, so correctness.releaseWakes (NO_BASELINE, not applicable) is NOT proof that the parked runs were live; the only evidence of it is their re-check reads in the plateau windows (\([$rc[] | "P=\(.P) \(.per // "n/a")"] | join(", ")) reads per parked run per \($recheckSecs // "?") s, \($readsPerRecheck) documented). Sleep mode was measured on one local one-node run only (perf/eval/s3-parked.jq header): not at 2+ replicas, not on the full profile"
+                  "sleep mode: no parked run was woken or completed, so correctness.releaseWakes (NO_BASELINE, not applicable) is NOT proof that the parked runs were live; the only evidence of it is their re-check reads in the plateau windows (\([$rc[] | "P=\(.P) \(.per // "n/a")"] | join(", ")) reads per parked run per \($recheckSecs // "?") s, \($readsPerRecheck) documented; sleep-mode measurements: perf/eval/s3-parked.jq header)"
                 else "park mode \($mode | tojson) is unknown: nothing shows the parked runs were live" end)
         end),
     advisory_guarded("advisory.crossNodeWake";
