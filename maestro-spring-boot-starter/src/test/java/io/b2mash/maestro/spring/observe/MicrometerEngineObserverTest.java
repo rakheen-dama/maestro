@@ -79,6 +79,19 @@ class MicrometerEngineObserverTest {
     }
 
     @Test
+    @DisplayName("maestro.workflow.start.deferred — Counter, tags workflow/reason=lock_held_elsewhere|lock_unavailable (P3 L2)")
+    void workflowStartDeferred() {
+        observer.workflowStartDeferred(WORKFLOW, true);
+        observer.workflowStartDeferred(WORKFLOW, false);
+        observer.workflowStartDeferred(WORKFLOW, false);
+
+        assertThat(registry.get("maestro.workflow.start.deferred").tag("workflow", "OrderWorkflow")
+                .tag("reason", "lock_held_elsewhere").counter().count()).isEqualTo(1.0);
+        assertThat(registry.get("maestro.workflow.start.deferred").tag("workflow", "OrderWorkflow")
+                .tag("reason", "lock_unavailable").counter().count()).isEqualTo(2.0);
+    }
+
+    @Test
     @DisplayName("maestro.workflow.terminated — Counter, tag workflow")
     void workflowTerminated() {
         observer.workflowTerminated(WORKFLOW);

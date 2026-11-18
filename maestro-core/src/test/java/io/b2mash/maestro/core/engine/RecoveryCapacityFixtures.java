@@ -154,6 +154,15 @@ final class RecoveryCapacityFixtures {
             return held.size();
         }
 
+        /**
+         * Frees {@code key} behind its holder's back — as a TTL expiry seen by
+         * another node would: the holder's next {@code renewAll} reports its
+         * handle lost, and anyone may acquire the key.
+         */
+        void forceRelease(String key) {
+            held.remove(key);
+        }
+
         boolean isHeld(String key) {
             return held.containsKey(key);
         }

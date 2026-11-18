@@ -77,6 +77,10 @@ final class RecoveryPoller implements StoppableLoop {
     private final Duration pollInterval;
     private final CapacitySignal signal;
     private final Duration capacitySpacing;
+    /** Guards {@link #promptRequestedAt}; notified by a prompt request and by a stop. */
+    private final Object promptMonitor = new Object();
+    /** {@link System#nanoTime()} of the pending prompt request (L3), or {@code null} for none. */
+    private @Nullable Long promptRequestedAt;
     private final BackgroundLoopGuard guard;
     private final AtomicBoolean started = new AtomicBoolean(false);
     /** Counted down by {@link #requestStop()}: ends every wait of the loop without an interrupt. */
@@ -208,6 +212,26 @@ final class RecoveryPoller implements StoppableLoop {
     }
 
     /**
+     * Asks for a prompt full pass (L3): a fresh start was persisted without a
+     * run because its instance lock could not be taken, and should not wait a
+     * whole {@code pollInterval}. The pass runs no sooner than
+     * {@code capacitySpacing} (≤ 1 s) after this request — by then the race
+     * that refused the lock (a duplicate start on another node, a pool blip)
+     * is usually over — and earlier full-pass timing is otherwise unchanged.
+     * Requests that arrive while one is pending coalesce into it. Never
+     * blocks; safe from any thread. While the poller is waiting for task-queue
+     * capacity after a deferring pass, the prompt pass runs once that wait ends.
+     */
+    void requestPromptPass() {
+        synchronized (promptMonitor) {
+            if (promptRequestedAt == null) {
+                promptRequestedAt = System.nanoTime();
+            }
+            promptMonitor.notifyAll();
+        }
+    }
+
+    /**
      * Asks the polling loop to stop and returns at once: no new iteration starts,
      * every wait between passes ends, and the thread is interrupted (Issue 64
      * tracks that interrupt, which can land inside a store call). Never joins.
@@ -217,6 +241,9 @@ final class RecoveryPoller implements StoppableLoop {
     public synchronized void requestStop() {
         running = false;
         stopRequested.countDown();
+        synchronized (promptMonitor) {
+            promptMonitor.notifyAll();
+        }
         signal.signal(); // wakes a wait for capacity without the interrupt
         var thread = pollerThread;
         if (thread != null && interruptOnStop) {
@@ -289,7 +316,7 @@ final class RecoveryPoller implements StoppableLoop {
         while (running) {
             try {
                 var capacityPass = awaitingCapacity && awaitCapacity(seen, nextFull, lastPassStart, cursors.keySet());
-                if (!capacityPass && !sleepUntil(nextFull)) {
+                if (!capacityPass && !sleepUntilFullPassOrPrompt(nextFull)) {
                     break;
                 }
                 if (!running) {
@@ -435,6 +462,40 @@ final class RecoveryPoller implements StoppableLoop {
             notBefore = System.nanoTime() + spacingNanos;
         }
         return false;
+    }
+
+    /**
+     * Waits until {@code deadline} ({@link System#nanoTime()}), a stop, or a
+     * pending prompt request at least {@code capacitySpacing} old (L3), and
+     * clears the prompt it returns for.
+     *
+     * @return {@code false} if the poller is stopping
+     */
+    private boolean sleepUntilFullPassOrPrompt(long deadline) throws InterruptedException {
+        var spacingNanos = capacitySpacing.toNanos();
+        synchronized (promptMonitor) {
+            while (running) {
+                var now = System.nanoTime();
+                var wakeAt = deadline;
+                if (promptRequestedAt != null) {
+                    var promptDue = promptRequestedAt + spacingNanos;
+                    if (promptDue - now <= 0) {
+                        promptRequestedAt = null;
+                        return true;
+                    }
+                    if (promptDue - deadline < 0) {
+                        wakeAt = promptDue;
+                    }
+                }
+                var remaining = wakeAt - now;
+                if (remaining <= 0) {
+                    promptRequestedAt = null; // the full pass due now serves the prompt too
+                    return true;
+                }
+                TimeUnit.NANOSECONDS.timedWait(promptMonitor, remaining);
+            }
+            return false;
+        }
     }
 
     /**

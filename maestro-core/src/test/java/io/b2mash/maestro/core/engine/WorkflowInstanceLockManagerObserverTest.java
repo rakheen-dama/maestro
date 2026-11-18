@@ -111,7 +111,7 @@ class WorkflowInstanceLockManagerObserverTest {
         manager = new WorkflowInstanceLockManager(lock, "svc",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 Duration.ofSeconds(30), Duration.ofMillis(50), observer);
-        manager.onLockLost(lostCallbacks::add);
+        manager.onLockLost((workflowId, _) -> lostCallbacks.add(workflowId));
 
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-cb"));
         lock.renewMode.set(RenewMode.LOST);
@@ -133,7 +133,7 @@ class WorkflowInstanceLockManagerObserverTest {
         manager = new WorkflowInstanceLockManager(lock, "svc",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 Duration.ofSeconds(30), Duration.ofMillis(50), observer);
-        manager.onLockLost(_ -> { throw new IllegalStateException("executor callback blew up"); });
+        manager.onLockLost((_, _) -> { throw new IllegalStateException("executor callback blew up"); });
 
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-x"));
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-y"));
@@ -167,7 +167,7 @@ class WorkflowInstanceLockManagerObserverTest {
                 "the callback must still have been attempted");
         assertTrue(manager.isHeld("wf-throw"), "the acquired lock must still be tracked");
 
-        manager.release("wf-throw");
+        manager.release("wf-throw", manager.handle("wf-throw"));
         assertFalse(manager.isHeld("wf-throw"), "the caller's release must drop the handle");
     }
 

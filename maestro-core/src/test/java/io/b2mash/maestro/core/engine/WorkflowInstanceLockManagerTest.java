@@ -114,6 +114,25 @@ class WorkflowInstanceLockManagerTest {
     }
 
     @Test
+    @DisplayName("release is handle-scoped: a stale handle releases nothing of a newer acquisition (L1)")
+    void releaseByAStaleHandleLeavesTheNewerLockAlone() {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-1"));
+        var first = manager.handle("order-1");
+        manager.release("order-1", first);
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-1"));
+        var second = manager.handle("order-1");
+
+        manager.release("order-1", first); // the first run, ending late
+        assertTrue(manager.holds("order-1", second), "the newer acquisition is still held");
+        assertEquals(List.of(first), lock.released, "only the first handle was ever released to the backend");
+
+        manager.release("order-1", null); // a launch that never acquired
+        assertTrue(manager.holds("order-1", second));
+    }
+
+    @Test
     @DisplayName("backend exception reports UNAVAILABLE and holds nothing")
     void backendThrowsUnavailable() {
         var lock = new RecordingLock();
@@ -153,7 +172,7 @@ class WorkflowInstanceLockManagerTest {
                 "a renewer-start failure must not be reported as UNAVAILABLE while the lock is held");
 
         // release must still work end-to-end after a renewer-start failure.
-        manager.release("order-1");
+        manager.release("order-1", manager.handle("order-1"));
         assertFalse(manager.isHeld("order-1"));
         assertEquals(1, lock.released.size());
     }
@@ -249,7 +268,7 @@ class WorkflowInstanceLockManagerTest {
         manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
         manager.tryAcquire("order-1");
 
-        manager.release("order-1");
+        manager.release("order-1", manager.handle("order-1"));
 
         assertFalse(manager.isHeld("order-1"));
         assertEquals(1, lock.released.size());
@@ -353,7 +372,7 @@ class WorkflowInstanceLockManagerTest {
         lock.lostKey.set("maestro:lock:workflow:wf-7");
         holdFifty(lock);
         var lost = new CopyOnWriteArrayList<String>();
-        manager.onLockLost(lost::add);
+        manager.onLockLost((workflowId, _) -> lost.add(workflowId));
 
         // The renewer is one thread: a second backend call means the first
         // pass's result has been fully processed.
@@ -371,7 +390,7 @@ class WorkflowInstanceLockManagerTest {
         lock.throwOnRenewAll.set(true);
         holdFifty(lock);
         var lost = new CopyOnWriteArrayList<String>();
-        manager.onLockLost(lost::add);
+        manager.onLockLost((workflowId, _) -> lost.add(workflowId));
 
         await().atMost(Duration.ofSeconds(5)).until(() -> lock.backendCalls() >= 2);
 

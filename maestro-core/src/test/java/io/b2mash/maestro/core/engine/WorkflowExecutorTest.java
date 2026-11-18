@@ -944,8 +944,8 @@ class WorkflowExecutorTest {
     void freshStartWithForeignLockIsLeftForRecovery() throws Exception {
         // Pilot readiness P3 reverses this test's former expectation (a fresh
         // start proceeded unlocked despite a foreign lock): no run executes
-        // without its instance lock. The start is durable; recovery runs it
-        // once the lock frees.
+        // without its instance lock. The start is durable; the recovery poller,
+        // prompted by the deferral, runs it once the lock frees.
         var lock = new MapLock();
         lock.holdForeign("maestro:lock:workflow:lock-4");
         var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
@@ -956,6 +956,9 @@ class WorkflowExecutorTest {
             var latch = new CountDownLatch(1);
             var workflow = new SimpleWorkflow(latch);
             var method = SimpleWorkflow.class.getMethod("run", String.class);
+            var reg = new WorkflowRegistration("SimpleWorkflow", "default", () -> workflow, method);
+            // A deferral needs a running recovery poller (M1); without one the start is refused.
+            lockedExecutor.startRecoveryPoller(Map.of("SimpleWorkflow", reg), Duration.ofSeconds(60));
 
             lockedExecutor.startWorkflow("lock-4", "SimpleWorkflow", "default",
                     "hello", () -> workflow, method);
@@ -965,9 +968,8 @@ class WorkflowExecutorTest {
                     "the start is persisted for recovery");
 
             lock.releaseForeign("maestro:lock:workflow:lock-4");
-            var reg = new WorkflowRegistration("SimpleWorkflow", "default", () -> workflow, method);
-            assertEquals(1, lockedExecutor.recoverWorkflows(Map.of("SimpleWorkflow", reg)));
-            assertTrue(latch.await(5, TimeUnit.SECONDS), "recovery runs it once the foreign lock is gone");
+            assertTrue(latch.await(5, TimeUnit.SECONDS),
+                    "the prompted recovery pass runs it once the foreign lock is gone");
         } finally {
             lockedExecutor.shutdown();
         }

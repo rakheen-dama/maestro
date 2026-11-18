@@ -99,7 +99,7 @@ class WorkflowInstanceLockManagerCloseTest {
     @Test
     void aLockLostAfterCloseStandsTheRunDownWithoutAlerting() throws Exception {
         var stoodDown = new CopyOnWriteArrayList<String>();
-        manager.onLockLost(stoodDown::add);
+        manager.onLockLost((workflowId, _) -> stoodDown.add(workflowId));
         lock.blockNextRenew();
         lock.lostAfterRelease = true;
         assertTrue(lock.inRenew.await(5, SECONDS));

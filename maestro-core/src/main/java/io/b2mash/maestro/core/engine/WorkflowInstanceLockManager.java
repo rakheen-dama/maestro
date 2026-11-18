@@ -17,7 +17,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
+import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 
 /**
@@ -93,18 +93,20 @@ final class WorkflowInstanceLockManager {
     /** Counted down by {@link #close(Duration)}: ends the renewer's wait between passes at once. */
     private final CountDownLatch stop = new CountDownLatch(1);
     private volatile @Nullable Thread renewerThread;
-    private volatile Consumer<String> lockLostCallback = _ -> { };
+    private volatile BiConsumer<String, LockHandle> lockLostCallback = (_, _) -> { };
 
     /**
-     * Registers the callback {@link #renewLoop} invokes with a workflow ID when
-     * a renewal reports that its instance lock was lost. Invoked at most once
-     * per lost handle, on the renewer thread, through the same containment as
-     * the observer callbacks — a throwing callback cannot kill the renewer.
+     * Registers the callback {@link #renewLoop} invokes with a workflow ID and
+     * the lost handle when a renewal reports that an instance lock was lost.
+     * Invoked at most once per lost handle, on the renewer thread, through the
+     * same containment as the observer callbacks — a throwing callback cannot
+     * kill the renewer. The handle tells the caller <em>which</em> run lost it:
+     * a newer run of the same workflow ID holds a different handle (L1).
      * Replaces any previously registered callback.
      *
-     * @param callback receives the workflow ID whose lock was lost
+     * @param callback receives the workflow ID and the handle that was lost
      */
-    void onLockLost(Consumer<String> callback) {
+    void onLockLost(BiConsumer<String, LockHandle> callback) {
         this.lockLostCallback = Objects.requireNonNull(callback, "callback");
     }
 
@@ -249,7 +251,7 @@ final class WorkflowInstanceLockManager {
             // (both calls above contain it); caught so that stays true if
             // either changes. A failing release is suppressed on the original.
             try {
-                release(workflowId);
+                release(workflowId, heldLocks.get(workflowId));
             } catch (RuntimeException | Error releaseFailure) {
                 e.addSuppressed(releaseFailure);
             }
@@ -259,12 +261,43 @@ final class WorkflowInstanceLockManager {
     }
 
     /**
-     * Releases the instance lock for a workflow. Safe to call when no lock
-     * is held. Backend failures are tolerated — the TTL cleans up.
+     * The handle this manager holds for a workflow right now, or {@code null}.
+     * A launch reads it right after {@link #tryAcquire} answered
+     * {@link Acquisition#ACQUIRED} and carries it for the run's whole life, so
+     * every later {@link #release(String, LockHandle)} and lost-lock callback
+     * concerns that run's own lock, not a newer run's (L1).
+     *
+     * @param workflowId the workflow's business ID
+     * @return the held handle, or {@code null} when none is held (never
+     *         acquired, released, or reported lost)
      */
-    void release(String workflowId) {
-        var handle = heldLocks.remove(workflowId);
-        if (handle == null) {
+    @Nullable LockHandle handle(String workflowId) {
+        return heldLocks.get(workflowId);
+    }
+
+    /**
+     * Whether {@code handle} is still the lock this manager holds for the workflow.
+     *
+     * @param workflowId the workflow's business ID
+     * @param handle     the handle a run acquired; {@code null} answers {@code false}
+     * @return {@code true} while that exact handle is held
+     */
+    boolean holds(String workflowId, @Nullable LockHandle handle) {
+        return handle != null && handle.equals(heldLocks.get(workflowId));
+    }
+
+    /**
+     * Releases a run's own instance lock: only if {@code handle} is still the
+     * one held for the workflow. A run whose lock was reported lost (the
+     * handle already dropped), or replaced by a newer run's acquisition, releases
+     * nothing — it must never remove or delete a newer run's lock (L1). Safe to
+     * call with {@code null}. Backend failures are tolerated — the TTL cleans up.
+     *
+     * @param workflowId the workflow's business ID
+     * @param handle     the handle the run acquired, or {@code null} for none
+     */
+    void release(String workflowId, @Nullable LockHandle handle) {
+        if (handle == null || !heldLocks.remove(workflowId, handle)) {
             return;
         }
         try {
@@ -323,7 +356,7 @@ final class WorkflowInstanceLockManager {
     }
 
     /** The instance lock key for a workflow — the one derivation of the key format. */
-    private String lockKey(String workflowId) {
+    String lockKey(String workflowId) {
         return keyPrefix + WORKFLOW_KEY_SEGMENT + workflowId;
     }
 
@@ -568,7 +601,7 @@ final class WorkflowInstanceLockManager {
             // In a finally: the handle is already dropped, so no later pass
             // reports this loss again — an observer Error (which emit lets
             // through, to the renewer's guard) must not skip the stand-down.
-            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId));
+            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId, handle));
         }
     }
 

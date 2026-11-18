@@ -27,6 +27,15 @@ public final class LockAcquisitionException extends MaestroException {
         this.key = key;
     }
 
+    /**
+     * @param key    the lock key that could not be acquired
+     * @param detail why, and what the caller should do; appended to the message
+     */
+    public LockAcquisitionException(String key, String detail) {
+        super("Failed to acquire lock " + key + ": " + detail);
+        this.key = key;
+    }
+
     /** Returns the lock key that could not be acquired. */
     public String key() {
         return key;

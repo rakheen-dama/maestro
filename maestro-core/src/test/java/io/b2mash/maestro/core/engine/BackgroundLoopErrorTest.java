@@ -414,7 +414,7 @@ class BackgroundLoopErrorTest {
     @Test
     void renewer_aLossReportedByAPassAfterAnError_standsTheRunDown() throws Exception {
         var lost = new CountDownLatch(1);
-        manager.onLockLost(workflowId -> lost.countDown());
+        manager.onLockLost((workflowId, _) -> lost.countDown());
         lock.alwaysFail = true;                                        // keep the answer until replaced below
         lock.answer = () -> {
             lock.answer = () -> Set.copyOf(lock.acquired);             // the second pass: every handle lost
@@ -443,7 +443,7 @@ class BackgroundLoopErrorTest {
                 lock, "svc", "maestro:lock:", Duration.ofSeconds(30), Duration.ofMillis(50), throwing);
         try {
             var lost = new CountDownLatch(1);
-            lossManager.onLockLost(workflowId -> lost.countDown());
+            lossManager.onLockLost((workflowId, _) -> lost.countDown());
             lock.alwaysFail = true;
             lock.answer = () -> Set.copyOf(lock.acquired);             // every pass: every handle lost
             lossManager.tryAcquire("wf-1");

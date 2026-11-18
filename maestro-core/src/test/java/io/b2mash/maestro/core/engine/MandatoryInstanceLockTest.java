@@ -4,7 +4,10 @@ import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.BlockingWork;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.CountingStore;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SharedLock;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.WorkWorkflow;
+import io.b2mash.maestro.core.exception.LockAcquisitionException;
+import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
@@ -13,6 +16,7 @@ import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Duration;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -23,15 +27,18 @@ import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.workMethod;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A run executes only while this node holds its instance lock (pilot
  * readiness P3, Issue 74). A launch whose lock acquisition fails — the lock
- * backend throws, or the lock is held elsewhere — runs nothing: a fresh start
- * still persists its {@code RUNNING} row and leaves it to recovery, and a
- * resume is skipped. Recovery adopts the workflow once a pass can take the
- * lock. Before P3 such a launch proceeded unlocked.
+ * backend throws, or the lock is held elsewhere — runs nothing. With the
+ * recovery poller running, a fresh start persists its {@code RUNNING} row,
+ * reports the deferral, and prompts a recovery pass that runs it as soon as the
+ * lock can be taken (L2, L3). Without a running poller nothing would ever run a
+ * deferral, so the start fails and persists nothing (M1). A resume is skipped;
+ * the next pass retries it. Before P3 such a launch proceeded unlocked.
  */
 class MandatoryInstanceLockTest {
 
@@ -41,8 +48,10 @@ class MandatoryInstanceLockTest {
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
     private final BlockingWork work = new BlockingWork();
     private final FlakyLock lock = new FlakyLock();
+    private final RecordingEngineObserver observer = new RecordingEngineObserver();
     private final WorkflowExecutor node = WorkflowExecutor.builder(store, serializer, SERVICE)
             .distributedLock(lock)
+            .observer(observer)
             .lifecycleEventsEnabled(false)
             .shutdownTimeout(Duration.ofSeconds(2))
             .build();
@@ -53,9 +62,11 @@ class MandatoryInstanceLockTest {
         node.shutdown();
     }
 
+    // ── With the recovery poller running: a refused acquire defers the start ──
+
     @Test
-    void aStartWhoseLockAcquireThrowsPersistsItsRowRunsNothingAndRecoveryRunsItUnderTheLock() {
-        var registrations = registrations();
+    void aStartWhoseLockAcquireThrowsIsDeferredReportedAndRunSoonUnderTheLock() {
+        startPoller();
         lock.failAcquire = true;
 
         node.startWorkflow("wf-1", "WorkWorkflow", "orders", null, workflow(), workMethod());
@@ -63,10 +74,13 @@ class MandatoryInstanceLockTest {
         assertFalse(node.isRunning("wf-1"), "a start whose lock acquire threw must not run unlocked");
         assertEquals(WorkflowStatus.RUNNING, store.getInstance("wf-1").orElseThrow().status(),
                 "the start is persisted and left for recovery");
+        assertEquals(List.of(false), observer.startDeferrals().stream()
+                .map(RecordingEngineObserver.StartDeferral::lockHeldElsewhere).toList(),
+                "the deferral is reported once, as lock unavailable (L2)");
 
         lock.failAcquire = false;
-        assertEquals(1, node.recoveryPass(registrations).adopted(), "recovery adopts it once the lock is takeable");
-        assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)), "the adopted run reached its activity");
+        // L3: the deferral prompts a recovery pass; the 60 s poll interval is never waited for.
+        assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)), "the deferred start ran within seconds");
         assertTrue(lock.isHeld(KEY), "the run executes under its instance lock");
         work.releaseAll();
         assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance("wf-1").orElseThrow().status(),
@@ -75,21 +89,57 @@ class MandatoryInstanceLockTest {
     }
 
     @Test
-    void aStartWhoseLockIsHeldElsewhereRunsNothingUntilTheLockFrees() {
-        var registrations = registrations();
+    void aStartWhoseLockIsHeldElsewhereIsDeferredAndRunsSoonAfterTheLockFrees() {
+        startPoller();
         var elsewhere = lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow();
 
         node.startWorkflow("wf-1", "WorkWorkflow", "orders", null, workflow(), workMethod());
 
         assertFalse(node.isRunning("wf-1"), "a start whose lock is held elsewhere must not run unlocked");
-        assertEquals(0, node.recoveryPass(registrations).adopted(), "recovery waits while the lock is held");
+        assertEquals(List.of(true), observer.startDeferrals().stream()
+                .map(RecordingEngineObserver.StartDeferral::lockHeldElsewhere).toList());
 
         lock.release(elsewhere);
-        assertEquals(1, node.recoveryPass(registrations).adopted());
+        assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)),
+                "the deferred start ran within seconds of the lock freeing (L3)");
         work.releaseAll();
         assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance("wf-1").orElseThrow().status(),
                 WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
         assertEquals(1, work.entries(), "the activity ran once");
+    }
+
+    // ── Without a running recovery poller: nothing would run a deferral (M1) ──
+
+    @Test
+    void withoutARecoveryPollerAStartWhoseLockAcquireThrowsFailsAndPersistsNothing() {
+        lock.failAcquire = true;
+
+        var e = assertThrows(LockAcquisitionException.class,
+                () -> node.startWorkflow("wf-1", "WorkWorkflow", "orders", null, workflow(), workMethod()));
+
+        assertEquals(KEY, e.key());
+        assertTrue(e.getMessage().contains("no recovery poller"), e.getMessage());
+        assertTrue(store.getInstance("wf-1").isEmpty(), "a refused start persists nothing");
+        assertEquals(0, work.entries());
+        assertEquals(List.of(), observer.startDeferrals());
+    }
+
+    @Test
+    void withoutARecoveryPollerAStartWhoseLockIsHeldElsewhereFailsAndPersistsNothing() {
+        lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow();
+
+        assertThrows(LockAcquisitionException.class,
+                () -> node.startWorkflow("wf-1", "WorkWorkflow", "orders", null, workflow(), workMethod()));
+        assertTrue(store.getInstance("wf-1").isEmpty(), "a refused start persists nothing");
+    }
+
+    @Test
+    void withoutARecoveryPollerADuplicateStartStillReportsTheExistingWorkflow() {
+        seedRecoverable(store, "wf-1", "orders");
+        lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow(); // its run holds the lock
+
+        assertThrows(WorkflowAlreadyExistsException.class,
+                () -> node.startWorkflow("wf-1", "WorkWorkflow", "orders", null, workflow(), workMethod()));
     }
 
     @Test
@@ -107,6 +157,13 @@ class MandatoryInstanceLockTest {
         work.releaseAll();
         assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance("wf-1").orElseThrow().status(),
                 WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
+    }
+
+    /** Starts the poller with a 60 s interval and waits for its first (startup) pass to finish. */
+    private void startPoller() {
+        node.startRecoveryPoller(registrations(), Duration.ofSeconds(60));
+        assertEquals(1, valueWithin(() -> observer.recoveryPasses().size(), 1, Duration.ofSeconds(5)),
+                "the poller's startup pass ran");
     }
 
     private java.util.function.Supplier<Object> workflow() {

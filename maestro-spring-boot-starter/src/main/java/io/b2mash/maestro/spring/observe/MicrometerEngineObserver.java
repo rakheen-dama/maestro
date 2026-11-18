@@ -31,6 +31,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <caption>name / type / tags / source callback</caption>
  *   <tr><th>Meter</th><th>Type</th><th>Tags</th><th>Source</th></tr>
  *   <tr><td>{@code maestro.workflow.started}</td><td>Counter</td><td>workflow</td><td>{@link #workflowStarted}</td></tr>
+ *   <tr><td>{@code maestro.workflow.start.deferred}</td><td>Counter</td><td>workflow, reason=lock_held_elsewhere|lock_unavailable</td><td>{@link #workflowStartDeferred}</td></tr>
  *   <tr><td>{@code maestro.workflow.completed}</td><td>Counter</td><td>workflow</td><td>{@link #workflowCompleted}</td></tr>
  *   <tr><td>{@code maestro.workflow.failed}</td><td>Counter</td><td>workflow</td><td>{@link #workflowFailed}</td></tr>
  *   <tr><td>{@code maestro.workflow.compensated}</td><td>Counter</td><td>workflow</td><td>{@link #workflowCompensating}</td></tr>
@@ -129,6 +130,12 @@ public final class MicrometerEngineObserver implements EngineObserver {
     @Override
     public void workflowStarted(WorkflowInfo w) {
         increment("maestro.workflow.started", TAG_WORKFLOW, w.workflowType());
+    }
+
+    @Override
+    public void workflowStartDeferred(WorkflowInfo w, boolean lockHeldElsewhere) {
+        increment("maestro.workflow.start.deferred", TAG_WORKFLOW, w.workflowType(),
+                TAG_REASON, lockHeldElsewhere ? "lock_held_elsewhere" : "lock_unavailable");
     }
 
     @Override

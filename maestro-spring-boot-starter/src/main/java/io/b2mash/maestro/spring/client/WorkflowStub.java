@@ -88,6 +88,18 @@ public final class WorkflowStub<T> {
      *         {@code startAsync} with the same workflow ID therefore throws
      *         {@code WorkflowAlreadyExistsException} — the workflow exists and
      *         will run; it is not started a second time.
+     * @throws io.b2mash.maestro.core.exception.LockAcquisitionException if the
+     *         workflow's instance lock cannot be taken (held elsewhere, or the lock
+     *         backend failed) <em>and this node runs no recovery poller</em>
+     *         ({@code maestro.recovery.enabled=false}, or before startup recovery
+     *         has started). Nothing was persisted; retry the start. With the poller
+     *         running, such a start is instead persisted and this method returns its
+     *         id normally: nothing runs here yet, and the recovery poller, prompted
+     *         at once, runs it about a second later if the lock can be taken by
+     *         then, otherwise at its next full pass ({@code maestro.recovery.poll-interval})
+     *         ({@code EngineObserver.workflowStartDeferred},
+     *         {@code maestro.workflow.start.deferred}). A run always holds its
+     *         instance lock (pilot readiness P3).
      */
     public UUID startAsync(@Nullable Object input) {
         return executor.startWorkflow(
@@ -124,6 +136,13 @@ public final class WorkflowStub<T> {
      * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
      *         workflow bean cannot be created — the instance row stays
      *         {@code RUNNING} for recovery (see {@link #startAsync})
+     * @throws io.b2mash.maestro.core.exception.LockAcquisitionException if the instance
+     *         lock cannot be taken and this node runs no recovery poller (see
+     *         {@link #startAsync}). When the start is deferred instead, the wait covers
+     *         the deferral too — about a second, or up to one
+     *         {@code maestro.recovery.poll-interval} when the lock is still held then
+     *         — so a shorter {@code timeout} ends in {@code TimeoutException}
+     *         although the workflow later runs
      */
     public <R> @Nullable R startAndWait(
             @Nullable Object input,
