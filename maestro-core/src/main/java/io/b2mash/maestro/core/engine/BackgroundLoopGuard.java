@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,7 +93,7 @@ final class BackgroundLoopGuard {
     private final String loop;
     private final Duration retryInterval;
     private final BooleanSupplier stopping;
-    private final EngineObserver observer;
+    private final CompositeEngineObserver observer;
     private final LongSupplier nanoTime;
 
     private volatile int streak;
@@ -125,7 +126,7 @@ final class BackgroundLoopGuard {
         this.loop = Objects.requireNonNull(loop, "loop");
         this.retryInterval = Objects.requireNonNull(retryInterval, "retryInterval");
         this.stopping = Objects.requireNonNull(stopping, "stopping");
-        this.observer = Objects.requireNonNull(observer, "observer");
+        this.observer = CompositeEngineObserver.contain(Objects.requireNonNull(observer, "observer"));
         this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
     }
 
@@ -179,7 +180,10 @@ final class BackgroundLoopGuard {
             log(failure, () -> logger.debug("Background loop '{}' failed again ({} in a row)", loop, n, failure));
         }
         if (failure instanceof Error) {
-            notifyObserver(failure);
+            // Contained by the composite (Issue 81): a throwing observer cannot
+            // end the loop this guard is keeping alive; a control-flow Error
+            // from it is still rethrown.
+            observer.backgroundLoopError(loop, failure.getClass().getName());
         }
         return logged;
     }
@@ -295,21 +299,5 @@ final class BackgroundLoopGuard {
                         + "node until the node restarts", loop, describe(failure), failure);
             }
         };
-    }
-
-    /**
-     * Reports a contained {@code Error}. An observer that throws is contained
-     * too, so it cannot end the loop the guard is keeping alive; a
-     * control-flow {@code Error} from it is still rethrown.
-     */
-    private void notifyObserver(Throwable error) {
-        try {
-            observer.backgroundLoopError(loop, error.getClass().getName());
-        } catch (Throwable t) {
-            if (t instanceof MaestroControlFlowError controlFlow) {
-                throw controlFlow;
-            }
-            logger.debug("EngineObserver.backgroundLoopError threw for loop '{}' — ignoring: {}", loop, t.toString());
-        }
     }
 }

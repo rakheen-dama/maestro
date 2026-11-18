@@ -33,6 +33,7 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTerminationDetail;
 import io.b2mash.maestro.core.observe.AbandonReason;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
@@ -175,7 +176,7 @@ public final class WorkflowExecutor {
     private final boolean lifecycleEventsEnabled;
     private final Duration shutdownTimeout;
     private final Duration wakeRecheckInterval;
-    private final EngineObserver observer;
+    private final CompositeEngineObserver observer;
     private final InstantSource instantSource;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final LifecycleEventSink lifecycleEventSink;
@@ -333,7 +334,12 @@ public final class WorkflowExecutor {
         // Idempotent: an already-guarded store is used as is.
         this.store = StoreFaultGuard.wrap(store);
         this.distributedLock = distributedLock;
-        this.observer = observer;
+        // Contained once, here (Issue 81), and handed to every component this
+        // executor builds: an observer that throws — anything but a control-flow
+        // signal or a VirtualMachineError — is logged, counted
+        // (observerErrorCount()) and otherwise ignored, at every emission site,
+        // whether or not the host wrapped it in CompositeEngineObserver.of.
+        this.observer = CompositeEngineObserver.contain(observer);
         // Wrapped once, here, and handed to every component this executor builds
         // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
         // enabled flag is honoured by every lifecycle-event publisher this
@@ -839,8 +845,7 @@ public final class WorkflowExecutor {
                         + "poller adopts it once the lock can be taken (a prompt pass is requested)",
                 instance.workflowId(), heldElsewhere
                         ? "is held elsewhere" : "could not be taken (lock backend unavailable)");
-        emit("workflowStartDeferred", instance.workflowId(),
-                () -> observer.workflowStartDeferred(observed(instance), heldElsewhere));
+        observer.workflowStartDeferred(observed(instance), heldElsewhere);
         var poller = recoveryPoller.get();
         if (poller != null) {
             poller.requestPromptPass();
@@ -1118,7 +1123,7 @@ public final class WorkflowExecutor {
             recoveryDeferred = pass.deferred();
         }
         logPass(pass, true);
-        emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        observer.recoveryPass(pass.scanned(), pass.adopted());
         return pass;
     }
 
@@ -1187,7 +1192,7 @@ public final class WorkflowExecutor {
         var pass = tally.toPass();
         if (pass.scanned() > 0) {
             logPass(pass, false);
-            emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+            observer.recoveryPass(pass.scanned(), pass.adopted());
         }
         return pass;
     }
@@ -1629,7 +1634,7 @@ public final class WorkflowExecutor {
             }
 
             publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
-            emit("workflowTerminated", workflowId, () -> observer.workflowTerminated(observed(terminated)));
+            observer.workflowTerminated(observed(terminated));
 
             // Best-effort local eviction. Only this node's threads can be
             // abandoned; a remote owner converges via the terminal-status guard.
@@ -2710,9 +2715,20 @@ public final class WorkflowExecutor {
         return taskQueueGovernor;
     }
 
-    /** Stub: the count lands with the fix. */
+    /**
+     * How many times an observer callback threw and was contained, on any
+     * thread, since this executor was built (Issue 81). Every
+     * {@link EngineObserver} the executor is given is wrapped by
+     * {@link CompositeEngineObserver#contain}: a callback that throws anything
+     * but a {@code MaestroControlFlowError} or a {@code VirtualMachineError} is
+     * logged ({@code WARN} once per callback and delegate, then {@code DEBUG}
+     * until it succeeds again), counted here, and otherwise ignored. The
+     * Spring Boot starter exports it as {@code maestro.observer.errors}.
+     *
+     * @return the number of contained observer failures
+     */
     public long observerErrorCount() {
-        return 0;
+        return observer.containedErrorCount();
     }
 
     /**
@@ -3036,8 +3052,7 @@ public final class WorkflowExecutor {
                 // A fresh start reports itself only once its object exists, so a
                 // throwing factory leaves no unmatched WORKFLOW_STARTED behind.
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
-                emit("workflowStarted", instance.workflowId(),
-                        () -> observer.workflowStarted(observed(instance)));
+                observer.workflowStarted(observed(instance));
             }
             // Set as executeWorkflow is entered. Until then no finally of the
             // run owns the lock, the entry or the reservation, so a Throwable
@@ -3145,8 +3160,7 @@ public final class WorkflowExecutor {
             throw e;
         }
         if (replaying) {
-            emit("workflowResumed", instance.workflowId(),
-                    () -> observer.workflowResumed(observed(instance)));
+            observer.workflowResumed(observed(instance));
         }
         return true;
     }
@@ -3319,11 +3333,8 @@ public final class WorkflowExecutor {
                 // may decide whether the completion is observed. Contained, so
                 // a throwing observer cannot land in catch (Exception) — which
                 // would compensate a workflow that just succeeded.
-                emit("workflowCompleted", ctx.workflowId(),
-                        () -> observer.workflowCompleted(observed(instance)));
-                emit("workflowFinished", ctx.workflowId(),
-                        () -> observer.workflowFinished(observed(instance), WorkflowStatus.COMPLETED,
-                                elapsedSince(instance)));
+                observer.workflowCompleted(observed(instance));
+                observer.workflowFinished(observed(instance), WorkflowStatus.COMPLETED, elapsedSince(instance));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
@@ -3680,8 +3691,7 @@ public final class WorkflowExecutor {
                         + "now {}) — no failure recorded, no compensation run; the concurrent runner's "
                         + "durable state governs",
                 ctx.workflowId(), reason, detail, status);
-        emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(reason, ctx.workflowId(), detail));
+        observer.standDown(reason, ctx.workflowId(), detail);
     }
 
     // ── Internal: unknown-history stand-down (spec §C2) ────────────────
@@ -3736,8 +3746,7 @@ public final class WorkflowExecutor {
         // only (stored values must not reach log backends). The full chain —
         // including the deserializer's raw message — is available at DEBUG.
         logger.debug("Stand-down cause for workflow '{}'", ctx.workflowId(), e);
-        emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail()));
+        observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail());
     }
 
     /**
@@ -3915,11 +3924,8 @@ public final class WorkflowExecutor {
                 // durable outcome (status and event, one write) is already
                 // in, so nothing that follows may decide whether it is
                 // observed.
-                emit("workflowFailed", ctx.workflowId(), () ->
-                        observer.workflowFailed(observed(instance), failure.getClass().getName()));
-                emit("workflowFinished", ctx.workflowId(), () ->
-                        observer.workflowFinished(observed(instance), WorkflowStatus.FAILED,
-                                elapsedSince(instance)));
+                observer.workflowFailed(observed(instance), failure.getClass().getName());
+                observer.workflowFinished(observed(instance), WorkflowStatus.FAILED, elapsedSince(instance));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
             } else {
@@ -4098,46 +4104,13 @@ public final class WorkflowExecutor {
      * Emits {@link EngineObserver#runAbandoned} for a local run that ended on
      * the workflow thread without recording an outcome (design §11, RULING 5).
      *
-     * <p>Contained like every other emission here: a throwing observer must not
-     * turn a routine shutdown into an escaping exception on the unwind path.
+     * <p>Contained like every other emission here: the observer is the
+     * executor's {@link CompositeEngineObserver#contain contained} form, so a
+     * throwing observer cannot turn a routine shutdown into an escaping
+     * exception on the unwind path.
      */
     private void emitRunAbandoned(WorkflowContext ctx, AbandonReason reason) {
-        emit("runAbandoned", ctx.workflowId(),
-                () -> observer.runAbandoned(observed(ctx), reason));
-    }
-
-    /**
-     * Invokes one observer callback, containing a misbehaving observer.
-     *
-     * <p>Since coordinator Ruling 4, containment is structural at the seam:
-     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
-     * wraps, so a registered adapter's {@code RuntimeException} is contained
-     * before it ever reaches here. This guard stays as depth — the
-     * builder accepts <em>any</em> {@code EngineObserver}, so nothing
-     * forces an embedder or a test wiring the engine by hand through
-     * {@code of(...)} — and because every emission in this class sits on a
-     * durable path where an escaping {@code RuntimeException} would be read as
-     * something else entirely: a workflow failure (and its compensations), an
-     * aborted recovery pass, a leaked instance lock, or a terminated workflow
-     * whose local thread never gets abandoned.
-     *
-     * <p>{@code RuntimeException} only: {@code Error}s — the engine's
-     * control-flow signals {@code ExecutorShutdownException} and
-     * {@code WorkflowTerminatedException} — always propagate, exactly as the
-     * composite does it.
-     *
-     * @param callback   the callback name, for the containment log line
-     * @param workflowId the workflow the callback described, or {@code null}
-     *                   for node-scoped callbacks such as {@code recoveryPass}
-     * @param emission   the observer invocation
-     */
-    private void emit(String callback, @Nullable String workflowId, Runnable emission) {
-        try {
-            emission.run();
-        } catch (RuntimeException e) {
-            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
-                    callback, workflowId, e.toString());
-        }
+        observer.runAbandoned(observed(ctx), reason);
     }
 
     /**

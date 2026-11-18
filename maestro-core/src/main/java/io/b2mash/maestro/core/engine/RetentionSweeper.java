@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.PurgeResult;
@@ -174,7 +175,7 @@ final class RetentionSweeper implements StoppableLoop {
         this.distributedLock = distributedLock;
         this.serviceName = serviceName;
         this.settings = settings;
-        this.observer = observer;
+        this.observer = CompositeEngineObserver.contain(observer);
         this.pacer = pacer;
         this.candidateId = UUID.randomUUID().toString();
         this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.RETENTION_SWEEPER, settings.interval(),
@@ -371,11 +372,7 @@ final class RetentionSweeper implements StoppableLoop {
                             + "{} timer(s) in {} batch(es)", total.instances(), total.events(), total.signals(),
                     total.timers(), batches);
         }
-        try {
-            observer.retentionPass(total);
-        } catch (RuntimeException e) {
-            logger.warn("EngineObserver.retentionPass threw — ignoring: {}", e.toString());
-        }
+        observer.retentionPass(total);
         return Optional.of(total);
     }
 

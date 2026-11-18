@@ -8,32 +8,60 @@ import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Fans one {@link EngineObserver} callback out to an ordered list of
- * delegates.
+ * delegates, containing each delegate.
  *
- * <h2>Containment contract</h2>
- * <p>A delegate throwing a {@link RuntimeException} is contained: the failure
- * is logged at WARN and the remaining delegates still run — one misbehaving
- * observer must never disturb the engine or its sibling observers.
- * {@link Error}s are deliberately <b>not</b> caught: the composite must never
- * swallow the engine's control-flow signals
- * ({@code ExecutorShutdownException}, {@code WorkflowTerminatedException}) —
- * and observers must never throw them. The one exception is
- * {@link #backgroundLoopError}, which contains every {@code Throwable} but a
- * {@link MaestroControlFlowError} per delegate: it fires while a background
- * loop is already containing an {@code Error}.
+ * <h2>Containment contract (Issue 81)</h2>
+ * <p>A delegate that throws is contained: the remaining delegates still run,
+ * and the engine path that made the call carries on as if the callback had
+ * returned — one misbehaving observer must never disturb the engine or its
+ * sibling observers. Contained is every {@link Throwable} except two kinds,
+ * which propagate unchanged:
+ * <ul>
+ *   <li>a {@link MaestroControlFlowError} — the engine's control-flow signals
+ *       ({@code ExecutorShutdownException}, {@code WorkflowTerminatedException},
+ *       {@code UnknownWorkflowHistoryException}) must never be swallowed, and
+ *       observers must never throw them;</li>
+ *   <li>a {@link VirtualMachineError} ({@code OutOfMemoryError},
+ *       {@code StackOverflowError}, {@code InternalError}) — the JVM's
+ *       distress, not the observer's; it propagates as if the engine had hit
+ *       it (a background loop then contains it as it would any loop
+ *       {@code Error}).</li>
+ * </ul>
+ * Everything else — a {@link RuntimeException}, a {@link LinkageError} from an
+ * adapter built against another library version, an {@link AssertionError} —
+ * is the observer's fault. The one exception is {@link #backgroundLoopError},
+ * which contains a {@code VirtualMachineError} too: it fires while a loop is
+ * already containing an {@code Error}, often that same resource exhaustion.
+ *
+ * <h2>Logging and counting</h2>
+ * <p>The first containment for a (callback, delegate) pair is logged at
+ * {@code WARN} with the stack trace; repeats are logged at {@code DEBUG} until
+ * a call of that callback to that delegate succeeds again
+ * ({@code backgroundLoopError} keys this per loop as well). Every containment
+ * increments {@link #containedErrorCount()}, which the engine exposes as
+ * {@code WorkflowExecutor.observerErrorCount()} — counted here, not through an
+ * observer, because the observer that failed may be the metrics one.
+ *
+ * <h2>Where it is applied</h2>
+ * <p>{@link #of} builds a composite for the starter's observer list
+ * (coordinator Ruling 4), and every engine type that takes an
+ * {@code EngineObserver} applies {@link #contain} to it, so containment holds
+ * for every emission site, including observers wired by hand.
  *
  * <h2>Thread safety</h2>
  * <p>Thread-safe. The delegate list is immutable; the only mutable state is
- * the concurrent set of delegates currently throwing from
- * {@link #backgroundLoopError}, kept to rate-limit that warning. Thread safety
- * of the callbacks themselves is
- * each delegate's obligation per the {@link EngineObserver} contract.
+ * the concurrent set of (callback, delegate) pairs currently throwing, kept to
+ * rate-limit the warning, and the atomic containment count. Thread safety of
+ * the callbacks themselves is each delegate's obligation per the
+ * {@link EngineObserver} contract.
  */
 public final class CompositeEngineObserver implements EngineObserver {
 
@@ -41,10 +69,17 @@ public final class CompositeEngineObserver implements EngineObserver {
 
     private final List<EngineObserver> delegates;
 
-    /** Delegate (by position) and loop whose last {@link #backgroundLoopError} call threw. */
-    private final Set<FailingDelegate> failingLoopErrorDelegates = ConcurrentHashMap.newKeySet();
+    /** (callback, delegate, loop) whose last call threw: repeats are logged at DEBUG. */
+    private final Set<Failing> failing = ConcurrentHashMap.newKeySet();
 
-    private record FailingDelegate(int delegateIndex, String loop) {
+    /** Every containment since construction. */
+    private final AtomicLong containedErrors = new AtomicLong();
+
+    /**
+     * One (callback, delegate) pair whose last call threw; {@code loop} is the
+     * loop name for {@link #backgroundLoopError}, {@code null} otherwise.
+     */
+    private record Failing(String callback, int delegateIndex, @Nullable String loop) {
     }
 
     private CompositeEngineObserver(List<EngineObserver> delegates) {
@@ -59,15 +94,8 @@ public final class CompositeEngineObserver implements EngineObserver {
      * amending design §1.2, which originally collapsed to the delegate
      * itself). One observer is the common deployment — a lone metrics adapter,
      * a lone tracing adapter — and it is exactly the case the collapse left
-     * with zero containment: a third-party adapter throwing a
-     * {@link RuntimeException} then propagated straight into engine control
-     * flow, where it could be read as a workflow failure, a lock-backend
-     * failure, or an aborted recovery pass. Wrapping always makes containment
-     * structural at every emission site, present and future, instead of
-     * depending on which call sites someone remembered to harden. The cost is
-     * one virtual call per emission on paths that already do database I/O.
-     *
-     * <p>{@link Error} still propagates uncontained — see the class Javadoc.
+     * with zero containment. The cost is one virtual call per emission on
+     * paths that already do database I/O.
      *
      * @param observers the delegates, in invocation order
      * @return {@code NOOP} for an empty list, otherwise a containing composite
@@ -76,30 +104,87 @@ public final class CompositeEngineObserver implements EngineObserver {
         return observers.isEmpty() ? EngineObserver.NOOP : new CompositeEngineObserver(observers);
     }
 
-    /** Stub: the containment rule lands with the fix. */
+    /**
+     * The containing form of {@code observer}: {@code observer} itself if it
+     * is already a composite, otherwise a composite of that one delegate.
+     * Every engine type that takes an {@code EngineObserver} calls this once,
+     * in its constructor (Issue 81).
+     *
+     * @param observer the observer to contain; never {@code null}
+     * @return a composite that contains {@code observer}
+     * @throws NullPointerException if {@code observer} is {@code null}
+     */
     public static CompositeEngineObserver contain(EngineObserver observer) {
+        Objects.requireNonNull(observer, "observer");
         return observer instanceof CompositeEngineObserver composite
                 ? composite : new CompositeEngineObserver(List.of(observer));
     }
 
-    /** Stub: the count lands with the fix. */
+    /**
+     * How many delegate failures this composite has contained since it was
+     * built, across every callback. Safe to read from any thread.
+     *
+     * @return the number of contained delegate failures
+     */
     public long containedErrorCount() {
-        return 0;
+        return containedErrors.get();
     }
 
     /**
-     * Runs one callback against every delegate in order, containing
-     * {@link RuntimeException} per delegate. {@link Error}s deliberately
-     * propagate — see the class Javadoc.
+     * Runs one callback against every delegate in order, containing every
+     * {@code Throwable} per delegate but a control-flow signal and a
+     * {@code VirtualMachineError} — see the class Javadoc.
      */
     private void fanOut(String callback, java.util.function.Consumer<EngineObserver> invocation) {
-        for (var delegate : delegates) {
+        for (int i = 0; i < delegates.size(); i++) {
+            var delegate = delegates.get(i);
             try {
                 invocation.accept(delegate);
-            } catch (RuntimeException e) {
-                logger.warn("EngineObserver delegate {} threw from {} — contained",
-                        delegate.getClass().getName(), callback, e);
+                succeeded(callback, i, null);
+            } catch (Throwable t) {
+                rethrowIfNotTheObserversFault(t, false);
+                contained(callback, i, null, delegate, t);
             }
+        }
+    }
+
+    /**
+     * Rethrows {@code t} when it is a control-flow signal, or — unless
+     * {@code containVirtualMachineErrors} — a {@code VirtualMachineError}.
+     */
+    private static void rethrowIfNotTheObserversFault(Throwable t, boolean containVirtualMachineErrors) {
+        if (t instanceof MaestroControlFlowError controlFlow) {
+            throw controlFlow;
+        }
+        if (!containVirtualMachineErrors && t instanceof VirtualMachineError vm) {
+            throw vm;
+        }
+    }
+
+    /** Ends a quiet period for the pair; one {@code isEmpty()} check when nothing is failing. */
+    private void succeeded(String callback, int delegateIndex, @Nullable String loop) {
+        if (!failing.isEmpty()) {
+            failing.remove(new Failing(callback, delegateIndex, loop));
+        }
+    }
+
+    /** Counts and logs one containment: WARN with the stack trace for the first of a streak, DEBUG after. */
+    private void contained(String callback, int delegateIndex, @Nullable String loop, EngineObserver delegate,
+                           Throwable t) {
+        containedErrors.incrementAndGet();
+        try {
+            var forLoop = loop == null ? "" : " for loop '" + loop + "'";
+            if (failing.add(new Failing(callback, delegateIndex, loop))) {
+                logger.warn("EngineObserver delegate {} threw from {}{} — contained; further failures of it from "
+                                + "{}{} are logged at DEBUG until a call to it succeeds again",
+                        delegate.getClass().getName(), callback, forLoop, callback, forLoop, t);
+            } else {
+                logger.debug("EngineObserver delegate {} threw again from {}{}: {}",
+                        delegate.getClass().getName(), callback, forLoop, t.toString());
+            }
+        } catch (Throwable logFailure) {
+            rethrowIfNotTheObserversFault(logFailure, true);
+            // A failure that cannot be logged is still contained and counted.
         }
     }
 
@@ -164,23 +249,25 @@ public final class CompositeEngineObserver implements EngineObserver {
      * first delegate's code runs first on the way in and last on the way out —
      * the same order in which every other callback fans out. The chain is
      * therefore built in reverse delegate order (the last delegate wraps the
-     * attempt itself). A delegate that throws a {@link RuntimeException} (or
-     * returns {@code null}) while wrapping is contained: its wrapper is skipped
-     * and the chain built so far is kept. What a wrapper does once the attempt
+     * attempt itself). A delegate that throws while wrapping (anything the
+     * class Javadoc contains), or returns {@code null}, is contained: its
+     * wrapper is skipped and the chain built so far is kept. What a wrapper does once the attempt
      * runs cannot be contained — see {@link EngineObserver#wrapActivityAttempt}.
      */
     @Override
     public <T> Callable<T> wrapActivityAttempt(ActivityInfo a, Callable<T> attempt) {
         var wrapped = attempt;
-        for (var delegate : delegates.reversed()) {
+        for (int i = delegates.size() - 1; i >= 0; i--) {
+            var delegate = delegates.get(i);
             try {
                 var next = delegate.wrapActivityAttempt(a, wrapped);
                 if (next != null) {
                     wrapped = next;
                 }
-            } catch (RuntimeException e) {
-                logger.warn("EngineObserver delegate {} threw from wrapActivityAttempt — contained",
-                        delegate.getClass().getName(), e);
+                succeeded("wrapActivityAttempt", i, null);
+            } catch (Throwable t) {
+                rethrowIfNotTheObserversFault(t, false);
+                contained("wrapActivityAttempt", i, null, delegate, t);
             }
         }
         return wrapped;
@@ -260,29 +347,18 @@ public final class CompositeEngineObserver implements EngineObserver {
     @Override
     public void backgroundLoopError(String loop, String errorType) {
         // Wider than fanOut: this callback fires while a loop is already
-        // containing an Error, so a delegate's own Error (an adapter bug, or
-        // the same resource exhaustion) must not skip the delegates after it.
-        // A loop that keeps failing calls this on every pass, so a delegate that
-        // keeps throwing is logged at WARN with the stack trace once per loop
-        // until a call to it succeeds again, then at DEBUG.
+        // containing an Error, so a delegate's own Error — a VirtualMachineError
+        // included, often the same resource exhaustion — must not skip the
+        // delegates after it. A loop that keeps failing calls this on every
+        // pass, so the quiet period is kept per loop.
         for (int i = 0; i < delegates.size(); i++) {
             var delegate = delegates.get(i);
-            var key = new FailingDelegate(i, loop);
             try {
                 delegate.backgroundLoopError(loop, errorType);
-                failingLoopErrorDelegates.remove(key);
+                succeeded("backgroundLoopError", i, loop);
             } catch (Throwable t) {
-                if (t instanceof MaestroControlFlowError controlFlow) {
-                    throw controlFlow;
-                }
-                if (failingLoopErrorDelegates.add(key)) {
-                    logger.warn("EngineObserver delegate {} threw from backgroundLoopError for loop '{}' — contained; "
-                            + "further failures of it for this loop are logged at DEBUG until it succeeds again",
-                            delegate.getClass().getName(), loop, t);
-                } else {
-                    logger.debug("EngineObserver delegate {} threw again from backgroundLoopError for loop '{}': {}",
-                            delegate.getClass().getName(), loop, t.toString());
-                }
+                rethrowIfNotTheObserversFault(t, true);
+                contained("backgroundLoopError", i, loop, delegate, t);
             }
         }
     }
