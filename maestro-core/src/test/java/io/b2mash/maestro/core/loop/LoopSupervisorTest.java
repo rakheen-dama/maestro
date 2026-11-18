@@ -267,6 +267,66 @@ class LoopSupervisorTest {
         assertEquals(LoopSnapshot.State.STOPPED, loop.snapshot().state());
     }
 
+    /**
+     * Review F3: the loop's end is reported to {@link LoopSupervisor#awaitStopped}
+     * even when logging its end throws (a failing appender), so shutdown does
+     * not wait out its deadline for a loop that has already ended.
+     */
+    @Test
+    void aLoggerThatThrowsAsTheLoopEndsStillReleasesAwaitStopped() {
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(LoopSupervisor.class)
+                .failWhen(m -> m.startsWith("Background loop 'end-log' stopped"))) {
+            var ran = new CountDownLatch(1);
+            var loop = start(LoopSpec.of("end-log", "test-end-log", LoopRole.HOUSEKEEPING, Duration.ofHours(1)),
+                    ctx -> {
+                        ran.countDown();
+                        return Next.afterPeriod();
+                    });
+            awaitLatch(ran);
+            loop.requestStop();
+            assertTrue(loop.awaitStopped(Duration.ofSeconds(2)), "the end was reported despite the logger");
+            assertEquals(LoopSnapshot.State.STOPPED, loop.snapshot().state());
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Background loop 'end-log' stopped")),
+                    "the end line was attempted: " + logs.records());
+        }
+    }
+
+    /**
+     * Review F4: a stop that lands while an iteration runs reaches a wait the
+     * body returns afterwards, even when the wait's wake is not sticky — the
+     * stop hook ran before the wait was armed, so only the supervisor's own
+     * check can end it.
+     */
+    @Test
+    void aStopDuringTheIterationEndsAWaitTheBodyReturnsAfterIt() {
+        var armed = new AtomicReference<@Nullable CountDownLatch>();
+        var timesArmed = new AtomicInteger();
+        var inIteration = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var loop = start(fast("pulse").withOnStop(() -> {
+            var current = armed.get();
+            if (current != null) {
+                current.countDown();          // a pulse: lost if nobody waits yet
+            }
+        }), ctx -> {
+            inIteration.countDown();
+            release.await();
+            return Next.await(c -> {
+                timesArmed.incrementAndGet();
+                var wake = new CountDownLatch(1);
+                armed.set(wake);
+                wake.await(30, TimeUnit.SECONDS);
+                return true;
+            });
+        });
+        awaitLatch(inIteration);
+        loop.requestStop();                   // the hook finds no armed wait
+        release.countDown();
+        assertTrue(loop.awaitStopped(Duration.ofSeconds(2)), "the stop reached the wait returned after it");
+        assertEquals(0, timesArmed.get(), "the wait was never entered");
+        assertEquals(LoopSnapshot.State.STOPPED, loop.snapshot().state());
+    }
+
     @Test
     void notesAreShownInTheSnapshot() {
         var noted = new CountDownLatch(1);

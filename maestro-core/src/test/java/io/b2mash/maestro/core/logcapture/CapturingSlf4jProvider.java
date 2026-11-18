@@ -41,6 +41,7 @@ public final class CapturingSlf4jProvider implements SLF4JServiceProvider {
     public static final class Capture implements AutoCloseable {
         private final String loggerName;
         private final List<CapturedLog> records = new CopyOnWriteArrayList<>();
+        private volatile java.util.function.Predicate<String> failWhen = _ -> false;
 
         private Capture(String loggerName) {
             this.loggerName = loggerName;
@@ -49,6 +50,19 @@ public final class CapturingSlf4jProvider implements SLF4JServiceProvider {
         /** Every call captured so far, in arrival order. */
         public List<CapturedLog> records() {
             return List.copyOf(records);
+        }
+
+        /**
+         * Makes every later call whose formatted message matches throw an
+         * {@link IllegalStateException} after it is recorded, as a failing
+         * appender would.
+         *
+         * @param messageMatches which messages fail
+         * @return this capture
+         */
+        public Capture failWhen(java.util.function.Predicate<String> messageMatches) {
+            this.failWhen = messageMatches;
+            return this;
         }
 
         @Override
@@ -139,6 +153,9 @@ public final class CapturingSlf4jProvider implements SLF4JServiceProvider {
             }
             var message = MessageFormatter.basicArrayFormat(messagePattern, arguments);
             capture.records.add(new CapturedLog(level, message, throwable));
+            if (capture.failWhen.test(message)) {
+                throw new IllegalStateException("appender failure (test)");
+            }
         }
     }
 }
