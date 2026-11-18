@@ -269,33 +269,28 @@ handler then throws (so Kafka redelivers the command) and the retried run
 fails again before the redelivery arrives, the redelivery retries it again:
 an admin command is not deduplicated by its message id, only by the row's
 status. A retry whose relaunch finds the row already terminated, or loses
-the adoption compare-and-set to another node, also returns
+the adoption compare-and-set to another node, returns
 `LOCK_HELD_ELSEWHERE`.
 
 **A Retry that lands as the failed run finishes.** A run commits `FAILED`
 (and its `WORKFLOW_FAILED`) first, then reports `workflowFailed` to the
 observer, hands the lifecycle event to its publisher and only in its
 `finally` leaves the node's local running registry and then releases its
-instance lock. A Retry on the same node in the gap before the registry
-removal still finds the row `FAILED`: it commits the reopen (the planned
-deletes and `RUNNING`), then finds the run registered locally, launches
-nothing and returns `ALREADY_RUNNING_LOCALLY`. The row is then `RUNNING`
-with no run anywhere until a recovery pass adopts it; that pass re-runs the
-deleted failure and completes
-(`AdminRetryTest.aRetryBeforeTheFailedRunLeavesThisNode_reopensTheRowAndRecoveryRelaunchesIt`).
-The rest of this paragraph is traced, not tested. `AdminCommandDispatcher`
-logs that outcome as a `WARN` no-op and acknowledges the command. With a
-lock backend, a Retry after the registry removal but before the lock release
-returns `LOCK_HELD_ELSEWHERE` with the same end state. The first recovery
-pass on any node once the failed run has left the registry (and, with a lock
-backend, released its lock) adopts it, so the retried run starts within one
-`maestro.recovery.poll-interval` (default 60 s) of the failed run's end; no
-`WORKFLOW_RETRIED` lifecycle event is published for it. The build before
-this change behaved the same way: it deleted the failure memos and wrote
-`RUNNING` before the same local check. The check is not moved ahead of the
-reopen because the dispatcher acknowledges `ALREADY_RUNNING_LOCALLY`: a
-Retry refused before writing would leave the workflow `FAILED` and the
-operator's Retry lost.
+instance lock. Since the PR #72 review, Retry takes the instance lock
+**before** it reopens the row, on every node: a Retry in that gap finds the
+lock still held, writes nothing (the row stays `FAILED`, its memos intact)
+and throws `LockAcquisitionException`, which `AdminCommandDispatcher`
+rethrows, so the transport redelivers the command; the redelivery, after the
+run has released its lock, retries it
+(`AdminRetryTest.aRetryBeforeTheFailedRunLeavesThisNode_writesNothingAndSucceedsWhenRedelivered`).
+The same holds when the lock backend fails: nothing is written and the
+command stays retryable, which matters most on a node without a recovery
+poller, where a reopened row would otherwise have had nothing to run it
+(`RecoveryDisabledLockFailureTest`). Before, the row was reopened first and
+left `RUNNING` for a recovery pass. `ALREADY_RUNNING_LOCALLY` and
+`LOCK_HELD_ELSEWHERE` now mean only a launch refused after the reopen (a
+stale local entry, a lock reported lost before the run started, a lost
+adoption compare-and-set); the row is then `RUNNING` for recovery.
 
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only
