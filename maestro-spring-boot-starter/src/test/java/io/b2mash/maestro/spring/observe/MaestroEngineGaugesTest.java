@@ -9,6 +9,7 @@ import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -22,6 +23,7 @@ import java.util.concurrent.CountDownLatch;
 
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 /**
  * Pins the {@code maestro.wake.permits} gauge registered by
@@ -81,6 +83,39 @@ class MaestroEngineGaugesTest {
             assertEquals(2.0, registry.get("maestro.recovery.deferred").gauge().value());
         } finally {
             hold.countDown();
+            executor.shutdown();
+        }
+    }
+
+    /**
+     * {@code maestro.observer.errors} (Issue 81) reads
+     * {@link WorkflowExecutor#observerErrorCount()}: an observer callback that
+     * throws is contained and counted by the executor, not through an
+     * observer — the one that failed may be the Micrometer one.
+     */
+    @Test
+    void observerErrorsCounterReadsTheExecutorsContainedFailures() {
+        var executor = WorkflowExecutor.builder(new InMemoryWorkflowStore(),
+                        new PayloadSerializer(JsonMapper.builder().build()), "svc")
+                .distributedLock(new InMemoryDistributedLock())
+                .observer(new EngineObserver() {
+                    @Override
+                    public void recoveryPass(int scanned, int adopted) {
+                        throw new IllegalStateException("observer bug");
+                    }
+                })
+                .build();
+        try {
+            var registry = new SimpleMeterRegistry();
+            new MaestroEngineGauges(registry, executor);
+            var counter = registry.find("maestro.observer.errors").functionCounter();
+            assertNotNull(counter, "no maestro.observer.errors: " + registry.getMetersAsString());
+            assertEquals(0.0, counter.count());
+
+            executor.recoverWorkflows(Map.of());                  // emits recoveryPass once
+
+            assertEquals(1.0, counter.count());
+        } finally {
             executor.shutdown();
         }
     }
