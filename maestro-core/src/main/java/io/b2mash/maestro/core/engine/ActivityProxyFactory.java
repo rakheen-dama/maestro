@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
@@ -314,9 +315,12 @@ public final class ActivityProxyFactory {
                 // The memo lookups and outcome appends get the same store-fault
                 // treatment as the executor's own calls (retry briefly, then
                 // latch the run's STORE_UNAVAILABLE stand-down) whoever builds
-                // the proxy — the Spring starter and the test kit pass their
-                // plain store. Idempotent: a guarded store is used as is.
-                StoreFaultGuard.wrap(store),
+                // the proxy. Pass WorkflowExecutor.guardedStore() — as the
+                // Spring starter and the test kit do — and this is a no-op: the
+                // proxy shares the executor's guard, its retry counter and its
+                // node-wide episode. A plain store gets a guard of its own that
+                // still counts its retries through this proxy's observer.
+                StoreFaultGuard.wrap(store, CompositeEngineObserver.contain(observer)),
                 distributedLock,
                 retryPolicy,
                 startToCloseTimeout,

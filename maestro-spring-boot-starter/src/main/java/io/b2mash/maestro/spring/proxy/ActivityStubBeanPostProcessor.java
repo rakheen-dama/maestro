@@ -163,16 +163,25 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
 
         // Optional SPIs — null when not available
         distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
-        // Same composite the executor is handed (design §1.3): every
-        // EngineObserver bean in the context, wrapped so a throwing adapter
-        // can never corrupt activity execution (coordinator Ruling 4).
-        observer = CompositeEngineObserver.of(ctx.getBeanProvider(EngineObserver.class).orderedStream().toList());
 
         // F8: the executor's governor, so maestro.worker.task-queues[].activity-concurrency
         // bounds live executions of these proxies. Without an executor bean no
         // workflow can run here at all, so unbounded is the only meaningful fallback.
         var executor = ctx.getBeanProvider(WorkflowExecutor.class).getIfAvailable();
         governor = executor != null ? executor.taskQueueGovernor() : TaskQueueGovernor.UNBOUNDED;
+        // One guarded store and one contained observer per executor (review
+        // F1, F2): the proxies take the executor's, so an activity's absorbed
+        // store fault moves maestro.store.retries within the node's one retry
+        // episode, and an activity callback's observer failure moves
+        // maestro.observer.errors. Without an executor bean no workflow runs
+        // here; the raw store and a composite of the observer beans are the
+        // fallback (still contained — coordinator Ruling 4).
+        if (executor != null) {
+            store = executor.guardedStore();
+            observer = executor.observer();
+        } else {
+            observer = CompositeEngineObserver.of(ctx.getBeanProvider(EngineObserver.class).orderedStream().toList());
+        }
 
         // Activity proxies are built here, independently of WorkflowExecutor. Their
         // ACTIVITY_* lifecycle events must take the executor's off-thread sink —

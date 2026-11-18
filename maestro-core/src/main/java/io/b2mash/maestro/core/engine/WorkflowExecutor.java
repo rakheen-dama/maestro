@@ -2817,6 +2817,40 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * The store this executor and its components call: the {@link WorkflowStore}
+     * it was built with, wrapped once in the store-fault guard (bounded
+     * in-place retries of the idempotent run operations, the
+     * {@code STORE_UNAVAILABLE} latch, {@code storeRetried} counting through
+     * {@link #observer()}, one node-wide retry episode). Hand it — not the raw
+     * store — to {@code ActivityProxyFactory.createProxy}, so activity memo
+     * reads and outcome appends share the executor's guard, its counter and its
+     * episode (review F1). The Spring Boot starter and {@code TestWorkflowEnvironment} do.
+     *
+     * <p><b>Internal until 1.0</b>, like the {@code WorkflowStore} SPI.
+     *
+     * @return the guarded store; never {@code null}
+     */
+    public WorkflowStore guardedStore() {
+        return store;
+    }
+
+    /**
+     * The observer this executor and its components call: the
+     * {@link EngineObserver} it was built with, contained once
+     * ({@link CompositeEngineObserver#contain}). Hand it — not a second
+     * composite — to {@code ActivityProxyFactory.createProxy}, so containments
+     * from the activity callbacks are counted on {@link #observerErrorCount()}
+     * too (review F2). The Spring Boot starter and {@code TestWorkflowEnvironment} do.
+     *
+     * <p><b>Internal until 1.0.</b>
+     *
+     * @return the contained observer; never {@code null}
+     */
+    public EngineObserver observer() {
+        return observer;
+    }
+
+    /**
      * How many times an observer callback threw and was contained, on any
      * thread, since this executor was built (Issue 81). Every
      * {@link EngineObserver} the executor is given is wrapped by
