@@ -364,6 +364,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void storeRetried(String operation) {
+        fanOut("storeRetried", d -> d.storeRetried(operation));
+    }
+
+    @Override
     public void standDown(StandDownReason reason, String workflowId, @Nullable String detail) {
         fanOut("standDown", d -> d.standDown(reason, workflowId, detail));
     }

@@ -3,6 +3,8 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.core.context.RunCancellation;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
@@ -17,8 +19,11 @@ import java.time.Duration;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
 /**
@@ -43,6 +48,20 @@ import java.util.function.Supplier;
  * attempted exactly once — a status CAS or signal consumption retried blind
  * could act twice. An interrupt during the wait restores the thread's
  * interrupt flag and ends the retries.
+ *
+ * <h2>Absorbed faults are visible (Issue 86)</h2>
+ * <p>Every in-place retry calls {@link EngineObserver#storeRetried} with the
+ * operation's bounded snake_case name ({@code append_event} for both
+ * {@code appendEvent} overloads, {@code append_event_returning_payload},
+ * {@code get_event_by_sequence}), which the starter counts on
+ * {@code maestro.store.retries{operation}}. Retries are grouped in
+ * <em>episodes</em>, node-wide — one guarded store per executor — because what
+ * is reported is the database's flakiness, not one run's bad luck: an episode
+ * starts with the first retry after {@link #EPISODE_QUIET} (60 s) without one,
+ * and ends implicitly once that long passes without a retry. The first retry
+ * of an episode logs one {@code WARN} with the {@link #diagnosis}; the others
+ * log at {@code DEBUG}. Exhausted retries keep their once-per-run latch
+ * {@code WARN}. Advisory reads are never retried, so never counted.
  *
  * <h2>When the run is latched</h2>
  * <p>When the retries are exhausted (or at once, for an operation that is not
@@ -102,8 +121,9 @@ import java.util.function.Supplier;
  * first — the engine's {@code MaestroControlFlowError}s reach their handlers
  * intact and are never retried or latched.
  *
- * <p><b>Thread safety:</b> stateless; a wrapped store is exactly as
- * thread-safe as its delegate. The advisory and pass-through flags are
+ * <p><b>Thread safety:</b> one atomic — the time of the last in-place retry,
+ * for the episode; otherwise a wrapped store is exactly as thread-safe as its
+ * delegate. The advisory and pass-through flags are
  * {@link ScopedValue}s, so each is confined to the thread (and scope) that
  * set it — the activity proxy binds the pass-through on the attempt thread
  * itself.
@@ -117,6 +137,9 @@ final class StoreFaultGuard {
 
     /** The waits before the second and the third attempt. */
     static final List<Duration> RETRY_BACKOFF = List.of(Duration.ofMillis(200), Duration.ofSeconds(1));
+
+    /** How long without an in-place retry ends an episode (class Javadoc). */
+    static final Duration EPISODE_QUIET = Duration.ofSeconds(60);
 
     /** The operations that are safe to repeat after an attempt of unknown outcome. */
     private static final Set<String> RETRIED =
@@ -132,24 +155,51 @@ final class StoreFaultGuard {
     }
 
     /**
-     * Wraps {@code delegate} in the guard, with the production retry waits.
+     * Wraps {@code delegate} in the guard, with the production retry waits and
+     * no observer.
      *
      * @param delegate the store to guard
      * @return the guarded store; {@code delegate} itself if it is already guarded
      */
     static WorkflowStore wrap(WorkflowStore delegate) {
-        return wrap(delegate, RETRY_BACKOFF);
+        return wrap(delegate, EngineObserver.NOOP);
     }
 
     /**
-     * Wraps {@code delegate} in the guard with the given retry waits — for
-     * tests, which cannot afford the production waits.
+     * Wraps {@code delegate} in the guard, with the production retry waits.
+     *
+     * @param delegate the store to guard
+     * @param observer receives {@link EngineObserver#storeRetried} per in-place retry
+     * @return the guarded store; {@code delegate} itself if it is already guarded
+     */
+    static WorkflowStore wrap(WorkflowStore delegate, EngineObserver observer) {
+        return wrap(delegate, RETRY_BACKOFF, observer, System::nanoTime);
+    }
+
+    /**
+     * Wraps {@code delegate} in the guard with the given retry waits and no
+     * observer — for tests, which cannot afford the production waits.
      *
      * @param delegate the store to guard
      * @param backoff  the waits before the second and the third attempt
      * @return the guarded store; {@code delegate} itself if it is already guarded
      */
     static WorkflowStore wrap(WorkflowStore delegate, List<Duration> backoff) {
+        return wrap(delegate, backoff, EngineObserver.NOOP, System::nanoTime);
+    }
+
+    /**
+     * Wraps {@code delegate} in the guard with the given retry waits, observer
+     * and monotonic clock (the episode's; a test seam).
+     *
+     * @param delegate the store to guard
+     * @param backoff  the waits before the second and the third attempt
+     * @param observer receives {@link EngineObserver#storeRetried} per in-place retry
+     * @param nanoTime monotonic clock in nanoseconds, as {@link System#nanoTime()}
+     * @return the guarded store; {@code delegate} itself if it is already guarded
+     */
+    static WorkflowStore wrap(WorkflowStore delegate, List<Duration> backoff, EngineObserver observer,
+                              LongSupplier nanoTime) {
         if (Proxy.isProxyClass(delegate.getClass())
                 && Proxy.getInvocationHandler(delegate) instanceof Handler) {
             return delegate;
@@ -161,14 +211,8 @@ final class StoreFaultGuard {
         return (WorkflowStore) Proxy.newProxyInstance(
                 WorkflowStore.class.getClassLoader(),
                 new Class<?>[]{WorkflowStore.class},
-                new Handler(delegate, List.copyOf(backoff)));
-    }
-
-    /** Stub: the episode accounting lands with the fix. */
-    static WorkflowStore wrap(WorkflowStore delegate, List<Duration> backoff,
-                              io.b2mash.maestro.core.observe.EngineObserver observer,
-                              java.util.function.LongSupplier nanoTime) {
-        return wrap(delegate, backoff);
+                new Handler(delegate, List.copyOf(backoff), new Episodes(CompositeEngineObserver.contain(observer),
+                        Objects.requireNonNull(nanoTime, "nanoTime"))));
     }
 
     /**
@@ -225,7 +269,44 @@ final class StoreFaultGuard {
         return "root cause " + root;
     }
 
-    private record Handler(WorkflowStore delegate, List<Duration> backoff) implements InvocationHandler {
+    /**
+     * Counts every in-place retry and decides which one opens an episode
+     * (class Javadoc). One per guarded store; thread-safe.
+     */
+    private static final class Episodes {
+
+        private static final long NONE = Long.MIN_VALUE;
+
+        private final EngineObserver observer;
+        private final LongSupplier nanoTime;
+        private final AtomicLong lastRetryNanos = new AtomicLong(NONE);
+
+        Episodes(EngineObserver observer, LongSupplier nanoTime) {
+            this.observer = observer;
+            this.nanoTime = nanoTime;
+        }
+
+        /** Records one retry; {@code true} when it opens an episode. */
+        boolean retried(Method method) {
+            observer.storeRetried(operation(method));
+            var now = nanoTime.getAsLong();
+            var previous = lastRetryNanos.getAndSet(now);
+            return previous == NONE || now - previous >= EPISODE_QUIET.toNanos();
+        }
+
+        /** The bounded, snake_case tag value of a retried operation. */
+        private static String operation(Method method) {
+            return switch (method.getName()) {
+                case "appendEvent" -> "append_event";
+                case "appendEventReturningPayload" -> "append_event_returning_payload";
+                case "getEventBySequence" -> "get_event_by_sequence";
+                default -> method.getName();
+            };
+        }
+    }
+
+    private record Handler(WorkflowStore delegate, List<Duration> backoff, Episodes episodes)
+            implements InvocationHandler {
 
         @Override
         public @Nullable Object invoke(Object proxy, Method method, @Nullable Object @Nullable [] args)
@@ -274,8 +355,15 @@ final class StoreFaultGuard {
         /** @return {@code true} to retry; {@code false} if interrupted (flag restored) */
         private boolean waitBeforeRetry(Method method, int attempt, StoreUnavailableException e) {
             var wait = backoff.get(attempt - 1);
-            logger.debug("Store unavailable on {} (attempt {}/{}), retrying in {}: {}",
-                    method.getName(), attempt, MAX_ATTEMPTS, wait, e.toString());
+            if (episodes.retried(method)) {
+                logger.warn("Store unavailable on {} — retrying in place (attempt {}/{}): {}; further in-place "
+                                + "retries are counted on maestro.store.retries and logged at DEBUG until {} s pass "
+                                + "without one",
+                        method.getName(), attempt, MAX_ATTEMPTS, diagnosis(e), EPISODE_QUIET.toSeconds());
+            } else {
+                logger.debug("Store unavailable on {} (attempt {}/{}), retrying in {}: {}",
+                        method.getName(), attempt, MAX_ATTEMPTS, wait, e.toString());
+            }
             try {
                 Thread.sleep(wait);
                 return true;

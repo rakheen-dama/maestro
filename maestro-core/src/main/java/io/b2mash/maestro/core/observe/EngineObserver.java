@@ -296,7 +296,18 @@ public interface EngineObserver {
 
     // ── Store faults ──────────────────────────────────────────────────
 
-    /** Stub: documented with the fix. */
+    /**
+     * The engine's store guard retried one store call in place after the store
+     * reported itself unavailable ({@code StoreUnavailableException}) — a fault
+     * the retries may still absorb (Issue 86). Fires on the calling thread,
+     * usually a workflow thread, once per retry, before the retry's wait.
+     * Only the idempotent run operations are retried; advisory reads and
+     * background-loop store calls never fire it.
+     *
+     * @param operation the retried operation, bounded: {@code append_event},
+     *                  {@code append_event_returning_payload} or
+     *                  {@code get_event_by_sequence}
+     */
     default void storeRetried(String operation) {}
 
     // ── Stand-down ────────────────────────────────────────────────────

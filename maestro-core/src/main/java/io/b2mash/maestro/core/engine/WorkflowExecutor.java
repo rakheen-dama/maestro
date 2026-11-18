@@ -332,14 +332,16 @@ public final class WorkflowExecutor {
         // reads/appends are retried briefly, and a final StoreUnavailableException
         // latches the run's STORE_UNAVAILABLE stand-down (see StoreFaultGuard).
         // Idempotent: an already-guarded store is used as is.
-        this.store = StoreFaultGuard.wrap(store);
-        this.distributedLock = distributedLock;
-        // Contained once, here (Issue 81), and handed to every component this
+        // The guard counts every in-place retry through the observer
+        // (storeRetried, Issue 86), so the observer is contained first.
+        // Contained once (Issue 81) and handed to every component this
         // executor builds: an observer that throws — anything but a control-flow
         // signal or a VirtualMachineError — is logged, counted
         // (observerErrorCount()) and otherwise ignored, at every emission site,
         // whether or not the host wrapped it in CompositeEngineObserver.of.
         this.observer = CompositeEngineObserver.contain(observer);
+        this.store = StoreFaultGuard.wrap(store, this.observer);
+        this.distributedLock = distributedLock;
         // Wrapped once, here, and handed to every component this executor builds
         // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
         // enabled flag is honoured by every lifecycle-event publisher this
