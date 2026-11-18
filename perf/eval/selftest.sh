@@ -1297,12 +1297,15 @@ if [[ -n "$s3src" ]]; then
   expect "s3: sleep mode: verdict still PASS (advisory only)" PASS "$(jq -r .verdict <<<"$out")"
   expect "s3: sleep mode: advisory.liveness says the release is no proof of liveness" yes \
     "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'NOT proof' && echo yes || echo no)"
-  # Sleep mode has been measured (one local run, 2026-11-16): the detail
-  # must no longer say it is not.
+  # Sleep mode has been measured (local one node 2026-11-16; local two
+  # nodes and full profile 2026-11-18): the detail must not say it is
+  # unmeasured or give a run count that goes stale; it points at the header.
   expect "s3: sleep mode: advisory.liveness no longer says sleep figures are not measured" no \
     "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'not measured' && echo yes || echo no)"
-  expect "s3: sleep mode: advisory.liveness says how far sleep mode was measured" yes \
-    "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'measured on one local one-node run' && echo yes || echo no)"
+  expect "s3: sleep mode: advisory.liveness no longer claims a single local one-node run" no \
+    "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'one local one-node run' && echo yes || echo no)"
+  expect "s3: sleep mode: advisory.liveness points at where sleep mode's measurements are listed" yes \
+    "$(s3_detail s3-live-sleep advisory.liveness | grep -qF 'sleep-mode measurements: perf/eval/s3-parked.jq header' && echo yes || echo no)"
   expect "s3: sleep mode: correctness.releaseWakes says it is no proof of liveness" yes \
     "$(s3_detail s3-live-sleep correctness.releaseWakes | grep -qF 'NOT proof' && echo yes || echo no)"
 

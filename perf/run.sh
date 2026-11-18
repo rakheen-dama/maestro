@@ -27,7 +27,8 @@
 #       PERF_BASELINE_ALLOW_SETTINGS_CHANGE=1 (with --record-baseline: allow
 #       a baseline of other settings to replace the old one)
 #       PERF_PARK_MODE (s3-parked: signal | sleep, default signal; sleep
-#       measured once, local profile, one node: perf/eval/s3-parked.jq)
+#       measured locally at 1 and 2 nodes and on the full profile at 1 node:
+#       perf/eval/s3-parked.jq)
 #       K6_NODES (scenario-internal: comma-separated node URLs a k6 phase
 #       sends to instead of every replica; lib/common.sh k6_run)
 #       Test-only overrides: PERF_EXPECT_COMMIT, PERF_K6_VUS, PERF_K6_MAX_VUS,
