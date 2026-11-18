@@ -39,6 +39,54 @@ jobs:
           path: '**/build/reports/tests/'
           retention-days: 7
 
+  # The two-build rolling test (maestro-integration-tests, RollingUpgradeIT):
+  # a node of each previous release runs beside a node of this build on one
+  # database, and runs parked by either are adopted and woken by the other. It
+  # resolves the previous releases from this repository's GitHub Packages
+  # registry, which asks for a token on every download, so it is a job of its
+  # own with `packages: read` and is not part of `./gradlew build`. On a pull
+  # request from a fork the token may not be granted the registry; the job
+  # then fails at dependency resolution, not in a test.
+  rolling-upgrade:
+    name: Rolling upgrade (previous release beside this build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v6
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v5
+
+      - name: Run the two-build rolling test
+        env:
+          # Read by rolling-node/build.gradle.kts with GITHUB_ACTOR, which
+          # Actions sets; never echoed.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew :maestro-integration-tests:rollingUpgradeTest
+
+      # Uploaded unconditionally: each node's log and results.txt (what every
+      # scenario observed, including any stand-down) are the evidence.
+      - name: Upload rolling-upgrade logs
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: rolling-upgrade-logs
+          path: |
+            maestro-integration-tests/build/rolling-upgrade/
+            maestro-integration-tests/build/reports/tests/rollingUpgradeTest/
+          retention-days: 14
+
   # GitHub disables every scheduled workflow after 60 days without a commit
   # (that is what took E2E (loan-origination) offline from 2026-10-10 until
   # this cycle). A scheduled keepalive would be disabled with it; a push is

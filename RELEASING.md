@@ -163,6 +163,23 @@ Either way the regeneration is a visible change to a pinned constant, in a diff 
 
 So a fixture cannot be edited or regenerated without changing one of these four literals: a regeneration always shows up in review as an edited Java constant. Gradle cannot skip these checks: `maestro-integration-tests/build.gradle.kts` declares the frozen `*/SeededHistoryWorkflows.java` sources and `src/test/resources/upgrade` as inputs of `test` and of `seededHistoryNonUtcTest` (the same suite in a non-UTC JVM), so even a comment-only edit (which leaves the bytecode unchanged) reruns the tests instead of leaving `test` up to date or restoring it from the build cache. The root `.gitattributes` marks the frozen fixtures `-text`, so git never converts their line endings on checkout and every platform reads the bytes the hashes pin.
 
+### The rolling test against previous releases
+
+The fixtures freeze what a past build wrote. The rolling test (`RollingUpgradeIT`, task `:maestro-integration-tests:rollingUpgradeTest`, CI job "Rolling upgrade" in `build-test.yml`) runs a past build: a node of each previous release, as a JVM of its own, beside a node of this build, on one database. Runs parked by either build are adopted and woken by the other; a run the previous release parked must finish on this build, and a run this build parked must finish on the previous release or stand down there without a write.
+
+The previous releases are the rows of `previousReleases` in `maestro-integration-tests/rolling-node/build.gradle.kts`: a Maestro version and the Spring Boot version it was built with. After a release is published, add its row; remove a row only when its release leaves the support window. The node source (`rolling-node/src/main`) is compiled against every row, so it may use only API present in the oldest one.
+
+The rows resolve from GitHub Packages (`gpr.user`/`gpr.token`, or `GITHUB_ACTOR`/`GITHUB_TOKEN`, as in [Consuming one](#consuming-one)). A machine without a `read:packages` token can publish the release tag's checkout into a local repository and point the test at it, without publishing anything:
+
+```bash
+git worktree add --detach /tmp/maestro-v0.3.0-rc.1 v0.3.0-rc.1
+(cd /tmp/maestro-v0.3.0-rc.1 && ./gradlew publishToMavenLocal -Pversion=0.3.0-rc.1 -Dmaven.repo.local=/tmp/maestro-releases)
+./gradlew :maestro-integration-tests:rollingUpgradeTest -Pmaestro.rolling.oldRepo=/tmp/maestro-releases
+git worktree remove /tmp/maestro-v0.3.0-rc.1
+```
+
+The test prints where the previous release came from, and writes what each scenario observed to `maestro-integration-tests/build/rolling-upgrade/results.txt`, beside each node's log.
+
 ---
 
 ## Pre-releases on GitHub Packages
