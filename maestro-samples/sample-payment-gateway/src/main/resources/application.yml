@@ -3,7 +3,7 @@ spring:
     name: sample-payment-gateway
 
   datasource:
-    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:maestro}
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:payment_gateway}
     username: ${POSTGRES_USER:maestro}
     password: ${POSTGRES_PASSWORD:maestro}
 

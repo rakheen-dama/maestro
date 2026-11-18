@@ -130,7 +130,8 @@ services:
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      POSTGRES_DB: maestro
+      # Its own database: services never share Maestro tables (docs/support-matrix.md).
+      POSTGRES_DB: payment_gateway
       POSTGRES_USER: maestro
       POSTGRES_PASSWORD: maestro
       KAFKA_BOOTSTRAP: kafka:9092

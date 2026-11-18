@@ -298,6 +298,18 @@ public class MaestroAutoConfiguration {
         return new WorkflowRegistrar(executor);
     }
 
+    /**
+     * The shared-table check at context refresh ({@code maestro.store.foreign-service-check},
+     * default {@code fail}): services never share Maestro tables.
+     */
+    @Bean
+    public ForeignServiceStartupCheck maestroForeignServiceStartupCheck(
+            WorkflowExecutor executor,
+            MaestroProperties properties
+    ) {
+        return new ForeignServiceStartupCheck(executor, properties.getStore().foreignServiceCheck());
+    }
+
     @Bean
     public StartupRecoveryRunner maestroStartupRecoveryRunner(
             WorkflowExecutor executor,

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.core.engine.ForeignServiceCheckMode;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
@@ -224,16 +225,25 @@ public class MaestroProperties {
      * <p>Tables live in the connection's default schema; use the JDBC URL's
      * {@code currentSchema} parameter to relocate them.
      *
-     * @param type   store implementation type (e.g., {@code "postgres"})
-     * @param schema how Maestro manages its own tables at startup
+     * @param type                store implementation type (e.g., {@code "postgres"})
+     * @param schema              how Maestro manages its own tables at startup
+     * @param foreignServiceCheck {@code maestro.store.foreign-service-check}: what
+     *                            startup does when the tables hold active workflow
+     *                            instances under another {@code maestro.service-name}
+     *                            — {@code fail} (default; services never share
+     *                            Maestro tables), {@code warn} (for a service
+     *                            rename in progress) or {@code off}. A read that
+     *                            fails or does not answer within 5 seconds is
+     *                            inconclusive and never fails startup
      */
     public record StoreProperties(
             @DefaultValue("postgres") String type,
-            @DefaultValue SchemaProperties schema
+            @DefaultValue SchemaProperties schema,
+            @DefaultValue("fail") ForeignServiceCheckMode foreignServiceCheck
     ) {
         /** @return the defaults documented above */
         public static StoreProperties defaults() {
-            return new StoreProperties("postgres", SchemaProperties.defaults());
+            return new StoreProperties("postgres", SchemaProperties.defaults(), ForeignServiceCheckMode.FAIL);
         }
     }
 

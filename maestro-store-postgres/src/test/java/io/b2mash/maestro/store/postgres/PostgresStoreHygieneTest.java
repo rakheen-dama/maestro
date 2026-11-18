@@ -576,26 +576,55 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
             }
         }
 
+        /**
+         * P3 (Issue 79): every other service name's active instances, whatever
+         * their type — {@code billing}'s invoices included, terminal rows not.
+         * (Before P3 the read took a type filter and left {@code billing} out.)
+         */
         @Test
-        void countsActiveInstancesOfTheGivenTypesUnderEveryOtherServiceName() {
-            var counts = store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 21);
-            assertEquals(List.of(Map.entry("orders-old", 3L), Map.entry("orders-1", 2L)),
+        void countsActiveInstancesOfAnyTypeUnderEveryOtherServiceName() {
+            var counts = store.getActiveInstanceCountsUnderOtherServices("orders", 21);
+            assertEquals(List.of(Map.entry("billing", 4L), Map.entry("orders-old", 3L), Map.entry("orders-1", 2L)),
                     List.copyOf(counts.entrySet()));
         }
 
         @Test
         void theLimitCapsTheNamesReturned() {
-            assertEquals(Set.of("orders-old"),
-                    store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 1).keySet());
+            assertEquals(Set.of("billing"), store.getActiveInstanceCountsUnderOtherServices("orders", 1).keySet());
         }
 
+        /**
+         * The read is cheap by construction: with sequential scans disabled,
+         * the planner answers it from the partial active-instance index
+         * {@code idx_wf_instance_recovery} (V101), so it never needs to read
+         * the table or its terminal rows.
+         */
         @Test
-        void noTypesMeansNoStatement() {
+        void theReadCanBeAnsweredFromThePartialActiveInstanceIndex() throws Exception {
             var sql = new CopyOnWriteArrayList<String>();
-            var counts = new PostgresWorkflowStore(recording(dataSource, sql), objectMapper)
-                    .getActiveInstanceCountsUnderOtherServices("orders", Set.of(), 21);
-            assertEquals(Map.of(), counts);
-            assertEquals(List.of(), sql);
+            new PostgresWorkflowStore(recording(dataSource, sql), objectMapper)
+                    .getActiveInstanceCountsUnderOtherServices("orders", 21);
+            var statement = sql.getFirst();
+            var plan = new StringBuilder();
+            try (var conn = dataSource.getConnection()) {
+                conn.setAutoCommit(false);
+                try (var off = conn.createStatement()) {
+                    off.execute("SET LOCAL enable_seqscan = off");
+                }
+                try (var explain = conn.prepareStatement("EXPLAIN " + statement)) {
+                    explain.setString(1, "orders");
+                    explain.setString(2, "orders");
+                    explain.setInt(3, 21);
+                    try (var rs = explain.executeQuery()) {
+                        while (rs.next()) {
+                            plan.append(rs.getString(1)).append('\n');
+                        }
+                    }
+                }
+                conn.rollback();
+            }
+            assertTrue(plan.toString().contains("idx_wf_instance_recovery"), plan.toString());
+            assertFalse(plan.toString().contains("Seq Scan"), plan.toString());
         }
 
         /**
@@ -607,7 +636,7 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
             var before = tableRowCounts();
             var sql = new CopyOnWriteArrayList<String>();
             new PostgresWorkflowStore(recording(dataSource, sql), objectMapper)
-                    .getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 21);
+                    .getActiveInstanceCountsUnderOtherServices("orders", 21);
             var statements = sql.stream().map(s -> s.replaceAll("\\s+", " ").strip()).toList();
             assertEquals(1, statements.size(), statements.toString());
             assertTrue(statements.getFirst().startsWith(

@@ -275,24 +275,18 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * {@inheritDoc}
      *
      * <p>Counts over the instances map, as the JDBC store's query does: active
-     * instances of the given types under every other service name, by count
+     * instances under every other service name, of any workflow type, by count
      * descending, then name.
      */
     @Override
-    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
-            String serviceName, Set<String> workflowTypes, int limit) {
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, int limit) {
         Objects.requireNonNull(serviceName, "serviceName");
-        Objects.requireNonNull(workflowTypes, "workflowTypes");
         if (limit < 1) {
             throw new IllegalArgumentException("limit must be positive, got " + limit);
-        }
-        if (workflowTypes.isEmpty()) {
-            return Map.of();
         }
         var counts = instances.values().stream()
                 .filter(i -> i.status().isActive())
                 .filter(i -> !serviceName.equals(i.serviceName()))
-                .filter(i -> workflowTypes.contains(i.workflowType()))
                 .collect(Collectors.groupingBy(WorkflowInstance::serviceName, Collectors.counting()));
         var ordered = new LinkedHashMap<String, Long>();
         counts.entrySet().stream()

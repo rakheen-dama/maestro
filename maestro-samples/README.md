@@ -191,9 +191,16 @@ curl -s http://localhost:8081/orders/{orderId}/status | jq .
 ## Running Locally (without Docker)
 
 Prerequisites: PostgreSQL 16+ and Kafka 3.x running locally. Postgres holds the
-workflow state and the distributed locks; Kafka carries the signals.
+workflow state and the distributed locks; Kafka carries the signals. Each
+service needs its own database — services never share Maestro tables
+(`docs/support-matrix.md`): the order service uses `maestro`, the payment
+gateway `payment_gateway`.
 
 ```bash
+# Create the two databases
+createdb maestro
+createdb payment_gateway
+
 # Create Kafka topics (see docker-compose.yml for the full list)
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.signals.order-service --partitions 3
 kafka-topics.sh --bootstrap-server localhost:9092 --create --topic maestro.signals.payment-gateway --partitions 3

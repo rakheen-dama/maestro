@@ -202,42 +202,41 @@ public interface WorkflowStore {
     }
 
     /**
-     * Counts, per other service name, the active instances of the given
-     * workflow types: for each {@link WorkflowInstance#serviceName()} other
-     * than {@code serviceName} that holds at least one instance whose status
-     * is {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isActive()
-     * active} and whose {@link WorkflowInstance#workflowType()} is in
-     * {@code workflowTypes}, that name's count of such instances.
+     * Counts, per other service name, the active instances recorded under it:
+     * for each {@link WorkflowInstance#serviceName()} other than
+     * {@code serviceName} that holds at least one instance whose status is
+     * {@linkplain io.b2mash.maestro.core.model.WorkflowStatus#isActive()
+     * active}, that name's count of such instances, whatever their workflow
+     * type.
      *
-     * <p><b>Advisory, and it never writes.</b> Recovery adopts only the
-     * instances recorded under this node's own service name, so active
-     * instances of this node's types recorded under another name never
-     * resume unless a node runs under that name (Issue 39). The engine calls
-     * this once per node start, off the startup path, and logs a warning per
-     * name it returns; nothing else depends on the answer. Terminal instances
-     * are not counted, and neither are other workflow types: a co-tenant
-     * service with its own types is not reported.
+     * <p><b>The shared-table check, and it never writes.</b> Services never
+     * share Maestro tables (pilot readiness P3, {@code docs/support-matrix.md}),
+     * so any active row under another name is either another service in the
+     * same tables or workflows stranded by a rename — recovery adopts only the
+     * instances recorded under this node's own name (Issue 39). The engine
+     * calls this once per node start, bounded in time, and fails startup (or,
+     * by configuration, warns) when it returns anything. Terminal instances are
+     * not counted: no index serves them by service name, and counting them
+     * would scan the table.
+     *
+     * <p><b>Cost.</b> It must stay one cheap read: the JDBC store answers from
+     * the partial active-instance index, reading only other services' active
+     * rows — none, on a correctly deployed service.
      *
      * <p><b>Ordering and limit.</b> The entries iterate by count descending,
-     * then by name ascending; at most {@code limit} are returned. An empty
-     * {@code workflowTypes} returns an empty map without reading the store.
+     * then by name ascending; at most {@code limit} are returned.
      *
-     * <p><b>The default</b> returns an empty map — "nothing to report" — so
-     * the engine's check logs nothing over a store that does not override
-     * this. The shipped JDBC store and the in-memory test store override it.
+     * <p><b>The default</b> returns an empty map — "nothing to report". The
+     * shipped JDBC store and the in-memory test store override it.
      *
-     * @param serviceName   this node's service name, whose instances are not counted
-     * @param workflowTypes the workflow types to count
-     * @param limit         the most service names to return; positive
+     * @param serviceName this node's service name, whose instances are not counted
+     * @param limit       the most service names to return; positive
      * @return the counts, ordered as above; never {@code null}
-     * @throws NullPointerException     if {@code serviceName} or
-     *                                  {@code workflowTypes} is {@code null}
+     * @throws NullPointerException     if {@code serviceName} is {@code null}
      * @throws IllegalArgumentException if {@code limit} is not positive
      */
-    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(
-            String serviceName, Set<String> workflowTypes, int limit) {
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, int limit) {
         Objects.requireNonNull(serviceName, "serviceName");
-        Objects.requireNonNull(workflowTypes, "workflowTypes");
         if (limit < 1) {
             throw new IllegalArgumentException("limit must be positive, got " + limit);
         }

@@ -8,6 +8,7 @@ import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
+import io.b2mash.maestro.core.exception.ForeignServiceRowsException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
@@ -2192,42 +2193,55 @@ public final class WorkflowExecutor {
     // ── Service-name check ──────────────────────────────────────────────
 
     /**
-     * Starts the once-per-start check for active workflows of this node's
-     * types recorded under another {@code maestro.service-name} (Issue 39),
-     * and returns at once.
+     * Runs the once-per-start shared-table check (pilot readiness P3; Issues
+     * 39, 79): fails, or warns, when this service's Maestro tables hold active
+     * workflow instances recorded under any other {@code maestro.service-name},
+     * of any workflow type.
      *
-     * <p>Recovery adopts only instances recorded under this executor's own
-     * service name. The check asks the store once, through
-     * {@link WorkflowStore#getActiveInstanceCountsUnderOtherServices}, for
-     * every other service name holding active instances of a type in
-     * {@code registrations}, and logs one {@code WARN} per name (at most 20)
-     * with its count and the remedy. It runs on its own virtual thread,
-     * {@code maestro-foreign-service-check}, and ends after that one read.
+     * <p>Services never share Maestro tables ({@code docs/support-matrix.md}),
+     * and recovery adopts only instances recorded under this executor's own
+     * service name, so such rows are either another service in the same tables
+     * or workflows stranded by a rename. The check asks the store once,
+     * through {@link WorkflowStore#getActiveInstanceCountsUnderOtherServices(String, int)},
+     * on its own virtual thread ({@code maestro-foreign-service-check}), and
+     * waits for the answer at most 5 seconds. Then:
+     * <ul>
+     *   <li>rows found: under {@link ForeignServiceCheckMode#FAIL} this method
+     *       throws {@link ForeignServiceRowsException} naming each other service
+     *       name and its count; under {@link ForeignServiceCheckMode#WARN} it logs
+     *       one {@code WARN} per name (at most 20) and returns;</li>
+     *   <li>no rows: one {@code DEBUG} line;</li>
+     *   <li>no answer within the bound, or a failed read: <em>inconclusive</em>
+     *       — one {@code WARN}, and it returns. An unreachable store must not
+     *       turn into a restart loop. A read still running is left to finish on
+     *       its own thread, never interrupted.</li>
+     * </ul>
+     * {@link ForeignServiceCheckMode#OFF} reads nothing. While the executor is
+     * shutting down the method logs at {@code DEBUG} and reads nothing. It
+     * never writes.
      *
-     * <p>Apart from a {@code null} argument (a programming error), it never
-     * throws, and it never writes: a failed read is logged once at
-     * {@code INFO}, and while the executor is shutting down this method logs
-     * at {@code DEBUG} and starts nothing. {@link #shutdown()} does not wait
-     * for it. A store that does not override the read reports nothing, so
-     * nothing is logged above {@code DEBUG}.
+     * <p>The Spring Boot starter calls this at context refresh, before
+     * recovery or any listener starts, with {@code maestro.store.foreign-service-check}
+     * ({@code fail} by default). An embedder without the starter calls it
+     * once before starting recovery.
      *
-     * <p>The Spring Boot starter calls this at startup, right after it has
-     * started recovery. An embedder without the starter calls it once after
-     * starting recovery.
-     *
-     * @param registrations map of workflow type → registration metadata; its
-     *                      keys are the types checked
-     * @throws NullPointerException if {@code registrations} is {@code null}
+     * @param mode what to do with rows found; never {@code null}
+     * @throws ForeignServiceRowsException under {@code FAIL}, when another
+     *                                     service name holds active instances
+     * @throws NullPointerException        if {@code mode} is {@code null}
      */
-    public void startForeignServiceCheck(Map<String, WorkflowRegistration> registrations) {
-        Objects.requireNonNull(registrations, "registrations");
+    public void checkForeignServices(ForeignServiceCheckMode mode) {
+        checkForeignServices(mode, ForeignServiceCheck.PROBE_TIMEOUT);
+    }
+
+    /** {@link #checkForeignServices(ForeignServiceCheckMode)} with the wait bound as a test seam. */
+    void checkForeignServices(ForeignServiceCheckMode mode, Duration timeout) {
+        Objects.requireNonNull(mode, "mode");
         if (shuttingDown.get()) {
-            logger.debug("WorkflowExecutor is shutting down — the service-name check is not started");
+            logger.debug("WorkflowExecutor is shutting down — the shared-table check is not run");
             return;
         }
-        var types = Set.copyOf(registrations.keySet());
-        Thread.ofVirtual().name(ForeignServiceCheck.THREAD_NAME)
-                .start(() -> ForeignServiceCheck.run(store, serviceName, types));
+        ForeignServiceCheck.run(store, serviceName, mode, timeout);
     }
 
     /**

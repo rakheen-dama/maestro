@@ -45,6 +45,23 @@
           "description": "Unbounded. Only valid together with maestro.worker.default-concurrency=0; 0 on one alone fails startup."
         }
       ]
+    },
+    {
+      "name": "maestro.store.foreign-service-check",
+      "values": [
+        {
+          "value": "fail",
+          "description": "Default. Startup fails when the tables hold active workflow instances under another maestro.service-name: services never share Maestro tables."
+        },
+        {
+          "value": "warn",
+          "description": "Startup logs one WARN per other service name and continues. For a service rename in progress only; set it back to fail once the old name's instances are drained or moved."
+        },
+        {
+          "value": "off",
+          "description": "The check reads nothing."
+        }
+      ]
     }
   ]
 }

@@ -49,7 +49,8 @@ public sealed class MaestroException extends RuntimeException
                 StaleRunException,
                 FencedWriteException,
                 StoreUnavailableException,
-                WorkflowInstantiationException {
+                WorkflowInstantiationException,
+                ForeignServiceRowsException {
 
     /**
      * Creates a new exception with the given message.
