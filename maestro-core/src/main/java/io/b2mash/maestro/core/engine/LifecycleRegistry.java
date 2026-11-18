@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.RunCancellation;
+import io.b2mash.maestro.core.context.WorkflowContext;
 import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -184,7 +185,20 @@ public final class LifecycleRegistry {
      *         when the calling thread is interrupted (its flag is restored)
      */
     boolean awaitNoRuns(ShutdownDeadline deadline) {
-        return awaitUntil(deadline, true);
+        return awaitNoRuns(deadline, null);
+    }
+
+    /**
+     * {@link #awaitNoRuns(ShutdownDeadline)}, not counting {@code excluded}:
+     * the run the waiting thread itself belongs to (see {@link #callerRun()}),
+     * which cannot leave while that thread waits.
+     *
+     * @param deadline the shutdown's deadline
+     * @param excluded a membership not to wait for, or {@code null}
+     * @return {@code true} if no other run is left
+     */
+    boolean awaitNoRuns(ShutdownDeadline deadline, @Nullable Membership excluded) {
+        return awaitUntil(deadline, true, excluded);
     }
 
     /**
@@ -195,13 +209,29 @@ public final class LifecycleRegistry {
      *         when the calling thread is interrupted (its flag is restored)
      */
     boolean awaitNoMembers(ShutdownDeadline deadline) {
-        return awaitUntil(deadline, false);
+        return awaitNoMembers(deadline, null);
     }
 
-    private boolean awaitUntil(ShutdownDeadline deadline, boolean runsOnly) {
+    /**
+     * {@link #awaitNoMembers(ShutdownDeadline)}, not counting {@code excluded}.
+     *
+     * @param deadline the shutdown's deadline
+     * @param excluded a membership not to wait for, or {@code null}
+     * @return {@code true} if nothing else is left
+     */
+    boolean awaitNoMembers(ShutdownDeadline deadline, @Nullable Membership excluded) {
+        return awaitUntil(deadline, false, excluded);
+    }
+
+    private boolean awaitUntil(ShutdownDeadline deadline, boolean runsOnly, @Nullable Membership excluded) {
         lock.lock();
         try {
-            while (runsOnly ? runs > 0 : !members.isEmpty()) {
+            while (true) {
+                var discount = excluded != null && members.contains(excluded) ? 1 : 0;
+                var waitingFor = (runsOnly ? runs : members.size()) - discount;
+                if (waitingFor <= 0) {
+                    break;
+                }
                 var nanos = deadline.remaining().toNanos();
                 if (nanos <= 0) {
                     return false;
@@ -214,6 +244,34 @@ public final class LifecycleRegistry {
                 }
             }
             return true;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * The run the calling thread itself belongs to, if any: the run whose
+     * cancellation is that of the {@link WorkflowContext} bound to this
+     * thread (its run thread, a branch, an activity attempt, a compensation),
+     * or the run this thread is launching and has not yet handed to a run
+     * thread. A shutdown called from such a thread must not wait for that run:
+     * it cannot end while its own thread waits.
+     *
+     * @return that membership, or {@code null}
+     */
+    @Nullable Membership callerRun() {
+        var bound = WorkflowContext.scopedValue();
+        var cancellation = bound.isBound() ? bound.get().cancellation() : null;
+        var self = Thread.currentThread();
+        lock.lock();
+        try {
+            for (var membership : members) {
+                if (membership.isRun()
+                        && (membership.cancellation == cancellation || membership.owner == self)) {
+                    return membership;
+                }
+            }
+            return null;
         } finally {
             lock.unlock();
         }
@@ -275,6 +333,9 @@ public final class LifecycleRegistry {
         private final String name;
         private final @Nullable Member member;
         private final @Nullable RunCancellation cancellation;
+        /** The thread that acts for this member: the joining thread, then a run's own thread. */
+        private volatile Thread owner = Thread.currentThread();
+        private volatile boolean handedOff;
 
         private Membership(@Nullable Kind kind, String name, @Nullable Member member,
                            @Nullable RunCancellation cancellation) {
@@ -282,6 +343,23 @@ public final class LifecycleRegistry {
             this.name = name;
             this.member = member;
             this.cancellation = cancellation;
+        }
+
+        /**
+         * Marks a run's membership as owned by its started run thread, which
+         * leaves it as its last act; the launching thread must not leave it
+         * any more. Called right after {@code Thread.start()}.
+         *
+         * @param runThread the started run thread
+         */
+        void handOff(Thread runThread) {
+            owner = runThread;
+            handedOff = true;
+        }
+
+        /** @return {@code true} once {@link #handOff} was called */
+        boolean isHandedOff() {
+            return handedOff;
         }
 
         /**

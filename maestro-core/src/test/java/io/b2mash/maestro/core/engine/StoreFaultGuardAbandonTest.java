@@ -86,6 +86,11 @@ class StoreFaultGuardAbandonTest {
     /**
      * A retried call whose run is given up while it waits out its backoff
      * sends nothing more: the second attempt is refused before the store.
+     *
+     * <p>Merge guard (P1 review I3): this fails if the give-up check after
+     * the backoff wait in {@code StoreFaultGuard.Handler.invoke} is dropped —
+     * the entry check alone does not cover it. Keep both when the loop
+     * supervisor's retry-episode rework of that loop is merged.
      */
     @org.junit.jupiter.api.Test
     void aRunGivenUpDuringARetryBackoffSendsNoFurtherAttempt() {

@@ -734,22 +734,24 @@ public final class WorkflowExecutor {
             Method workflowMethod
     ) {
         // Joined before anything is locked or written (P1): refused once
-        // shutdown has begun, and otherwise waited for by its drain.
+        // shutdown has begun, and otherwise waited for by its drain. Nothing
+        // is allocated between the join and the try below, so no Error can
+        // leave a member nobody leaves.
         var cancellation = new RunCancellation();
+        var instanceId = UUID.randomUUID();
         var membership = lifecycle.joinRun(workflowId, cancellation);
         if (membership == null) {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start workflow '%s'".formatted(workflowId));
         }
-        var instanceId = UUID.randomUUID();
-        // Set the moment the run's thread has started, which then owns the membership.
-        var handedOff = new boolean[1];
         try {
             startWorkflow(instanceId, workflowId, workflowType, taskQueue, input, workflowFactory,
-                    workflowMethod, cancellation, membership, handedOff);
+                    workflowMethod, cancellation, membership);
             return instanceId;
         } finally {
-            if (!handedOff[0]) {
+            // Handed off the moment the run's thread started (launchWorkflow),
+            // whatever is thrown after it.
+            if (!membership.isHandedOff()) {
                 // Last, after every lock release on the paths that did not
                 // start a run thread (a started run leaves on its own thread).
                 membership.leave();
@@ -758,9 +760,8 @@ public final class WorkflowExecutor {
     }
 
     /**
-     * {@link #startWorkflow}'s body, run under the start's registry membership.
-     * Sets {@code handedOff[0]} once a run thread has started, which then
-     * owns the membership.
+     * {@link #startWorkflow}'s body, run under the start's registry membership;
+     * a started run thread owns the membership from then on.
      */
     private void startWorkflow(
             UUID instanceId,
@@ -771,8 +772,7 @@ public final class WorkflowExecutor {
             Supplier<Object> workflowFactory,
             Method workflowMethod,
             RunCancellation cancellation,
-            LifecycleRegistry.Membership membership,
-            boolean[] handedOff
+            LifecycleRegistry.Membership membership
     ) {
         var now = Instant.now();
         var runId = UUID.randomUUID();
@@ -853,9 +853,8 @@ public final class WorkflowExecutor {
 
         // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
         // the run's workflow object has been built)
-        handedOff[0] = launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null,
-                cancellation, membership);
-        if (!handedOff[0]) {
+        if (!launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null,
+                cancellation, membership)) {
             // The lock was reported lost between the acquire and the run's
             // registration (a stall of a whole TTL): the row is durable; leave
             // it to recovery like any other deferral.
@@ -957,7 +956,10 @@ public final class WorkflowExecutor {
             }
             return launched;
         } finally {
-            if (!launched) {
+            // Not "!launched": a throw after the run thread started (an
+            // observer Error in workflowResumed) must neither give back the
+            // reservation the run claims nor leave the membership it owns.
+            if (membership == null || !membership.isHandedOff()) {
                 try {
                     if (reservation != null) {
                         // Not launched (shutting down, already running here,
@@ -1927,10 +1929,18 @@ public final class WorkflowExecutor {
      *                                 recovery poller adopts it once the
      *                                 factory works.
      * @throws IllegalStateException   if this executor is shutting down or has
-     *                                 shut down: nothing was read or written and
-     *                                 the row stays {@code FAILED}. Transient for
-     *                                 the fleet: the caller should <em>not</em>
-     *                                 acknowledge, so a peer retries it.
+     *                                 shut down ({@link #isShuttingDown()}):
+     *                                 nothing was read or written and the row
+     *                                 stays {@code FAILED}. The caller should
+     *                                 <em>not</em> acknowledge. With the starter's
+     *                                 Kafka transport the record is then
+     *                                 redelivered to this same node until its
+     *                                 consumer stops at bean destruction (Issue
+     *                                 69): with the default redelivery budget a
+     *                                 peer consumes it after the rebalance; a
+     *                                 budget shorter than the drain dead-letters
+     *                                 it, and disabled redelivery drops it
+     *                                 ({@code docs/operations.md} §15.1).
      */
     public RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration) {
         // Joined before anything is read, written or locked (P1): a retry
@@ -1944,14 +1954,13 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot retry workflow '%s'".formatted(workflowId));
         }
-        // Set the moment a relaunched run's thread has started, which then
-        // owns the membership — not inferred from the outcome, so nothing
-        // that throws after the hand-off can make this method leave too.
-        var handedOff = new boolean[1];
         try {
-            return retryWorkflow(workflowId, registration, cancellation, membership, handedOff);
+            return retryWorkflow(workflowId, registration, cancellation, membership);
         } finally {
-            if (!handedOff[0]) {
+            // Handed off the moment a relaunched run's thread started
+            // (launchWorkflow) — not inferred from the outcome, so nothing that
+            // throws after it (an observer Error) can make this method leave too.
+            if (!membership.isHandedOff()) {
                 // Last, after any lock release.
                 membership.leave();
             }
@@ -1960,8 +1969,7 @@ public final class WorkflowExecutor {
 
     /** {@link #retryWorkflow(String, WorkflowRegistration)}'s body, run under the retry's membership. */
     private RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration,
-                                       RunCancellation cancellation, LifecycleRegistry.Membership membership,
-                                       boolean[] handedOff) {
+                                       RunCancellation cancellation, LifecycleRegistry.Membership membership) {
         var existing = store.getInstance(workflowId);
         if (existing.isEmpty()) {
             logger.warn("Cannot retry workflow '{}' — no such instance in this service", workflowId);
@@ -2043,7 +2051,6 @@ public final class WorkflowExecutor {
 
         var launched = launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
                 running.input(), true, null, null, cancellation, membership);
-        handedOff[0] = launched;
         if (!launched) {
             logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
                     + "left for the recovery poller to adopt", workflowId);
@@ -2465,6 +2472,19 @@ public final class WorkflowExecutor {
      * the steps that do not wait still run, and the interrupt status is
      * restored before the call returns.
      *
+     * <h2>Called from a run's own thread</h2>
+     * <p>Call {@code shutdown()} from a thread of its own. Called on a thread
+     * that belongs to a run — the workflow's or a compensation's code, a
+     * {@code parallel()} branch, an activity body (any thread with the run's
+     * {@code WorkflowContext} bound), or the thread still launching it (an
+     * observer callback such as {@code instanceLockAcquired},
+     * {@code workflowStarted} or {@code workflowStartDeferred}, or a store
+     * decorator) — it does not wait for that run, which could not end while
+     * its own thread waits; it waits for every other run as usual, gives that
+     * run up with the rest at the deadline step, and logs a {@code WARN}
+     * naming it. A thread the run's code starts itself is not recognised and
+     * waits for the run like any other caller.
+     *
      * <h2>A second call</h2>
      * <p>A call made while a shutdown is in progress — in a Spring context,
      * the executor's inferred destroy method — waits for the first to finish,
@@ -2536,6 +2556,18 @@ public final class WorkflowExecutor {
         var inFlightAtStart = LifecycleRegistry.runNames(members).size();
         logger.info("Maestro shutdown started: {} run(s) in flight; deadline {} ms (maestro.shutdown.timeout)",
                 inFlightAtStart, deadline.budget().toMillis());
+        // F4: shutdown() called on a thread that belongs to a run — the run's
+        // own thread, a branch, an activity attempt, or the thread still
+        // launching it (an observer callback, a store decorator) — cannot wait
+        // for that run: it cannot end while this thread waits. It is not
+        // waited for, and it is given up with the rest at S4.
+        var caller = lifecycle.callerRun();
+        if (caller != null) {
+            logger.warn("Maestro shutdown() was called from a thread of workflow '{}' (its own run, an activity, "
+                    + "an observer callback or a store decorator on its launch): that run is not waited for and "
+                    + "is given up — nothing it does from now on is recorded. Call shutdown() from another thread",
+                    caller.name());
+        }
 
         // Steps 2–4 never wait, so their order does not matter. Step 2: ask
         // the background loops to stop — no new timer fires and no new
@@ -2573,7 +2605,7 @@ public final class WorkflowExecutor {
         // so shutdown never returns with a drained run's lock still held.
         beforeShutdownDrain.run();
         var drainStart = System.nanoTime();
-        if (!lifecycle.awaitNoRuns(deadline) && Thread.currentThread().isInterrupted()) {
+        if (!lifecycle.awaitNoRuns(deadline, caller) && Thread.currentThread().isInterrupted()) {
             // The flag stays set: every bounded wait below then ends at once
             // too, and the non-blocking steps still run.
             logger.warn("Interrupted while waiting for {} run(s) during shutdown",
@@ -2602,7 +2634,7 @@ public final class WorkflowExecutor {
         // S5: every other registry member (none in core yet: the loops above
         // still stop through their own slots until the loop supervisor joins
         // them), against what is left.
-        if (!lifecycle.awaitNoMembers(deadline)) {
+        if (!lifecycle.awaitNoMembers(deadline, caller)) {
             for (var member : lifecycle.remaining()) {
                 if (!member.isRun()) {
                     logger.warn("Maestro {} did not stop within the shutdown deadline; it ends after its "
@@ -2635,7 +2667,9 @@ public final class WorkflowExecutor {
         var steps = "drain %d ms, background loops %d ms, instance locks %d ms, lifecycle events %d ms"
                 .formatted(drainMs, loopsMs, locksMs, eventsMs);
         // A run stuck in its lock release counts as still running too.
-        var stillRunning = LifecycleRegistry.runNames(lifecycle.remaining());
+        // The calling run (F4) was named in its own WARN above.
+        var stillRunning = LifecycleRegistry.runNames(lifecycle.remaining().stream()
+                .filter(m -> m != caller).toList());
         if (stillRunning.isEmpty()) {
             logger.info("Maestro shutdown finished in {} ms of its {} ms deadline: {} run(s) in flight at start, "
                             + "0 still running ({})",
@@ -2848,6 +2882,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Whether {@link #shutdown()} has been called on this executor: from then
+     * on every launch — {@code startWorkflow}, a recovery adoption,
+     * {@code retryWorkflow} — is refused. Lets a caller tell a refusal by a
+     * stopping node (an {@code IllegalStateException} to redeliver elsewhere)
+     * from a genuine failure, for example to log it at {@code WARN}.
+     *
+     * @return {@code true} once shutdown has begun; never reset
+     */
+    public boolean isShuttingDown() {
+        return shuttingDown.get();
+    }
+
+    /**
      * Returns the sink through which this executor — and every component it
      * built — publishes lifecycle events <em>off</em> the workflow thread.
      *
@@ -3045,10 +3092,12 @@ public final class WorkflowExecutor {
      *
      * <p>{@code membership} is the run's place in the lifecycle registry,
      * joined by the caller before any lock was taken, and {@code cancellation}
-     * is the latch it was joined with. Once the run's thread has started, that
-     * thread owns the membership and leaves it as its very last act; on every
-     * other path — {@code false} or a throw — this method has released the lock
-     * it took, and the caller leaves the membership afterwards.
+     * is the latch it was joined with. The moment the run's thread has started
+     * this method marks the membership {@linkplain LifecycleRegistry.Membership#isHandedOff()
+     * handed off}: that thread owns it and leaves it as its very last act, even
+     * if this method then throws. On every other path — {@code false} or a
+     * throw before the start — this method has released the lock it took, and
+     * the caller leaves the membership afterwards.
      *
      * @return {@code true} iff the run's thread was started
      */
@@ -3257,6 +3306,9 @@ public final class WorkflowExecutor {
             // since has already requested SHUTDOWN on it (P1, Issue 80).
             beforeRunThreadStart.run();
             thread.start();
+            // From here the run's thread owns the membership: it leaves it as
+            // its last act, and nothing thrown below may make the caller leave.
+            membership.handOff(thread);
         } catch (RuntimeException | Error e) {
             // The launch's own failure is what the caller must see: every
             // cleanup failure is suppressed on it, and none skips a later step.

@@ -113,8 +113,17 @@ public class AdminCommandDispatcher {
                         "Unknown admin command '%s' for workflow '%s'".formatted(command, workflowId));
             }
         } catch (RuntimeException e) {
-            logger.error("Admin command '{}' failed for workflow '{}' — rethrowing for transport redelivery",
-                    command, workflowId, e);
+            if (e instanceof IllegalStateException && executor.isShuttingDown()) {
+                // A stopping node refusing work, not an error (P1): no stack
+                // trace. Not acknowledged either; see retryWorkflow's Javadoc
+                // for where the redelivered record ends up.
+                logger.warn("Admin command '{}' for workflow '{}' refused: this node is shutting down — not "
+                        + "acknowledged, rethrowing for transport redelivery ({})", command, workflowId,
+                        e.getMessage());
+            } else {
+                logger.error("Admin command '{}' failed for workflow '{}' — rethrowing for transport redelivery",
+                        command, workflowId, e);
+            }
             throw e;
         } finally {
             MDC.remove(MDC_WORKFLOW_ID);
