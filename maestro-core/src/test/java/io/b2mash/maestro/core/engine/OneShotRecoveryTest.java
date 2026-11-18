@@ -217,6 +217,23 @@ class OneShotRecoveryTest {
         assertEquals("startup-recovery", recovery.loopName());
     }
 
+    /**
+     * P2: the one-shot pass is its own loop, {@code startup-recovery} — in
+     * shutdown's log, and now on {@code maestro.loop.errors} too, where it used
+     * to count under {@code recovery-poller}.
+     */
+    @Test
+    void countsUnderStartupRecovery() {
+        var store = new FailingStore(1, () -> new AssertionError("injected in the first pass"));
+        seedRecoverable(store, "wf-1", "orders");
+        var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
+        var a = node(store, 1, Duration.ofSeconds(2), observer);
+        a.startOneShotRecovery(registrations(a, store), Duration.ofMillis(50));
+        assertEquals(1, valueWithin(lock::heldCount, 1, Duration.ofSeconds(5)), "the retried pass adopted it");
+        assertEquals(List.of(new io.b2mash.maestro.core.observe.RecordingEngineObserver.LoopErrorCall(
+                "startup-recovery", AssertionError.class.getName())), observer.loopErrors());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────
 
     /** Fails its first {@code failures} recovery-page reads with what {@code failure} supplies. */
@@ -254,10 +271,14 @@ class OneShotRecoveryTest {
     }
 
     private WorkflowExecutor node(CountingStore store, int c, Duration shutdownTimeout) {
+        return node(store, c, shutdownTimeout, EngineObserver.NOOP);
+    }
+
+    private WorkflowExecutor node(CountingStore store, int c, Duration shutdownTimeout, EngineObserver observer) {
         var executor = WorkflowExecutor.builder(store, serializer, SERVICE)
                 .distributedLock(lock)
                 .lifecycleEventsEnabled(false)
-                .observer(EngineObserver.NOOP)
+                .observer(observer)
                 .defaultTaskQueueLimits(c > 0 ? new TaskQueueLimits(c, c) : null)
                 .shutdownTimeout(shutdownTimeout)
                 .build();

@@ -346,7 +346,8 @@ class LoopSupervisorTest {
     /**
      * Takes each iteration's step from a queue the test fills, counting
      * iterations as they begin. With no step within the bound the iteration
-     * just succeeds, so a test never hangs its teardown.
+     * just succeeds, and a stop ends the wait for a step, so a test never hangs
+     * its teardown.
      */
     static final class ScriptedBody implements LoopBody {
         final BlockingQueue<Step> steps = new LinkedBlockingQueue<>();
@@ -365,8 +366,14 @@ class LoopSupervisorTest {
         public Next iterate(LoopContext ctx) throws Exception {
             interruptedOnEntry.set(Thread.currentThread().isInterrupted());
             iterations.incrementAndGet();
-            var step = steps.poll(BOUND.toMillis(), TimeUnit.MILLISECONDS);
-            return step == null || ctx.stopRequested() ? Next.afterPeriod() : step.run();
+            var deadline = System.nanoTime() + BOUND.toNanos();
+            while (!ctx.stopRequested() && System.nanoTime() < deadline) {
+                var step = steps.poll(10, TimeUnit.MILLISECONDS);
+                if (step != null) {
+                    return step.run();
+                }
+            }
+            return Next.afterPeriod();
         }
     }
 

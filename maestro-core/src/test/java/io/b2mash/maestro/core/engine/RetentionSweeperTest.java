@@ -1,11 +1,13 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.test.InMemoryDistributedLock;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
@@ -251,6 +253,31 @@ class RetentionSweeperTest {
 
             assertEquals(Optional.empty(), sweeper.sweepOnce());
             assertTrue(store.calls.isEmpty());
+        }
+
+        /**
+         * P2: a lock-backend fault on the election is a failed sweep, on every
+         * node. It used to be read as "not the leader" and swallowed, so the
+         * loop's streak never moved (Issue 67).
+         */
+        @Test
+        @DisplayName("a leader-election fault is a failed sweep: it extends the loop's streak")
+        void aLeaderElectionFaultExtendsTheStreak() {
+            var store = new RecordingStore();
+            var lock = new ScriptedLeaderLock(true);
+            lock.failWith(new IllegalStateException("lock table unreachable"));
+            var sweeper = new RetentionSweeper(store, lock, SERVICE, new WorkflowExecutor.RetentionSettings(
+                    Duration.ofMillis(20), Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 2, 100),
+                    new RecordingEngineObserver());
+            var loop = LoopSupervisor.start(sweeper.spec(), sweeper, EngineObserver.NOOP);
+            try {
+                await().atMost(Duration.ofSeconds(5)).until(() -> loop.snapshot().consecutiveFailures() >= 2);
+                assertEquals(IllegalStateException.class.getName(), loop.snapshot().lastFailureType());
+                assertTrue(store.calls.isEmpty(), "no batch without a leader");
+            } finally {
+                loop.requestStop();
+                loop.awaitStopped(Duration.ofSeconds(5));
+            }
         }
 
         private static PurgeResult full() {

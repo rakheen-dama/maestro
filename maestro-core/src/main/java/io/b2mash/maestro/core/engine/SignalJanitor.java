@@ -50,7 +50,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * @see WorkflowExecutor#startSignalJanitor(Duration, Duration)
  */
-final class SignalJanitor implements StoppableLoop {
+final class SignalJanitor implements StoppableLoop, io.b2mash.maestro.core.loop.LoopBody {
 
     private static final Logger logger = LoggerFactory.getLogger(SignalJanitor.class);
 
@@ -352,5 +352,17 @@ final class SignalJanitor implements StoppableLoop {
             }
         }
         logger.debug("Signal janitor loop exited");
+    }
+
+    /** Red shim: replaced by the migration. */
+    io.b2mash.maestro.core.loop.LoopSpec spec() {
+        return io.b2mash.maestro.core.loop.LoopSpec.of("signal-janitor", THREAD_NAME,
+                io.b2mash.maestro.core.loop.LoopRole.HOUSEKEEPING, interval);
+    }
+
+    @Override
+    public io.b2mash.maestro.core.loop.Next iterate(io.b2mash.maestro.core.loop.LoopContext ctx) {
+        sweepOnce();
+        return io.b2mash.maestro.core.loop.Next.afterPeriod();
     }
 }

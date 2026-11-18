@@ -4,7 +4,9 @@ import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -76,6 +78,28 @@ class SignalJanitorTest {
         assertFalse(janitor.isRunning());
     }
 
+    /**
+     * P2: a store fault is a failed sweep. It used to be logged at WARN and
+     * swallowed by the sweep, so it never reached the loop's streak and health
+     * read the janitor healthy while every sweep failed (Issue 67).
+     */
+    @Test
+    @DisplayName("a store fault is a failed sweep: it extends the loop's streak")
+    void aStoreFaultExtendsTheStreak() {
+        var store = new RecordingStore();
+        store.failEveryCallWith(new IllegalStateException("db down"));
+        var janitor = new SignalJanitor(store, "svc", Duration.ofMillis(20), Duration.ofDays(7));
+        var loop = LoopSupervisor.start(janitor.spec(), janitor, EngineObserver.NOOP);
+        try {
+            await().atMost(Duration.ofSeconds(5)).until(() -> loop.snapshot().consecutiveFailures() >= 2);
+            assertEquals(IllegalStateException.class.getName(), loop.snapshot().lastFailureType());
+            assertTrue(loop.snapshot().running(), "the janitor keeps running");
+        } finally {
+            loop.requestStop();
+            loop.awaitStopped(Duration.ofSeconds(5));
+        }
+    }
+
     @Test
     @DisplayName("rejects a non-positive interval or retention")
     void rejectsNonPositiveSettings() {
@@ -98,6 +122,12 @@ class SignalJanitorTest {
 
         void failNextWith(RuntimeException failure) {
             nextFailure.set(failure);
+        }
+
+        private volatile @Nullable RuntimeException everyCall;
+
+        void failEveryCallWith(RuntimeException failure) {
+            everyCall = failure;
         }
 
         int calls() {
@@ -139,6 +169,10 @@ class SignalJanitorTest {
             var failure = nextFailure.getAndSet(null);
             if (failure != null) {
                 throw failure;
+            }
+            var always = everyCall;
+            if (always != null) {
+                throw always;
             }
             return 3;
         }

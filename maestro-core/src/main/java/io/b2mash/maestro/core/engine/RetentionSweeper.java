@@ -81,7 +81,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * @see WorkflowExecutor#startRetentionSweeper(WorkflowExecutor.RetentionSettings)
  */
-final class RetentionSweeper implements StoppableLoop {
+final class RetentionSweeper implements StoppableLoop, io.b2mash.maestro.core.loop.LoopBody {
 
     private static final Logger logger = LoggerFactory.getLogger(RetentionSweeper.class);
 
@@ -422,5 +422,17 @@ final class RetentionSweeper implements StoppableLoop {
             }
         }
         logger.debug("Retention sweeper loop exited");
+    }
+
+    /** Red shim: replaced by the migration. */
+    io.b2mash.maestro.core.loop.LoopSpec spec() {
+        return io.b2mash.maestro.core.loop.LoopSpec.of("retention-sweeper", THREAD_NAME,
+                io.b2mash.maestro.core.loop.LoopRole.HOUSEKEEPING, settings.interval());
+    }
+
+    @Override
+    public io.b2mash.maestro.core.loop.Next iterate(io.b2mash.maestro.core.loop.LoopContext ctx) {
+        sweepOnce();
+        return io.b2mash.maestro.core.loop.Next.afterPeriod();
     }
 }
