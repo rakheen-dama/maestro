@@ -10,6 +10,25 @@ java {
 }
 
 publishing {
+    // Pre-release builds for pilots go to this repository's GitHub Packages
+    // registry (RELEASING.md, "Pre-releases on GitHub Packages"). The repository
+    // and the credentials come from the environment GitHub Actions provides, or
+    // from the gradle properties gprRepository / gprUser / gprToken.
+    repositories {
+        maven {
+            name = "GitHubPackages"
+            val repository = providers.gradleProperty("gprRepository")
+                .orElse(providers.environmentVariable("GITHUB_REPOSITORY"))
+                .orElse("rakheen-dama/maestro")
+            url = uri("https://maven.pkg.github.com/${repository.get()}")
+            credentials {
+                username = providers.gradleProperty("gprUser")
+                    .orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
+                password = providers.gradleProperty("gprToken")
+                    .orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
+            }
+        }
+    }
     publications {
         create<MavenPublication>("mavenJava") {
             from(components["java"])
