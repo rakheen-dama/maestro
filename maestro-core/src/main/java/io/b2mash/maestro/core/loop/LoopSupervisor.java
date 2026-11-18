@@ -322,15 +322,20 @@ public final class LoopSupervisor {
                         describe(t), t));
             }
         }
-        var state = done ? LoopSnapshot.State.DONE
-                : stopRequested.get() ? LoopSnapshot.State.STOPPED : LoopSnapshot.State.DEAD;
-        status.set(status.get().withState(state));
-        switch (state) {
-            case STOPPED -> logger.info("Background loop '{}' stopped", spec.name());
-            case DONE -> logger.debug("Background loop '{}' finished its work", spec.name());
-            default -> { } // DEAD: the uncaught handler logs what escaped
+        try {
+            var state = done ? LoopSnapshot.State.DONE
+                    : stopRequested.get() ? LoopSnapshot.State.STOPPED : LoopSnapshot.State.DEAD;
+            status.set(status.get().withState(state));
+            switch (state) {
+                case STOPPED -> quietly(() -> logger.info("Background loop '{}' stopped", spec.name()));
+                case DONE -> quietly(() -> logger.debug("Background loop '{}' finished its work", spec.name()));
+                default -> { } // DEAD: the uncaught handler logs what escaped
+            }
+        } finally {
+            // Whatever the lines above throw, the loop has ended: a waiter must
+            // not wait out its deadline for it (review F3).
+            exited.countDown();
         }
-        exited.countDown();
         if (exitFailure != null) {
             throw exitFailure;
         }
@@ -343,7 +348,9 @@ public final class LoopSupervisor {
             case Next.After after -> context.sleep(after.delay());
             case Next.Immediately _ -> !stopRequested.get();
             case Next.Done _ -> false;
-            case Next.Await await -> awaitCustom(await.loopWait());
+            // Checked before the wait is armed: a stop that landed during the
+            // iteration ran the stop hooks before anyone waited (review F4).
+            case Next.Await await -> !stopRequested.get() && awaitCustom(await.loopWait());
         };
     }
 
@@ -487,6 +494,18 @@ public final class LoopSupervisor {
                 }
                 // Nothing left to log with; the failure is still counted.
             }
+        }
+    }
+
+    /** Runs one logging call, containing anything but a control-flow {@code Error} it throws. */
+    private static void quietly(Runnable call) {
+        try {
+            call.run();
+        } catch (Throwable t) {
+            if (t instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            // A logger that throws cannot change how the loop ended.
         }
     }
 
