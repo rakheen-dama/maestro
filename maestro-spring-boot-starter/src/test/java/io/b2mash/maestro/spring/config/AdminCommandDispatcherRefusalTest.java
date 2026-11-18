@@ -27,6 +27,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 /**
  * WP3: a {@code $maestro:retry} that the engine refuses with
@@ -113,6 +114,51 @@ class AdminCommandDispatcherRefusalTest {
         assertEquals(WorkflowStatus.FAILED, after.status());
         assertEquals(0, after.version(), "the refusal must not write the row");
         assertEquals(3, store.getEvents(instanceId).size(), "the refusal must not delete an event");
+    }
+
+    /**
+     * P1: a {@code $maestro:retry} consumed while this node shuts down is
+     * refused by the engine with {@code IllegalStateException} and nothing is
+     * written. The dispatcher rethrows it, so the record is not acknowledged,
+     * and logs it at WARN without a stack trace: a draining node refusing work
+     * is not an error.
+     */
+    @Test
+    @DisplayName("$maestro:retry during shutdown is refused, not acked, and logged at WARN, not ERROR")
+    void aRetryRefusedBecauseTheNodeIsShuttingDown_isRethrownAndLoggedAtWarn() {
+        var now = Instant.now();
+        store.createInstance(WorkflowInstance.builder()
+                .id(UUID.randomUUID())
+                .workflowId("wf-draining")
+                .runId(UUID.randomUUID())
+                .workflowType(WORKFLOW_TYPE)
+                .taskQueue("default")
+                .status(WorkflowStatus.FAILED)
+                .serviceName("test-service")
+                .startedAt(now)
+                .updatedAt(now)
+                .completedAt(now)
+                .version(0)
+                .build());
+        executor.shutdown();
+
+        var dispatcherLog = (Logger) LoggerFactory.getLogger(AdminCommandDispatcher.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        dispatcherLog.addAppender(appender);
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> dispatcher.dispatch(new SignalMessage("wf-draining", "$maestro:retry", null)));
+        } finally {
+            dispatcherLog.detachAppender(appender);
+        }
+
+        assertEquals(List.of(), appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList(),
+                "a refusal by a shutting-down node is not an ERROR");
+        var warnings = appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList();
+        assertEquals(1, warnings.size(), appender.list.toString());
+        assertEquals(null, warnings.getFirst().getThrowableProxy(), "no stack trace for a routine refusal");
+        assertEquals(WorkflowStatus.FAILED, store.getInstance("wf-draining").orElseThrow().status());
     }
 
     private WorkflowEvent event(UUID instanceId, int seq, EventType type, String step, String json) {
