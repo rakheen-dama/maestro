@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.postgres;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -65,7 +66,7 @@ class PostgresNullPayloadTest extends PostgresTestSupport {
         var seen = Collections.synchronizedList(new ArrayList<@Nullable Object>());
         var method = OptionalEverywhere.class.getMethod("run", Optional.class);
 
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeA.startWorkflow(id, "OptionalEverywhere", "default", Optional.empty(),
                 () -> new OptionalEverywhere(seen, store, serializer), method);
         nodeA.deliverSignal(id, OptionalEverywhere.SIGNAL, Optional.empty());
@@ -85,7 +86,7 @@ class PostgresNullPayloadTest extends PostgresTestSupport {
         // Node A stops while parked; node B adopts the run, re-reads the input and replays both reads.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeB.recoverWorkflows(Map.of("OptionalEverywhere", new WorkflowRegistration("OptionalEverywhere",
                 "default", () -> new OptionalEverywhere(seen, store, serializer), method)));
         await().atMost(BOUND).until(() -> seen.size() >= 6);

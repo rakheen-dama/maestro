@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.TestTerminalWait;
@@ -51,9 +52,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <h2>Why this matters</h2>
  * <p>The executor's success path re-reads the instance, builds
  * {@code version + 1} and writes {@code COMPLETED}. Any concurrent writer
- * invalidates that version: a second node running the same workflow (the
- * documented no-lock-backend degradation, a lock lost mid-run, or a stale lock
- * on a fresh start), or simply another status transition on this node. The
+ * invalidates that version: a second node running the same workflow (a lock
+ * lost mid-run), or simply another status transition on this node. The
  * resulting {@link OptimisticLockException} escapes into the generic
  * {@code catch (Exception)} that treats <em>workflow</em> failures — so a
  * workflow that ran to success is recorded as {@code FAILED}, its output
@@ -74,7 +74,7 @@ class WorkflowExecutorTerminalTransitionTest {
     void setUp() {
         store = new VersionedStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach
@@ -247,7 +247,7 @@ class WorkflowExecutorTerminalTransitionTest {
     // ── helpers ───────────────────────────────────────────────────────────
 
     private WorkflowExecutor newExecutor(EngineObserver observer) {
-        return WorkflowExecutor.builder(store, serializer, "test-service")
+        return WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .wakeRecheckInterval(Duration.ofMillis(200))
                 .observer(observer)

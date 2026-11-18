@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.client;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.exception.SerializationException;
@@ -40,7 +41,7 @@ class WorkflowHandleNullResultTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach

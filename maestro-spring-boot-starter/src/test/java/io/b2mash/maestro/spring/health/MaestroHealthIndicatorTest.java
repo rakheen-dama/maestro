@@ -54,7 +54,7 @@ class MaestroHealthIndicatorTest {
     void setUp() {
         var store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "health-indicator-test").build();
+        executor = WorkflowExecutor.builder(store, serializer, "health-indicator-test").distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach

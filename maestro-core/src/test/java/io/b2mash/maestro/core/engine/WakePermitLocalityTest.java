@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -53,7 +54,7 @@ class WakePermitLocalityTest {
     }
 
     private WorkflowExecutor node(VersionedInMemoryStore store) {
-        var executor = WorkflowExecutor.builder(store, serializer, "svc")
+        var executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
@@ -112,7 +113,7 @@ class WakePermitLocalityTest {
     @Test
     void aSignalDeliveredBeforeTheWorkflowStartsHere_leavesNoPermitAndIsFoundAtTheAwait() throws Exception {
         var store = new VersionedInMemoryStore();
-        var executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        var executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         executors.add(executor);
 
         executor.deliverSignal("pre-start", "go", "x");
@@ -130,7 +131,7 @@ class WakePermitLocalityTest {
     void aNotificationArrivingAfterTheRunEnded_leavesNoPermit() throws Exception {
         var store = new VersionedInMemoryStore();
         var notifier = new LingeringNotifier();
-        var executor = WorkflowExecutor.builder(store, serializer, "svc")
+        var executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
@@ -172,7 +173,7 @@ class WakePermitLocalityTest {
     @Test
     void aSignalDeliveredBeforeALocalAwaitParks_wakesItAtOnce() throws Exception {
         var store = new RaceStore();
-        var executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        var executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         executors.add(executor);
         store.executor = executor;
 
@@ -193,7 +194,7 @@ class WakePermitLocalityTest {
     @Test
     void aSleepTimerFiredBeforeALocalSleepParks_wakesItAtOnce() throws Exception {
         var store = new RaceStore();
-        var executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        var executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         executors.add(executor);
         store.executor = executor;
 

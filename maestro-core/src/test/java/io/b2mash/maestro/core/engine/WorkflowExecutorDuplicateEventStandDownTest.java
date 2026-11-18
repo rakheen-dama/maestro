@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -80,7 +81,7 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         store = new ConflictingStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observer = new RecordingEngineObserver();
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))

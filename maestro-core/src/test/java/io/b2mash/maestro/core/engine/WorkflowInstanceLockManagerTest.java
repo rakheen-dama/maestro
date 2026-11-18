@@ -106,27 +106,37 @@ class WorkflowInstanceLockManagerTest {
     }
 
     @Test
-    @DisplayName("null backend reports NO_BACKEND")
-    void nullBackendNoBackend() {
-        manager = new WorkflowInstanceLockManager(null, "svc", SHORT_TTL, SHORT_RENEW);
-
-        assertEquals(Acquisition.NO_BACKEND, manager.tryAcquire("order-1"));
-        assertFalse(manager.isHeld("order-1"));
+    @DisplayName("a null backend is rejected: a DistributedLock is mandatory (P3)")
+    @SuppressWarnings("DataFlowIssue")
+    void nullBackendRejected() {
+        assertThrows(NullPointerException.class,
+                () -> new WorkflowInstanceLockManager(null, "svc", SHORT_TTL, SHORT_RENEW));
     }
 
     @Test
-    @DisplayName("backend exception degrades to NO_BACKEND")
-    void backendThrowsNoBackend() {
+    @DisplayName("backend exception reports UNAVAILABLE and holds nothing")
+    void backendThrowsUnavailable() {
         var lock = new RecordingLock();
         lock.throwOnAcquire.set(true);
         manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
 
-        assertEquals(Acquisition.NO_BACKEND, manager.tryAcquire("order-1"));
+        assertEquals(Acquisition.UNAVAILABLE, manager.tryAcquire("order-1"));
         assertFalse(manager.isHeld("order-1"));
     }
 
     @Test
-    @DisplayName("renewer-start failure does not misreport ACQUIRED as NO_BACKEND — lock is already held")
+    @DisplayName("after close, tryAcquire reports UNAVAILABLE without asking the backend")
+    void afterCloseUnavailable() {
+        var lock = new RecordingLock();
+        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        manager.close();
+
+        assertEquals(Acquisition.UNAVAILABLE, manager.tryAcquire("order-1"));
+        assertEquals(List.of(), lock.acquiredKeys, "a closed manager must not take a lock nobody would renew");
+    }
+
+    @Test
+    @DisplayName("renewer-start failure does not misreport ACQUIRED as UNAVAILABLE — lock is already held")
     void renewerStartFailureStillReportsAcquired() {
         var lock = new RecordingLock();
         manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
@@ -138,9 +148,9 @@ class WorkflowInstanceLockManagerTest {
 
         assertTrue(manager.isHeld("order-1"),
                 "the lock IS held locally regardless of what tryAcquire reports — "
-                        + "reporting NO_BACKEND here would make the caller skip release()");
+                        + "reporting UNAVAILABLE here would make the caller skip release()");
         assertEquals(Acquisition.ACQUIRED, result,
-                "a renewer-start failure must not be reported as NO_BACKEND while the lock is held");
+                "a renewer-start failure must not be reported as UNAVAILABLE while the lock is held");
 
         // release must still work end-to-end after a renewer-start failure.
         manager.release("order-1");
@@ -405,8 +415,8 @@ class WorkflowInstanceLockManagerTest {
     }
 
     @Test
-    @DisplayName("heldElsewhere is empty — 'unknown, try them all' — when the backend throws or is absent")
-    void heldElsewhereIsEmptyWhenTheBackendThrowsOrIsAbsent() {
+    @DisplayName("heldElsewhere is empty — 'unknown, try them all' — when the backend throws")
+    void heldElsewhereIsEmptyWhenTheBackendThrows() {
         var lock = new RecordingLock();
         lock.heldKeysAnswer = keys -> {
             throw new LockBackendException("Simulated backend failure", "batch", new RuntimeException());
@@ -414,10 +424,6 @@ class WorkflowInstanceLockManagerTest {
         manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
         assertEquals(Set.of(), manager.heldElsewhere(List.of("wf-a")));
         assertEquals(1, lock.heldKeysAsked.size(), "the backend was asked, and its failure contained");
-
-        var unlocked = new WorkflowInstanceLockManager(null, "svc", SHORT_TTL, SHORT_RENEW);
-        assertEquals(Set.of(), unlocked.heldElsewhere(List.of("wf-a")));
-        unlocked.close();
     }
 
     // ── Recording DistributedLock ──────────────────────────────────────

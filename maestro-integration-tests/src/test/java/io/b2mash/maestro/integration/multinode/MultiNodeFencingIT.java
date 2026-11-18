@@ -57,7 +57,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * cannot persist workflow progress, with a multi-node test proving the stale
  * node is fenced out.</em> It differs from {@code MultiNodeOwnerDeathIT}
  * (where the dead node never comes back) and from
- * {@code EnginePostgresDualExecutionIT} (no lock backend at all): here the
+ * {@code EnginePostgresDualExecutionIT} (no shared lock at all): here the
  * stale node holds a real, expired lock and resumes into the adopter's run.
  */
 @Tag("integration")

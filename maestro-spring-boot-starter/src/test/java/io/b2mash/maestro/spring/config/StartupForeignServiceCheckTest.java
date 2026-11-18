@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -238,7 +239,7 @@ class StartupForeignServiceCheckTest {
     }
 
     private WorkflowExecutor node(WorkflowStore store) {
-        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), SERVICE)
+        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), SERVICE).distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();

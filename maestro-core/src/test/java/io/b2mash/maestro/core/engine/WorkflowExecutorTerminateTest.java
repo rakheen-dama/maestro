@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.Saga;
@@ -68,7 +69,7 @@ class WorkflowExecutorTerminateTest {
         store = new VersionedInMemoryStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .shutdownTimeout(Duration.ofSeconds(5))
@@ -171,7 +172,7 @@ class WorkflowExecutorTerminateTest {
     @DisplayName("terminate works on a node that is not running the workflow")
     void terminateFromANonOwningNode_marksTheRowAnyway() throws Exception {
         var workflow = new SleepingWorkflow();
-        var owner = WorkflowExecutor.builder(store, serializer, "owner-node")
+        var owner = WorkflowExecutor.builder(store, serializer, "owner-node").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
         try {

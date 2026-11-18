@@ -39,7 +39,7 @@ class WorkflowInstanceLockManagerObserverTest {
     }
 
     @Test
-    @DisplayName("a winning acquire emits instanceLockAcquired; HELD_ELSEWHERE and NO_BACKEND emit nothing")
+    @DisplayName("a winning acquire emits instanceLockAcquired; HELD_ELSEWHERE and UNAVAILABLE emit nothing")
     void acquireEmitsOnlyWhenAcquired() {
         var observer = new RecordingEngineObserver();
         var lock = new ScriptedLock();
@@ -56,7 +56,7 @@ class WorkflowInstanceLockManagerObserverTest {
                 "a lock held elsewhere must not emit instanceLockAcquired");
 
         lock.throwOnAcquire = true;
-        assertEquals(WorkflowInstanceLockManager.Acquisition.NO_BACKEND, manager.tryAcquire("wf-c"));
+        assertEquals(WorkflowInstanceLockManager.Acquisition.UNAVAILABLE, manager.tryAcquire("wf-c"));
         assertEquals(List.of("wf-a"), observer.lockAcquired(),
                 "an unavailable backend must not emit instanceLockAcquired");
     }
@@ -148,7 +148,7 @@ class WorkflowInstanceLockManagerObserverTest {
     // ── A throwing observer must never be mistaken for a backend failure ──
 
     @Test
-    @DisplayName("a throwing instanceLockAcquired does not report NO_BACKEND and does not leak the lock")
+    @DisplayName("a throwing instanceLockAcquired does not report UNAVAILABLE and does not leak the lock")
     void throwingObserverOnAcquireIsContained() {
         var observer = new ThrowingObserver();
         var lock = new ScriptedLock();
@@ -158,7 +158,7 @@ class WorkflowInstanceLockManagerObserverTest {
 
         // The lock IS held once tryAcquire put the handle in heldLocks. Were a
         // throwing adapter (e.g. a Micrometer meter-name conflict) reported as
-        // NO_BACKEND, WorkflowExecutor would skip release() for this workflow
+        // UNAVAILABLE, WorkflowExecutor would skip release() for this workflow
         // and the renewer would keep the lock alive forever — the workflowId
         // becomes permanently unacquirable on this node and blocked elsewhere.
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-throw"),

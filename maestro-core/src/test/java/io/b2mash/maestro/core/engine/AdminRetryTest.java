@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
@@ -74,7 +75,7 @@ class AdminRetryTest {
         store = new VersionedInMemoryStore();
         observer = new RecordingEngineObserver();
         serializer = new PayloadSerializer(MAPPER);
-        executor = WorkflowExecutor.builder(store, serializer, "svc")
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
@@ -300,7 +301,7 @@ class AdminRetryTest {
                 throw new WorkflowNotFoundException(reopened.workflowId());
             }
         };
-        var purgingExecutor = WorkflowExecutor.builder(purging, serializer, "svc")
+        var purgingExecutor = WorkflowExecutor.builder(purging, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .observer(observer)
                 .build();
@@ -344,7 +345,7 @@ class AdminRetryTest {
                 }
             }
         };
-        var holding = WorkflowExecutor.builder(store, serializer, "svc")
+        var holding = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .observer(holdsTheRun)
                 .build();

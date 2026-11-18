@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
@@ -73,7 +74,7 @@ class WorkflowExecutorRetryTest {
         store = new VersionedInMemoryStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .shutdownTimeout(Duration.ofSeconds(5))

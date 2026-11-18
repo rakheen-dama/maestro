@@ -40,11 +40,13 @@ import java.util.stream.Collectors;
  *       such as {@code maestro-store-postgres})</li>
  * </ul>
  *
- * <p>Optional SPIs ({@link DistributedLock}, {@link WorkflowMessaging},
- * {@link SignalNotifier}) are injected when available — {@code maestro-store-postgres}
- * contributes the first and last, {@code maestro-messaging-kafka} the second.
- * When absent, the engine runs in single-node mode without distributed
- * locking, cross-service messaging or instant cross-node signal wake.
+ * <p>A {@link DistributedLock} is mandatory (pilot readiness P3):
+ * {@code maestro-store-postgres} contributes {@code PostgresDistributedLock},
+ * and without a lock bean startup fails with {@link #MISSING_LOCK_MESSAGE}.
+ * The optional SPIs ({@link WorkflowMessaging}, {@link SignalNotifier}) are
+ * injected when available — {@code maestro-messaging-kafka} contributes the
+ * first, {@code maestro-store-postgres} the second; without them the engine
+ * runs without cross-service messaging or instant cross-node signal wake.
  *
  * @see MaestroProperties
  */
@@ -67,6 +69,17 @@ public class MaestroAutoConfiguration {
                     + "arguments they were recorded with — a non-deterministic input (map order, clock, "
                     + "per-node config) replays the recorded result silently. Live outcomes still record "
                     + "their fingerprint; re-enable as soon as the drift is fixed.";
+
+    /**
+     * The startup failure when no {@link DistributedLock} bean exists (pilot
+     * readiness P3: the lock is mandatory). Package-private so the wording is
+     * pinned.
+     */
+    static final String MISSING_LOCK_MESSAGE = "Maestro needs a DistributedLock bean and found none. There is no "
+            + "lock-less mode: the instance lock is what stops two nodes from running one workflow at once. "
+            + "Add maestro-store-postgres (it provides PostgresDistributedLock on the store's DataSource, "
+            + "maestro.lock.type=postgres, the default) or declare a DistributedLock bean; in tests, use "
+            + "maestro-test's InMemoryDistributedLock. See docs/support-matrix.md.";
 
     @Bean
     @ConditionalOnMissingBean
@@ -108,8 +121,10 @@ public class MaestroAutoConfiguration {
         // Logged at INFO (not DEBUG) so an operator - or an E2E harness grepping
         // this process's own log - can confirm the effective backend without
         // trusting configuration alone.
-        log.info("Maestro distributed-lock backend: {}",
-                distributedLock != null ? distributedLock.getClass().getName() : "none (single-node mode)");
+        if (distributedLock == null) {
+            throw new IllegalStateException(MISSING_LOCK_MESSAGE);
+        }
+        log.info("Maestro distributed-lock backend: {}", distributedLock.getClass().getName());
         log.info("Maestro cross-node signal wake: {}",
                 signalNotifier != null ? signalNotifier.getClass().getName()
                         : "none (cross-node wake falls back to maestro.signal.wake-recheck-interval)");

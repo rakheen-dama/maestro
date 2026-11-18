@@ -15,6 +15,7 @@ import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.SignalNotifier;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.databind.ObjectMapper;
 
@@ -58,7 +59,7 @@ public final class MaestroEngineHarness implements AutoCloseable {
 
     private final WorkflowStore store;
     private final PayloadSerializer serializer;
-    private final @Nullable DistributedLock lock;
+    private final DistributedLock lock;
     private final @Nullable WorkflowMessaging messaging;
     private final WorkflowExecutor executor;
     private final ActivityProxyFactory proxyFactory = new ActivityProxyFactory();
@@ -72,14 +73,18 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private MaestroEngineHarness(Builder builder) {
         this.store = builder.store;
         this.serializer = new PayloadSerializer(builder.objectMapper);
-        this.lock = builder.lock;
+        // A lock is mandatory (P3). A harness built without one gets its own
+        // in-memory lock: private to this node, so it excludes nothing across
+        // simulated nodes — a multi-node test that needs exclusion passes one
+        // real backend (PostgresDistributedLock) to every node.
+        this.lock = builder.lock != null ? builder.lock : new InMemoryDistributedLock();
         this.messaging = builder.messaging;
         this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
         this.lockKeyPrefix = builder.lockKeyPrefix;
         this.verifyArguments = builder.verifyArguments;
         // Everything the harness builder leaves unset takes WorkflowExecutor.Builder's default.
         var executorBuilder = WorkflowExecutor.builder(builder.store, this.serializer, builder.serviceName)
-                .distributedLock(builder.lock)
+                .distributedLock(this.lock)
                 .messaging(builder.messaging)
                 .signalNotifier(builder.signalNotifier)
                 .lockKeyPrefix(builder.lockKeyPrefix)
@@ -393,7 +398,11 @@ public final class MaestroEngineHarness implements AutoCloseable {
             this.objectMapper = objectMapper;
         }
 
-        /** @param lock the distributed lock backend, or {@code null} for none */
+        /**
+         * @param lock the distributed lock backend; {@code null} (the default)
+         *             gives this node its own {@code InMemoryDistributedLock},
+         *             which excludes nothing across simulated nodes
+         */
         public Builder lock(@Nullable DistributedLock lock) {
             this.lock = lock;
             return this;

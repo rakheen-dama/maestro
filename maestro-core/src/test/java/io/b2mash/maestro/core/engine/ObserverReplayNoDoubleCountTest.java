@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
@@ -55,7 +56,7 @@ class ObserverReplayNoDoubleCountTest {
     }
 
     private WorkflowExecutor newExecutor(RecordingEngineObserver obs) {
-        return WorkflowExecutor.builder(store, serializer, SERVICE)
+        return WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .wakeRecheckInterval(Duration.ofMillis(200))
                 .observer(obs)

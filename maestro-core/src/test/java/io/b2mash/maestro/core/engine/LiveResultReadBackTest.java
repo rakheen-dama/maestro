@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.b2mash.maestro.core.annotation.Activity;
@@ -75,7 +76,7 @@ class LiveResultReadBackTest {
         guarded = StoreFaultGuard.wrap(store, List.of(Duration.ofMillis(1), Duration.ofMillis(1)));
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observer = new RecordingEngineObserver();
-        executor = WorkflowExecutor.builder(guarded, serializer, "svc").observer(observer).build();
+        executor = WorkflowExecutor.builder(guarded, serializer, "svc").distributedLock(new InMemoryDistributedLock()).observer(observer).build();
     }
 
     @AfterEach

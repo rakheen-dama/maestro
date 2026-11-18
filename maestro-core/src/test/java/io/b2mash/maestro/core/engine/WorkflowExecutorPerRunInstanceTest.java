@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -62,7 +63,7 @@ class WorkflowExecutorPerRunInstanceTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach
@@ -107,7 +108,7 @@ class WorkflowExecutorPerRunInstanceTest {
         assertEquals(WorkflowStatus.WAITING_SIGNAL,
                 store.getInstance("p-r").orElseThrow().status());
 
-        second = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        second = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         second.registerQueries("probe", ProbeWorkflow.class);
         assertTrue(second.resumeWorkflow(store.getInstance("p-r").orElseThrow(), factory, method));
         await().atMost(5, SECONDS).until(() -> second.parkedCount() == 1);
@@ -162,7 +163,7 @@ class WorkflowExecutorPerRunInstanceTest {
             }
         };
         executor.shutdown();
-        executor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var method = ProbeWorkflow.class.getMethod("run", String.class);
         executor.startWorkflow("a-broken", "broken", "default", "A", ProbeWorkflow::new, method);
         executor.startWorkflow("b-healthy", "probe", "default", "B", ProbeWorkflow::new, method);
@@ -170,7 +171,7 @@ class WorkflowExecutorPerRunInstanceTest {
         executor.shutdown();
         executor = null;
 
-        second = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        second = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         Supplier<Object> broken = () -> { throw new IllegalStateException("broken wiring"); };
         var recovered = second.recoverWorkflows(Map.of(
                 "broken", new WorkflowRegistration("broken", "default", broken, method),
@@ -203,7 +204,7 @@ class WorkflowExecutorPerRunInstanceTest {
         executor.shutdown();
         executor = null;
 
-        second = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        second = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         Supplier<Object> broken = () -> { throw new IllegalStateException("broken wiring"); };
         var pass = second.recoveryPass(Map.of(
                 "broken", new WorkflowRegistration("broken", "default", broken, method),

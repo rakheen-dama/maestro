@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.SignalTimeoutException;
 import io.b2mash.maestro.core.model.EventType;
@@ -36,7 +37,7 @@ class AwaitDeadlineStoreErrorTest {
     @BeforeEach
     void setUp() {
         store = new DeadlineFaultStore();
-        executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service")
+        executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .wakeRecheckInterval(Duration.ofMillis(100))
                 .build();

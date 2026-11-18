@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -89,7 +90,7 @@ class RecoveryPassIsolationTest {
     @BeforeEach
     void setUp() {
         store = new PoisonableStore();
-        executor = executor(null, "old-node");
+        executor = executor(new InMemoryDistributedLock(), "old-node");
     }
 
     @AfterEach
@@ -98,13 +99,13 @@ class RecoveryPassIsolationTest {
     }
 
     /** Replaces the default executor with one on {@code lock} for {@code serviceName}. */
-    private WorkflowExecutor useExecutor(@Nullable DistributedLock lock, String serviceName) {
+    private WorkflowExecutor useExecutor(DistributedLock lock, String serviceName) {
         executor.shutdown();
         executor = executor(lock, serviceName);
         return executor;
     }
 
-    private WorkflowExecutor executor(@Nullable DistributedLock lock, String serviceName) {
+    private WorkflowExecutor executor(DistributedLock lock, String serviceName) {
         // The raw store: the executor wraps it in StoreFaultGuard's proxy itself,
         // so every count below is what reached the store THROUGH that proxy.
         var serializer = new PayloadSerializer(JsonMapper.builder().build());

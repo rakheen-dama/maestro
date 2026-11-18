@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.observe.AbandonReason;
@@ -51,7 +52,7 @@ class OperationAppendFaultDetailTest {
         store.failAlways("appendEvent");
         observer = new RecordingEngineObserver();
         guarded = StoreFaultGuard.wrap(store, List.of(Duration.ofMillis(1), Duration.ofMillis(1)));
-        executor = WorkflowExecutor.builder(guarded, serializer, "svc").observer(observer).build();
+        executor = WorkflowExecutor.builder(guarded, serializer, "svc").distributedLock(new InMemoryDistributedLock()).observer(observer).build();
     }
 
     @AfterEach

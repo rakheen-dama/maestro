@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -61,7 +62,7 @@ class WorkflowInputNullTest {
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observerA = new RecordingEngineObserver();
         observerB = new RecordingEngineObserver();
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).observer(observerA).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerA).build();
     }
 
     @AfterEach
@@ -99,7 +100,7 @@ class WorkflowInputNullTest {
         // Node A stops while parked; node B adopts the run and re-reads the stored input.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).observer(observerB).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerB).build();
         nodeB.recoverWorkflows(Map.of(type.getSimpleName(), new WorkflowRegistration(
                 type.getSimpleName(), "default", () -> factory.apply(seen), method)));
         await().atMost(BOUND).until(() -> seen.size() >= 2 || !observerB.standDowns().isEmpty());

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -86,7 +87,7 @@ class ForeignPayloadStandDownTest {
         store = new VersionedInMemoryStore();
         observer = new RecordingEngineObserver();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "old-node")
+        executor = WorkflowExecutor.builder(store, serializer, "old-node").distributedLock(new InMemoryDistributedLock())
                 .lockKeyPrefix("maestro:lock:")
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .shutdownTimeout(Duration.ofSeconds(5))

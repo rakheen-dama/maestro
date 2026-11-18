@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import org.jspecify.annotations.Nullable;
@@ -120,7 +121,7 @@ class ForeignServiceCheckTest {
     }
 
     private WorkflowExecutor node() {
-        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "orders")
+        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "orders").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(2))
                 .build();

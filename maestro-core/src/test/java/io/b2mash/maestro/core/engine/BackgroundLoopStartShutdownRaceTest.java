@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import tools.jackson.databind.ObjectMapper;
@@ -88,7 +89,7 @@ class BackgroundLoopStartShutdownRaceTest {
         var starterFailure = new AtomicReference<Throwable>();
         for (var i = 0; i < ROUNDS; i++) {
             var store = new CountingStore();
-            var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "node")
+            var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "node").distributedLock(new InMemoryDistributedLock())
                     .lockKeyPrefix("maestro:lock:")
                     .instanceLockTtl(Duration.ofSeconds(30))
                     .shutdownTimeout(Duration.ofSeconds(5))

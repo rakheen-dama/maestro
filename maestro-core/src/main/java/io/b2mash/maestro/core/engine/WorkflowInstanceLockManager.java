@@ -32,15 +32,16 @@ import java.util.function.Supplier;
  * if this node crashes, the TTL expires and another node's recovery poller
  * picks the workflow up.
  *
- * <p><b>Graceful degradation:</b> with no {@link DistributedLock} backend
- * (or a failing one), acquisition reports {@link Acquisition#NO_BACKEND}
- * and callers proceed exactly as before this lock existed. The lock is an
- * <em>admission</em> guard — it stops a second node from starting a redundant
- * run in the first place; it is not what keeps a stale run from persisting
- * progress. That is the store's lease fencing (Issue 11): every adoption bumps
- * the instance row's {@code lease_epoch}, and every run-scoped write is
- * validated against the epoch the run adopted at, so a run whose lock expired
- * or was never held cannot write once another node has adopted the workflow.
+ * <p><b>Mandatory:</b> a {@link DistributedLock} is required (pilot
+ * readiness P3). When the backend throws, or after {@link #close()},
+ * acquisition reports {@link Acquisition#UNAVAILABLE} and the executor does
+ * not launch the run: no run executes without holding its instance lock. The
+ * lock is an <em>admission</em> guard — it stops a second node from starting a
+ * redundant run in the first place; it is not what keeps a stale run from
+ * persisting progress. That is the store's lease fencing (Issue 11): every
+ * adoption bumps the instance row's {@code lease_epoch}, and every run-scoped
+ * write is validated against the epoch the run adopted at, so a run whose lock
+ * expired cannot write once another node has adopted the workflow.
  *
  * <p><b>Lost locks:</b> if a renewal reports lost ownership, the handle is
  * dropped, an ERROR is logged and the {@link #onLockLost} callback is invoked,
@@ -72,11 +73,14 @@ final class WorkflowInstanceLockManager {
         ACQUIRED,
         /** Lock held elsewhere (another node, or already held locally). */
         HELD_ELSEWHERE,
-        /** No lock backend configured or backend unavailable — proceed unlocked. */
-        NO_BACKEND
+        /**
+         * The backend threw, or this manager is closed — nothing is held and
+         * the caller must not run the workflow (it is left for recovery).
+         */
+        UNAVAILABLE
     }
 
-    private final @Nullable DistributedLock distributedLock;
+    private final DistributedLock distributedLock;
     private final String serviceName;
     private final String keyPrefix;
     private final Duration ttl;
@@ -124,12 +128,12 @@ final class WorkflowInstanceLockManager {
      */
     volatile Supplier<Thread> renewerThreadStarter;
 
-    WorkflowInstanceLockManager(@Nullable DistributedLock distributedLock, String serviceName) {
+    WorkflowInstanceLockManager(DistributedLock distributedLock, String serviceName) {
         this(distributedLock, serviceName, DEFAULT_KEY_PREFIX, DEFAULT_LOCK_TTL, DEFAULT_RENEW_INTERVAL);
     }
 
     WorkflowInstanceLockManager(
-            @Nullable DistributedLock distributedLock,
+            DistributedLock distributedLock,
             String serviceName,
             Duration ttl,
             Duration renewInterval
@@ -138,7 +142,7 @@ final class WorkflowInstanceLockManager {
     }
 
     WorkflowInstanceLockManager(
-            @Nullable DistributedLock distributedLock,
+            DistributedLock distributedLock,
             String serviceName,
             String keyPrefix,
             Duration ttl,
@@ -150,19 +154,21 @@ final class WorkflowInstanceLockManager {
     /**
      * Creates a lock manager with an {@link EngineObserver}.
      *
+     * @param distributedLock the lock backend; never {@code null}
      * @param observer engine observation seam — fires
      *                 {@code instanceLockAcquired}, {@code instanceLockRenewFailed}
      *                 and {@code instanceLockLost}; never {@code null} (pass
      *                 {@link EngineObserver#NOOP})
      */
     WorkflowInstanceLockManager(
-            @Nullable DistributedLock distributedLock,
+            DistributedLock distributedLock,
             String serviceName,
             String keyPrefix,
             Duration ttl,
             Duration renewInterval,
             EngineObserver observer
     ) {
+        Objects.requireNonNull(distributedLock, "distributedLock");
         if (ttl == null || ttl.isNegative() || ttl.isZero()) {
             throw new IllegalArgumentException("instance lock ttl must be positive, got " + ttl);
         }
@@ -191,10 +197,11 @@ final class WorkflowInstanceLockManager {
      * @return the acquisition outcome — never throws
      */
     Acquisition tryAcquire(String workflowId) {
-        if (distributedLock == null || closed.get()) {
+        if (closed.get()) {
             // After close() the renewer is gone — a lock acquired now would
-            // silently expire mid-run, so degrade to unlocked instead
-            return Acquisition.NO_BACKEND;
+            // silently expire mid-run, so nothing is acquired and the caller
+            // does not launch
+            return Acquisition.UNAVAILABLE;
         }
         if (heldLocks.containsKey(workflowId)) {
             // Local completing-vs-relaunching race: treat as held
@@ -207,13 +214,13 @@ final class WorkflowInstanceLockManager {
             }
             heldLocks.put(workflowId, handle.get());
         } catch (Exception e) {
-            logger.warn("Instance lock backend unavailable for workflow '{}' — proceeding unlocked: {}",
-                    workflowId, e.getMessage());
-            return Acquisition.NO_BACKEND;
+            logger.warn("Instance lock backend unavailable for workflow '{}' — not running it now; recovery "
+                    + "retries it once the lock can be taken: {}", workflowId, e.getMessage());
+            return Acquisition.UNAVAILABLE;
         }
         // Deliberately outside the backend try: the lock IS held from the
         // heldLocks.put() above, so neither a renewer-start failure nor a
-        // throwing observer may be reported as NO_BACKEND — the caller would
+        // throwing observer may be reported as UNAVAILABLE — the caller would
         // then skip release() and this node would renew a lock nobody
         // releases, making the workflowId permanently unacquirable here and
         // blocked cluster-wide.
@@ -257,7 +264,7 @@ final class WorkflowInstanceLockManager {
      */
     void release(String workflowId) {
         var handle = heldLocks.remove(workflowId);
-        if (handle == null || distributedLock == null) {
+        if (handle == null) {
             return;
         }
         try {
@@ -277,15 +284,14 @@ final class WorkflowInstanceLockManager {
      * without spending a {@code tryAcquire} on each; an id not reported here
      * still goes through {@code tryAcquire}, which remains the authority. Locks
      * this node holds are never reported (they are held here, not elsewhere).
-     * With no backend, after {@link #close}, or when the backend throws, the
-     * answer is empty — "unknown, try them all" — never an exception.
+     * After {@link #close}, or when the backend throws, the answer is empty — "unknown, try them all" — never an exception.
      * {@code Error}s propagate.
      *
      * @param workflowIds the workflow IDs to look up
      * @return the subset whose lock another node holds; may be empty
      */
     Set<String> heldElsewhere(Collection<String> workflowIds) {
-        if (distributedLock == null || closed.get() || workflowIds.isEmpty()) {
+        if (closed.get() || workflowIds.isEmpty()) {
             return Set.of();
         }
         var idByKey = new HashMap<String, String>();
@@ -328,8 +334,8 @@ final class WorkflowInstanceLockManager {
 
     /**
      * Whether the renewer thread is alive. It starts with the first lock this
-     * manager acquires, so this is {@code false} before then, with no
-     * {@link DistributedLock}, and after {@link #close()}.
+     * manager acquires, so this is {@code false} before then and after
+     * {@link #close()}.
      *
      * @return {@code true} while the renewer thread runs and the manager is open
      */
@@ -476,7 +482,6 @@ final class WorkflowInstanceLockManager {
      *         guard here), {@code true} otherwise, including a pass with no
      *         held lock
      */
-    @SuppressWarnings("DataFlowIssue") // renewer only runs when distributedLock != null
     private boolean renewPass() {
         if (heldLocks.isEmpty()) {
             return true;
@@ -575,7 +580,7 @@ final class WorkflowInstanceLockManager {
      * wraps. This guard stays as depth — the constructors accept <em>any</em>
      * {@code EngineObserver}, so nothing forces an embedder or a test wiring
      * the engine by hand through {@code of(...)}, and an escape here would
-     * either report a held lock as {@code NO_BACKEND} or kill the single
+     * either report a held lock as {@code UNAVAILABLE} or kill the single
      * renewer thread. {@code RuntimeException} only: {@code Error}s (the
      * engine's control-flow signals) always propagate.
      */

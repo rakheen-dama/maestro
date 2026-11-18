@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
@@ -71,7 +72,7 @@ class SequenceSpaceExhaustionTest extends ParallelSagaTestSupport {
     void compensationOverflow_finishesFailedWithoutRunningCompensations() throws Exception {
         var undone = new AtomicInteger();
         var workflow = new TripleForkWorkflow(undone);
-        var executor = WorkflowExecutor.builder(store, serializer, "node-a").build();
+        var executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock()).build();
         try {
             executor.startWorkflow("triple-fork", "TripleForkWorkflow", "default", "in", () -> workflow,
                     TripleForkWorkflow.class.getMethod("run", String.class));

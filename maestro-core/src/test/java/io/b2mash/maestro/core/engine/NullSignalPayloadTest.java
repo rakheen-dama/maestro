@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -51,7 +52,7 @@ class NullSignalPayloadTest {
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observerA = new RecordingEngineObserver();
         observerB = new RecordingEngineObserver();
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).observer(observerA).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerA).build();
     }
 
     @AfterEach
@@ -79,7 +80,7 @@ class NullSignalPayloadTest {
         // Node A stops while parked on "go"; node B adopts the run and replays the SIGNAL_RECEIVED memo.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).observer(observerB).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerB).build();
         nodeB.recoverWorkflows(Map.of("NullIntSignalWorkflow", new WorkflowRegistration(
                 "NullIntSignalWorkflow", "default", () -> new NullIntSignalWorkflow(seen), method)));
 

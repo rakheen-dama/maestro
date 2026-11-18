@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -85,7 +86,7 @@ class WorkflowExecutorShutdownTest {
     void setUp() {
         store = new InMemoryStore();
         serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach
@@ -145,7 +146,7 @@ class WorkflowExecutorShutdownTest {
 
         // Prove the durable state is genuinely intact, not just untouched in
         // memory: a second executor recovers it and drives it to completion.
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var registrations = Map.of("CatchAllAwaitingWorkflow",
                 new WorkflowRegistration("CatchAllAwaitingWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations));
@@ -229,7 +230,7 @@ class WorkflowExecutorShutdownTest {
         // (nothing was memoized for it — it never completed), and once resumed,
         // finishes compensation and reaches FAILED, the correct outcome for a
         // genuine failure.
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var registrations = Map.of("ParkingCompensationWorkflow",
                 new WorkflowRegistration("ParkingCompensationWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
@@ -276,7 +277,7 @@ class WorkflowExecutorShutdownTest {
         assertEquals(1, completedInvocations.get(), "shutdown itself must not trigger a re-invocation");
         assertFalse(hasEvent("mid-comp-completed-first", EventType.WORKFLOW_FAILED));
 
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var registrations = Map.of("ParkingSecondCompensationWorkflow",
                 new WorkflowRegistration("ParkingSecondCompensationWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),
@@ -336,7 +337,7 @@ class WorkflowExecutorShutdownTest {
         assertEquals(List.of("park-parallel-branch"),
                 store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
 
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var registrations = Map.of("ParkingParallelBranchWorkflow",
                 new WorkflowRegistration("ParkingParallelBranchWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations));
@@ -386,7 +387,7 @@ class WorkflowExecutorShutdownTest {
 
         // Recovery: the activity never completed (no ACTIVITY_COMPLETED was
         // persisted), so it replays live again on the second node.
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var restartedInvocations = new AtomicInteger();
         var restartedActivityImpl = new ParkingActivityImpl(restartedInvocations, RetryShutdownWorkflow.RESUME_SIGNAL);
         var restartedProxy = new ActivityProxyFactory().createProxy(
@@ -441,7 +442,7 @@ class WorkflowExecutorShutdownTest {
         assertEquals(List.of("park-compensate-activity"),
                 store.getRecoverableInstances().stream().map(WorkflowInstance::workflowId).toList());
 
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var restartedUndoCount = new AtomicInteger();
         var restartedActivityImpl = new ParkingCompensateActivityImpl(
                 restartedUndoCount, CompensateShutdownWorkflow.RESUME_SIGNAL);
@@ -542,7 +543,7 @@ class WorkflowExecutorShutdownTest {
     @DisplayName("A configured shutdown timeout bounds the drain wait instead of the 20 s default")
     void shutdown_withConfiguredTimeout_returnsAfterTheConfiguredWaitNotTheDefault() throws Exception {
         executor.shutdown(); // discard the default, 20 s-timeout executor from setUp
-        executor = WorkflowExecutor.builder(store, serializer, SERVICE)
+        executor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock())
                 .shutdownTimeout(Duration.ofMillis(300))
                 .build();
 
@@ -570,7 +571,7 @@ class WorkflowExecutorShutdownTest {
     @DisplayName("The instance lock of a parked workflow is released on shutdown")
     void shutdown_withWorkflowParkedOnSignal_releasesTheInstanceLock() throws Exception {
         var lock = new MapLock();
-        executor.shutdown(); // discard the default, lock-less executor
+        executor.shutdown(); // discard the default executor: this test needs its own lock to inspect
         executor = WorkflowExecutor.builder(store, serializer, SERVICE)
                 .distributedLock(lock)
                 .build();
@@ -600,7 +601,7 @@ class WorkflowExecutorShutdownTest {
 
         executor.shutdown();
 
-        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        secondExecutor = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         var registrations = Map.of("AwaitingWorkflow",
                 new WorkflowRegistration("AwaitingWorkflow", "default", () -> workflow, method));
         assertEquals(1, secondExecutor.recoverWorkflows(registrations),

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
@@ -35,7 +36,7 @@ class RecoveryFactoryLinkageErrorTest {
 
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
     private final VersionedInMemoryStore store = new VersionedInMemoryStore();
-    private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "svc")
+    private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
             .lifecycleEventsEnabled(false)
             .build();
     private final CountDownLatch healthyRan = new CountDownLatch(1);

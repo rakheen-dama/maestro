@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -147,7 +148,7 @@ class WorkflowExecutorShutdownDeadlineTest {
 
     @Test
     void aSecondShutdownCallReturnsOnlyAfterTheFirstHasFinished() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();
@@ -180,7 +181,7 @@ class WorkflowExecutorShutdownDeadlineTest {
      */
     @Test
     void aSecondCallWaitsForAFirstCallDrainingLongerThanTheGrace() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();
@@ -210,7 +211,7 @@ class WorkflowExecutorShutdownDeadlineTest {
      */
     @Test
     void startingAWorkflowDuringTheDrainIsRefused() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();
@@ -232,7 +233,7 @@ class WorkflowExecutorShutdownDeadlineTest {
     /** A first call that throws still releases a second caller at once (the latch counts down in a finally). */
     @Test
     void aSecondCallerIsReleasedWhenTheFirstShutdownThrows() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .build(); // the default 20 s deadline: a second caller left waiting would wait 22 s
         var secondWaiting = new CountDownLatch(1);
@@ -283,7 +284,7 @@ class WorkflowExecutorShutdownDeadlineTest {
      */
     @Test
     void aRunRegisteredButNotYetStartedIsWaitedForByTheDrain() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();
@@ -335,7 +336,7 @@ class WorkflowExecutorShutdownDeadlineTest {
      */
     @Test
     void aRunStillUnstartedAtTheDeadlineIsReportedAsStillRunning() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofMillis(300))
                 .build();
@@ -375,7 +376,7 @@ class WorkflowExecutorShutdownDeadlineTest {
      */
     @Test
     void aLaunchThatFailsBeforeItsThreadStartsReleasesTheDrainAtOnce() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();
@@ -417,7 +418,7 @@ class WorkflowExecutorShutdownDeadlineTest {
     void theLifecyclePublisherStillFlushesWhenTimeIsLeft() throws Exception {
         var gate = new CountDownLatch(1);
         var recording = new RecordingMessaging(gate);
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .messaging(recording)
                 .lifecycleEventsEnabled(true)
                 .build();
@@ -438,7 +439,7 @@ class WorkflowExecutorShutdownDeadlineTest {
 
     @Test
     void theFinishLineReportsTheStepsAndNothingStillRunning() {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .build();
         try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
@@ -460,7 +461,7 @@ class WorkflowExecutorShutdownDeadlineTest {
     @Test
     void everyLoopHasEndedWhenShutdownReturns() throws Exception {
         var slow = new SlowToStopStore();
-        executor = WorkflowExecutor.builder(slow, serializer, "node-a")
+        executor = WorkflowExecutor.builder(slow, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();
@@ -481,7 +482,7 @@ class WorkflowExecutorShutdownDeadlineTest {
 
     @Test
     void aShutdownThatHitsItsDeadlineNamesTheRunsStillRunning() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofMillis(300))
                 .build();
@@ -500,7 +501,7 @@ class WorkflowExecutorShutdownDeadlineTest {
 
     @Test
     void aLoopThatDoesNotStopByTheDeadlineIsNamed() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofMillis(300))
                 .build();
@@ -522,7 +523,7 @@ class WorkflowExecutorShutdownDeadlineTest {
     @Test
     void theDeadlineIsMeasuredOnTheMonotonicClock() throws Exception {
         var runs = 15;
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .instantSource(InstantSource.fixed(Instant.parse("2026-01-01T00:00:00Z")))
                 .shutdownTimeout(Duration.ofMillis(300))

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -57,7 +58,7 @@ class BackgroundLoopErrorTest {
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
     private final RecordingEngineObserver observer = new RecordingEngineObserver();
     private final PollFaultStore store = new PollFaultStore();
-    private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "svc")
+    private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
             .lifecycleEventsEnabled(false)
             .observer(observer)
             .build();
@@ -154,7 +155,7 @@ class BackgroundLoopErrorTest {
                 throw new AssertionError("interrupted store call");
             }
         };
-        var poller = new TimerPoller(swallowing, executor, null, "svc", Duration.ofMinutes(10), 10, observer);
+        var poller = new TimerPoller(swallowing, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10, observer);
         poller.start();
         assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
 
@@ -188,7 +189,7 @@ class BackgroundLoopErrorTest {
                 return List.of();
             }
         };
-        var poller = new TimerPoller(swallowing, executor, null, "svc", Duration.ofMinutes(10), 10, observer);
+        var poller = new TimerPoller(swallowing, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10, observer);
         poller.start();
         assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
 
@@ -318,7 +319,7 @@ class BackgroundLoopErrorTest {
                 return PurgeResult.EMPTY;
             }
         };
-        var sweeper = new RetentionSweeper(flaky, null, "svc", new WorkflowExecutor.RetentionSettings(
+        var sweeper = new RetentionSweeper(flaky, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
                 Duration.ofMillis(50), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1), observer);
         sweeperRef.set(sweeper);
         sweeper.start();
@@ -352,7 +353,7 @@ class BackgroundLoopErrorTest {
                 throw new AssertionError("every sweep fails");
             }
         };
-        var sweeper = new RetentionSweeper(failing, null, "svc", new WorkflowExecutor.RetentionSettings(
+        var sweeper = new RetentionSweeper(failing, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
                 Duration.ofMinutes(10), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1), observer);
         sweeper.start();
         await("the first failed sweep").atMost(Duration.ofSeconds(5))

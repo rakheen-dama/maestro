@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
@@ -53,7 +54,7 @@ class WorkflowExecutorErrorEscapeTest {
         store = new VersionedInMemoryStore();
         observer = new RecordingEngineObserver();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "node")
+        executor = WorkflowExecutor.builder(store, serializer, "node").distributedLock(new InMemoryDistributedLock())
                 .lockKeyPrefix("maestro:lock:")
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .shutdownTimeout(Duration.ofSeconds(5))

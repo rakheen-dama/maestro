@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -58,6 +60,7 @@ class MaestroAutoConfigurationLifecycleEventsTest {
             .withUserConfiguration(TestWorkflowConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+            .withBean(DistributedLock.class, InMemoryDistributedLock::new)
             .withBean(WorkflowMessaging.class, InMemoryWorkflowMessaging::new)
             .withPropertyValues("maestro.service-name=lifecycle-events-test");
 

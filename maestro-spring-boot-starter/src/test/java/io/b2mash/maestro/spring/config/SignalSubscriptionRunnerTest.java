@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -40,7 +41,7 @@ class SignalSubscriptionRunnerTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "order-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "order-service").distributedLock(new InMemoryDistributedLock()).build();
         commandDispatcher = new AdminCommandDispatcher(executor, store, new WorkflowRegistrar(executor));
         properties = new MaestroProperties();
         properties.setServiceName("order-service");
@@ -107,7 +108,7 @@ class SignalSubscriptionRunnerTest {
     void handlerPropagatesDeliveryFailure() {
         var failingStore = new FailingSaveSignalStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        var failingExecutor = WorkflowExecutor.builder(failingStore, serializer, "order-service").build();
+        var failingExecutor = WorkflowExecutor.builder(failingStore, serializer, "order-service").distributedLock(new InMemoryDistributedLock()).build();
         var failingDispatcher = new AdminCommandDispatcher(
                 failingExecutor, failingStore, new WorkflowRegistrar(failingExecutor));
         var runner = new SignalSubscriptionRunner(failingExecutor, failingDispatcher, messaging, properties);

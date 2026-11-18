@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -90,7 +91,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var blockFor = Duration.ofSeconds(3);
         var messaging = new BlockingMessaging(blockFor);
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 
@@ -117,7 +118,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsDisabled_noPublishCalls() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .lifecycleEventsEnabled(false)
                 .build();
@@ -148,7 +149,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsEnabled_byDefault() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 
@@ -169,7 +170,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void shutdown_doesNotHangOnLifecyclePublisher() throws Exception {
         var messaging = new BlockingMessaging(Duration.ofSeconds(30));
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 
@@ -197,7 +198,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsDisabled_stopsActivityTimerAndSignalEventsToo() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .lifecycleEventsEnabled(false)
                 .build();
@@ -252,7 +253,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventsDisabled_stopsCompensationEventsToo() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .lifecycleEventsEnabled(false)
                 .build();
@@ -278,7 +279,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         // level events (e.g. a typo in a signal/timer name that never fires).
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 
@@ -329,7 +330,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void lifecycleEventSink_publishesOffTheCallingThread() {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "sink-service")
+        executor = WorkflowExecutor.builder(store, serializer, "sink-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 
@@ -348,11 +349,11 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     @DisplayName("lifecycleEventSink() is NOOP with no messaging, and NOOP when publishing is disabled")
     void lifecycleEventSink_isNoopWithoutMessagingOrWhenDisabled() {
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock()).build();
         assertSame(LifecycleEventSink.NOOP, executor.lifecycleEventSink(), "no messaging → NOOP");
         executor.shutdown();
 
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(new RecordingMessaging())
                 .lifecycleEventsEnabled(false)
                 .build();
@@ -369,7 +370,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         // thread each event is actually published on.
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "sink-service")
+        executor = WorkflowExecutor.builder(store, serializer, "sink-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 
@@ -418,7 +419,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
     void compensationEvents_publishOffThread_viaTheExecutorSink() throws Exception {
         var messaging = new RecordingMessaging();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "sink-service")
+        executor = WorkflowExecutor.builder(store, serializer, "sink-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .build();
 

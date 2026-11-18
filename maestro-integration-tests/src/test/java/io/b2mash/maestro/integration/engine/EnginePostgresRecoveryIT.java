@@ -34,11 +34,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <em>same</em> store, which is what "a new process" means in one JVM — then
  * recovers it.
  *
- * <p>Node A is deliberately built <b>without a lock backend</b>. A crashed JVM
+ * <p>Node A is deliberately built <b>without the shared lock backend</b>: the
+ * harness gives it a private in-memory lock node B cannot see. A crashed JVM
  * stops renewing its instance lock and the lock expires by TTL; a wedged
  * in-process harness would keep renewing forever, because the lock renewer
  * cannot be stopped without {@code shutdown()} — and {@code shutdown()} would
- * join the wedged thread. Giving node A no lock backend reproduces the
+ * join the wedged thread. Giving node A a lock node B cannot see reproduces the
  * post-expiry state directly. Node B keeps a real Postgres lock, so the
  * adoption path is exercised with locking engaged.
  *
@@ -156,8 +157,9 @@ class EnginePostgresRecoveryIT extends PostgresIntegrationSupport {
 
         // The workflow is still in flight on node A — wedged, but very much
         // alive. Node A's own recovery pass sees it in the store as RUNNING and
-        // must recognise it as locally owned. Node A has no lock backend here,
-        // so the in-JVM running-workflow check is the only guard in play.
+        // must recognise it as locally owned. Node A's own (in-memory) lock
+        // reports the instance lock held here, as the in-JVM running-workflow
+        // check does.
         assertEquals(0, crashedNode.recover(),
                 "a workflow already running on this node must not be relaunched");
         assertTrue(crashedNode.executor().isRunning(workflowId));

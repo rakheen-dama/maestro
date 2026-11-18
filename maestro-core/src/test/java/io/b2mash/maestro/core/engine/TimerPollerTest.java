@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.TimerStatus;
@@ -55,7 +56,7 @@ class TimerPollerTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach
@@ -76,7 +77,7 @@ class TimerPollerTest {
                 timerId, UUID.randomUUID(), "wf-1", "sleep-1",
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
 
-        poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
+        poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
         poller.start();
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
@@ -92,7 +93,7 @@ class TimerPollerTest {
                 UUID.randomUUID(), UUID.randomUUID(), "wf-1", "sleep-1",
                 Instant.now().plusSeconds(600), TimerStatus.PENDING, Instant.now()));
 
-        poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
+        poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
         poller.start();
 
         // Wait a few poll cycles, then assert the timer is still pending
@@ -117,7 +118,7 @@ class TimerPollerTest {
                 timer2, UUID.randomUUID(), "wf-2", "sleep-1",
                 Instant.now().minusSeconds(5), TimerStatus.PENDING, Instant.now()));
 
-        poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
+        poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
         poller.start();
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
@@ -166,18 +167,18 @@ class TimerPollerTest {
     }
 
     @Test
-    @DisplayName("null lock — always polls (single-node mode)")
-    void nullLockAlwaysPolls() {
+    @DisplayName("a lone poller elects itself and polls")
+    void aLonePollerElectsItselfAndPolls() {
         store.saveTimer(new WorkflowTimer(
                 UUID.randomUUID(), UUID.randomUUID(), "wf-1", "sleep-1",
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
 
-        poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
+        poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
         poller.start();
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
             var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
-            assertTrue(dueTimers.isEmpty(), "Null lock should always poll");
+            assertTrue(dueTimers.isEmpty(), "a lone poller is the leader and polls");
         });
     }
 
@@ -186,7 +187,7 @@ class TimerPollerTest {
     @Test
     @DisplayName("stop terminates the poller")
     void stopTerminatesPoller() {
-        poller = new TimerPoller(store, executor, null, "test-service", pollInterval, 100);
+        poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
         poller.start();
         assertTrue(poller.isRunning());
 

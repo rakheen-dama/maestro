@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
@@ -49,7 +50,7 @@ class AdminCommandDispatcherTest {
     void setUp() throws NoSuchMethodException {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock()).build();
         registrar = new StubRegistrar(executor);
         registrar.register(WORKFLOW_TYPE, new WorkflowRegistration(
                 WORKFLOW_TYPE, "default", SimpleWorkflow::new, SimpleWorkflow.class.getMethod("run", String.class)));

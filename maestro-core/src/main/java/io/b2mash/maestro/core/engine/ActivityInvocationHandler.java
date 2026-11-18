@@ -168,10 +168,9 @@ import java.util.concurrent.TimeoutException;
  * is the activity's own failure, retried under its {@code RetryPolicy}.
  *
  * <h2>Duplicate execution</h2>
- * <p>There is no per-activity lock. With a lock backend, two runners execute
- * a step concurrently only when both hold the same workflow: the window after
- * a node lost its instance lock, or after a node's instance-lock acquire
- * failed and it proceeded unlocked (traced, not tested). Lease fencing (V6)
+ * <p>There is no per-activity lock. Two runners execute a step concurrently
+ * only in the window after a node lost its instance lock: no run launches
+ * without its lock (pilot readiness P3). Lease fencing (V6)
  * rejects the stale runner's outcome append, so the stale runner records
  * nothing; the adopting node, finding no recorded outcome, runs the step
  * again. Activities must be idempotent. A duplicate Kafka delivery is

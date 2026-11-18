@@ -20,13 +20,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * cluster is active at any time.
  *
  * <h2>Leader Election</h2>
- * <p>If a {@link DistributedLock} is configured, the poller calls
+ * <p>The poller calls
  * {@link DistributedLock#trySetLeader(String, String, Duration)} on each
  * iteration with key {@code maestro:leader:timer-poller:{serviceName}}
  * and 15-second TTL. The implementation should return {@code true} both
  * when newly elected and when the candidate is already the current leader
- * (effectively renewing the TTL). If the lock backend is unavailable
- * ({@code null}), the poller runs unconditionally (single-node mode).
+ * (effectively renewing the TTL). A {@link DistributedLock} is mandatory
+ * (pilot readiness P3): there is no single-node mode that polls unelected.
  *
  * <h2>Clock</h2>
  * <p>A due timer is one the store says is due by its own clock
@@ -77,7 +77,7 @@ final class TimerPoller implements StoppableLoop {
 
     private final WorkflowStore store;
     private final WorkflowExecutor executor;
-    private final @Nullable DistributedLock distributedLock;
+    private final DistributedLock distributedLock;
     private final String serviceName;
     private final Duration pollInterval;
     private final int batchSize;
@@ -94,8 +94,7 @@ final class TimerPoller implements StoppableLoop {
      *
      * @param store           workflow store for timer queries
      * @param executor        workflow executor for firing timers
-     * @param distributedLock optional lock backend for leader election
-     *                        ({@code null} for single-node mode)
+     * @param distributedLock lock backend for leader election; never {@code null}
      * @param serviceName     the owning service name (for leader election key)
      * @param pollInterval    interval between polling cycles
      * @param batchSize       maximum timers to process per cycle
@@ -103,7 +102,7 @@ final class TimerPoller implements StoppableLoop {
     TimerPoller(
             WorkflowStore store,
             WorkflowExecutor executor,
-            @Nullable DistributedLock distributedLock,
+            DistributedLock distributedLock,
             String serviceName,
             Duration pollInterval,
             int batchSize
@@ -116,8 +115,7 @@ final class TimerPoller implements StoppableLoop {
      *
      * @param store           workflow store for timer queries
      * @param executor        workflow executor for firing timers
-     * @param distributedLock optional lock backend for leader election
-     *                        ({@code null} for single-node mode)
+     * @param distributedLock lock backend for leader election; never {@code null}
      * @param serviceName     the owning service name (for leader election key)
      * @param pollInterval    interval between polling cycles
      * @param batchSize       maximum timers to process per cycle
@@ -127,7 +125,7 @@ final class TimerPoller implements StoppableLoop {
     TimerPoller(
             WorkflowStore store,
             WorkflowExecutor executor,
-            @Nullable DistributedLock distributedLock,
+            DistributedLock distributedLock,
             String serviceName,
             Duration pollInterval,
             int batchSize,
@@ -135,6 +133,7 @@ final class TimerPoller implements StoppableLoop {
     ) {
         if (store == null) throw new NullPointerException("store must not be null");
         if (executor == null) throw new NullPointerException("executor must not be null");
+        if (distributedLock == null) throw new NullPointerException("distributedLock must not be null");
         if (serviceName == null || serviceName.isBlank()) {
             throw new IllegalArgumentException("serviceName must not be null or blank");
         }
@@ -348,10 +347,6 @@ final class TimerPoller implements StoppableLoop {
      * again.
      */
     private boolean isLeader() {
-        if (distributedLock == null) {
-            return true; // No lock backend — single-node mode, always poll
-        }
-
         var elected = distributedLock.trySetLeader(LEADER_KEY_PREFIX + serviceName, candidateId, LEADER_TTL);
         if (!elected) {
             logger.debug("Another instance holds timer poller leadership for service '{}'", serviceName);

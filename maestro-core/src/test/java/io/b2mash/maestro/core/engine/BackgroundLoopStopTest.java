@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
@@ -42,7 +43,7 @@ class BackgroundLoopStopTest {
         TIMER_POLLER {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new TimerPoller(store, executor, null, "svc", INTERVAL, 10);
+                var loop = new TimerPoller(store, executor, new InMemoryDistributedLock(), "svc", INTERVAL, 10);
                 loop.start();
                 return loop;
             }
@@ -66,7 +67,7 @@ class BackgroundLoopStopTest {
         RETENTION_SWEEPER {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new RetentionSweeper(store, null, "svc", new WorkflowExecutor.RetentionSettings(
+                var loop = new RetentionSweeper(store, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
                         INTERVAL, Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1),
                         EngineObserver.NOOP);
                 loop.start();
@@ -88,7 +89,7 @@ class BackgroundLoopStopTest {
     @BeforeEach
     void setUp() {
         store = new StuckStore();
-        executor = WorkflowExecutor.builder(store, new PayloadSerializer(JsonMapper.builder().build()), "svc")
+        executor = WorkflowExecutor.builder(store, new PayloadSerializer(JsonMapper.builder().build()), "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .build();
     }

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -34,6 +35,7 @@ class WorkflowExecutorBuilderTest {
     private VersionedInMemoryStore store;
     private PayloadSerializer serializer;
     private final List<WorkflowExecutor> built = new ArrayList<>();
+    private final InMemoryDistributedLock lock = new InMemoryDistributedLock();
 
     @BeforeEach
     void setUp() {
@@ -74,14 +76,14 @@ class WorkflowExecutorBuilderTest {
 
     @Test
     void aDefaultBuildIsUnboundedOnTheSystemClock() {
-        var e = keep(WorkflowExecutor.builder(store, serializer, "svc").build());
+        var e = keep(WorkflowExecutor.builder(store, serializer, "svc").distributedLock(lock).build());
         assertSame(InstantSource.system(), e.instantSource());
         assertSame(TaskQueueGovernor.UNBOUNDED, e.taskQueueGovernor());
     }
 
     @Test
     void defaultTaskQueueLimitsAloneBoundsAnUnlistedQueue() {
-        var e = keep(WorkflowExecutor.builder(store, serializer, "svc")
+        var e = keep(WorkflowExecutor.builder(store, serializer, "svc").distributedLock(lock)
                 .defaultTaskQueueLimits(new TaskQueueLimits(2, 3)).build());
         assertNotSame(TaskQueueGovernor.UNBOUNDED, e.taskQueueGovernor());
         assertEquals(OptionalInt.of(2), e.taskQueueGovernor().availableWorkflowSlots("never-configured"));
@@ -175,8 +177,20 @@ class WorkflowExecutorBuilderTest {
     }
 
     @Test
+    void buildWithoutADistributedLockFailsNamingTheRemedy() {
+        // Pilot readiness P3: a DistributedLock is mandatory. The check runs
+        // after every other reference check, so their messages are unchanged.
+        var e = assertThrows(NullPointerException.class, WorkflowExecutor.builder(store, serializer, "svc")::build);
+        assertEquals(WorkflowExecutor.MISSING_LOCK_MESSAGE, e.getMessage());
+        assertTrue(e.getMessage().contains("PostgresDistributedLock"), e.getMessage());
+        assertTrue(e.getMessage().contains("InMemoryDistributedLock"), e.getMessage());
+        assertThrows(NullPointerException.class,
+                WorkflowExecutor.builder(store, serializer, "svc").distributedLock(null)::build);
+    }
+
+    @Test
     void aBuiltExecutorKeepsItsSettingsWhenTheBuilderChangesLater() {
-        var b = WorkflowExecutor.builder(store, serializer, "svc");
+        var b = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(lock);
         var first = keep(b.build());
         var second = keep(b.defaultTaskQueueLimits(new TaskQueueLimits(1, 1)).build());
         assertSame(TaskQueueGovernor.UNBOUNDED, first.taskQueueGovernor());

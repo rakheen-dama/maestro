@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -30,7 +31,7 @@ class RetentionSweeperScopeTest {
     @Test
     void everyBatchIsScopedToTheSweepersService() {
         store.script(new PurgeResult(2, 2, 0, 0));                                 // C full, then EMPTY
-        new RetentionSweeper(store, null, "orders", settings(2, 100), EngineObserver.NOOP).sweepOnce();
+        new RetentionSweeper(store, new InMemoryDistributedLock(), "orders", settings(2, 100), EngineObserver.NOOP).sweepOnce();
         assertEquals(List.of("orders", "orders", "orders", "orders"), store.scopedServiceNames());   // C full, C empty, T, F
         assertEquals(0, store.unscopedCalls());
     }

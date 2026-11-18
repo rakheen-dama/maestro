@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.model.EventType;
@@ -67,7 +68,7 @@ class WorkflowExecutorObserverTest {
     }
 
     private WorkflowExecutor newExecutor(EngineObserver obs) {
-        return WorkflowExecutor.builder(store, serializer, SERVICE)
+        return WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .wakeRecheckInterval(Duration.ofMillis(200))
                 .observer(obs)

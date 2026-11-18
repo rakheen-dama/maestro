@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import org.junit.jupiter.api.AfterEach;
@@ -36,7 +37,7 @@ class AwaitTimerStrayPermitTest {
     @BeforeEach
     void setUp() throws Exception {
         store = new VersionedInMemoryStore();
-        executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service").build();
+        executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service").distributedLock(new InMemoryDistributedLock()).build();
         var field = WorkflowExecutor.class.getDeclaredField("parkingLot");
         field.setAccessible(true);
         parkingLot = (ParkingLot) field.get(executor);

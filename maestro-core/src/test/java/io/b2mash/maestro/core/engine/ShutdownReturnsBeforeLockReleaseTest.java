@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -28,7 +29,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SERVICE;
@@ -306,136 +306,6 @@ class ShutdownReturnsBeforeLockReleaseTest {
         }
     }
 
-    /**
-     * Two runs of one workflow id on a node without a lock backend: the
-     * second to register replaces the first in {@code runningWorkflows}, so
-     * the first is tracked only by the drain. Both sit in a 30 s retry
-     * backoff, which only a stop request ends. Shutdown asks every run the
-     * drain waits for to stop, so both stand down and it returns at once.
-     */
-    @Test
-    void shutdownAsksEveryRunTheDrainWaitsForToStop() throws Exception {
-        var invocations = new AtomicInteger();
-        var twin = twinExecutor();
-        try {
-            launchTwins(twin, () -> new WorkflowExecutorTerminateTest.BackoffWorkflow(
-                    WorkflowExecutorTerminateTest.failingProxy(store, serializer, invocations)), backoffMethod());
-            assertEquals(2, valueWithin(invocations::get, 2, Duration.ofSeconds(5)), "both runs are in backoff");
-
-            try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
-                var start = System.nanoTime();
-                twin.shutdown();
-                var tookMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-
-                assertTrue(tookMs < 2_000, "shutdown waited " + tookMs + " ms for a run it never asked to stop");
-                assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Maestro shutdown finished in")
-                                && r.message().contains("2 run(s) in flight at start, 0 still running")),
-                        logs.records().toString());
-            }
-            assertEquals(2, invocations.get(), "the backoff was abandoned, not waited out");
-        } finally {
-            twin.shutdown();
-        }
-    }
-
-    /**
-     * Two runs of one workflow id on a node without a lock backend: the run
-     * replaced in {@code runningWorkflows} ends first, and its end leaves the
-     * other run's entry in place.
-     */
-    @Test
-    void aRunThatEndsRemovesOnlyItsOwnRunningEntry() throws Exception {
-        var invocations = new AtomicInteger();
-        var replacedRunGo = new CountDownLatch(1);
-        var replacedRunThread = new AtomicReference<@Nullable Thread>();
-        var twin = twinExecutor();
-        try {
-            var replacedRun = new LatchWorkflow(replacedRunGo, replacedRunThread);
-            launchTwins(twin, () -> new WorkflowExecutorTerminateTest.BackoffWorkflow(
-                            WorkflowExecutorTerminateTest.failingProxy(store, serializer, invocations)),
-                    backoffMethod(), () -> replacedRun, latchMethod());
-            assertEquals(1, valueWithin(invocations::get, 1, Duration.ofSeconds(5)), "the replacing run is in backoff");
-
-            replacedRunGo.countDown();
-            var thread = valueMatching(replacedRunThread::get, t -> t != null, Duration.ofSeconds(5));
-            assertTrue(thread.join(Duration.ofSeconds(5)), "the replaced run ended");
-
-            assertTrue(twin.isRunning("wf-twin"), "the replaced run's end removed the replacing run's entry");
-        } finally {
-            twin.shutdown();
-        }
-    }
-
-    /** Two runs of one id still running at the deadline: the WARN counts both and names the id once. */
-    @Test
-    void theDeadlineWarnNamesAWorkflowIdOnce() throws Exception {
-        var go = new CountDownLatch(1);
-        var twin = WorkflowExecutor.builder(store, serializer, SERVICE)
-                .lifecycleEventsEnabled(false)
-                .shutdownTimeout(Duration.ofMillis(300))
-                .build();
-        try {
-            launchTwins(twin, () -> new LatchWorkflow(go, new AtomicReference<>()), latchMethod());
-
-            try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
-                twin.shutdown();
-
-                var warn = logs.records().stream()
-                        .filter(r -> r.message().startsWith("Maestro shutdown hit its 300 ms deadline")).toList();
-                assertEquals(1, warn.size(), logs.records().toString());
-                assertTrue(warn.getFirst().message().contains("2 of 2 run(s) still running [wf-twin];"),
-                        warn.getFirst().message());
-            }
-        } finally {
-            go.countDown();
-            twin.shutdown();
-        }
-    }
-
-    /** No lock backend, so two resumes of one workflow id can both launch on this node. */
-    private WorkflowExecutor twinExecutor() {
-        return WorkflowExecutor.builder(store, serializer, SERVICE)
-                .lifecycleEventsEnabled(false)
-                .shutdownTimeout(Duration.ofSeconds(3))
-                .build();
-    }
-
-    private void launchTwins(WorkflowExecutor twin, Supplier<Object> factory, Method method) throws Exception {
-        launchTwins(twin, factory, method, factory, method);
-    }
-
-    /**
-     * Launches two runs of {@code wf-twin}: the replacing run's launch is held
-     * after admission while the replaced run's launch registers and starts,
-     * then registers over it in {@code runningWorkflows}.
-     */
-    private void launchTwins(WorkflowExecutor twin, Supplier<Object> replacingFactory, Method replacingMethod,
-                             Supplier<Object> replacedFactory, Method replacedMethod) throws Exception {
-        var seeded = RecoveryCapacityFixtures.seedRecoverable(store, "wf-twin", "default");
-        var admissions = new AtomicInteger();
-        var held = new CountDownLatch(1);
-        var go = new CountDownLatch(1);
-        twin.afterLaunchAdmission = () -> {
-            if (admissions.getAndIncrement() == 0) {
-                held.countDown();
-                awaitOrFail(go, "the replacing launch was let go");
-            }
-        };
-        var replacing = Thread.ofVirtual().start(() -> twin.resumeWorkflow(seeded, replacingFactory, replacingMethod));
-        awaitOrFail(held, "the replacing launch was admitted");
-        assertTrue(twin.resumeWorkflow(seeded, replacedFactory, replacedMethod), "the replaced run launched");
-        go.countDown();
-        assertTrue(replacing.join(Duration.ofSeconds(5)), "the replacing launch returned");
-    }
-
-    private static Method backoffMethod() throws NoSuchMethodException {
-        return WorkflowExecutorTerminateTest.BackoffWorkflow.class.getMethod("run");
-    }
-
-    private static Method latchMethod() throws NoSuchMethodException {
-        return LatchWorkflow.class.getMethod("run");
-    }
-
     private void awaitParked(String workflowId) {
         assertEquals(WorkflowStatus.WAITING_SIGNAL,
                 valueWithin(() -> store.getInstance(workflowId).map(i -> i.status()).orElse(null),
@@ -511,24 +381,6 @@ class ShutdownReturnsBeforeLockReleaseTest {
         /** @return a constant */
         @WorkflowMethod
         public String run() {
-            return "done";
-        }
-    }
-
-    /** Records its run's thread, then returns once {@code go} opens. */
-    public static final class LatchWorkflow {
-        private final CountDownLatch go;
-        private final AtomicReference<@Nullable Thread> runThread;
-
-        LatchWorkflow(CountDownLatch go, AtomicReference<@Nullable Thread> runThread) {
-            this.go = go;
-            this.runThread = runThread;
-        }
-
-        /** @return a constant */
-        public String run() {
-            awaitOrFail(go, "the test let the run finish");
-            runThread.set(Thread.currentThread());
             return "done";
         }
     }

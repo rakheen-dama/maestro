@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.postgres;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -66,7 +67,7 @@ class PostgresInstanceRewriteEngineTest extends PostgresTestSupport {
         var facts = new ArrayList<String>();
 
         // Live start, then the park on "go" rewrites the instance (InstanceStatusWriter).
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeA.startWorkflow(id, Priced.TYPE, "default", new PostgresPayloadFidelityTest.Order(
                 new BigDecimal("10.50"), new BigDecimal("12345678901234567890.123456789")),
                 registration.workflowFactory(), registration.workflowMethod());
@@ -76,7 +77,7 @@ class PostgresInstanceRewriteEngineTest extends PostgresTestSupport {
         // Node A stops; node B adopts the run (the adoption CAS rewrites the row) and replays the input.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeB.recoverWorkflows(Map.of(Priced.TYPE, registration));
         await().atMost(BOUND).until(() -> seen.size() >= 2);
         awaitStatus(id, WorkflowStatus.WAITING_SIGNAL);
@@ -116,7 +117,7 @@ class PostgresInstanceRewriteEngineTest extends PostgresTestSupport {
         var seen = Collections.synchronizedList(new ArrayList<PostgresPayloadFidelityTest.Order>());
         var registration = registration(seen, new AtomicInteger(0));
 
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeA.startWorkflow(id, Priced.TYPE, "default", new PostgresPayloadFidelityTest.Order(
                 new BigDecimal("10.50"), new BigDecimal("12345678901234567890.123456789")),
                 registration.workflowFactory(), registration.workflowMethod());
@@ -133,7 +134,7 @@ class PostgresInstanceRewriteEngineTest extends PostgresTestSupport {
             assertEquals(1, ps.executeUpdate());
         }
 
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeB.recoverWorkflows(Map.of(Priced.TYPE, registration));
         await().atMost(BOUND).until(() -> seen.size() >= 2);
         nodeB.deliverSignal(id, Priced.GO, "go");

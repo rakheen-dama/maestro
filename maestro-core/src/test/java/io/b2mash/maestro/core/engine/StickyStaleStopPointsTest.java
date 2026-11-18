@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -61,7 +62,7 @@ class StickyStaleStopPointsTest {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observer = new RecordingEngineObserver();
-        executor = WorkflowExecutor.builder(store, serializer, "node")
+        executor = WorkflowExecutor.builder(store, serializer, "node").distributedLock(new InMemoryDistributedLock())
                 .lockKeyPrefix("maestro:lock:")
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .shutdownTimeout(Duration.ofSeconds(5))

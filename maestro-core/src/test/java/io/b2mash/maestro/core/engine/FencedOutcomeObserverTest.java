@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -35,7 +36,7 @@ class FencedOutcomeObserverTest {
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
     private final FencingOutcomeStore store = new FencingOutcomeStore();
     private final RecordingEngineObserver observer = new RecordingEngineObserver();
-    private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "svc")
+    private final WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
             .lifecycleEventsEnabled(false)
             .observer(observer)
             .build();

@@ -16,6 +16,7 @@ import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
@@ -85,12 +86,17 @@ import static org.awaitility.Awaitility.await;
 @ExtendWith(OutputCaptureExtension.class)
 class MaestroAutoConfigurationConfigSeamsTest {
 
-    private final ApplicationContextRunner runner = new ApplicationContextRunner()
+    /** Every context here but the two that bring their own recording lock. */
+    private final ApplicationContextRunner runnerWithoutLock = new ApplicationContextRunner()
             .withConfiguration(AutoConfigurations.of(MaestroAutoConfiguration.class))
             .withUserConfiguration(TestWorkflowConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
             .withPropertyValues("maestro.service-name=config-seams-test");
+
+    /** A DistributedLock is mandatory (P3): the default contexts get the in-memory one. */
+    private final ApplicationContextRunner runner = runnerWithoutLock
+            .withBean(DistributedLock.class, InMemoryDistributedLock::new);
 
     @Test
     @DisplayName("the auto-configured executor arms sleep timers and await deadlines on the system clock (R59)")
@@ -170,7 +176,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
     @DisplayName("A workflow's activities take no lock under a custom maestro.lock.key-prefix; its instance lock uses the prefix")
     void noActivityLockIsTakenUnderACustomKeyPrefix() {
         var lock = new RecordingLock();
-        runner.withBean(DistributedLock.class, () -> lock)
+        runnerWithoutLock.withBean(DistributedLock.class, () -> lock)
                 .withPropertyValues("maestro.lock.key-prefix=custom:prefix:")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -189,7 +195,7 @@ class MaestroAutoConfigurationConfigSeamsTest {
     @DisplayName("maestro.lock.ttl and maestro.lock.key-prefix reach the instance lock")
     void lockTtlAndKeyPrefixReachTheInstanceLock() {
         var lock = new RecordingLock();
-        runner.withBean(DistributedLock.class, () -> lock)
+        runnerWithoutLock.withBean(DistributedLock.class, () -> lock)
                 .withPropertyValues("maestro.lock.ttl=45s", "maestro.lock.key-prefix=custom:prefix:")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
