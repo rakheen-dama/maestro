@@ -1,5 +1,20 @@
 # Release Notes — Maestro
 
+## Unreleased — pilot readiness P1 (part 1): one lifecycle owner for runs
+
+### Fixed — a launch admitted before shutdown is waited for; an admin Retry during shutdown is refused (Issue 80)
+
+- **What was wrong.** The drain made one weakly consistent pass over the runs it knew. A launch already past its shutting-down check but not yet registered when the pass began was never waited for: `shutdown()` could return while it still held its instance lock, and the run went on after the engine had stopped. `retryWorkflow` (the dashboard's Retry, `$maestro:retry`) had no shutdown check at all: a command consumed during or after the drain reopened the row and launched a run nothing waited for.
+- **What changes.** The executor has a lifecycle registry (`WorkflowExecutor.lifecycle()`, `LifecycleRegistry`, internal until 1.0). `startWorkflow`, recovery adoption and `retryWorkflow` join it before they take the instance lock and leave it after the lock's release; shutdown closes it and copies its runs in one critical section, so every launch is either drained or refused. A refused start throws `IllegalStateException` as before; a refused recovery adoption is skipped (no lock, no CAS, no epoch bump); a refused **Retry now throws `IllegalStateException` (`WorkflowExecutor is shutting down — cannot retry workflow '…'`)** with nothing read or written — the admin dispatcher does not acknowledge the record, so a peer retries it (`ShutdownAdmissionTest`, `LaunchOutcomeRegistryTest`, `LifecycleRegistryTest`).
+- **Logs.** The summary's `{n} run(s) in flight at start` now counts the runs in the registry when shutdown began, launches not yet started included. `Interrupted while waiting for workflow '…' during shutdown` becomes `Interrupted while waiting for {n} run(s) during shutdown`.
+
+### Fixed — a run still executing at the shutdown deadline records nothing more (Issue 70)
+
+- **What was wrong.** A run past the deadline kept writing. Spring destroys the host's beans once Maestro's phase has ended, so its activity could fail because of the teardown, record `ACTIVITY_FAILED`, and the workflow could fail and compensate work that never failed.
+- **What changes.** At the deadline every run still registered is **given up** (`RunCancellation.abandon()`, sticky): from then on every store call made under its context is refused with `ExecutorShutdownException` without reaching the store (advisory log-line reads and the activity body's own calls excepted), every stop point that checks for a store fault checks for it too, and a failure the workflow code makes of it is routed to the shutdown arm, never to `FAILED` or a compensation. The run ends `runAbandoned(SHUTDOWN)`; its row keeps the active status it had, and a peer recovers it as after a crash at the deadline. A launch still taking its lock at the deadline writes nothing either: a start throws `IllegalStateException` with no row, a resume adopts nothing (`ShutdownGiveUpTest`, `GivenUpLaunchTest`, `StoreFaultGuardAbandonTest`).
+- **Behaviour change.** A **successful** activity result that arrives after the deadline is discarded, and the activity runs once more on the adopting node — at-least-once, as for a crash. The deadline `WARN` now reads `… records nothing for them: it gave them up, so nothing they do from now on is recorded; …`.
+- **Not enforced.** A `spring.lifecycle.timeout-per-shutdown-phase` shorter than `maestro.shutdown.timeout` lets Spring destroy host beans before the deadline; Operations §15.4 still requires it to be at least the timeout plus 2 s.
+
 ## Unreleased — pilot readiness P3: scope cuts and the support matrix
 
 **New: [`docs/support-matrix.md`](support-matrix.md)** states what is supported, what is not, and what is untested (shared tables, lock-less nodes, stores other than Postgres, version skew, Postgres versions, connection pools, PgBouncer, Kafka setups). `docs/open-issues.md` is triaged against it: five issues closed (31, 62, 74, 78, 79) and every open issue labelled `blocks-pilot`, `blocks-1.0` or `limitation`, with a ranked index at the top.

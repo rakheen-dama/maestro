@@ -38,12 +38,12 @@ Every open issue carries one label, set against `docs/support-matrix.md`:
 Within a label the list is ranked, most important first. Five issues were closed by this
 triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Nothing below was deleted or renumbered; each section keeps its text and anchor.
 
-**`blocks-pilot`** (12)
+**`blocks-pilot`** (10; 80 and 70 closed by P1, 2026-11-18)
 
 1. [41](#issue-41) — An older node replaying history appended by a newer node is untested
 2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
-3. [80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it
-4. [70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown
+3. ~~[80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it~~ — closed (P1)
+4. ~~[70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown~~ — closed (P1)
 5. [69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`
 6. [64](#issue-64) — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call
 7. [66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query
@@ -5249,6 +5249,8 @@ shutdown phase begins, and none consumes after the `DataSource` is closed.
 
 ### Issue 70 — A run still executing at the shutdown deadline can record a failure caused by bean teardown {#issue-70}
 
+> **Closed (pilot-readiness P1, 2026-11-18, PR #TBD): fixed.** At the deadline every run still in the executor's lifecycle registry is given up (`RunCancellation.abandon()`, a sticky flag outside the cause precedence). From then on `StoreFaultGuard` refuses every store call made under the run's context with `ExecutorShutdownException` (advisory reads and the activity body's pass-through calls excepted), checked on entry and before each retry; `RetryExecutor`, `ActivityInvocationHandler`, `DefaultWorkflowOperations` (`sleep`, `parallel`), `SignalManager.awaitSignal`, `SagaManager` and the executor's terminal and failure paths check it where they check for a store fault; and `executeWorkflow` routes a given-up run's `Error`/`Exception` to the shutdown arm, never to `failAndCompensate`. A launch still taking its lock at the deadline writes nothing. A late successful result is discarded and the activity runs again on the adopting node (maintainer-approved). Pinned by `ShutdownGiveUpTest` (activity, parallel branch, compensation; late failure, late success, no further activity), `GivenUpLaunchTest` and `StoreFaultGuardAbandonTest` (every `WorkflowStore` method).
+
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Shutdown completeness, P1.
 
 > **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
@@ -5631,6 +5633,8 @@ starter test.
 <a id="issue-80"></a>
 
 ### Issue 80 — Shutdown's drain can miss a run registered after it began, and not wait for it {#issue-80}
+
+> **Closed (pilot-readiness P1, 2026-11-18, PR #TBD): fixed.** `unreleasedRuns` is gone. Every launch — `startWorkflow`, recovery adoption, and `retryWorkflow`, which had no shutdown check at all — joins the executor's `LifecycleRegistry` before it takes the instance lock and leaves it after the lock's release; shutdown closes the registry and copies its members in one critical section, so a launch is either in the drain or refused, and the drain is `awaitNoRuns(deadline)`. A refused Retry throws `IllegalStateException` with nothing written, so the admin dispatcher does not acknowledge it. Pinned by `ShutdownAdmissionTest.aLaunchPastItsAdmissionCheckWhenShutdownBeginsIsWaitedFor`, `ShutdownAdmissionTest.aRetryDuringShutdownIsRefusedAndWritesNothing`, `LaunchOutcomeRegistryTest` (every launch exit path) and `LifecycleRegistryTest`.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Shutdown completeness, P1.
 

@@ -32,9 +32,9 @@ Starting point: `0.3.0-rc.1` is published to GitHub Packages (PR #69, tag at `d7
 Problem: runs, loops, Kafka containers and the pool are stopped by separate hand-written code; nothing knows everything that is still running. Issues 80, 70, 69, and the rest of 64.
 
 - [ ] Design note: one registry every run, loop and listener container joins before it starts and leaves after it has released what it holds; shutdown closes the registry (nothing new can join), then stops and joins everything in it against the one `ShutdownDeadline`.
-- [ ] A launch that loses the race with shutdown is refused at the registry, not asked to stop afterwards (Issue 80).
+- [x] A launch that loses the race with shutdown is refused at the registry, not asked to stop afterwards (Issue 80). P1 task 1: `LifecycleRegistry`; `startWorkflow`, recovery adoption and `retryWorkflow` (which had no check) join before the lock, leave after the release.
 - [ ] Maestro's Kafka containers become lifecycle-managed and stop before the drain ends (Issue 69).
-- [ ] A run still executing at the deadline cannot record a failure caused by teardown: its outcome writes are fenced once shutdown has given up on it (Issue 70).
+- [x] A run still executing at the deadline cannot record a failure caused by teardown: its outcome writes are fenced once shutdown has given up on it (Issue 70). P1 task 2: in-memory give-up latch (`RunCancellation.abandon()`) refused at `StoreFaultGuard` and the stop points, not a store-side fence (design note §3, option B).
 - [ ] The four core pollers and the lock cleaner stop by latch and bounded join, not interrupt (rest of Issue 64); the health probe's interrupt (Issue 66) is decided in the design note.
 - [ ] Gate: uncached build, chaos PR-gate ×3, 2 h soak.
 
