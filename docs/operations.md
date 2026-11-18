@@ -1718,17 +1718,45 @@ drains, if the phase timed out (traced).
 
 A request already in flight that calls `startWorkflow` after the engine's
 shutdown has begun gets `IllegalStateException` (`WorkflowExecutor is shutting
-down — cannot start workflow '…'`), as before WP5. So does an admin Retry
-(`$maestro:retry`) consumed during or after the drain (`… cannot retry workflow
-'…'`): it reads and writes nothing, the row stays `FAILED`, and the admin
-dispatcher does not acknowledge the record, so a peer retries it
-(`ShutdownAdmissionTest.aRetryDuringShutdownIsRefusedAndWritesNothing`). Before
-P1 such a retry reopened the row and launched a run nothing waited for. In a web host that is an
+down — cannot start workflow '…'`), as before WP5. In a web host that is an
 HTTP 500 unless the host maps it, for example to 503 so the client retries
 against another node (`WorkflowExecutorShutdownDeadlineTest.startingAWorkflowDuringTheDrainIsRefused`;
 the HTTP status is traced, not tested). Because the web server now stops
 accepting new requests at the start of the drain instead of after it, only
 requests already in flight can meet this.
+
+An admin Retry (`$maestro:retry`) consumed during or after the drain is refused
+the same way (`… cannot retry workflow '…'`): it reads and writes nothing, the
+row stays `FAILED`, and the admin dispatcher rethrows, so the record is not
+acknowledged. Until the engine's Kafka signal container stops — at bean destruction, after
+`shutdown()` returns, until [Issue 69](open-issues.md#issue-69) is fixed — the
+record is redelivered to this same draining node and refused again on each
+attempt (one `WARN` each, no stack trace). What happens next depends on
+`maestro.messaging.redelivery.*`:
+
+| Redelivery setting | What becomes of the refused Retry |
+|---|---|
+| Default: `max-attempts` 10, backoff 1, 2, 4, 8, 16, 30 … s (about 2.5 min) | The container stops before the budget is spent; the offset stays uncommitted and a peer consumes the command after the rebalance |
+| A budget whose backoff fits inside the drain (`max-attempts` ≤ 5 with the default intervals and the default 20 s `maestro.shutdown.timeout`) | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
+| `maestro.messaging.redelivery.enabled=false` | Logged and skipped after one attempt: the Retry is lost — click it again once a node is up |
+
+Before P1 such a Retry reopened the row on the draining node and launched a run
+nothing waited for (`ShutdownAdmissionTest.aRetryDuringShutdownIsRefusedAndWritesNothing`,
+`AdminCommandDispatcherRefusalTest.aRetryRefusedBecauseTheNodeIsShuttingDown_isRethrownAndLoggedAtWarn`).
+
+**Calling `shutdown()` from a run's own thread.** `shutdown()` called on a
+thread that belongs to a run — a workflow's or compensation's own code, a
+`parallel()` branch, an activity body, or the thread still launching the run
+(an observer callback such as `instanceLockAcquired`, `workflowStarted` or
+`workflowStartDeferred`, or a `WorkflowStore` decorator) — does not wait for
+that run, which cannot end while its own thread waits; it waits for every other
+run as usual. That run is given up at step 5a with the rest, and a `WARN`
+names it (`Maestro shutdown() was called from a thread of workflow '…' …`).
+Call `shutdown()` from another thread
+(`ShutdownAdmissionTest.aShutdownCalledOnALaunchingThreadDoesNotWaitForThatLaunch`,
+`…aShutdownCalledFromAWorkflowsOwnThreadDoesNotWaitForThatRun`). A thread the
+run's code starts itself is not recognised: a `shutdown()` call there waits
+for the run like any other caller.
 
 ### 15.2 What each workflow looks like afterwards
 
