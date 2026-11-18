@@ -161,13 +161,14 @@ class WorkflowInstanceLockManagerObserverTest {
         // UNAVAILABLE, WorkflowExecutor would skip release() for this workflow
         // and the renewer would keep the lock alive forever — the workflowId
         // becomes permanently unacquirable on this node and blocked elsewhere.
-        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-throw"),
+        var acquired = manager.acquire("wf-throw");
+        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, acquired.outcome(),
                 "a throwing observer must not be reported as a lock-backend failure");
         assertEquals(List.of("wf-throw"), observer.acquired,
                 "the callback must still have been attempted");
         assertTrue(manager.isHeld("wf-throw"), "the acquired lock must still be tracked");
 
-        manager.release("wf-throw", manager.handle("wf-throw"));
+        manager.release("wf-throw", acquired.handle());
         assertFalse(manager.isHeld("wf-throw"), "the caller's release must drop the handle");
     }
 

@@ -766,13 +766,12 @@ public final class WorkflowExecutor {
         // recovery poller can only see the workflow after createInstance, and
         // by then this node already owns the lock — closing the race where a
         // poller cycle steals a just-created workflow before launch (Issue 74).
-        var acquisition = instanceLockManager.tryAcquire(workflowId);
-        // The handle this run carries for its whole life (L1); null when the
-        // lock was not acquired (or was already reported lost).
-        var handle = acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED
-                ? instanceLockManager.handle(workflowId) : null;
-        var heldElsewhere = acquisition == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE;
-        if (handle == null && !isRecoveryPollerRunning()) {
+        var acquired = instanceLockManager.acquire(workflowId);
+        // The handle this run carries for its whole life (L1): the one this
+        // acquisition took, never re-read by id; null when not acquired.
+        var handle = acquired.handle();
+        var heldElsewhere = acquired.outcome() == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE;
+        if (handle == null && !canDeferStart(workflowType)) {
             // M1: a deferred start is acceptable only when something will run
             // it, and on this node only the recovery poller does. Without it,
             // refuse the start before anything is written: an id returned for
@@ -783,9 +782,9 @@ public final class WorkflowExecutor {
             var key = instanceLockManager.lockKey(workflowId);
             throw new LockAcquisitionException(key, "the instance lock "
                     + (heldElsewhere ? "is held elsewhere" : "could not be taken (lock backend unavailable)")
-                    + " and this node runs no recovery poller to start the workflow later "
-                    + "(maestro.recovery.enabled=false, or recovery not started yet) — nothing was persisted; "
-                    + "retry the start");
+                    + " and no recovery poller that registers workflow type '" + workflowType + "' is running on "
+                    + "this node to start it later (maestro.recovery.enabled=false, recovery not started yet, or "
+                    + "the type not registered with it) — nothing was persisted; retry the start");
         }
         try {
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
@@ -825,6 +824,17 @@ public final class WorkflowExecutor {
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
         return instanceId;
+    }
+
+    /**
+     * Whether a fresh start of {@code workflowType} may be deferred: only when
+     * something on this node will run it — a running recovery poller that
+     * registers the type (M1; PR #72 review). Otherwise the start is refused
+     * before anything is written.
+     */
+    private boolean canDeferStart(String workflowType) {
+        var poller = recoveryPoller.get();
+        return poller != null && poller.recovers(workflowType);
     }
 
     /**
@@ -2927,11 +2937,10 @@ public final class WorkflowExecutor {
         if (preAcquired != null) {
             handle = preAcquired;
         } else {
-            var acquisition = instanceLockManager.tryAcquire(snapshot.workflowId());
-            handle = acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED
-                    ? instanceLockManager.handle(snapshot.workflowId()) : null;
+            var acquired = instanceLockManager.acquire(snapshot.workflowId());
+            handle = acquired.handle();
             if (handle == null) {
-                var heldElsewhere = acquisition == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE;
+                var heldElsewhere = acquired.outcome() == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE;
                 logger.info("Workflow '{}' instance lock {} — skipping resume{}", snapshot.workflowId(),
                         heldElsewhere ? "is held elsewhere" : "could not be taken (lock backend unavailable)",
                         heldElsewhere || isRecoveryPollerRunning() ? ""
@@ -2969,6 +2978,17 @@ public final class WorkflowExecutor {
                 // lock renewer did or did not notice. Losing this CAS means
                 // another adopter got here first in the same instant; this node
                 // yields exactly as if the lock had been held elsewhere.
+                // Revalidate this run's own handle before moving the fence
+                // (PR #72 review): a handle already reported lost may mean a
+                // peer holds the lock and has adopted — bumping the epoch now
+                // would fence that peer. A loss not yet noticed is left to the
+                // version CAS (a peer that adopted after our read) and the
+                // registration check below.
+                if (!instanceLockManager.holds(snapshot.workflowId(), handle)) {
+                    logger.info("Workflow '{}' lost its instance lock before adoption — skipping resume",
+                            snapshot.workflowId());
+                    return false;
+                }
                 var adopted = adopt(current.get());
                 if (adopted == null) {
                     instanceLockManager.release(snapshot.workflowId(), handle);
@@ -3237,6 +3257,10 @@ public final class WorkflowExecutor {
             // no-op for an unbounded queue). Released first in finally below.
             // A recovered run claims the slot or queue place its pass reserved.
             taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId(), reservation);
+            // Every queue, bounded or not (PR #72 review): a run whose lock was
+            // reported lost after it registered, before its thread got here, has
+            // executed nothing — it stands down before any workflow code runs.
+            ctx.cancellation().throwIfStale(ctx.workflowId());
             if (taskQueueGovernor.availableWorkflowSlots(ctx.taskQueue()).isPresent()) {
                 // A bounded run may have waited for its slot while this node
                 // began shutting down, or while the workflow was terminated.

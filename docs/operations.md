@@ -1376,12 +1376,17 @@ GROUP BY 1, 2;
 ```
 
 To remove one abandoned name's history, run this in `psql`, after setting
-the name and the age once at the top:
+the name and the age once at the top. **The one age applies to all three
+terminal statuses**, so choose it no shorter than the longest retention you
+want to keep: `90 days` below matches the default `maestro.retention.failed-retention`,
+so a `FAILED` workflow keeps the 90 days an operator has to Retry it, and
+`COMPLETED`/`TERMINATED` history is kept longer than their 30-day default. A
+shorter age deletes `FAILED` workflows inside their retention.
 
 ```sql
 \set ON_ERROR_STOP on
 \set service 'orders-old'
-\set age '30 days'
+\set age '90 days'
 WITH candidates AS (
   SELECT id FROM maestro_workflow_instance
   WHERE service_name = :'service' AND status IN ('COMPLETED', 'TERMINATED', 'FAILED')

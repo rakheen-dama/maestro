@@ -118,15 +118,14 @@ class WorkflowInstanceLockManagerTest {
     void releaseByAStaleHandleLeavesTheNewerLockAlone() {
         var lock = new RecordingLock();
         manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
-        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-1"));
-        var first = manager.handle("order-1");
-        manager.release("order-1", first);
-        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("order-1"));
-        var second = manager.handle("order-1");
+        var first = manager.acquire("order-1");
+        assertEquals(Acquisition.ACQUIRED, first.outcome());
+        manager.release("order-1", first.handle());
+        var second = manager.acquire("order-1").handle();
 
-        manager.release("order-1", first); // the first run, ending late
+        manager.release("order-1", first.handle()); // the first run, ending late
         assertTrue(manager.holds("order-1", second), "the newer acquisition is still held");
-        assertEquals(List.of(first), lock.released, "only the first handle was ever released to the backend");
+        assertEquals(List.of(first.handle()), lock.released, "only the first handle was ever released to the backend");
 
         manager.release("order-1", null); // a launch that never acquired
         assertTrue(manager.holds("order-1", second));
@@ -163,7 +162,8 @@ class WorkflowInstanceLockManagerTest {
             throw new RuntimeException("simulated renewer-start failure");
         };
 
-        var result = manager.tryAcquire("order-1");
+        var acquired = manager.acquire("order-1");
+        var result = acquired.outcome();
 
         assertTrue(manager.isHeld("order-1"),
                 "the lock IS held locally regardless of what tryAcquire reports — "
@@ -172,7 +172,7 @@ class WorkflowInstanceLockManagerTest {
                 "a renewer-start failure must not be reported as UNAVAILABLE while the lock is held");
 
         // release must still work end-to-end after a renewer-start failure.
-        manager.release("order-1", manager.handle("order-1"));
+        manager.release("order-1", acquired.handle());
         assertFalse(manager.isHeld("order-1"));
         assertEquals(1, lock.released.size());
     }
@@ -266,9 +266,9 @@ class WorkflowInstanceLockManagerTest {
     void releaseRemovesAndCallsBackend() {
         var lock = new RecordingLock();
         manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
-        manager.tryAcquire("order-1");
+        var handle = manager.acquire("order-1").handle();
 
-        manager.release("order-1", manager.handle("order-1"));
+        manager.release("order-1", handle);
 
         assertFalse(manager.isHeld("order-1"));
         assertEquals(1, lock.released.size());
