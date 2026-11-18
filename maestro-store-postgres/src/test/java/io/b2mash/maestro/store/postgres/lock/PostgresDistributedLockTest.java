@@ -16,7 +16,6 @@ import java.util.Set;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -79,11 +78,20 @@ class PostgresDistributedLockTest {
         assertTrue(true);
     }
 
+    /**
+     * Pilot readiness P2 (ruling on the review): a broken election table is
+     * not "another node is the leader". It throws, like tryAcquire and renew,
+     * so the timer poller's and the retention sweeper's failure streaks see it.
+     * (It used to log a WARN and report not-leader.)
+     */
     @Test
-    @DisplayName("trySetLeader tolerates backend failures and reports not-leader")
-    void trySetLeaderToleratesBackendFailure() {
-        assertFalse(lock.trySetLeader("maestro:leader:timer-poller:svc", "node-1",
-                Duration.ofSeconds(15)));
+    @DisplayName("trySetLeader wraps backend failures in LockBackendException — a failure is never 'not the leader'")
+    void trySetLeaderWrapsBackendFailure() {
+        var ex = assertThrows(LockBackendException.class,
+                () -> lock.trySetLeader("maestro:leader:timer-poller:svc", "node-1", Duration.ofSeconds(15)));
+
+        assertEquals("maestro:leader:timer-poller:svc", ex.key());
+        assertInstanceOf(SQLException.class, ex.getCause());
     }
 
     @Test
