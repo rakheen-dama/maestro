@@ -24,6 +24,9 @@ include(
     "maestro-bom",
     "maestro-test",
     "maestro-integration-tests",
+    // The node the rolling-upgrade test launches, built twice: against this
+    // build and against each previous release (not published).
+    "maestro-integration-tests:rolling-node",
     "maestro-admin",
     "maestro-admin-client",
     "maestro-samples:sample-order-service",

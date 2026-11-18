@@ -163,6 +163,30 @@ Either way the regeneration is a visible change to a pinned constant, in a diff 
 
 So a fixture cannot be edited or regenerated without changing one of these four literals: a regeneration always shows up in review as an edited Java constant. Gradle cannot skip these checks: `maestro-integration-tests/build.gradle.kts` declares the frozen `*/SeededHistoryWorkflows.java` sources and `src/test/resources/upgrade` as inputs of `test` and of `seededHistoryNonUtcTest` (the same suite in a non-UTC JVM), so even a comment-only edit (which leaves the bytecode unchanged) reruns the tests instead of leaving `test` up to date or restoring it from the build cache. The root `.gitattributes` marks the frozen fixtures `-text`, so git never converts their line endings on checkout and every platform reads the bytes the hashes pin.
 
+### The rolling test against previous releases
+
+The fixtures freeze what a past build wrote. The rolling test (`RollingUpgradeIT`, task `:maestro-integration-tests:rollingUpgradeTest`, CI job "Rolling upgrade" in `build-test.yml`) runs a past build: a node of each previous release, as a JVM of its own, beside a node of this build, on one database. Runs parked by either build are adopted and woken by the other, and one signal sent through both builds with one client message id is stored once. The rule each direction is held to:
+
+- **Upgrade** (parked by the previous release, adopted by this build): the run must finish exactly as on one build. A stand-down fails the test.
+- **Rollback** (parked by this build, adopted by the previous release): the previous release must either (a) finish the run correctly, or (b) stand down having recorded only what a correct run records (a prefix of the run's final history), never a `FAILED` or `TERMINATED` status, never a compensation in a run that does not fail, and never losing a signal. After (b) a node of this build must take the run back and finish it correctly; the steps after the park may have run on either node, each exactly once. (b) passes the test, because `docs/operations.md` §10.3 allows it, but the CI job turns each one into a "Rollback stand-down" warning on the run and lists it in the job summary.
+
+The previous releases are the rows of `previousReleases` in `maestro-integration-tests/rolling-node/build.gradle.kts`: a Maestro version and the Spring Boot version it was built with. After a release is published, add its row; remove a row only when its release leaves the support window. The node source (`rolling-node/src/main`) is compiled against every row, so it may use only API present in the oldest one.
+
+The rows resolve from GitHub Packages (`gpr.user`/`gpr.token`, or `GITHUB_ACTOR`/`GITHUB_TOKEN`, as in [Consuming one](#consuming-one)). A machine without a `read:packages` token can publish the release tag's checkout into a local repository and point the test at it, without publishing anything:
+
+```bash
+git worktree add --detach /tmp/maestro-v0.3.0-rc.1 v0.3.0-rc.1
+(cd /tmp/maestro-v0.3.0-rc.1 && ./gradlew publishToMavenLocal -Pversion=0.3.0-rc.1 -Dmaven.repo.local=/tmp/maestro-releases)
+./gradlew :maestro-integration-tests:rollingUpgradeTest -Pmaestro.rolling.oldRepo=/tmp/maestro-releases
+git worktree remove /tmp/maestro-v0.3.0-rc.1
+```
+
+The test prints where the previous release came from, and writes one line per scenario run to `maestro-integration-tests/build/rolling-upgrade/results.txt`, beside each node's log: `PASSED` with what it observed (including any stand-down), `FAILED` with the first line of the failure, or `ABORTED`.
+
+The CI job skips the test, with a "Rolling upgrade skipped" notice, on a pull request from a fork and on a Dependabot run: their token may not be able to read the registry, so no resolution is attempted there. A skipped job still reports success, and that success is **no evidence about rolling upgrades**: on those pull requests the rolling test has not run. Before making "Rolling upgrade" a required check, observe on a fork pull request both the skip notice and a successful check, so the requirement cannot block an outside contributor. Registry resolution itself is validated on an eligible (same-repository) run; the first one, on PR #71, resolved `0.3.0-rc.1` from GitHub Packages and passed.
+
+Not covered: signals that arrive through Kafka. A `@MaestroSignalListener` derives the message id from the record (`kafka:<topicId>:<partition>:<offset>`, or `hdr:<topic>:<id>` from a header) and the nodes run no broker, so nothing checks that both builds derive the same id for a redelivered record, nor the `SignalMessage` and lifecycle-event formats on the wire between builds, nor both builds in one consumer group. Only client-supplied ids (`client:<id>`) are checked across builds.
+
 ---
 
 ## Pre-releases on GitHub Packages
