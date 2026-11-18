@@ -45,8 +45,9 @@ Properties under `maestro.store.*` control the workflow persistence layer.
 |----------------------------|----------|-------------|----------------------------------------------------------------------------------------------------------|
 | `maestro.store.type`       | `String` | `"postgres"`| Store implementation type. Currently only `postgres` is supported.                                       |
 | `maestro.store.schema.mode`| `String` | `"flyway"`  | `flyway` applies pending Maestro migrations; `validate` fails startup if any are pending; `none` skips — you own the DDL. Case-insensitive. See [Schema management](#schema-management). |
+| `maestro.store.foreign-service-check` | `fail` \| `warn` \| `off` | `fail` | What startup does when Maestro's tables hold active workflow instances under another `maestro.service-name`, of any workflow type: `fail` stops startup with `ForeignServiceRowsException` (services never share Maestro tables); `warn` logs one `WARN` per other name and starts — for a service rename in progress only; `off` reads nothing. The read is bounded to 5 seconds; a read that fails or times out is inconclusive (one `WARN`) and never fails startup. See [Isolating services](#store-configuration) below and `docs/operations.md` §11.5. |
 
-**Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table, so give each service its own Postgres schema and point its datasource at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup. To give the engine a connection pool of its own rather than the application's, see [A dedicated connection pool](#a-dedicated-connection-pool).
+**Isolating services that share a database.** Maestro's tables are always named `maestro_*`. Two services must never share a `maestro_workflow_instance` table — it is not supported ([support matrix](support-matrix.md)), and since pilot readiness P3 startup fails when the tables hold another service's active instances (`maestro.store.foreign-service-check` above) — so give each service its own database, or its own Postgres schema with its datasource pointed at it — `jdbc:postgresql://host/db?currentSchema=order_service` or `spring.datasource.hikari.schema: order_service`. Maestro's migrations (see [Schema management](#schema-management)) run in the connection's current schema, so no further configuration is needed. `maestro.store.table-prefix` was removed; setting it fails startup. To give the engine a connection pool of its own rather than the application's, see [A dedicated connection pool](#a-dedicated-connection-pool).
 
 ### Schema management
 
@@ -486,10 +487,17 @@ The lock is table-backed, in the same PostgreSQL database as the workflow store,
 and ships in `maestro-store-postgres` — there is no separate lock module and
 nothing extra to deploy.
 
+**The lock is mandatory** (pilot readiness P3). There is no lock-less mode:
+startup fails without a `DistributedLock` bean (the message names
+`maestro-store-postgres`, which provides one), and a run whose instance-lock
+acquire fails does not start unlocked — a fresh start is persisted and the
+recovery poller adopts it once the lock can be taken; a resume is skipped until
+a later pass. Tests use `maestro-test`'s `InMemoryDistributedLock`.
+
 | Property                        | Type       | Default          | Description                                                                                  |
 |---------------------------------|------------|------------------|----------------------------------------------------------------------------------------------|
 | `maestro.lock.type`             | `String`   | `"postgres"`     | Lock implementation. `postgres` is the only supported value; any other value (including the removed `valkey`) fails startup with a message naming the removal. |
-| `maestro.lock.key-prefix`       | `String`   | `"maestro:lock:"`| Prefix for all lock keys — the `lock_key` column of `maestro_distributed_lock`. Change this to isolate multiple environments that share a schema. |
+| `maestro.lock.key-prefix`       | `String`   | `"maestro:lock:"`| Prefix for all lock keys — the `lock_key` column of `maestro_distributed_lock`. It separates lock keys only, not workflow tables: environments and services never share Maestro tables ([support matrix](support-matrix.md)). |
 | `maestro.lock.ttl`              | `Duration` | `30s`            | Lock time-to-live. Locks are automatically renewed while the workflow is executing. If a node crashes, locks expire after this duration, enabling recovery by another node. |
 | `maestro.lock.cleanup-interval` | `Duration` | `10m`            | How often the lock cleaner deletes rows whose TTL expired more than a minute ago. Every node runs it (the delete is idempotent). Expired rows never block an acquire — `tryAcquire` treats an expired row as free — so the cleaner only bounds table growth. |
 
@@ -840,9 +848,9 @@ third of the leader TTL), so a sweep keeps the database busy about half of the
 time it runs; a sweep of B batches of t each takes about B·t + (B−1)·min(t, 5 s)
 (arithmetic; the pause rule is `RetentionSweeperPacingTest`). A sweep purges
 only workflows recorded under this node's `maestro.service-name`
-(`RetentionSweeperScopeTest`, `PostgresStoreHygieneTest`): services sharing the
-tables each purge their own rows with their own retentions, and rows recorded
-under a name no node runs any more are purged by nobody — see
+(`RetentionSweeperScopeTest`, `PostgresStoreHygieneTest`). Services never share
+Maestro tables, so the scope matters only for rows recorded under a name no
+node runs any more (a rename): they are purged by nobody — see
 [Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name)
 for how to find and remove them. See
 [Operations § Retention and table growth](operations.md#11-retention-and-table-growth)
@@ -1002,6 +1010,7 @@ maestro:
   service-name: order-service
   store:
     type: postgres
+    foreign-service-check: fail   # warn only while renaming the service
   messaging:
     type: kafka
     topics:
@@ -1457,10 +1466,11 @@ including parked waits — and renewed every 10 seconds. If a node crashes, the
 lock expires after 30 seconds, allowing another node's recovery poller to pick
 up the workflow.
 
-There is no per-activity lock. With a lock backend, two runners execute a
-step concurrently only when both hold the same workflow: the window after a
-node lost its instance lock, or after a node's instance-lock acquire failed
-and it proceeded unlocked (traced, not tested). Lease fencing (V6) rejects
+There is no per-activity lock. Two runners execute a step concurrently only
+in the window after a node lost its instance lock: the lock is mandatory, and
+a run whose instance-lock acquire fails does not start (a fresh start is
+persisted and left to recovery; a resume is skipped until a later pass can
+take the lock). Lease fencing (V6) rejects
 the stale runner's outcome append, so the stale runner records nothing; the
 adopting node, finding no recorded outcome, runs the step again. That holds
 for a store that overrides `WorkflowStore`'s fenced overloads, as the shipped

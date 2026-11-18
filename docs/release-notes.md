@@ -1,5 +1,33 @@
 # Release Notes — Maestro
 
+## Unreleased — pilot readiness P3: scope cuts and the support matrix
+
+**New: [`docs/support-matrix.md`](support-matrix.md)** states what is supported, what is not, and what is untested (shared tables, lock-less nodes, stores other than Postgres, version skew, Postgres versions, connection pools, PgBouncer, Kafka setups). `docs/open-issues.md` is triaged against it: six issues closed (31, 62, 74, 77, 78, 79) and every open issue labelled `blocks-pilot`, `blocks-1.0` or `limitation`, with a ranked index at the top.
+
+### Breaking — a `DistributedLock` is mandatory (Issue 74)
+
+- **What changes.** `WorkflowExecutor.Builder.build()` fails without a lock (`NullPointerException`, message `WorkflowExecutor.MISSING_LOCK_MESSAGE`), and the starter fails startup when no `DistributedLock` bean exists (`IllegalStateException`, `MaestroAutoConfiguration.MISSING_LOCK_MESSAGE`) instead of starting in "single-node mode". With `maestro-store-postgres` on the classpath nothing changes: it provides `PostgresDistributedLock`.
+- **No run executes without its instance lock.** A start whose acquire fails — the lock held elsewhere, or the lock backend throwing — is still persisted `RUNNING` and `startWorkflow` returns its id, but nothing runs on the calling node: the recovery poller adopts it on the first pass that can take the lock (no `WORKFLOW_STARTED` event or `workflowStarted` callback for it; the adopting run reports `workflowResumed`). A resume whose acquire fails is skipped (recovery retries; a retry reports `LOCK_HELD_ELSEWHERE`). Before, both proceeded unlocked (`MandatoryInstanceLockTest`). New `WARN`: `Workflow '{id}' was persisted but not started here: its instance lock {is held elsewhere | could not be taken (lock backend unavailable)} — the recovery poller adopts it once the lock can be taken`. The lock backend's own `WARN` now ends `— not running it now; recovery retries it once the lock can be taken` (was `— proceeding unlocked`).
+- **Embedders and tests.** Pass `.distributedLock(...)`: `PostgresDistributedLock` in production, `maestro-test`'s `InMemoryDistributedLock` in tests (`TestWorkflowEnvironment` already does). A Spring test context with a store and no lock needs `.withBean(DistributedLock.class, InMemoryDistributedLock::new)`.
+
+### Breaking — services never share Maestro tables (Issues 78, 79; Issue 77 becomes a runbook)
+
+- **What changes.** The startup advisory of Issue 39 becomes a check at context refresh, before any listener or recovery starts. It reads the active instances under **any** other `maestro.service-name`, of any workflow type, and by default **fails startup** with `ForeignServiceRowsException` naming each name and its count. `maestro.store.foreign-service-check` = `fail` (default) | `warn` (one `WARN` per name; for a rename in progress) | `off`. The read waits at most 5 s; a failed or late read is inconclusive — one `WARN`, `Maestro shared-table check inconclusive: …`, startup continues — so an unreachable database never becomes a restart loop (`StartupForeignServiceCheckTest`, `ForeignServiceCheckTest`). Terminal rows are not read.
+- **Upgrading.** A service that shares its `maestro_*` tables with another must move to its own database or schema before upgrading, or set `warn` while it moves. A rename: [Operations §11.5](operations.md#115-rows-recorded-under-another-maestroservice-name), "Finishing a rename". A rolling upgrade of one service is unaffected (its nodes share one name).
+- **The root `docker-compose.yml`** gives `sample-payment-gateway` its own `payment_gateway` database (it shared the order service's `maestro` tables). On an existing `pgdata` volume the init script does not run again: `docker compose down -v`, or `CREATE DATABASE payment_gateway`.
+- **Logs.** The old `WARN` (`… of a type this node runs …`), `More than 20 other service names hold active instances of this node's workflow types` and `Maestro service-name check skipped` are gone; the new texts are in Operations §11.5.
+
+### API and SPI
+
+- `WorkflowExecutor.startForeignServiceCheck(Map<String, WorkflowRegistration>)` is replaced by `checkForeignServices(ForeignServiceCheckMode)`, which runs the bounded read on its own thread and returns (or throws) once it has an answer. New public types: `ForeignServiceCheckMode` (`io.b2mash.maestro.core.engine`) and `ForeignServiceRowsException` (`io.b2mash.maestro.core.exception`, a `MaestroException`). The starter's new bean `maestroForeignServiceStartupCheck` (`ForeignServiceStartupCheck`) runs it.
+- `WorkflowStore.getActiveInstanceCountsUnderOtherServices(String serviceName, int limit)` replaces the `(serviceName, workflowTypes, limit)` form. The JDBC store reads it from the partial active-instance index with two ranges, so it touches only other services' active rows.
+- **The `WorkflowStore` SPI is internal until 1.0** (Issue 62, closed): Postgres is the only supported store; methods and defaults change between releases without deprecation.
+- `TimerPoller`, `RetentionSweeper` and `WorkflowInstanceLockManager` (package-private) reject a null lock; their single-node branches are gone.
+
+### Tests
+
+Removed with lock-less mode: `NoLockStartRecoveryRaceTest`, `MultiNodeNoLockBackendIT`, three two-runs-of-one-id tests in `ShutdownReturnsBeforeLockReleaseTest`, and the lock-less duplicate of a terminal-resume test. `MaestroEngineHarness` gives a node built without a lock its own in-memory lock.
+
 ## Unreleased — Postgres + Kafka only
 
 ### Changed — retention and the signal janitor pace their batches and keep to their own service; a startup warning for workflows under another service name (3.11a, 3.11b, Issue 39)

@@ -28,6 +28,12 @@ workload (the `sample-loan-origination` demo). They are useful as *shape* —
 which term dominates a bound, whether two backends behave equivalently — not
 as guarantees for your production hardware, network, or workload.
 
+**What is supported at all** — one service per set of Maestro tables, a
+mandatory `DistributedLock`, Postgres as the only store, rolling upgrades from
+the previous release only, and which Postgres, pool and Kafka setups are
+tested — is stated in [`docs/support-matrix.md`](support-matrix.md). This
+guide assumes a supported setup.
+
 ---
 
 ## 1. Owner-kill → peer adoption (`kill -9`, no restart)
@@ -377,15 +383,15 @@ is marked stale proactively and stands down at its next stop point as
 `stale_run` with detail `instance lock lost` instead — same outcome, earlier.
 Pinned by `MultiNodeFencingIT` (a node with a real, expired Postgres lock
 resumes into the adopter's run: exactly one `LEASE_FENCED`, sequence 2 still
-empty at that moment, the adopter completes alone), `MultiNodeNoLockBackendIT`
-and `EnginePostgresDualExecutionIT` (no lock backend at all: the loser is
-fenced at its first write).
+empty at that moment, the adopter completes alone) and
+`EnginePostgresDualExecutionIT` (two nodes sharing no lock, the lost-lock
+window made permanent: the loser is fenced at its first write).
 
-**No lock backend.** Multi-node without a `DistributedLock` is unsupported,
-but the fence makes it *safe*: two lock-less nodes adopting the same
-workflow either race the adoption CAS (one loses and never launches) or adopt
-in turn (the earlier adopter's first write is fenced). The in-flight step
-still executes on both — see the idempotency rule above.
+**No lock backend.** Not supported, and refused: since pilot readiness P3 a
+node without a `DistributedLock` fails startup, and a run whose instance-lock
+acquire fails does not start (`docs/support-matrix.md`). The suite that
+characterised lock-less nodes (`MultiNodeNoLockBackendIT`) was removed with the
+mode.
 
 **What changed in the earlier cycle: the loser loses fast and clean.** Before
 Issue 18 was fixed, a stale node's post-thaw event-append collision
@@ -431,7 +437,11 @@ this cycle; tighten them after one green soak on a fenced build.
 
 Maestro has one lock backend: the table-backed `PostgresDistributedLock` in
 `maestro-store-postgres` (`maestro_distributed_lock`, `maestro_leader_election`;
-`maestro.lock.type` accepts only `postgres`). It is verified across the full
+`maestro.lock.type` accepts only `postgres`). It is **mandatory**: a node
+without a `DistributedLock` fails startup, and a run whose instance-lock
+acquire fails (the lock is held elsewhere, or the lock backend threw) does not
+start — a fresh start is persisted `RUNNING` for the recovery poller, a resume
+is skipped until a later pass can take the lock (pilot readiness P3). It is verified across the full
 multi-node scenario set above (owner-kill adoption, rolling restart,
 timer-leader failover, cross-node admin commands), 3 consecutive green runs,
 on `sample-loan-origination`'s E2E script.
@@ -597,6 +607,11 @@ message. An older node reads the new `failedSequences` field of a newer
 fleets", under the admin Retry entry.*
 
 ### 10.1 The deploy rule has not changed: upgrade all nodes together
+
+*Supported skew (`docs/support-matrix.md`): a rolling upgrade from the
+**previous release** only. Old and new nodes running together is not yet
+proven by a test (Issue 41, pilot-readiness P4); skew beyond the previous
+release is not supported.*
 
 **Upgrade every node of a service together, or drain the service first.** The
 engine now stands down rather than failing when it meets history it cannot read
@@ -1135,10 +1150,10 @@ calls `trySetLeader("maestro:leader:retention:<service>", candidateId, 15 s)` �
 the same election the timer poller uses — and a node that is not the leader
 stops at once, emits nothing and logs at `DEBUG`. A leader that dies hands over
 within the 15 s TTL. The leader purges **this service's workflows only** —
-those recorded under its `maestro.service-name`; services sharing the tables
-each purge their own, with their own retentions (`RetentionSweeperScopeTest`,
-`PostgresStoreHygieneTest$ScopedPurge`). Rows recorded under a name no node runs
-any more are therefore purged by nobody (§11.5).
+those recorded under its `maestro.service-name` (`RetentionSweeperScopeTest`,
+`PostgresStoreHygieneTest$ScopedPurge`). Services never share Maestro tables
+(`docs/support-matrix.md`), so this matters only for rows recorded under a name
+no node runs any more — after a rename: they are purged by nobody (§11.5).
 
 Each batch (`batch-size` instances, 500 by default) is one
 transaction: Postgres selects the candidates `FOR UPDATE SKIP LOCKED`, deletes
@@ -1274,32 +1289,41 @@ purged anything logs one `INFO` line with its counts; a store failure logs
 Every row of `maestro_workflow_instance` carries the `service_name` of the node
 that started it. Recovery adopts only active rows recorded under this node's
 `maestro.service-name`, and the retention sweep and the signal janitor touch
-only this service's rows. Rows under any other name are another service's
-business — or nobody's, after a rename, or when replicas once ran with
-per-replica names.
+only this service's rows. **Services never share Maestro tables**
+([`docs/support-matrix.md`](support-matrix.md)), so a row under any other name
+is either another service pointed at the wrong tables, or nobody's: left by a
+rename, or by replicas that once ran with per-replica names.
 
-**The startup warning (Issue 39).** Once per node start, on its own thread
-right after recovery has started, each node runs one read and logs one `WARN`
-per other service name that holds **active** instances (`RUNNING`,
-`WAITING_SIGNAL`, `WAITING_TIMER`, `COMPENSATING`) of a workflow type this node
-registers:
+**The startup check (Issues 39, 79; pilot readiness P3).** At context refresh
+— before any Kafka listener or recovery starts — each node runs one read for
+**active** instances (`RUNNING`, `WAITING_SIGNAL`, `WAITING_TIMER`,
+`COMPENSATING`) recorded under any other service name, of any workflow type.
+`maestro.store.foreign-service-check` decides what rows found do:
 
-```text
-3 active workflow instance(s) of a type this node runs are recorded under maestro.service-name 'orders-old', not 'orders'. Recovery adopts only 'orders' instances, so unless a node runs with maestro.service-name=orders-old these workflows never resume; if no node runs that name any more, start one under it or correct the rows (docs/operations.md §11.5).
-```
+- `fail` (default) — startup fails with `ForeignServiceRowsException`:
 
-- It counts neither terminal rows (they are not stranded work) nor other
-  workflow types (a co-tenant service with its own types is not reported).
-- It warns about at most 20 names; when there are more, one `INFO` says so,
-  and the listing query below shows them all.
-- A clean node logs nothing above `DEBUG`. A failed read logs one `INFO`,
-  `Maestro service-name check skipped: …`, without a stack trace. The check
-  never fails or delays startup, and never writes
-  (`StartupForeignServiceCheckTest`, `ForeignServiceCheckTest`,
-  `PostgresStoreHygieneTest$ForeignServiceCounts`).
-- It runs once per node start: ten replicas starting log ten copies.
-- A live co-tenant service that registers the same type name is reported too:
-  the wording is conditional for that reason (Issue 79).
+  ```text
+  Maestro's tables hold active workflow instances recorded under another maestro.service-name than 'orders': 'orders-old' (3). Services never share Maestro tables (docs/support-matrix.md): give each service its own database or schema. If a node of this service ran under another name, or the service is being renamed, recovery adopts only 'orders' instances; set maestro.store.foreign-service-check=warn until the old name's instances are drained or moved (docs/operations.md §11.5).
+  ```
+
+- `warn` — one `WARN` per other name (at most 20; one `INFO` when there are
+  more), and startup continues. For a rename in progress only:
+
+  ```text
+  3 active workflow instance(s) are recorded under maestro.service-name 'orders-old', not 'orders'. Recovery adopts only 'orders' instances, so unless a node runs with maestro.service-name=orders-old they never resume; finish the rename and set maestro.store.foreign-service-check back to fail (docs/operations.md §11.5).
+  ```
+
+- `off` — nothing is read.
+
+The read is bounded: it runs on its own thread and startup waits for it at
+most 5 seconds. A read that fails or does not answer in time is
+**inconclusive** — one `WARN`, `Maestro shared-table check inconclusive: …`,
+and startup continues, so an unreachable database never becomes a restart
+loop; the next start checks again. It counts no terminal rows (no index
+serves them by service name), never writes, and never logs a workflow id
+(`StartupForeignServiceCheckTest`, `ForeignServiceCheckTest`,
+`PostgresStoreHygieneTest$ForeignServiceCounts`). It runs once per node
+start: ten replicas starting under `warn` log ten copies.
 
 **Listing every name** (not exercised by a test; the release notes' pre-upgrade
 query, by type):
@@ -1322,8 +1346,22 @@ GROUP BY service_name, workflow_type ORDER BY service_name, workflow_type;
    ('RUNNING', 'WAITING_SIGNAL', 'WAITING_TIMER', 'COMPENSATING')`. The next
    recovery pass adopts them.
 
-**Terminal rows under a name no node runs are never purged** (Issue 77): each
-service's sweep purges only its own name. Find them (not exercised by a test):
+**Finishing a rename (runbook; Issue 77).** A service renamed from
+`orders-old` to `orders` (traced, not tested):
+
+1. Deploy the new name with `maestro.store.foreign-service-check=warn`. The
+   nodes start and report the old name's active rows.
+2. Drain or move the old name's **active** rows: run one node under the old
+   name — also with `warn`, since to it the new name's rows are foreign —
+   until its workflows finish (remedy 1 above), or, once no node runs the old
+   name, correct their `service_name` (remedy 2).
+3. Purge the old name's **terminal** history with the statement below. No
+   node's retention sweep ever will: each sweep purges only its own name,
+   so terminal rows under a name no node runs are kept for ever.
+4. Set `maestro.store.foreign-service-check` back to `fail` (remove the
+   property). The next start reads no other name.
+
+Find terminal rows under other names (not exercised by a test):
 
 ```sql
 SELECT service_name, status, count(*), min(completed_at)
@@ -1400,7 +1438,9 @@ Tested on Postgres 16 (Testcontainers `postgres:16-alpine`) by
 The tests bind the name and the age as the two parameters. Neither the
 statement nor the count is tested on Postgres 14.
 
-**The cost of scoping in shared tables (Issue 78).** The sweep's candidate
+**The cost of scoping in shared tables (Issue 78; history).** Shared tables
+are no longer supported (pilot readiness P3), so this cost arises only while
+a rename is in progress; Issue 78 is closed as out of scope. The sweep's candidate
 select still walks `idx_wf_instance_terminal (status, completed_at)` and
 filters `service_name` on the heap. A single-service database pays nothing for
 the filter. When a co-tenant keeps a longer retention for the same status,
@@ -1499,7 +1539,7 @@ P = workflows parked on this node):
 | Clock-skew check | 1 `SELECT now()` | at timer-poller start, then every **10 min** |
 | Retention sweep (leader only) | per batch 1 leader upsert + 1 candidate select + 4 deletes; ≤ 3 × `max-batches-per-sweep` batches, each after the first paused as long as the previous one (≤ 5 s) | `maestro.retention.interval` = **1 h** |
 | Signal janitor (every node) | ⌈(U + 1) / 1,000⌉ deletes for U stale unconsumed signals of this service, at most 1,000 per sweep, paced the same way | `maestro.signal.janitor-interval` = **1 h** |
-| Service-name check | 1 read, over the active rows of every service in the tables | once per node start |
+| Shared-table check | 1 read, over the other services' active rows only (none, on a correctly deployed service); bounded to 5 s | once per node start, at context refresh |
 | Lock cleaner (every node) | 2 deletes: `maestro_distributed_lock` and `maestro_leader_election` rows expired for more than a minute | `maestro.lock.cleanup-interval` = **10 min** |
 
 **The janitor's steady state.** Once the backlog is gone, every node's sweep is one statement that deletes nothing. That statement took 149 ms with the planner's custom plan, and 795 ms with the generic plan a server-side prepared statement can switch to in a pool. The old single, unscoped statement took 194 ms on the same state. That cost is paid once per node per `janitor-interval`. These figures were measured on the planning probe: Postgres 16, 412,500 instances, 42,060 unconsumed signals left to scan, not production-sized.
@@ -1817,6 +1857,7 @@ of shutdown. To keep 30 s, set `maestro.shutdown.timeout: 30s`,
 
 ## See also
 
+- `docs/support-matrix.md` — what is supported, not supported and untested.
 - `docs/observability.md` — the full meter catalog (including
   `maestro.standdown`), span topology, and the Kafka trace-propagation
   contract.

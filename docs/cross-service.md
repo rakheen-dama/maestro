@@ -475,11 +475,10 @@ signals or timers. If a node crashes, the lock expires after 30 seconds,
 allowing another node's periodic recovery poller (`maestro.recovery.*`) to
 pick up the workflow.
 
-**No activity lock** -- There is no per-activity lock. With a lock backend,
-two runners execute a step concurrently only when both hold the same workflow:
-the window after a node lost its instance lock, or after a node's
-instance-lock acquire failed and it proceeded unlocked (traced, not tested). Lease
-fencing (V6) rejects the stale runner's outcome append, so the stale runner
+**No activity lock** -- There is no per-activity lock. Two runners execute a
+step concurrently only in the window after a node lost its instance lock: a
+`DistributedLock` is mandatory, and no run starts without holding its instance
+lock (`docs/support-matrix.md`). Lease fencing (V6) rejects the stale runner's outcome append, so the stale runner
 records nothing; the adopting node, finding no recorded outcome, runs the step
 again. Activities must be idempotent. A duplicate Kafka delivery is
 deduplicated by the signal's message id (V9), not by a lock.
@@ -504,8 +503,9 @@ transaction-pooling mode — the parked workflow re-checks the store every
 
 The coordination layer is best-effort by design:
 
-- **Locks** — if a lock expires or a renewal is lost, execution continues
-  unlocked and a peer may adopt the instance; the unique constraint on
+- **Locks** — if a lock expires or a renewal is lost, the run that held it
+  is stood down and a peer may adopt the instance; until it stops, the lease
+  fence rejects its writes, and the unique constraint on
   `(workflow_instance_id, sequence_number)` and optimistic instance versioning
   remain the correctness backstop
 - **Dedup** falls back to the unique constraint on
@@ -518,9 +518,10 @@ The coordination layer is best-effort by design:
   the signal arrives within one re-check interval
 
 The system is slower in these cases, but durable workflow state stays
-correct — Postgres is always the source of truth. What unlocked execution
-cannot guarantee is exactly-once *external side effects*: without the lock an
-activity may run more than once, which is why activities must be idempotent
+correct — Postgres is always the source of truth. What a lost lock cannot
+guarantee is exactly-once *external side effects*: the activity in flight when
+the lock was lost may run once more on the adopting node, which is why
+activities must be idempotent
 (see Best Practices below).
 
 ---
