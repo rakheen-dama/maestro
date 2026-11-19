@@ -104,6 +104,7 @@ finding them by hand.
 | Other pools (Tomcat JDBC, DBCP2, a plain `DataSource`) | **Untested** | The unit suites use `PGSimpleDataSource`, which pools nothing. |
 | PgBouncer in **transaction** pooling mode | **Untested** | `LISTEN` needs a session: set `maestro.signal.wake-notify.enabled=false` (cross-node wake then falls back to `maestro.signal.wake-recheck-interval`). Nothing else has been run behind PgBouncer, including pgjdbc's server-side prepared statements. |
 | PgBouncer in session pooling mode | **Untested** | |
+| Probing the root `/actuator/health` on a pool Maestro shares with the host | **Not supported** | On an exhausted pool the root waits on Boot's `db` indicator (Hikari's `connectionTimeout`, 30 s) though `maestro` answers within 2 s. Probe the groups: `readinessState,maestro` and `livenessState,maestroLiveness` (`docs/operations.md` §14; Issue 75). |
 
 ## Kafka
 

@@ -49,7 +49,9 @@ class WorkflowExecutorSuperviseTest {
         });
         await().atMost(Duration.ofSeconds(5)).until(() -> !observer.loopErrors().isEmpty());
         assertEquals("custom-loop", observer.loopErrors().getFirst().loop());
-        assertEquals(List.of("custom-loop"), executor.loops().stream().map(LoopSnapshot::name).toList());
+        // The instance-lock renewer runs from the build on (P2 task 4).
+        assertEquals(List.of("custom-loop", "instance-lock-renewer"),
+                executor.loops().stream().map(LoopSnapshot::name).toList());
         assertThrows(IllegalStateException.class, () -> executor.supervise(spec, ctx -> Next.afterPeriod()),
                 "a loop name is unique on an executor");
 
@@ -58,6 +60,18 @@ class WorkflowExecutorSuperviseTest {
         assertEquals(LoopSnapshot.State.STOPPED, executor.loops().getFirst().state());
         assertThrows(IllegalStateException.class,
                 () -> executor.supervise(spec.withInitialDelay(Duration.ZERO), ctx -> Next.afterPeriod()));
+    }
+
+    /**
+     * PR #76 review 4629668495: the renewer is listed in {@code loops()} from
+     * outside the supervised map, so its name is reserved: a loop of that name
+     * would hide the renewer's snapshot from the gauge and health.
+     */
+    @Test
+    void theRenewersNameIsReserved() {
+        var spec = LoopSpec.of("instance-lock-renewer", "test-impostor", LoopRole.CRITICAL, Duration.ofHours(1));
+        assertThrows(IllegalArgumentException.class, () -> executor.supervise(spec, ctx -> Next.afterPeriod()));
+        assertEquals(1, executor.loops().stream().filter(l -> l.name().equals("instance-lock-renewer")).count());
     }
 
     @Test
@@ -71,7 +85,7 @@ class WorkflowExecutorSuperviseTest {
                 .anyMatch(l -> l.name().equals("startup-recovery") && l.state() == LoopSnapshot.State.DONE));
         var byName = executor.loops().stream().collect(java.util.stream.Collectors.toMap(
                 LoopSnapshot::name, l -> l));
-        assertEquals(List.of("retention-sweeper", "signal-janitor", "startup-recovery"),
+        assertEquals(List.of("instance-lock-renewer", "retention-sweeper", "signal-janitor", "startup-recovery"),
                 executor.loops().stream().map(LoopSnapshot::name).toList());
         assertEquals(LoopRole.HOUSEKEEPING, byName.get("signal-janitor").role());
         assertEquals(LoopRole.HOUSEKEEPING, byName.get("retention-sweeper").role());

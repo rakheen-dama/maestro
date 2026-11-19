@@ -48,6 +48,7 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <tr><td>{@code maestro.retention.sweeps}</td><td>Counter</td><td>—</td><td>{@link #retentionPass}</td></tr>
  *   <tr><td>{@code maestro.lock.renew.failures}</td><td>Counter</td><td>outcome=error|lost</td><td>{@link #instanceLockRenewFailed}/{@link #instanceLockLost}</td></tr>
  *   <tr><td>{@code maestro.loop.errors}</td><td>Counter</td><td>loop</td><td>{@link #backgroundLoopError}; the six engine loops' series are registered at zero on construction</td></tr>
+ *   <tr><td>{@code maestro.loop.failures}</td><td>Counter</td><td>loop</td><td>{@link #backgroundLoopFailed}; eight series registered at zero</td></tr>
  *   <tr><td>{@code maestro.store.retries}</td><td>Counter</td><td>operation=append_event|append_event_returning_payload|get_event_by_sequence</td><td>{@link #storeRetried}</td></tr>
  *   <tr><td>{@code maestro.standdown}</td><td>Counter</td><td>reason</td><td>{@link #standDown}</td></tr>
  *   <tr><td>{@code maestro.run.abandoned}</td><td>Counter</td><td>reason=shutdown|terminated|converged|terminal_write_failed|node_error|store_unavailable</td><td>{@link #runAbandoned}</td></tr>
@@ -104,14 +105,18 @@ public final class MicrometerEngineObserver implements EngineObserver {
 
     private static final String LOOP_ERRORS = "maestro.loop.errors";
 
+    private static final String LOOP_FAILURES = "maestro.loop.failures";
+
     /**
-     * The six engine loops' fixed names, as {@code EngineObserver#backgroundLoopError}
-     * lists them; {@code LoopErrorCounterWiringTest} fails if a loop reports
-     * under any other name.
+     * Every supervised loop's fixed name, the two {@code maestro-store-postgres}
+     * loops included, as {@code EngineObserver#backgroundLoopError} lists them:
+     * the series of {@code maestro.loop.errors} and {@code maestro.loop.failures},
+     * registered at zero on construction. {@code LoopErrorCounterWiringTest}
+     * fails if an engine loop reports under any other name.
      */
-    private static final List<String> ENGINE_LOOPS = List.of(
+    static final List<String> ALL_LOOPS = List.of(
             "timer-poller", "recovery-poller", "startup-recovery", "signal-janitor", "retention-sweeper",
-            "instance-lock-renewer");
+            "instance-lock-renewer", "lock-cleaner", "wake-listener");
 
     private final MeterRegistry registry;
     private final Set<String> warnedMeterNames = ConcurrentHashMap.newKeySet();
@@ -121,11 +126,12 @@ public final class MicrometerEngineObserver implements EngineObserver {
      */
     public MicrometerEngineObserver(MeterRegistry registry) {
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
-        // Registered at zero up front, one series per engine loop: a rate or
+        // Registered at zero up front, one series per loop: a rate or
         // increase() query then sees the first Error, instead of a series that
         // first appears already at 1.
-        for (var loop : ENGINE_LOOPS) {
+        for (var loop : ALL_LOOPS) {
             safely(LOOP_ERRORS, () -> Counter.builder(LOOP_ERRORS).tag(TAG_LOOP, loop).register(registry));
+            safely(LOOP_FAILURES, () -> Counter.builder(LOOP_FAILURES).tag(TAG_LOOP, loop).register(registry));
         }
     }
 
@@ -313,6 +319,16 @@ public final class MicrometerEngineObserver implements EngineObserver {
     @Override
     public void storeRetried(String operation) {
         increment("maestro.store.retries", "operation", operation);
+    }
+
+    /**
+     * Counts a failed iteration of a supervised loop, any failure — a store
+     * fault included — tagged with the loop's fixed name only (eight values,
+     * bounded by code). Its series are registered at zero (P2 task 5).
+     */
+    @Override
+    public void backgroundLoopFailed(String loop, String failureType) {
+        increment(LOOP_FAILURES, TAG_LOOP, loop);
     }
 
     private static String reasonTag(StandDownReason reason) {

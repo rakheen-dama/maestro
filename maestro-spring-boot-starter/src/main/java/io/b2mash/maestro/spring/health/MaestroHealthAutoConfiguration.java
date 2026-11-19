@@ -43,6 +43,20 @@ import org.springframework.context.annotation.Bean;
 public class MaestroHealthAutoConfiguration {
 
     /**
+     * Creates the {@code maestroLiveness} contributor ({@link MaestroLivenessHealthIndicator}):
+     * {@code DOWN} only for a dead loop; no I/O. Add it to the liveness group
+     * ({@code livenessState,maestroLiveness}, Operations §14).
+     *
+     * @param executor the executor whose loops are read
+     * @return the liveness indicator
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public MaestroLivenessHealthIndicator maestroLivenessHealthIndicator(WorkflowExecutor executor) {
+        return new MaestroLivenessHealthIndicator(executor);
+    }
+
+    /**
      * Creates the {@link MaestroHealthIndicator} bean if one does not already exist.
      *
      * @param store      the workflow store to probe for reachability

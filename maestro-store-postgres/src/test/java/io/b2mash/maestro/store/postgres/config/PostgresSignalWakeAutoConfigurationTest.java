@@ -83,6 +83,10 @@ class PostgresSignalWakeAutoConfigurationTest {
             assertThat(ctx).hasSingleBean(DistributedLock.class);
             assertThat(ctx.getBean(DistributedLock.class)).isInstanceOf(PostgresDistributedLock.class);
             assertThat(ctx).hasSingleBean(PostgresLockCleanerScheduler.class);
+            // P2 task 6: both Postgres loops run under the executor's supervisor.
+            assertThat(ctx.getBean(WorkflowExecutor.class).loops())
+                    .extracting(io.b2mash.maestro.core.loop.LoopSnapshot::name)
+                    .contains("lock-cleaner", "wake-listener");
         });
     }
 
@@ -170,6 +174,27 @@ class PostgresSignalWakeAutoConfigurationTest {
             assertThat(ctx).doesNotHaveBean(PostgresSignalNotifier.class);
             assertThat(ctx).doesNotHaveBean(PostgresWakeListener.class);
         });
+    }
+
+    /**
+     * PR #76 review 4629668583: a listener the configured notifier does not
+     * use is not started — it would hold a pool connection for nothing.
+     */
+    @Test
+    @DisplayName("a listener the configured notifier does not use is not started")
+    void aListenerTheConfiguredNotifierDoesNotUseIsNotStarted() {
+        var custom = mock(SignalNotifier.class);
+        runner.withBean("customNotifier", SignalNotifier.class, () -> custom)
+                .withBean("appListener", PostgresWakeListener.class,
+                        () -> new PostgresWakeListener(realDataSource(), WakeChannel.channelFor(SERVICE)))
+                .run(ctx -> {
+                    assertThat(ctx).hasNotFailed();
+                    var listener = ctx.getBean(PostgresWakeListener.class);
+                    assertThat(listener.isConnected()).isFalse();
+                    assertThat(ctx.getBean(WorkflowExecutor.class).loops())
+                            .extracting(io.b2mash.maestro.core.loop.LoopSnapshot::name)
+                            .doesNotContain("wake-listener");
+                });
     }
 
     @Test

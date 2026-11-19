@@ -17,6 +17,9 @@ import java.util.Objects;
  * @param period       the wait after a successful iteration, unless the body
  *                     returns another {@link Next}
  * @param backoff      the wait after a failed iteration
+ * @param backoffWait  how that wait is waited: {@link BackoffWait#SLEEP} (the
+ *                     whole back-off, ended only by a stop) unless the body
+ *                     has a bounded reason to retry sooner
  * @param failing      when a failure streak counts as failing
  * @param onStop       run once, on the thread calling
  *                     {@link LoopSupervisor#requestStop()}, to end a wait the
@@ -30,6 +33,7 @@ public record LoopSpec(
         Duration initialDelay,
         Duration period,
         Backoff backoff,
+        BackoffWait backoffWait,
         FailingRule failing,
         List<Runnable> onStop
 ) {
@@ -45,6 +49,7 @@ public record LoopSpec(
         Objects.requireNonNull(initialDelay, "initialDelay");
         Objects.requireNonNull(period, "period");
         Objects.requireNonNull(backoff, "backoff");
+        Objects.requireNonNull(backoffWait, "backoffWait");
         Objects.requireNonNull(failing, "failing");
         onStop = List.copyOf(onStop);
         if (name.isBlank() || threadName.isBlank()) {
@@ -71,7 +76,7 @@ public record LoopSpec(
      */
     public static LoopSpec of(String name, String threadName, LoopRole role, Duration period) {
         return new LoopSpec(name, threadName, role, Duration.ZERO, period, Backoff.fixed(period),
-                FailingRule.streak(2), List.of());
+                BackoffWait.SLEEP, FailingRule.streak(2), List.of());
     }
 
     /**
@@ -79,7 +84,7 @@ public record LoopSpec(
      * @return this spec with that initial delay
      */
     public LoopSpec withInitialDelay(Duration delay) {
-        return new LoopSpec(name, threadName, role, delay, period, backoff, failing, onStop);
+        return new LoopSpec(name, threadName, role, delay, period, backoff, backoffWait, failing, onStop);
     }
 
     /**
@@ -87,7 +92,15 @@ public record LoopSpec(
      * @return this spec with that back-off
      */
     public LoopSpec withBackoff(Backoff backoff) {
-        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, failing, onStop);
+        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, backoffWait, failing, onStop);
+    }
+
+    /**
+     * @param wait how the back-off after a failed iteration is waited
+     * @return this spec with {@code wait}
+     */
+    public LoopSpec withBackoffWait(BackoffWait wait) {
+        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, wait, failing, onStop);
     }
 
     /**
@@ -95,7 +108,7 @@ public record LoopSpec(
      * @return this spec with that rule
      */
     public LoopSpec withFailing(FailingRule rule) {
-        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, rule, onStop);
+        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, backoffWait, rule, onStop);
     }
 
     /**
@@ -103,6 +116,7 @@ public record LoopSpec(
      * @return this spec with those stop hooks
      */
     public LoopSpec withOnStop(Runnable... hooks) {
-        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, failing, List.of(hooks));
+        return new LoopSpec(name, threadName, role, initialDelay, period, backoff, backoffWait, failing,
+                List.of(hooks));
     }
 }

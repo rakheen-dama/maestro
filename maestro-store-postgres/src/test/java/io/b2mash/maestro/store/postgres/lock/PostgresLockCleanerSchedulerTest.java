@@ -4,7 +4,13 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
+import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Named;
@@ -12,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;
@@ -19,9 +26,12 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Supplier;
 
 import static org.awaitility.Awaitility.await;
@@ -96,49 +106,94 @@ class PostgresLockCleanerSchedulerTest extends PostgresLockTestSupport {
         }
     }
 
+    /**
+     * Issue 65's done-when (P2 task 6): supervised by the executor, the
+     * cleaner reports a contained {@code Error} to the engine's observer under
+     * its loop name, which is what moves {@code maestro.loop.errors{loop=lock-cleaner}},
+     * and it shows in {@link WorkflowExecutor#loops()}.
+     */
+    @Test
+    @DisplayName("supervised by the executor, an Error from a run reaches the observer as loop 'lock-cleaner'")
+    void anErrorMovesLoopErrors() throws Exception {
+        var loopErrors = new CopyOnWriteArrayList<String>();
+        var executor = WorkflowExecutor.builder(new InMemoryWorkflowStore(),
+                        new PayloadSerializer(new ObjectMapper()), "svc")
+                .distributedLock(new InMemoryDistributedLock())
+                .lifecycleEventsEnabled(false)
+                .observer(new EngineObserver() {
+                    @Override
+                    public void backgroundLoopError(String loop, String errorType) {
+                        loopErrors.add(loop + " " + errorType);
+                    }
+                })
+                .build();
+        var faulty = new FaultyDataSource(dataSource, () -> new AssertionError("x"));
+        try (var scheduler = new PostgresLockCleanerScheduler(new PostgresLockCleaner(faulty), Duration.ofMillis(50))) {
+            scheduler.start(executor);
+            assertTrue(faulty.secondRun.await(5, TimeUnit.SECONDS), "the cleaner made no second run");
+            assertEquals(List.of("lock-cleaner java.lang.AssertionError"), loopErrors);
+            assertTrue(executor.loops().stream().anyMatch(l -> l.name().equals("lock-cleaner")),
+                    "the cleaner is one of the executor's loops: " + executor.loops());
+        } finally {
+            executor.shutdown();
+        }
+    }
+
     @Test
     @DisplayName("a control-flow Error ends the cleaner, and its end is logged through SLF4J")
     void aControlFlowErrorEndsTheCleanerAndIsLogged() {
         var faulty = new FaultyDataSource(dataSource, () -> new ExecutorShutdownException("test"));
-        var log = (Logger) LoggerFactory.getLogger(PostgresLockCleanerScheduler.class);
+        var log = (Logger) LoggerFactory.getLogger(LoopSupervisor.class);
         var appender = new ListAppender<ILoggingEvent>();
         appender.start();
         log.addAppender(appender);
         try (var scheduler = new PostgresLockCleanerScheduler(new PostgresLockCleaner(faulty), Duration.ofMillis(50))) {
             scheduler.start();
-            await("the cleaner thread to end").atMost(Duration.ofSeconds(5)).until(() -> !scheduler.isRunning());
+            // The supervisor publishes DEAD before its uncaught handler logs: await the line.
+            await("the cleaner's end to be logged").atMost(Duration.ofSeconds(5))
+                    .until(() -> errors(appender).stream()
+                            .anyMatch(m -> m.startsWith("Background loop 'lock-cleaner' stopped: ")));
+            assertFalse(scheduler.isRunning());
             assertEquals(1, faulty.calls.get(), "the control-flow Error ended the loop; it made no second run");
-            // The uncaught handler runs on the thread before it terminates.
-            assertTrue(errors(appender).stream().anyMatch(m -> m.startsWith("Postgres lock cleaner stopped: ")),
-                    "the cleaner's end was not logged through SLF4J: " + errors(appender));
         } finally {
             log.detachAppender(appender);
         }
     }
 
+    /**
+     * Rewritten in P2 task 6 (Issue 64): {@code close()} no longer interrupts
+     * the cleaner's thread. A run in progress is left to finish — it is never
+     * interrupted inside its JDBC call — and the loop ends right after it.
+     */
     @Test
-    @DisplayName("close() while a run swallows the interrupt and then throws ends the cleaner")
-    void closeWhileARunSwallowsTheInterruptAndThrowsEndsTheCleaner() throws Exception {
+    @DisplayName("close() while a run is in progress never interrupts it, and the cleaner ends after it")
+    void closeWhileARunIsInProgressNeverInterruptsItAndTheCleanerEndsAfterIt() throws Exception {
         var entered = new CountDownLatch(1);
-        var cleanerThread = new java.util.concurrent.atomic.AtomicReference<Thread>();
-        var swallowing = new FaultyDataSource(dataSource, () -> {
+        var release = new CountDownLatch(1);
+        var interrupted = new AtomicBoolean();
+        var cleanerThread = new AtomicReference<Thread>();
+        var blocking = new FaultyDataSource(dataSource, () -> {
             cleanerThread.set(Thread.currentThread());
             entered.countDown();
             try {
-                new CountDownLatch(1).await();                  // until close() interrupts
-            } catch (InterruptedException swallowed) {
-                // a driver that swallows the interrupt (flag cleared) and then fails
+                assertTrue(release.await(10, TimeUnit.SECONDS));
+            } catch (InterruptedException e) {
+                interrupted.set(true);
             }
-            return new AssertionError("interrupted run");
+            return new IllegalStateException("the run ends after close()");
         });
-        var scheduler = new PostgresLockCleanerScheduler(new PostgresLockCleaner(swallowing), Duration.ofMillis(50));
+        var scheduler = new PostgresLockCleanerScheduler(new PostgresLockCleaner(blocking), Duration.ofMillis(50));
         scheduler.start();
         assertTrue(entered.await(5, TimeUnit.SECONDS), "the cleaner never reached the data source");
 
         scheduler.close();
+        assertFalse(scheduler.isRunning(), "stopping as soon as close() returns");
+        assertTrue(cleanerThread.get().isAlive(), "close() does not wait for the run");
+        release.countDown();
 
-        assertTrue(cleanerThread.get().join(Duration.ofSeconds(4)), "the cleaner thread outlived close()");
-        assertFalse(scheduler.isRunning());
+        assertTrue(cleanerThread.get().join(Duration.ofSeconds(4)), "the cleaner thread outlived its run");
+        assertFalse(interrupted.get(), "close() interrupted the run");
+        assertEquals(1, blocking.calls.get(), "no run after close()");
     }
 
     private static List<String> errors(ListAppender<ILoggingEvent> appender) {

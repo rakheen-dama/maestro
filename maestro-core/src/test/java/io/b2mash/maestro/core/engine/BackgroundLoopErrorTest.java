@@ -105,9 +105,8 @@ class BackgroundLoopErrorTest {
 
     @Test
     void timerPoller_aLeaderElectionFailureGoesThroughTheGuardAndTheSkewCheckStillRuns() {
-        var poller = new TimerPoller(store, executor, new ThrowingLeaderLock(), "svc", Duration.ofMillis(50), 10,
-                observer);
-        poller.start();
+        var body = new TimerPoller(store, executor, new ThrowingLeaderLock(), "svc", Duration.ofMillis(50), 10);
+        var poller = RunningLoop.start(body.spec(), body, observer);
         try {
             await("two consecutive failed elections").atMost(Duration.ofSeconds(5))
                     .until(() -> poller.consecutiveFailures() >= 2);
@@ -121,9 +120,8 @@ class BackgroundLoopErrorTest {
     /** Shutdown during a failing streak: stop() lands in the failure arm's wait and ends the loop at once. */
     @Test
     void timerPoller_stopDuringAFailingStreak_endsTheLoopPromptly() {
-        var poller = new TimerPoller(store, executor, new ThrowingLeaderLock(), "svc", Duration.ofMinutes(10), 10,
-                observer);
-        poller.start();
+        var body = new TimerPoller(store, executor, new ThrowingLeaderLock(), "svc", Duration.ofMinutes(10), 10);
+        var poller = RunningLoop.start(body.spec(), body, observer);
         await("the first failed election").atMost(Duration.ofSeconds(5))
                 .until(() -> poller.consecutiveFailures() >= 1);
 
@@ -137,69 +135,102 @@ class BackgroundLoopErrorTest {
     }
 
     /**
-     * Shutdown while a store call swallows the interrupt and then throws: the
-     * guard sees the loop stopping, does not count or report the failure, and
-     * the loop ends instead of sleeping a full interval.
+     * Shutdown while a store call is in progress and then throws: the
+     * supervisor sees the loop stopping, does not count or report the failure,
+     * and the loop ends instead of sleeping a full interval. (Since P2 task 4
+     * the stop never interrupts the call; it used to, and these tests had the
+     * store swallow that interrupt.)
      */
     @Test
-    void timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndThrows_endsPromptlyAndUncounted() throws Exception {
+    void timerPoller_stopWhileAStoreCallIsInProgressAndThenThrows_endsPromptlyAndUncounted() throws Exception {
         var entered = new CountDownLatch(1);
-        var swallowing = new PollFaultStore() {
+        var release = new CountDownLatch(1);
+        var interrupted = new AtomicBoolean();
+        var slow = new PollFaultStore() {
             @Override
             public List<WorkflowTimer> getDueTimers(int batchSize) {
                 entered.countDown();
-                try {
-                    new CountDownLatch(1).await();           // until stop() interrupts
-                } catch (InterruptedException swallowed) {
-                    // a driver that swallows the interrupt (flag cleared) and then fails
-                }
-                throw new AssertionError("interrupted store call");
+                awaitRelease(release, interrupted);
+                throw new AssertionError("a store call that fails after the stop");
             }
         };
-        var poller = new TimerPoller(swallowing, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10, observer);
-        poller.start();
-        assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
+        var body = new TimerPoller(slow, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10);
+        var poller = RunningLoop.start(body.spec(), body, observer);
+        Duration elapsed;
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
 
-        var started = System.nanoTime();
-        poller.stop();
-        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+            poller.requestStop();
+            release.countDown();
+            var started = System.nanoTime();
+            assertTrue(poller.awaitStopped(Duration.ofSeconds(5)));
+            elapsed = Duration.ofNanos(System.nanoTime() - started);
+        } finally {
+            // PR #76 review 4629668532: whatever failed above, the standalone
+            // poller is stopped and its store call released, bounded.
+            poller.requestStop();
+            release.countDown();
+            poller.awaitStopped(Duration.ofSeconds(5));
+        }
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
-                "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
+                "the loop ended at once after its call, took " + elapsed);
+        assertFalse(interrupted.get(), "the store call was never interrupted");
         assertEquals(0, poller.consecutiveFailures(), "a failure while stopping is not counted");
         assertEquals(List.of(), observer.loopErrors(), "a failure while stopping is not reported");
     }
 
     /**
-     * Shutdown while a store call swallows the interrupt and then returns
-     * normally: the success path re-checks {@code running} too, so the loop
-     * ends instead of sleeping a full interval.
+     * Shutdown while a store call is in progress and then returns normally:
+     * the loop ends instead of sleeping a full interval.
      */
     @Test
-    void timerPoller_stopWhileAStoreCallSwallowsTheInterruptAndReturns_endsPromptly() throws Exception {
+    void timerPoller_stopWhileAStoreCallIsInProgressAndThenReturns_endsPromptly() throws Exception {
         var entered = new CountDownLatch(1);
-        var swallowing = new PollFaultStore() {
+        var release = new CountDownLatch(1);
+        var interrupted = new AtomicBoolean();
+        var slow = new PollFaultStore() {
             @Override
             public List<WorkflowTimer> getDueTimers(int batchSize) {
                 entered.countDown();
-                try {
-                    new CountDownLatch(1).await();           // until stop() interrupts
-                } catch (InterruptedException swallowed) {
-                    // a driver that swallows the interrupt (flag cleared) and returns
-                }
+                awaitRelease(release, interrupted);
                 return List.of();
             }
         };
-        var poller = new TimerPoller(swallowing, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10, observer);
-        poller.start();
-        assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
+        var body = new TimerPoller(slow, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10);
+        var poller = RunningLoop.start(body.spec(), body, observer);
+        Duration elapsed;
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
 
-        var started = System.nanoTime();
-        poller.stop();
-        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+            poller.requestStop();
+            release.countDown();
+            var started = System.nanoTime();
+            assertTrue(poller.awaitStopped(Duration.ofSeconds(5)));
+            elapsed = Duration.ofNanos(System.nanoTime() - started);
+        } finally {
+            // PR #76 review 4629668532: whatever failed above, the standalone
+            // poller is stopped and its store call released, bounded.
+            poller.requestStop();
+            release.countDown();
+            poller.awaitStopped(Duration.ofSeconds(5));
+        }
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
-                "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
+                "the loop ended at once after its call, took " + elapsed);
+        assertFalse(interrupted.get(), "the store call was never interrupted");
+    }
+
+    /** Waits for {@code release}, recording (and swallowing) any interrupt, as some drivers do. */
+    private static void awaitRelease(CountDownLatch release, AtomicBoolean interrupted) {
+        while (true) {
+            try {
+                release.await();
+                return;
+            } catch (InterruptedException e) {
+                interrupted.set(true);
+            }
+        }
     }
 
     // ── Recovery poller ───────────────────────────────────────────────
@@ -384,24 +415,27 @@ class BackgroundLoopErrorTest {
     }
 
     /**
-     * The renewer's end is reported through SLF4J by the guard's uncaught
+     * The renewer's end is reported through SLF4J by the supervisor's uncaught
      * handler (review d5): the verdict comes from that log line, not from
      * Awaitility rethrowing a dead thread's exception, which is switched off.
      */
     @Test
     void aControlFlowErrorStopsTheRenewer() {
-        try (var logs = CapturingSlf4jProvider.watch(BackgroundLoopGuard.class)) {
+        try (var logs = CapturingSlf4jProvider.watch(io.b2mash.maestro.core.loop.LoopSupervisor.class)) {
             lock.answer = () -> { throw new ExecutorShutdownException("test"); };
             manager.tryAcquire("wf-1");
-            await("the renewer thread to end").atMost(Duration.ofSeconds(5)).dontCatchUncaughtExceptions()
-                    .until(() -> !manager.isRenewerRunning());
-            assertTrue(manager.hasRenewerStarted());
-            assertEquals(1, lock.calls.get(), "the control-flow Error ended the renewer; it made no second pass");
-            // The uncaught handler runs on the dying thread before isAlive() turns false.
-            var stopped = logs.records().stream()
+            java.util.function.Supplier<List<CapturingSlf4jProvider.CapturedLog>> stoppedLines = () -> logs.records()
+                    .stream()
                     .filter(r -> r.message().startsWith("Background loop 'instance-lock-renewer' stopped: "
                             + "io.b2mash.maestro.core.exception.ExecutorShutdownException: test escaped it"))
                     .toList();
+            // The supervisor publishes DEAD before its thread's uncaught handler logs.
+            await("the renewer's end to be logged").atMost(Duration.ofSeconds(5)).dontCatchUncaughtExceptions()
+                    .until(() -> !stoppedLines.get().isEmpty());
+            assertFalse(manager.isRenewerRunning());
+            assertEquals(io.b2mash.maestro.core.loop.LoopSnapshot.State.DEAD, manager.renewerSnapshot().state());
+            assertEquals(1, lock.calls.get(), "the control-flow Error ended the renewer; it made no second pass");
+            var stopped = stoppedLines.get();
             assertEquals(1, stopped.size(), "one 'stopped' line: " + logs.records());
             assertEquals(Level.ERROR, stopped.getFirst().level());
             assertTrue(stopped.getFirst().throwable() instanceof ExecutorShutdownException,
@@ -492,7 +526,6 @@ class BackgroundLoopErrorTest {
     /** close() during a failing streak ends the renewer thread. */
     @Test
     void renewer_closeDuringAFailingStreak_endsTheRenewer() throws Exception {
-        var thread = captureRenewerThread();
         lock.alwaysFail = true;
         lock.answer = () -> { throw new AssertionError("every pass fails"); };
         manager.tryAcquire("wf-1");
@@ -501,12 +534,13 @@ class BackgroundLoopErrorTest {
 
         manager.close();
 
-        assertTrue(thread.get().join(Duration.ofSeconds(4)), "the renewer thread outlived close()");
+        assertTrue(manager.renewerSnapshot().state().ended(), "the renewer outlived close(): "
+                + manager.renewerSnapshot().state());
         assertFalse(manager.isRenewerRunning());
     }
 
     /**
-     * close() while renewAll is in flight, which then throws: the guard sees
+     * close() while renewAll is in flight, which then throws: the supervisor sees
      * the renewer stopping, does not count or report the failure, and the
      * thread ends. Since WP5 (Issue 64) close() never interrupts the renewer:
      * the in-flight call is released from another thread once close() has
@@ -514,7 +548,6 @@ class BackgroundLoopErrorTest {
      */
     @Test
     void renewer_closeWhileRenewAllIsInFlightAndThenThrows_endsUncounted() throws Exception {
-        var thread = captureRenewerThread();
         var entered = new CountDownLatch(1);
         var release = new CountDownLatch(1);
         var interrupted = new AtomicBoolean();
@@ -539,22 +572,11 @@ class BackgroundLoopErrorTest {
 
         manager.close();
 
-        assertTrue(thread.get().join(Duration.ofSeconds(4)), "the renewer thread outlived close()");
+        assertTrue(manager.renewerSnapshot().state().ended(), "the renewer outlived close(): "
+                + manager.renewerSnapshot().state());
         assertFalse(interrupted.get(), "close() must not interrupt a renewal in flight");
         assertEquals(0, manager.renewFailureStreak(), "a failure while stopping is not counted");
         assertEquals(List.of(), observer.loopErrors(), "a failure while stopping is not reported");
-    }
-
-    /** Records the renewer thread the manager builds, so a test can join it. */
-    private AtomicReference<Thread> captureRenewerThread() {
-        var captured = new AtomicReference<Thread>();
-        var starter = manager.renewerThreadStarter;
-        manager.renewerThreadStarter = () -> {
-            var thread = starter.get();
-            captured.set(thread);
-            return thread;
-        };
-        return captured;
     }
 
     // ── Fixtures ──────────────────────────────────────────────────────

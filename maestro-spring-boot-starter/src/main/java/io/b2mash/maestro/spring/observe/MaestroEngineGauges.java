@@ -52,6 +52,15 @@ import io.micrometer.core.instrument.MeterRegistry;
  */
 public final class MaestroEngineGauges {
 
+    private static double failing(WorkflowExecutor executor, String loop) {
+        for (var snapshot : executor.loops()) {
+            if (snapshot.name().equals(loop)) {
+                return snapshot.failing() ? 1.0 : 0.0;
+            }
+        }
+        return 0.0;
+    }
+
     private final WorkflowExecutor executor;
 
     /**
@@ -84,6 +93,15 @@ public final class MaestroEngineGauges {
                         + "for lack of task-queue capacity")
                 .strongReference(true)
                 .register(registry);
+        // One series per supervised loop (P2 task 5): 1 while its snapshot reads
+        // failing (its FailingRule holds), 0 otherwise or before it starts.
+        for (var loop : MicrometerEngineObserver.ALL_LOOPS) {
+            Gauge.builder("maestro.loop.failing", this.executor, e -> failing(e, loop))
+                    .tag("loop", loop)
+                    .description("1 while this background loop's failure streak counts as failing")
+                    .strongReference(true)
+                    .register(registry);
+        }
         // No tags: the log names the callback and the delegate.
         FunctionCounter.builder("maestro.observer.errors", this.executor, WorkflowExecutor::observerErrorCount)
                 .description("Observer callbacks that threw and were contained (logged WARN once per callback "

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.loop;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -415,8 +416,96 @@ class LoopSupervisorTest {
             throw new IllegalStateException("the wait fails");
         }));
         awaitUntil(() -> waits.get() >= 3);
-        awaitUntil(() -> loop.snapshot().consecutiveFailures() >= 2);
-        assertTrue(loop.snapshot().failing(), "two failures in a row: failing under streak(2)");
+        // Since the P2b review (M1) each iteration's success is published before
+        // its wait and taken back when the wait throws, so the streak is read
+        // once it holds rather than at an arbitrary instant.
+        awaitUntil(() -> {
+            var snapshot = loop.snapshot();                    // one reading: failing under streak(2)
+            return snapshot.failing() && snapshot.consecutiveFailures() >= 2;
+        });
+    }
+
+    /**
+     * PR #76 review 4629668520: a loop must not die because an observer threw.
+     * A {@code VirtualMachineError} from {@code backgroundLoopFailed} — which
+     * the composite rethrows for ordinary callbacks — is contained on the
+     * supervisor's failure-reporting path: the failure is still counted, the
+     * loop backs off and runs again, as it does for the same error from its
+     * body.
+     */
+    @Test
+    void aVirtualMachineErrorFromTheFailureObserverDoesNotEndTheLoop() {
+        var calls = new AtomicInteger();
+        var throwing = new EngineObserver() {
+            @Override
+            public void backgroundLoopFailed(String loop, String failureType) {
+                throw new OutOfMemoryError("observer (scripted)");
+            }
+
+            @Override
+            public void backgroundLoopError(String loop, String errorType) {
+                throw new OutOfMemoryError("observer (scripted)");
+            }
+        };
+        var loop = LoopSupervisor.start(fast("vme-observer"), ctx -> {
+            calls.incrementAndGet();
+            throw new AssertionError("the body fails");
+        }, throwing);
+        started.add(loop);
+        awaitUntil(() -> calls.get() >= 3);
+        var snapshot = loop.snapshot();
+        assertTrue(snapshot.running(), "the loop is still running: " + snapshot.state());
+        assertTrue(snapshot.consecutiveFailures() >= 2, "each failure still counted: " + snapshot);
+    }
+
+    /**
+     * P2b review M1: an iteration that succeeds ends the streak at once, even
+     * when it returns {@code Next.await}. The recovery poller waits a whole
+     * poll interval after each pass; were its success published only after
+     * that wait, a poller that recovered would read failing — readiness
+     * {@code DOWN} on every node — for one more interval.
+     */
+    @Test
+    void aSuccessfulIterationEndsTheStreakBeforeItsCustomWait() throws Exception {
+        var calls = new AtomicInteger();
+        var waiting = new CountDownLatch(1);
+        var loop = start(fast("recovering"), ctx -> {
+            if (calls.incrementAndGet() <= 2) {
+                throw new IllegalStateException("down");
+            }
+            return Next.await(c -> {
+                waiting.countDown();
+                return c.sleep(Duration.ofMinutes(1));
+            });
+        });
+        assertTrue(waiting.await(5, TimeUnit.SECONDS), "the third iteration reached its wait");
+        var snapshot = loop.snapshot();
+        assertAll(
+                () -> assertEquals(0, snapshot.consecutiveFailures(), "the success ended the streak"),
+                () -> assertFalse(snapshot.failing(), "not failing while it waits after a success"),
+                () -> assertNotNull(snapshot.lastSuccess()));
+    }
+
+    /**
+     * P2 task 5: every counted failure — an {@code Exception} as well as an
+     * {@code Error} — is reported to {@code backgroundLoopFailed}, which feeds
+     * {@code maestro.loop.failures}; a failure while stopping is not.
+     */
+    @Test
+    void everyCountedFailureIsReportedToBackgroundLoopFailed() {
+        var body = new ScriptedBody();
+        start(fast("reported"), body);
+        body.step(() -> {
+            throw new IllegalStateException("an Exception");
+        });
+        body.step(() -> {
+            throw new AssertionError("an Error");
+        });
+        body.awaitIterations(3);
+        assertEquals(List.of(
+                        new RecordingEngineObserver.LoopErrorCall("reported", IllegalStateException.class.getName()),
+                        new RecordingEngineObserver.LoopErrorCall("reported", AssertionError.class.getName())),
+                observer.loopFailures());
     }
 
     @Test

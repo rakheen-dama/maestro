@@ -283,19 +283,36 @@ public interface EngineObserver {
     /**
      * A background loop (one of {@code timer-poller}, {@code recovery-poller},
      * {@code startup-recovery}, {@code signal-janitor},
-     * {@code retention-sweeper}, {@code instance-lock-renewer}) contained an
+     * {@code retention-sweeper}, {@code instance-lock-renewer}, and with
+     * {@code maestro-store-postgres} supervised by the executor
+     * {@code lock-cleaner} and {@code wake-listener}) contained an
      * {@code Error} that is not a
      * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError}, and
      * keeps running. Fires on the loop's own thread, never on a workflow
      * thread. {@code errorType} is the {@code Error}'s class name. Any
      * occurrence means a bug or resource exhaustion on this node. (The
      * one-shot startup recovery reported under {@code recovery-poller} before
-     * pilot readiness P2.)
+     * pilot readiness P2, and the two Postgres loops reported nothing.)
      *
-     * @param loop      the loop's fixed name (bounded: the six names above)
+     * @param loop      the loop's fixed name (bounded: the eight names above)
      * @param errorType fully-qualified class name of the contained {@code Error}
      */
     default void backgroundLoopError(String loop, String errorType) {}
+
+    /**
+     * A supervised background loop's iteration failed and the failure was
+     * counted in its streak — an {@code Exception} (a store or lock-backend
+     * fault) as well as an {@code Error}; never a failure while the loop is
+     * stopping, never a {@code MaestroControlFlowError}. Fires on the loop's
+     * own thread, before {@link #backgroundLoopError} for an {@code Error}.
+     * The starter counts it on {@code maestro.loop.failures{loop}}.
+     *
+     * @param loop        the loop's fixed name (bounded: the engine's six and
+     *                    {@code lock-cleaner}, {@code wake-listener})
+     * @param failureType fully-qualified class name of the failure; never use
+     *                    it as a metric tag
+     */
+    default void backgroundLoopFailed(String loop, String failureType) {}
 
     // ── Store faults ──────────────────────────────────────────────────
 

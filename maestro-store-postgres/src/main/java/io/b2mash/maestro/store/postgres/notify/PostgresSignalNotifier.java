@@ -58,6 +58,18 @@ public final class PostgresSignalNotifier implements SignalNotifier, AutoCloseab
 
     private final DataSource dataSource;
     private final PostgresWakeListener listener;
+
+    /**
+     * Whether this notifier wakes through {@code candidate}: the
+     * auto-configuration starts a listener only for the notifier that uses it
+     * (PR #76 review).
+     *
+     * @param candidate a listener
+     * @return {@code true} if it is this notifier's listener
+     */
+    public boolean uses(PostgresWakeListener candidate) {
+        return listener == candidate;
+    }
     private final String channel;
     private final LongSupplier nanoClock;
 

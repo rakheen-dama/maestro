@@ -161,6 +161,46 @@ class LoopSupervisorCadenceTest {
         }
     }
 
+    /**
+     * P2b review m6 (design note §7, log lines): an optimisation loop — the
+     * wake listener — logs the first failure of a streak, and its reminders,
+     * at {@code WARN}: a routine Postgres failover must not page. Critical and
+     * housekeeping loops are unchanged ({@code ERROR}).
+     */
+    @Test
+    void anOptimisationLoopLogsItsFirstFailureAndItsRemindersAtWarn() {
+        var optimisation = LoopSupervisor.unstarted(
+                LoopSpec.of("wake-listener", "t-wake", LoopRole.OPTIMISATION, Duration.ofSeconds(1)),
+                ctx -> Next.afterPeriod(), observer, nanos::get, InstantSource.system());
+        try (var logs = CapturingSlf4jProvider.watch(LoopSupervisor.class)) {
+            assertEquals(LoopSupervisor.Logged.FIRST, optimisation.failed(new IllegalStateException("first")));
+            nanos.addAndGet(LoopSupervisor.REMINDER_INTERVAL.toNanos());
+            assertEquals(LoopSupervisor.Logged.REMINDER, optimisation.failed(new IllegalStateException("again")));
+            var records = logs.records();
+            assertAll(
+                    () -> assertEquals(Level.WARN, records.get(0).level(), "FIRST"),
+                    () -> assertTrue(records.get(0).message().startsWith("Background loop 'wake-listener' failed "
+                            + "(java.lang.IllegalStateException: first)"), records.get(0).message()),
+                    () -> assertEquals(Level.WARN, records.get(1).level(), "REMINDER"));
+        }
+    }
+
+    /**
+     * P2b review m4: the age of the last success is measured on the monotonic
+     * clock; a wall-clock step moves {@code lastSuccess} but not it.
+     */
+    @Test
+    void sinceLastSuccessIsMeasuredOnTheMonotonicClock() {
+        var wall = new java.util.concurrent.atomic.AtomicReference<>(java.time.Instant.parse("2026-11-19T00:00:00Z"));
+        var supervisor = LoopSupervisor.unstarted(LoopSpec.of("x", "t-x", LoopRole.CRITICAL, Duration.ofSeconds(5)),
+                ctx -> Next.afterPeriod(), observer, nanos::get, wall::get);
+        assertNull(supervisor.snapshot().sinceLastSuccess(), "no success yet");
+        supervisor.succeeded();
+        nanos.addAndGet(Duration.ofSeconds(5).toNanos());
+        wall.set(wall.get().plusSeconds(3600));                 // an NTP step
+        assertEquals(Duration.ofSeconds(5), supervisor.snapshot().sinceLastSuccess());
+    }
+
     @Test
     void whileStoppingAFailureIsQuietAndUncounted() {
         stopping();

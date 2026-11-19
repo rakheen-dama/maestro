@@ -120,6 +120,42 @@ class MaestroEngineGaugesTest {
         }
     }
 
+    /** P2 task 5: maestro.loop.failing{loop} is 1 while the loop's snapshot reads failing, 0 otherwise. */
+    @Test
+    void loopFailingGaugeIsOneWhileTheLoopReadsFailing() {
+        var delegate = new InMemoryWorkflowStore();
+        var failingJanitor = (io.b2mash.maestro.core.spi.WorkflowStore) java.lang.reflect.Proxy.newProxyInstance(
+                io.b2mash.maestro.core.spi.WorkflowStore.class.getClassLoader(),
+                new Class<?>[] {io.b2mash.maestro.core.spi.WorkflowStore.class}, (self, method, args) -> {
+                    if (method.getName().equals("deleteUnconsumedSignalsForTerminalInstancesBefore")) {
+                        throw new IllegalStateException("db down (test)");
+                    }
+                    try {
+                        return method.invoke(delegate, args);
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+        var executor = WorkflowExecutor.builder(failingJanitor, new PayloadSerializer(JsonMapper.builder().build()),
+                        "svc")
+                .distributedLock(new InMemoryDistributedLock()).build();
+        try {
+            var registry = new SimpleMeterRegistry();
+            new MaestroEngineGauges(registry, executor);
+            var gauge = registry.get("maestro.loop.failing").tag("loop", "signal-janitor").gauge();
+            assertEquals(0.0, gauge.value(), "not started yet: 0");
+            executor.startSignalJanitor(Duration.ofMillis(10), Duration.ofDays(7));
+            var deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+            while (gauge.value() != 1.0 && System.nanoTime() < deadline) {
+                Thread.onSpinWait();
+            }
+            assertEquals(1.0, gauge.value(), "two failed sweeps in a row: failing");
+            assertEquals(0.0, registry.get("maestro.loop.failing").tag("loop", "timer-poller").gauge().value());
+        } finally {
+            executor.shutdown();
+        }
+    }
+
     /** A run that stays running until the test lets it end. */
     @DurableWorkflow(name = "HoldWorkflow")
     public static final class HoldWorkflow {

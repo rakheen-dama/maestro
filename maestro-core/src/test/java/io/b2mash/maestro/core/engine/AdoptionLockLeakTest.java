@@ -49,7 +49,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>Two windows: in {@code WorkflowExecutor.launchWorkflow}, between the
  * adoption and the run's thread start; and in
  * {@code WorkflowInstanceLockManager.tryAcquire}, after the handle is recorded
- * (the renewer start and the {@code instanceLockAcquired} callback).
+ * (the {@code instanceLockAcquired} callback; the renewer starts with the
+ * manager since P2 task 4, so its start is no longer a window).
  */
 class AdoptionLockLeakTest {
 
@@ -122,7 +123,12 @@ class AdoptionLockLeakTest {
                 "the handle acquired for the failed launch is released");
     }
 
-    /** Window (b): an Error from the instanceLockAcquired callback, after the handle is recorded. */
+    /**
+     * Window (b): an Error from the instanceLockAcquired callback, after the
+     * handle is recorded. A VirtualMachineError: the observer's containment
+     * absorbs every other Error (Issue 81), and this one still reaches the
+     * release.
+     */
     @Test
     void anErrorFromTheLockAcquiredCallback_releasesTheLock_andALaterRecoveryPassAdoptsAndRunsTheWorkflow()
             throws Exception {
@@ -131,7 +137,7 @@ class AdoptionLockLeakTest {
             @Override
             public void instanceLockAcquired(String workflowId) {
                 if (thrown.compareAndSet(false, true)) {
-                    throw new AssertionError("injected in instanceLockAcquired");
+                    throw new InternalError("injected in instanceLockAcquired");
                 }
             }
         });
@@ -141,31 +147,6 @@ class AdoptionLockLeakTest {
 
         assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass after the Error adopted and ran the workflow");
         assertTrue(thrown.get(), "the first acquisition hit the injected Error");
-    }
-
-    /**
-     * Window (b): an Error starting the renewer. The handle is released, the
-     * start is un-latched, and the next acquisition starts the renewer.
-     */
-    @Test
-    void anErrorStartingTheRenewer_releasesTheHandleAndTheNextAcquisitionStartsTheRenewer() {
-        manager = new WorkflowInstanceLockManager(lock, "svc", "maestro:lock:", Duration.ofSeconds(30),
-                Duration.ofMillis(50), EngineObserver.NOOP);
-        var working = manager.renewerThreadStarter;
-        manager.renewerThreadStarter = () -> {
-            throw new OutOfMemoryError("unable to create native thread");
-        };
-
-        assertThrows(OutOfMemoryError.class, () -> manager.tryAcquire("wf-1"));
-
-        assertFalse(manager.isHeld("wf-1"), "no run owns the handle, so it is not kept");
-        assertEquals(List.of("maestro:lock:workflow:wf-1"), lock.released, "the backend lock is given back");
-        assertFalse(manager.hasRenewerStarted(), "the failed start is un-latched");
-
-        manager.renewerThreadStarter = working;
-        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-1"));
-        await("the renewer to start on the next acquisition").atMost(Duration.ofSeconds(5))
-                .until(manager::isRenewerRunning);
     }
 
     /**
@@ -277,17 +258,27 @@ class AdoptionLockLeakTest {
         assertSuppressedReleaseFailure(thrown);
     }
 
+    /**
+     * In {@code tryAcquire}, after the handle is recorded, only the
+     * {@code instanceLockAcquired} callback can still throw (the renewer starts
+     * with the manager since P2 task 4, and the observer is contained but for
+     * a VirtualMachineError or a control-flow Error): its Error reaches the
+     * caller, the handle is given back, and a release that throws is
+     * suppressed on it, not put in its place.
+     */
     @Test
     void aReleaseThatThrowsDoesNotReplaceTheLaunchsError_inTryAcquire() {
         manager = new WorkflowInstanceLockManager(new ReleaseFailsLock(), "svc", "maestro:lock:",
-                Duration.ofSeconds(30), Duration.ofMillis(50), EngineObserver.NOOP);
-        manager.renewerThreadStarter = () -> {
-            throw new OutOfMemoryError("unable to create native thread");
-        };
+                Duration.ofSeconds(30), Duration.ofMillis(50), new EngineObserver() {
+                    @Override
+                    public void instanceLockAcquired(String workflowId) {
+                        throw new OutOfMemoryError("observer allocation");
+                    }
+                });
 
         var thrown = assertThrows(OutOfMemoryError.class, () -> manager.tryAcquire("wf-1"));
 
-        assertEquals("unable to create native thread", thrown.getMessage());
+        assertEquals("observer allocation", thrown.getMessage());
         assertSuppressedReleaseFailure(thrown);
     }
 

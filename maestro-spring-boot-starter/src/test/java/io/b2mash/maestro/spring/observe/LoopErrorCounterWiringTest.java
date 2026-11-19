@@ -37,7 +37,8 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  * the auto-configuration wires them, and is counted under that loop's name.
  *
  * <p>The two {@code maestro-store-postgres} loops (lock cleaner, wake listener)
- * do not reach an {@code EngineObserver} and are not counted (Issue 65).
+ * reach the same observer once they run under the executor (P2 task 6, Issue
+ * 65): {@code PostgresLockCleanerSchedulerTest.anErrorMovesLoopErrors}.
  *
  * <p><b>Thread safety:</b> per-test fixtures; the fault counters are atomic.
  */
