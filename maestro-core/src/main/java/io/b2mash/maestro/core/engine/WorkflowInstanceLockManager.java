@@ -187,8 +187,10 @@ final class WorkflowInstanceLockManager {
         // Contained once, here (Issue 81): a throwing observer can neither
         // report a held lock as UNAVAILABLE nor end a renewal pass early.
         this.observer = CompositeEngineObserver.contain(observer);
+        // The same composite (PR #74 review): one containment count and one
+        // quiet period per observer, not one per consumer.
         this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.INSTANCE_LOCK_RENEWER, renewInterval,
-                closed::get, observer);
+                closed::get, this.observer);
         this.renewerThreadStarter = () -> Thread.ofVirtual()
                 .name("maestro-instance-lock-renewer-" + this.serviceName)
                 .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
