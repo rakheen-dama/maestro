@@ -196,32 +196,66 @@ final class WorkflowInstanceLockManager {
     }
 
     /**
-     * Attempts to acquire the instance lock for a workflow.
+     * The outcome of one {@link #acquire}: the handle is the one <em>this</em>
+     * acquisition took — never looked up again by workflow ID, so a launch whose
+     * handle is later reported lost cannot pick up a newer acquisition's handle
+     * (PR #72 review).
+     *
+     * @param outcome what happened
+     * @param handle  the handle taken; non-{@code null} exactly when
+     *                {@code outcome} is {@link Acquisition#ACQUIRED}
+     */
+    record Acquired(Acquisition outcome, @Nullable LockHandle handle) {
+
+        private static final Acquired HELD_ELSEWHERE = new Acquired(Acquisition.HELD_ELSEWHERE, null);
+        private static final Acquired UNAVAILABLE = new Acquired(Acquisition.UNAVAILABLE, null);
+    }
+
+    /**
+     * Attempts to acquire the instance lock for a workflow; the outcome only.
+     * Same as {@code acquire(workflowId).outcome()}. A launch uses
+     * {@link #acquire}, which also returns the handle it must carry.
      *
      * @param workflowId the workflow's business ID
      * @return the acquisition outcome — never throws
      */
     Acquisition tryAcquire(String workflowId) {
+        return acquire(workflowId).outcome();
+    }
+
+    /**
+     * Attempts to acquire the instance lock for a workflow, returning the
+     * outcome together with the handle this attempt took.
+     *
+     * @param workflowId the workflow's business ID
+     * @return the outcome and, when {@link Acquisition#ACQUIRED}, this
+     *         acquisition's handle — never throws, but an {@code Error} from
+     *         the renewer start or the observer propagates after this
+     *         attempt's own handle was given back
+     */
+    Acquired acquire(String workflowId) {
         if (closed.get()) {
             // After close() the renewer is gone — a lock acquired now would
             // silently expire mid-run, so nothing is acquired and the caller
             // does not launch
-            return Acquisition.UNAVAILABLE;
+            return Acquired.UNAVAILABLE;
         }
         if (heldLocks.containsKey(workflowId)) {
             // Local completing-vs-relaunching race: treat as held
-            return Acquisition.HELD_ELSEWHERE;
+            return Acquired.HELD_ELSEWHERE;
         }
+        LockHandle handle;
         try {
-            var handle = distributedLock.tryAcquire(lockKey(workflowId), ttl);
-            if (handle.isEmpty()) {
-                return Acquisition.HELD_ELSEWHERE;
+            var acquired = distributedLock.tryAcquire(lockKey(workflowId), ttl);
+            if (acquired.isEmpty()) {
+                return Acquired.HELD_ELSEWHERE;
             }
-            heldLocks.put(workflowId, handle.get());
+            handle = acquired.get();
+            heldLocks.put(workflowId, handle);
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — not running it now; recovery "
                     + "retries it once the lock can be taken: {}", workflowId, e.getMessage());
-            return Acquisition.UNAVAILABLE;
+            return Acquired.UNAVAILABLE;
         }
         // Deliberately outside the backend try: the lock IS held from the
         // heldLocks.put() above, so neither a renewer-start failure nor a
@@ -253,29 +287,16 @@ final class WorkflowInstanceLockManager {
             // Error included). A RuntimeException cannot reach here today
             // (both calls above contain it); caught so that stays true if
             // either changes. A failing release is suppressed on the original.
+            // This attempt's own handle: if it was reported lost meanwhile and
+            // another launch took the lock, the newer handle is not ours.
             try {
-                release(workflowId, heldLocks.get(workflowId));
+                release(workflowId, handle);
             } catch (RuntimeException | Error releaseFailure) {
                 e.addSuppressed(releaseFailure);
             }
             throw e;
         }
-        return Acquisition.ACQUIRED;
-    }
-
-    /**
-     * The handle this manager holds for a workflow right now, or {@code null}.
-     * A launch reads it right after {@link #tryAcquire} answered
-     * {@link Acquisition#ACQUIRED} and carries it for the run's whole life, so
-     * every later {@link #release(String, LockHandle)} and lost-lock callback
-     * concerns that run's own lock, not a newer run's (L1).
-     *
-     * @param workflowId the workflow's business ID
-     * @return the held handle, or {@code null} when none is held (never
-     *         acquired, released, or reported lost)
-     */
-    @Nullable LockHandle handle(String workflowId) {
-        return heldLocks.get(workflowId);
+        return new Acquired(Acquisition.ACQUIRED, handle);
     }
 
     /**

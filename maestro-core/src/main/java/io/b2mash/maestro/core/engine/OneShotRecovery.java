@@ -27,8 +27,12 @@ import java.util.Map;
  * iteration — logged at the supervisor's cadence, counted in the loop's
  * streak, an {@link Error} also counted on
  * {@code maestro.loop.errors{loop=startup-recovery}} — and retried after
- * {@code retryInterval}, with no limit, until one pass completes. Then the
- * loop ends {@code DONE}. A {@code MaestroControlFlowError} ends it at once.
+ * {@code retryInterval}, with no limit, until one pass completes. A pass that
+ * skipped a row because the lock backend failed (not one whose lock another
+ * node holds) has not completed either: nothing else on this node would ever
+ * adopt that row, so it is retried after {@code retryInterval} too (PR #72
+ * review), without counting as a failure. Then the loop ends {@code DONE}. A
+ * {@code MaestroControlFlowError} ends it at once.
  *
  * <p>A stop never interrupts the thread: it ends the retry wait at once, and a
  * pass in progress ends at its next instance on the loop's stop flag (or once
@@ -90,13 +94,22 @@ final class OneShotRecovery implements LoopBody {
 
     @Override
     public Next iterate(LoopContext ctx) {
-        var adopted = executor.recoverWorkflowsUntil(registrations, ctx::stopRequested);
+        var pass = executor.recoverWorkflowsUntil(registrations, ctx::stopRequested);
         if (ctx.stopRequested()) {
             logger.debug("One-shot startup recovery stopped before a pass completed");
             return Next.afterPeriod();       // the loop ends STOPPED: the pass did not complete
         }
+        if (pass.lockUnavailable() > 0) {
+            // PR #72 review: a pass that skipped rows because the lock backend
+            // failed is not finished — nothing else on this node would ever
+            // adopt them. Retry after the interval; not a failed iteration.
+            logger.warn("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) but skipped "
+                    + "{} because the lock backend failed; retrying in {}", pass.adopted(),
+                    pass.lockUnavailable(), retryInterval);
+            return Next.after(retryInterval);
+        }
         logger.info("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) without "
-                + "a capacity check; runs beyond a task queue's bound wait for their slots", adopted);
+                + "a capacity check; runs beyond a task queue's bound wait for their slots", pass.adopted());
         return Next.done();
     }
 }

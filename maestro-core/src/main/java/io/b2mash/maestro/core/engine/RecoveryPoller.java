@@ -229,6 +229,17 @@ final class RecoveryPoller implements StoppableLoop {
             }
             promptMonitor.notifyAll();
         }
+        // Also ends a wait for task-queue capacity (PR #72 review): that wait
+        // watches only the capacity signal. A spurious signal costs one
+        // headroom check; the wait then sees the prompt and ends.
+        signal.signal();
+    }
+
+    /** Whether a prompt request is pending (L3). */
+    private boolean promptPending() {
+        synchronized (promptMonitor) {
+            return promptRequestedAt != null;
+        }
     }
 
     /**
@@ -290,6 +301,19 @@ final class RecoveryPoller implements StoppableLoop {
     boolean isRunning() {
         var thread = pollerThread;
         return running && thread != null && thread.isAlive();
+    }
+
+    /**
+     * Whether this poller, while running, can adopt a row of
+     * {@code workflowType}: it holds a registration for it. A deferred start
+     * of a type it does not register would be skipped by every pass (PR #72
+     * review).
+     *
+     * @param workflowType the workflow type
+     * @return {@code true} if running and registered for the type
+     */
+    boolean recovers(String workflowType) {
+        return isRunning() && registrations.containsKey(workflowType);
     }
 
     /**
@@ -429,8 +453,12 @@ final class RecoveryPoller implements StoppableLoop {
      * {@code nextFull}. A wake whose queues have no headroom makes no statement
      * and waits again, checking again no sooner than one spacing later.
      *
+     * A pending prompt request (L3) ends the wait too: the method returns
+     * {@code false} and the full-pass wait that follows runs the prompted pass
+     * when it is due.
+     *
      * @return {@code true} to run a capacity pass now; {@code false} when the
-     *         full pass is due or the poller is stopping
+     *         full pass is due, a prompt is pending, or the poller is stopping
      */
     private boolean awaitCapacity(long seen, long nextFull, long lastPassStart, Set<String> queues)
             throws InterruptedException {
@@ -443,14 +471,14 @@ final class RecoveryPoller implements StoppableLoop {
             if (untilFull <= 0 || !signal.awaitChange(epoch, Duration.ofNanos(untilFull))) {
                 return false;
             }
-            if (!running) {
+            if (!running || promptPending()) {
                 return false;
             }
             var spacingLeft = notBefore - System.nanoTime();
             if (spacingLeft > 0 && !sleepUntil(Math.min(notBefore, nextFull))) {
                 return false;
             }
-            if (nextFull - System.nanoTime() <= 0) {
+            if (nextFull - System.nanoTime() <= 0 || promptPending()) {
                 return false;
             }
             // Read before the headroom check: a release after it wakes the next wait.

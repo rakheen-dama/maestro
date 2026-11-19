@@ -134,6 +134,22 @@ class MandatoryInstanceLockTest {
     }
 
     @Test
+    void aPollerWithoutARegistrationForTheTypeCannotTakeADeferralSoTheStartFailsAndPersistsNothing() {
+        // PR #72 review 4622153269: a running poller that cannot resolve the
+        // workflow type would skip the row for ever.
+        node.startRecoveryPoller(Map.of(), Duration.ofSeconds(60));
+        assertEquals(1, valueWithin(() -> observer.recoveryPasses().size(), 1, Duration.ofSeconds(5)));
+        lock.failAcquire = true;
+
+        var e = assertThrows(LockAcquisitionException.class,
+                () -> node.startWorkflow("wf-1", "WorkWorkflow", "orders", null, workflow(), workMethod()));
+
+        assertTrue(e.getMessage().contains("WorkWorkflow"), e.getMessage());
+        assertTrue(store.getInstance("wf-1").isEmpty(), "a refused start persists nothing");
+        assertEquals(List.of(), observer.startDeferrals());
+    }
+
+    @Test
     void withoutARecoveryPollerADuplicateStartStillReportsTheExistingWorkflow() {
         seedRecoverable(store, "wf-1", "orders");
         lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow(); // its run holds the lock
