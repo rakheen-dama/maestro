@@ -5,8 +5,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 /**
  * One Maestro node of the rolling-upgrade test: a Spring Boot application on
- * the starter, the Postgres store and lock, and nothing else, exactly as a
- * service deploys Maestro.
+ * the starter, the Postgres store and lock, and the Kafka transport, exactly
+ * as a service deploys Maestro. The test excludes Maestro's Kafka
+ * auto-configuration on every node of a scenario that has no broker, so only
+ * the Kafka scenarios' consuming nodes connect to one
+ * ({@link RollingSignalListener}).
  *
  * <h2>Built twice from one source</h2>
  * <p>This source set is compiled against this build's modules and, separately,

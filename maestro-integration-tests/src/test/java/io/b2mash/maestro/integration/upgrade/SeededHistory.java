@@ -6,18 +6,6 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.RecordingObserver;
 import io.b2mash.maestro.integration.support.TerminalWait;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.Invocations;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedActivities;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedFailingActivities;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedFailingWorkflow;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedOrderActivities;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedOrderWorkflow;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedRiskActivities;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedSagaActivities;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedSagaWorkflow;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedTypedActivities;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.SeedTypedResultWorkflow;
-import io.b2mash.maestro.integration.upgrade.cbf5a2a.SeededHistoryWorkflows.StepGate;
 import io.b2mash.maestro.store.postgres.PostgresWorkflowStore;
 import io.b2mash.maestro.store.postgres.lock.PostgresDistributedLock;
 import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
@@ -36,127 +24,73 @@ import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
- * The seeded history written by the build at {@code cbf5a2a}, loaded into a
- * fresh database: the fixture WP9, WP1 and WP3 use to prove that this build
- * upgrades and drives history an older build left behind.
+ * One seeded-history fixture ({@link SeededFixture}) loaded into a fresh
+ * database: the history a past build wrote, which WP9, WP1, WP3 and P4 use to
+ * prove that this build upgrades and drives history an older build left
+ * behind.
  *
- * <p>{@code upgrade/cbf5a2a/seeded-history.sql} is a {@code pg_dump} of every
+ * <p>{@code upgrade/<name>/seeded-history.sql} is a {@code pg_dump} of every
  * {@code maestro_*} table — DDL, {@code maestro_schema_history} and rows —
- * taken after {@code SeededHistoryCapture} ran the frozen
- * {@code SeededHistoryWorkflows} on {@code cbf5a2a}'s own engine and
- * migrations. {@code capture.properties} records which commit, which server
- * and which fixture source produced it. Neither is ever regenerated at a
- * later commit (the plan's "Regeneration rules"); every other suite starts
- * from an empty schema, so this is the only fixture holding rows an older
- * build wrote.
+ * taken after the fixture's {@code SeededHistoryCapture} ran its frozen
+ * {@code SeededHistoryWorkflows} on that build's own engine and migrations.
+ * {@code capture.properties} records which commit, which server and which
+ * fixture source produced it. Neither is ever regenerated at a later commit
+ * (RELEASING.md § Upgrade fixtures); every other suite starts from an empty
+ * schema, so the fixtures are the only rows an older build wrote.
  *
- * <p>{@link #load()} gives every caller its own database, so a test may
- * upgrade, recover and mutate it freely. One {@code postgres:16-alpine}
+ * <p>{@link #load(SeededFixture)} gives every caller its own database, so a
+ * test may upgrade, recover and mutate it freely. One {@code postgres:16-alpine}
  * container serves every load in the JVM; Ryuk removes it at exit.
+ * {@link #load()} loads {@link Cbf5a2aFixture}, the fixture the WP1 tests use.
  *
  * <h2>Using it from a later work package</h2>
  * <ul>
- *   <li>New assertions go in new test classes that call {@link #load()}.
- *       WP9's assertions in {@code SeededHistoryUpgradeIT} change only as a
- *       named plan step. Its class Javadoc's "Pins" section says which ones
- *       may change at all: the pins on history {@code cbf5a2a} wrote
- *       (including {@link #DUMP_SHA256}, {@link #CAPTURE_MANIFEST_SHA256} and
- *       the clock-window constants below) never do; only the pins on what
- *       this build appends may.</li>
- *   <li>WP1 adopts the dormant {@code upgrade-fixture-wp1} runs with
- *       {@code node(Seeds.WP1_SERVICE, …)}. Each parked on {@code go} before
- *       its consumer activity ran, so no recorded step depends on the first
- *       result and none stands down: they complete on this build, each
- *       consumer receiving the first result as it reads back (the exact
- *       decimal, the stamp in UTC). WP1 pins this, and that this build writes
- *       the bytes {@code cbf5a2a} wrote, in
+ *   <li>Assertions that hold for every fixture go in
+ *       {@code SeededHistoryUpgradeIT}, which runs once per
+ *       {@link SeededFixtures#all()} entry. Its class Javadoc's "Pins" section
+ *       says which of its assertions may change at all: the pins on history a
+ *       past build wrote (the fixture's SHA-256s, clock window and recorded
+ *       events) never do; only the pins on what this build appends may.</li>
+ *   <li>WP1 adopts {@code cbf5a2a}'s dormant {@code upgrade-fixture-wp1} runs
+ *       with {@code node(Seeds.WP1_SERVICE, …)} in
  *       {@code SeededHistoryReplayFidelityIT}.</li>
- *   <li>WP3 calls {@code node.retry(id, SeedFailingWorkflow.class)} or
- *       {@code node.retry(id, SeedSagaWorkflow.class)} on the {@code FAILED}
- *       ids. It may first re-register
- *       {@code new SeedActivities(invocations, StepGate.OPEN, false)} so that
+ *   <li>WP3 calls {@code node.retry(id, fixture.failingWorkflow())} or
+ *       {@code node.retry(id, fixture.sagaWorkflow())} on the {@code FAILED}
+ *       ids, with the activities built with {@code explodeFails=false} so that
  *       {@code explode} succeeds.</li>
- *   <li>Activity-step keys and expected payload values are in the
+ *   <li>Activity-step keys and expected payload values are in each frozen
  *       {@code Seeds} Javadoc.</li>
  * </ul>
  *
  * <h2>Thread Safety</h2>
- * <p>{@link #load()} is thread-safe. An instance is meant for one test thread;
- * the store, data source and serializer it hands out are thread-safe.
+ * <p>{@link #load(SeededFixture)} is thread-safe. An instance is meant for one
+ * test thread; the store, data source and serializer it hands out are
+ * thread-safe.
  */
 public final class SeededHistory {
-
-    /** Classpath location of the dump. */
-    static final String DUMP_RESOURCE = "upgrade/cbf5a2a/seeded-history.sql";
-    /** Classpath location of the capture manifest. */
-    static final String MANIFEST_RESOURCE = "upgrade/cbf5a2a/capture.properties";
-
-    /**
-     * SHA-256 of the raw bytes of {@link #DUMP_RESOURCE} as the capture at
-     * {@code cbf5a2a} wrote it (the value the capture script printed). The
-     * row-level guards (counts, statuses, event types, the WP1 decimal) cannot
-     * see a hand-edited payload or timer row; this digest can. Never update it
-     * without re-capturing under the regeneration rules.
-     */
-    public static final String DUMP_SHA256 = "ee06b7f9359e2b4cf7ca5b6ff493ae42afc9624073ff58ba7b316476ebffa134";
-
-    /**
-     * SHA-256 of the raw bytes of {@link #MANIFEST_RESOURCE} as committed with
-     * the dump. The manifest records the frozen workflow source's path
-     * ({@code fixtureSource.path}) and SHA-256 ({@code fixtureSource.sha256}),
-     * and {@code theDumpWasCapturedAtCbf5a2a} checks that file's raw bytes
-     * against them; pinning the manifest therefore pins the source too, so
-     * editing the source together with its recorded hash, or pointing the path
-     * at another file, must also change this literal, in a diff a reviewer
-     * sees. Never update it without re-capturing under the regeneration rules.
-     */
-    public static final String CAPTURE_MANIFEST_SHA256 = "b71ca8e04bf77f91baf7a0bd77b22799e7980a13f5127d5f7e23f562557f93af";
 
     /** The directory, relative to the repository root, that {@code fixtureSource.path} is relative to. */
     static final String MODULE_DIR = "maestro-integration-tests";
 
-    /**
-     * The seeded {@code PENDING} timer rows a replay needs <em>already due</em>,
-     * as {@code "<workflowId>/<timerId>"}: {@code seed-parked-timer}'s 10-minute
-     * nap (fired by the timer poller) and {@code seed-parked-express}'s
-     * 10-minute {@code express} deadline (self-fired by {@code awaitSignal}
-     * during replay).
-     */
-    static final Set<String> MUST_BE_DUE = Set.of("seed-parked-timer/sleep-8002", "seed-parked-express/await-signal-8004");
-
-    /**
-     * The latest {@code fire_at} among {@link #MUST_BE_DUE}
-     * ({@code seed-parked-express}'s {@code await-signal-8004}). Before this
-     * instant the parked runs would wait out real time instead of replaying.
-     */
-    public static final Instant LATEST_MUST_BE_DUE = Instant.parse("2026-11-12T15:02:18.853649Z");
-
-    /**
-     * The earliest {@code fire_at} among every other seeded {@code PENDING}
-     * timer row ({@code seed-parked-approval}'s 10-year {@code approval}
-     * deadline; {@code seed-terminated}'s and the three {@code seed-wp1-*} ones
-     * follow within seconds). {@code getDueTimers} has no service filter, so
-     * from this instant on a timer poller would fire them: the parked approval
-     * would time out, and the terminated and WP1 rows would change.
-     */
-    public static final Instant EARLIEST_MUST_STAY_PENDING = Instant.parse("2036-11-09T14:52:08.619137Z");
-
-    private static final String DUMP_IN_CONTAINER = "/tmp/seeded-history-cbf5a2a.sql";
     private static final AtomicInteger DATABASES = new AtomicInteger();
+    private static final Set<String> COPIED = new HashSet<>();
     private static @Nullable PostgreSQLContainer<?> postgres;
 
+    private final SeededFixture fixture;
     private final PGSimpleDataSource dataSource;
     private final PostgresWorkflowStore store;
     private final PayloadSerializer serializer;
     private final Properties manifest;
 
-    private SeededHistory(PGSimpleDataSource dataSource, Properties manifest) {
+    private SeededHistory(SeededFixture fixture, PGSimpleDataSource dataSource, Properties manifest) {
+        this.fixture = fixture;
         this.dataSource = dataSource;
         var mapper = JsonMapper.builder().build();
         this.store = new PostgresWorkflowStore(dataSource, mapper);
@@ -165,16 +99,27 @@ public final class SeededHistory {
     }
 
     /**
-     * Loads the dump into a fresh database. The schema is exactly as
-     * {@code cbf5a2a} left it: nothing of this build has touched it until
+     * {@link #load(SeededFixture)} of {@link Cbf5a2aFixture}.
+     *
+     * @return the loaded history
+     */
+    public static SeededHistory load() {
+        return load(Cbf5a2aFixture.INSTANCE);
+    }
+
+    /**
+     * Loads the fixture's dump into a fresh database. The schema is exactly as
+     * the fixture's build left it: nothing of this build has touched it until
      * {@link #upgrade(SchemaMode)}.
      *
+     * @param fixture the fixture
      * @return the loaded history
      * @throws IllegalStateException if the dump or manifest is missing, or
      *                               {@code psql} fails to restore the dump
      */
-    public static SeededHistory load() {
+    public static SeededHistory load(SeededFixture fixture) {
         var container = container();
+        var dumpInContainer = copyDump(container, fixture);
         var database = "seeded_" + DATABASES.incrementAndGet();
         try (var conn = dataSource(container, container.getDatabaseName()).getConnection();
              var st = conn.createStatement()) {
@@ -184,18 +129,23 @@ public final class SeededHistory {
         }
         try {
             var result = container.execInContainer("psql", "-v", "ON_ERROR_STOP=1", "-q",
-                    "-U", "test", "-d", database, "-f", DUMP_IN_CONTAINER);
+                    "-U", "test", "-d", database, "-f", dumpInContainer);
             if (result.getExitCode() != 0) {
-                throw new IllegalStateException("psql could not restore " + DUMP_RESOURCE + " (exit "
+                throw new IllegalStateException("psql could not restore " + fixture.dumpResource() + " (exit "
                         + result.getExitCode() + "): " + result.getStderr());
             }
         } catch (IOException e) {
             throw new UncheckedIOException(e);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            throw new IllegalStateException("Interrupted restoring " + DUMP_RESOURCE, e);
+            throw new IllegalStateException("Interrupted restoring " + fixture.dumpResource(), e);
         }
-        return new SeededHistory(dataSource(container, database), readManifest());
+        return new SeededHistory(fixture, dataSource(container, database), readManifest(fixture));
+    }
+
+    /** @return the fixture this history was loaded from */
+    public SeededFixture fixture() {
+        return fixture;
     }
 
     /**
@@ -213,8 +163,8 @@ public final class SeededHistory {
 
     /**
      * The precondition of every test that runs a node over this history: the
-     * wall clock lies after {@link #LATEST_MUST_BE_DUE} and before
-     * {@link #EARLIEST_MUST_STAY_PENDING}. It first checks that both constants
+     * wall clock lies after the fixture's {@link SeededFixture#latestMustBeDue()}
+     * and before its {@link SeededFixture#earliestMustStayPending()}. It first checks that both constants
      * still match the seeded {@code PENDING} timer rows, so neither can drift
      * from the data. Call it before a node touches the database.
      *
@@ -231,7 +181,7 @@ public final class SeededHistory {
                      + " WHERE status = 'PENDING'")) {
             while (rs.next()) {
                 var fireAt = rs.getObject(3, OffsetDateTime.class).toInstant();
-                if (MUST_BE_DUE.contains(rs.getString(1) + "/" + rs.getString(2))) {
+                if (fixture.mustBeDue().contains(rs.getString(1) + "/" + rs.getString(2))) {
                     latestDue = latestDue == null || fireAt.isAfter(latestDue) ? fireAt : latestDue;
                 } else {
                     earliestPending = earliestPending == null || fireAt.isBefore(earliestPending) ? fireAt : earliestPending;
@@ -240,16 +190,19 @@ public final class SeededHistory {
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot read the seeded timer rows", e);
         }
-        if (!LATEST_MUST_BE_DUE.equals(latestDue) || !EARLIEST_MUST_STAY_PENDING.equals(earliestPending)) {
-            throw new IllegalStateException("The clock window no longer matches the seeded PENDING timers: latest"
-                    + " must-be-due " + latestDue + " (constant " + LATEST_MUST_BE_DUE + "), earliest must-stay-pending "
-                    + earliestPending + " (constant " + EARLIEST_MUST_STAY_PENDING + ")");
+        var latestMustBeDue = fixture.latestMustBeDue();
+        var earliestMustStayPending = fixture.earliestMustStayPending();
+        if (!latestMustBeDue.equals(latestDue) || !earliestMustStayPending.equals(earliestPending)) {
+            throw new IllegalStateException("The clock window of fixture " + fixture.name() + " no longer matches"
+                    + " the seeded PENDING timers: latest must-be-due " + latestDue + " (constant " + latestMustBeDue
+                    + "), earliest must-stay-pending " + earliestPending + " (constant " + earliestMustStayPending + ")");
         }
         var now = Instant.now();
-        if (!now.isAfter(LATEST_MUST_BE_DUE) || !now.isBefore(EARLIEST_MUST_STAY_PENDING)) {
-            throw new IllegalStateException("Wall clock " + now + " is outside the seeded-history window: it must be"
-                    + " after " + LATEST_MUST_BE_DUE + " (the latest seeded timer a replay needs already due) and"
-                    + " before " + EARLIEST_MUST_STAY_PENDING + " (the earliest seeded PENDING timer that must still"
+        if (!now.isAfter(latestMustBeDue) || !now.isBefore(earliestMustStayPending)) {
+            throw new IllegalStateException("Wall clock " + now + " is outside the window of fixture "
+                    + fixture.name() + ": it must be"
+                    + " after " + latestMustBeDue + " (the latest seeded timer a replay needs already due) and"
+                    + " before " + earliestMustStayPending + " (the earliest seeded PENDING timer that must still"
                     + " be pending, which a timer poller would otherwise fire). Once the second instant has passed,"
                     + " the fixture must be re-captured (RELEASING.md, Upgrade fixtures).");
         }
@@ -292,7 +245,7 @@ public final class SeededHistory {
         var root = repositoryRoot(Path.of("").toAbsolutePath());
         var source = root.resolve(MODULE_DIR).resolve(manifest.getProperty("fixtureSource.path")).normalize();
         if (!Files.isRegularFile(source)) {
-            throw new IllegalStateException("The frozen fixture source named by " + MANIFEST_RESOURCE
+            throw new IllegalStateException("The frozen fixture source named by " + fixture.manifestResource()
                     + " (fixtureSource.path) is not a file: " + source);
         }
         return source;
@@ -383,52 +336,26 @@ public final class SeededHistory {
 
     /**
      * Builds a node of this build over the seeded database: the Postgres lock,
-     * a 500 ms wake re-check, every frozen workflow registered, and one
-     * {@code SeedActivities(invocations, StepGate.OPEN, true)} registered for
-     * all five activity interfaces. A caller may re-register an activity
-     * interface to override it. Nothing is started: the caller decides
-     * whether to recover, poll timers or start the recovery poller, and
-     * closes the node.
+     * a 500 ms wake re-check, every frozen workflow of the fixture registered,
+     * and {@code activities} registered for every frozen activity interface. A
+     * caller may re-register an activity interface to override it. Nothing is
+     * started: the caller decides whether to recover, poll timers or start the
+     * recovery poller, and closes the node.
      *
      * @param serviceName the node's service name ({@code Seeds.SERVICE} adopts the seeded runs)
      * @param observer    observes the node's executor and activity proxies
-     * @param invocations counts the activity calls the node makes
+     * @param activities  the fixture's activities ({@link SeededFixture#activities}), which count the calls
      * @return the node
      */
-    public MaestroEngineHarness node(String serviceName, RecordingObserver observer, Invocations invocations) {
-        return node(serviceName, observer, invocations, true);
-    }
-
-    /**
-     * {@link #node(String, RecordingObserver, Invocations)}, with the
-     * activities built as {@code SeedActivities(invocations, StepGate.OPEN,
-     * explodeFails)}: {@code false} makes {@code seed-failing.explode}
-     * succeed, the operator's "the fault is fixed" before a Retry.
-     *
-     * @param serviceName  the node's service name ({@code Seeds.SERVICE} adopts the seeded runs)
-     * @param observer     observes the node's executor and activity proxies
-     * @param invocations  counts the activity calls the node makes
-     * @param explodeFails whether {@code seed-failing.explode} throws
-     * @return the node
-     */
-    public MaestroEngineHarness node(String serviceName, RecordingObserver observer, Invocations invocations,
-                                     boolean explodeFails) {
+    public MaestroEngineHarness node(String serviceName, RecordingObserver observer, FrozenActivities activities) {
         var node = MaestroEngineHarness.builder(store, JsonMapper.builder().build())
                 .serviceName(serviceName)
                 .lock(new PostgresDistributedLock(dataSource))
                 .wakeRecheckInterval(Duration.ofMillis(500))
                 .observer(observer)
                 .build();
-        node.registerWorkflow(SeedOrderWorkflow.class);
-        node.registerWorkflow(SeedSagaWorkflow.class);
-        node.registerWorkflow(SeedFailingWorkflow.class);
-        node.registerWorkflow(SeedTypedResultWorkflow.class);
-        var activities = new SeedActivities(invocations, StepGate.OPEN, explodeFails);
-        node.registerActivities(SeedOrderActivities.class, activities);
-        node.registerActivities(SeedRiskActivities.class, activities);
-        node.registerActivities(SeedSagaActivities.class, activities);
-        node.registerActivities(SeedFailingActivities.class, activities);
-        node.registerActivities(SeedTypedActivities.class, activities);
+        fixture.workflows().forEach(node::registerWorkflow);
+        activities.registerOn(node);
         return node;
     }
 
@@ -439,22 +366,31 @@ public final class SeededHistory {
         if (postgres != null) {
             return postgres;
         }
-        // Checked first: a missing dump must say so, not surface as a
-        // container or copy failure.
-        for (var resource : List.of(DUMP_RESOURCE, MANIFEST_RESOURCE)) {
-            if (SeededHistory.class.getClassLoader().getResource(resource) == null) {
-                throw new IllegalStateException("Seeded history resource '" + resource + "' is not on the test"
-                        + " classpath; it is produced by scripts/capture-upgrade-fixture.sh history cbf5a2a cbf5a2a");
-            }
-        }
         var started = new PostgreSQLContainer<>("postgres:16-alpine")
                 .withDatabaseName("seeded_template")
                 .withUsername("test")
                 .withPassword("test");
         started.start();
-        started.copyFileToContainer(MountableFile.forClasspathResource(DUMP_RESOURCE), DUMP_IN_CONTAINER);
         postgres = started;
         return started;
+    }
+
+    /** Copies the fixture's dump into the container once; returns its path there. */
+    private static synchronized String copyDump(PostgreSQLContainer<?> container, SeededFixture fixture) {
+        // Checked first: a missing dump must say so, not surface as a copy failure.
+        for (var resource : List.of(fixture.dumpResource(), fixture.manifestResource())) {
+            if (SeededHistory.class.getClassLoader().getResource(resource) == null) {
+                throw new IllegalStateException("Seeded history resource '" + resource + "' is not on the test"
+                        + " classpath; it is produced by scripts/capture-upgrade-fixture.sh history <ref> "
+                        + fixture.name());
+            }
+        }
+        var inContainer = "/tmp/seeded-history-" + fixture.name() + ".sql";
+        if (!COPIED.contains(fixture.name())) {
+            container.copyFileToContainer(MountableFile.forClasspathResource(fixture.dumpResource()), inContainer);
+            COPIED.add(fixture.name());   // only once the copy succeeded
+        }
+        return inContainer;
     }
 
     private static PGSimpleDataSource dataSource(PostgreSQLContainer<?> container, String database) {
@@ -467,11 +403,11 @@ public final class SeededHistory {
         return ds;
     }
 
-    private static Properties readManifest() {
+    private static Properties readManifest(SeededFixture fixture) {
         var properties = new Properties();
-        try (var in = SeededHistory.class.getClassLoader().getResourceAsStream(MANIFEST_RESOURCE)) {
+        try (var in = SeededHistory.class.getClassLoader().getResourceAsStream(fixture.manifestResource())) {
             if (in == null) {
-                throw new IllegalStateException("Missing " + MANIFEST_RESOURCE);
+                throw new IllegalStateException("Missing " + fixture.manifestResource());
             }
             properties.load(in);
         } catch (IOException e) {
