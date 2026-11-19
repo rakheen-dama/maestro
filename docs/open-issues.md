@@ -478,7 +478,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | `limitation` — Open |
 | [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | **Closed** (P3: out of scope) |
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | `limitation` — Open |
-| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | `blocks-pilot` — Partly resolved (WP5: the renewer; P2: the signal janitor and retention sweeper); the cleaner and the timer and recovery pollers open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | `blocks-pilot` — Partly resolved (WP5: the renewer; P2: every core engine loop); the lock cleaner open |
 | [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | `blocks-pilot` — Open |
 | [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | `blocks-pilot` — Open |
 | [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | `blocks-pilot` — Open |
@@ -4858,6 +4858,11 @@ page.
 ### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** The pollers and cleaner still interrupt JDBC; P1.
+
+> **Partly resolved further** (pilot readiness P2 task 4, PR #TBD-P2b): the
+> timer poller and the recovery poller run under `LoopSupervisor` too: no core
+> engine loop is interrupted any more (the renewer since WP5; the janitor,
+> sweeper and startup recovery since PR #74). Open: the lock cleaner (task 6).
 
 > **Partly resolved further** (pilot readiness P2, PR #74): the signal janitor
 > and the retention sweeper run under `LoopSupervisor` and are stopped by a

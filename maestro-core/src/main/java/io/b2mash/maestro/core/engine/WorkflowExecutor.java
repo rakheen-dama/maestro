@@ -276,10 +276,11 @@ public final class WorkflowExecutor {
      */
     volatile Runnable duringFailedLaunchCleanup = () -> { };
     private final AtomicBoolean shuttingDown;
-    private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
-    private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
-    private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
-    private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
+    /**
+     * The recovery poller's body, once started: for prompt passes and its
+     * registrations. Its loop is the supervisor in {@link #supervised}.
+     */
+    private volatile @Nullable RecoveryPoller recoveryPoller;
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
     /**
      * Every loop this executor supervises ({@link #supervise}), by loop name.
@@ -396,7 +397,7 @@ public final class WorkflowExecutor {
         this.sagaManager = new SagaManager(this.store, serializer, serviceName, this.observer, this.lifecycleEventSink);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
-                instanceLockTtl.dividedBy(3), this.observer);
+                instanceLockTtl.dividedBy(3), this.observer, builder.renewerStarter);
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
         this.instanceLockTtl = instanceLockTtl;
@@ -886,8 +887,8 @@ public final class WorkflowExecutor {
      * before anything is written.
      */
     private boolean canDeferStart(String workflowType) {
-        var poller = recoveryPoller.get();
-        return poller != null && poller.recovers(workflowType);
+        var poller = recoveryPoller;
+        return poller != null && loopRunning(RecoveryPoller.LOOP_NAME) && poller.registers(workflowType);
     }
 
     /**
@@ -903,7 +904,7 @@ public final class WorkflowExecutor {
                 instance.workflowId(), heldElsewhere
                         ? "is held elsewhere" : "could not be taken (lock backend unavailable)");
         observer.workflowStartDeferred(observed(instance), heldElsewhere);
-        var poller = recoveryPoller.get();
+        var poller = recoveryPoller;
         if (poller != null) {
             poller.requestPromptPass();
         }
@@ -2050,7 +2051,7 @@ public final class WorkflowExecutor {
                 if (canDeferStart(running.workflowType())) {
                     logger.info("Workflow '{}' CAS'd to RUNNING but lost its instance lock before its run "
                             + "started — left for recovery to adopt (a prompt pass is requested)", workflowId);
-                    var poller = recoveryPoller.get();
+                    var poller = recoveryPoller;
                     if (poller != null) {
                         poller.requestPromptPass();
                     }
@@ -2155,10 +2156,9 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start timer poller");
         }
-        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize,
-                observer);
-        installAndStart(timerPoller, poller, "Timer poller", poller::start, poller::stop);
-        timerPollerStarted.set(true);
+        var poller = new TimerPoller(store, this, distributedLock, serviceName, pollInterval, batchSize);
+        supervise(poller.spec(), poller);
+        logger.info("Timer poller started ({})", poller.describeSettings());
     }
 
     // ── Recovery poller ─────────────────────────────────────────────────
@@ -2205,10 +2205,13 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start recovery poller");
         }
-        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval, observer,
+        var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval,
                 taskQueueGovernor.capacitySignal(), capacitySpacing);
-        installAndStart(recoveryPoller, poller, "Recovery poller", poller::start, poller::stop);
-        recoveryPollerStarted.set(true);
+        // Published before the loop starts: a start deferred by its first pass
+        // can prompt it at once.
+        recoveryPoller = poller;
+        supervise(poller.spec(), poller);
+        logger.info("Recovery poller started ({})", poller.describeSettings());
     }
 
     /**
@@ -2515,17 +2518,20 @@ public final class WorkflowExecutor {
     }
 
     /**
-     * A snapshot of every loop this executor supervises ({@link #supervise}),
-     * ended ones included, ordered by name. Safe from any thread; never blocks
+     * A snapshot of every loop this executor supervises ({@link #supervise})
+     * and of its instance-lock renewer, ended ones included, ordered by name. Safe from any thread; never blocks
      * and never touches the store.
      *
      * @return one snapshot per supervised loop
      */
     public List<LoopSnapshot> loops() {
-        return supervised.values().stream()
-                .map(LoopSupervisor::snapshot)
-                .sorted(java.util.Comparator.comparing(LoopSnapshot::name))
-                .toList();
+        var snapshots = new ArrayList<LoopSnapshot>(supervised.size() + 1);
+        supervised.values().forEach(supervisor -> snapshots.add(supervisor.snapshot()));
+        // The renewer is supervised by the lock manager, not stopped with the
+        // other loops (runs need it during the drain), but it is one of them.
+        snapshots.add(instanceLockManager.renewerSnapshot());
+        snapshots.sort(java.util.Comparator.comparing(LoopSnapshot::name));
+        return List.copyOf(snapshots);
     }
 
     /** The snapshot of the supervised loop {@code name}, or {@code null} if it was never started. */
@@ -2538,29 +2544,6 @@ public final class WorkflowExecutor {
     private boolean loopRunning(String name) {
         var snapshot = loop(name);
         return snapshot != null && snapshot.running();
-    }
-
-    /**
-     * Claims a background-loop slot, starts the loop, then re-checks for a
-     * concurrent {@link #shutdown()}. The up-front {@code shuttingDown} check
-     * in each {@code start*} method is only a fast fail: a shutdown landing
-     * between it and the claim would find the slot empty, stop nothing, and
-     * leave the loop running on a stopped executor. The re-check after the
-     * start closes that window — whichever of {@code shutdown()} and this
-     * method runs last stops the loop.
-     */
-    private <T> void installAndStart(
-            AtomicReference<T> slot, T loop, String name, Runnable start, Runnable stop) {
-        if (!slot.compareAndSet(null, loop)) {
-            throw new IllegalStateException(name + " already started");
-        }
-        start.run();
-        if (shuttingDown.get()) {
-            slot.compareAndSet(loop, null);
-            stop.run();
-            throw new IllegalStateException(
-                    "WorkflowExecutor is shutting down — " + name + " stopped");
-        }
     }
 
     // ── Shutdown ───────────────────────────────────────────────────────
@@ -2668,17 +2651,12 @@ public final class WorkflowExecutor {
         // the background loops to stop — no new timer fires and no new
         // recovery launches — and join them only after the drain (step 6),
         // so a loop stuck in a store call never delays it.
-        var loops = new ArrayList<StoppableLoop>(5);
-        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(timerPoller, recoveryPoller)) {
-            var loop = slot.getAndSet(null);
-            if (loop != null) {
-                loop.requestStop();
-                loops.add(loop);
-            }
-        }
-        // The supervised loops (startup recovery, signal janitor, retention
-        // sweeper): asked once, never interrupted; they stay in the map, so
-        // loops() reads them STOPPED afterwards.
+        var loops = new ArrayList<StoppableLoop>(6);
+        // Every supervised loop (timer and recovery pollers, startup recovery,
+        // signal janitor, retention sweeper): asked once, never interrupted
+        // (Issue 64); they stay in the map, so loops() reads them STOPPED
+        // afterwards. The instance-lock renewer is not among them: runs need it
+        // during the drain, and step 8 stops it.
         for (var supervisor : supervised.values()) {
             supervisor.requestStop();
             loops.add(StoppableLoop.of(supervisor));
@@ -3034,8 +3012,7 @@ public final class WorkflowExecutor {
      *         {@link #shutdown()})
      */
     public boolean isTimerPollerRunning() {
-        var poller = timerPoller.get();
-        return poller != null && poller.isRunning();
+        return loopRunning(TimerPoller.LOOP_NAME);
     }
 
     /**
@@ -3047,8 +3024,7 @@ public final class WorkflowExecutor {
      *         via {@link #shutdown()})
      */
     public boolean isRecoveryPollerRunning() {
-        var poller = recoveryPoller.get();
-        return poller != null && poller.isRunning();
+        return loopRunning(RecoveryPoller.LOOP_NAME);
     }
 
     /**
@@ -3077,7 +3053,7 @@ public final class WorkflowExecutor {
      * @return {@code true} once the timer poller has been started at least once
      */
     public boolean hasTimerPollerStarted() {
-        return timerPollerStarted.get();
+        return supervised.containsKey(TimerPoller.LOOP_NAME);
     }
 
     /**
@@ -3088,37 +3064,46 @@ public final class WorkflowExecutor {
      * @return {@code true} once the recovery poller has been started at least once
      */
     public boolean hasRecoveryPollerStarted() {
-        return recoveryPollerStarted.get();
+        return supervised.containsKey(RecoveryPoller.LOOP_NAME);
     }
 
     /**
-     * Returns whether this node's instance-lock renewer thread is alive. It
-     * starts with the first instance lock this node acquires, so it is
-     * {@code false} before then, on a node without a {@code DistributedLock},
-     * and after {@link #shutdown()}.
+     * Returns whether this node's instance-lock renewer is running. It starts
+     * while the executor is built (P2 task 4), so it is {@code true} from then
+     * until {@link #shutdown()} — or until something ends it, which health
+     * reports.
      *
-     * @return {@code true} while the instance-lock renewer thread runs
+     * @return {@code true} while the instance-lock renewer runs
      */
     public boolean isInstanceLockRenewerRunning() {
         return instanceLockManager.isRenewerRunning();
     }
 
     /**
-     * Returns whether this node's instance-lock renewer has been started.
-     * Monotonic in practice; see {@link #hasTimerPollerStarted()} for the
-     * startup-vs-fault rationale.
+     * Returns whether this node's instance-lock renewer has been started:
+     * always {@code true}, since it starts while the executor is built (a
+     * renewer that cannot start fails the build). Kept for existing callers.
      *
-     * @return {@code true} once the instance-lock renewer has been started
+     * @return {@code true}
      */
     public boolean hasInstanceLockRenewerStarted() {
-        return instanceLockManager.hasRenewerStarted();
+        return true;
+    }
+
+    /**
+     * How many instance locks this node holds right now.
+     *
+     * @return the number of held instance locks
+     */
+    public int instanceLocksHeld() {
+        return instanceLockManager.heldCount();
     }
 
     /**
      * Returns the instance-lock renewer's current failure streak: consecutive
      * renewal passes that failed (the lock backend's {@code renewAll} threw, or
      * the pass threw an {@code Error}) since the last pass that did not.
-     * {@code 0} before the renewer starts. A renewer can be running with a
+     * A renewer can be running with a
      * positive streak: its thread is alive, but the locks it holds are not
      * being renewed.
      *

@@ -48,17 +48,15 @@ class BackgroundLoopStopTest {
         TIMER_POLLER {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new TimerPoller(store, executor, new InMemoryDistributedLock(), "svc", INTERVAL, 10);
-                loop.start();
-                return loop;
+                var poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "svc", INTERVAL, 10);
+                return RunningLoop.start(poller.spec(), poller);
             }
         },
         RECOVERY_POLLER {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new RecoveryPoller(executor, Map.of(), "svc", INTERVAL);
-                loop.start();
-                return loop;
+                var poller = new RecoveryPoller(executor, Map.of(), "svc", INTERVAL);
+                return RunningLoop.start(poller.spec(), poller);
             }
         },
         SIGNAL_JANITOR {

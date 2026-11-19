@@ -175,16 +175,15 @@ class RecoveryPollerCapacityTest {
             seedRecoverable(store, "wf-" + i, "orders");
         }
         var a = node(1);
-        var poller = new RecoveryPoller(a, registrations(a), SERVICE, Duration.ofHours(1),
-                EngineObserver.NOOP, a.taskQueueGovernor().capacitySignal(), Duration.ofHours(1));
-        poller.interruptOnStop = false;
-        poller.start();
+        var body = new RecoveryPoller(a, registrations(a), SERVICE, Duration.ofHours(1),
+                a.taskQueueGovernor().capacitySignal(), Duration.ofHours(1));
+        // Since P2 task 4 nothing can interrupt the loop: the stop hook is the only wake.
+        var poller = RunningLoop.start(body.spec(), body);
         try {
             assertEquals(1, valueWithin(store::pageReads, 1, Duration.ofSeconds(5)));
             poller.requestStop();
             assertTrue(poller.awaitStopped(Duration.ofSeconds(5)), "the loop left its wait on the stop alone");
         } finally {
-            poller.interruptOnStop = true;
             poller.stop();
         }
     }
@@ -278,9 +277,9 @@ class RecoveryPollerCapacityTest {
             seedRecoverable(store, "rec-" + i, "orders");
         }
         var a = node(1);
-        var poller = new RecoveryPoller(a, registrations(a), SERVICE, Duration.ofHours(1),
-                EngineObserver.NOOP, a.taskQueueGovernor().capacitySignal(), spacing);
-        poller.start();
+        var body = new RecoveryPoller(a, registrations(a), SERVICE, Duration.ofHours(1),
+                a.taskQueueGovernor().capacitySignal(), spacing);
+        var poller = RunningLoop.start(body.spec(), body);
         try {
             assertEquals(1, valueWithin(store::pageReads, 1, Duration.ofSeconds(5)));
             assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)));
@@ -293,7 +292,7 @@ class RecoveryPollerCapacityTest {
                 LockSupport.parkNanos(Duration.ofMillis(2).toNanos());
             }
             var elapsedMs = Duration.ofNanos(System.nanoTime() - start).toMillis();
-            var checks = poller.headroomChecks.get();
+            var checks = body.headroomChecks.get();
             assertTrue(checks <= elapsedMs / spacing.toMillis() + 2,
                     "headroom checks=" + checks + " in " + elapsedMs + " ms at one per " + spacing.toMillis() + " ms");
         } finally {

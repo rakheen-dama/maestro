@@ -32,11 +32,12 @@ class TimerPollerDatabaseClockTest {
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
     private WorkflowExecutor executor;
     private TimerPoller poller;
+    private RunningLoop running;
 
     @AfterEach
     void tearDown() {
-        if (poller != null) {
-            poller.stop();
+        if (running != null) {
+            running.stop();
         }
         if (executor != null) {
             executor.shutdown();
@@ -48,9 +49,9 @@ class TimerPollerDatabaseClockTest {
         var store = new ClockRecordingStore();
         executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "svc", Duration.ofMillis(50), 10);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
         awaitPolls(store);
-        poller.stop();
+        running.stop();
 
         assertEquals("store-clock", store.polls.getFirst());
         assertFalse(store.polls.contains("caller-clock"), store.polls.toString());
@@ -82,14 +83,14 @@ class TimerPollerDatabaseClockTest {
         executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         poller = new TimerPoller(store, executor, new NeverLeaderLock(), "svc", Duration.ofMillis(50), 10);
         var started = System.nanoTime();
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
         var deadline = started + Duration.ofSeconds(10).toNanos();
         var atLeast = started + Duration.ofSeconds(1).toNanos();
         while (System.nanoTime() < deadline
                 && (store.clockReads.get() == 0 || System.nanoTime() < atLeast)) {
             Thread.sleep(10);
         }
-        poller.stop();
+        running.stop();
 
         assertTrue(store.clockReads.get() > 0, "awaited (10 s) the non-leader poller's start-up store-clock read");
         assertEquals(1, store.clockReads.get(), "one check at start, the next only after ClockSkewCheck.INTERVAL");
@@ -119,12 +120,12 @@ class TimerPollerDatabaseClockTest {
         };
         executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         poller = new TimerPoller(store, executor, lock, "svc", Duration.ofMillis(50), 10);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
         var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
         while (!calls.contains("store-clock") && System.nanoTime() < deadline) {
             Thread.sleep(10);
         }
-        poller.stop();
+        running.stop();
 
         assertTrue(calls.contains("store-clock"), "awaited the poller's start-up store-clock read: " + calls);
         assertEquals("leader", calls.getFirst(), "the leadership is renewed first: " + calls);

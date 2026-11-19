@@ -49,7 +49,9 @@ class WorkflowExecutorSuperviseTest {
         });
         await().atMost(Duration.ofSeconds(5)).until(() -> !observer.loopErrors().isEmpty());
         assertEquals("custom-loop", observer.loopErrors().getFirst().loop());
-        assertEquals(List.of("custom-loop"), executor.loops().stream().map(LoopSnapshot::name).toList());
+        // The instance-lock renewer runs from the build on (P2 task 4).
+        assertEquals(List.of("custom-loop", "instance-lock-renewer"),
+                executor.loops().stream().map(LoopSnapshot::name).toList());
         assertThrows(IllegalStateException.class, () -> executor.supervise(spec, ctx -> Next.afterPeriod()),
                 "a loop name is unique on an executor");
 
@@ -71,7 +73,7 @@ class WorkflowExecutorSuperviseTest {
                 .anyMatch(l -> l.name().equals("startup-recovery") && l.state() == LoopSnapshot.State.DONE));
         var byName = executor.loops().stream().collect(java.util.stream.Collectors.toMap(
                 LoopSnapshot::name, l -> l));
-        assertEquals(List.of("retention-sweeper", "signal-janitor", "startup-recovery"),
+        assertEquals(List.of("instance-lock-renewer", "retention-sweeper", "signal-janitor", "startup-recovery"),
                 executor.loops().stream().map(LoopSnapshot::name).toList());
         assertEquals(LoopRole.HOUSEKEEPING, byName.get("signal-janitor").role());
         assertEquals(LoopRole.HOUSEKEEPING, byName.get("retention-sweeper").role());

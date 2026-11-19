@@ -86,13 +86,6 @@ class MaestroHealthIndicatorTest {
     }
 
     @Test
-    void aRenewerThatNeverStartedIsIdleAndNotAFault() {
-        var health = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false).health();
-        assertThat(health.getDetails()).containsEntry("instanceLockRenewerRunning", "idle");
-        assertThat(health.getStatus()).isEqualTo(Status.UP);
-    }
-
-    @Test
     void aRenewerThatStartedAndStoppedIsDown() throws Exception {
         executorWithLock.startWorkflow("wf-renew", "AwaitForever", "default", null, AwaitForever::new, awaitForever);
         await().atMost(Duration.ofSeconds(5)).until(executorWithLock::hasInstanceLockRenewerStarted);

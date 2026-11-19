@@ -51,6 +51,7 @@ class TimerPollerTest {
     private WorkflowExecutor executor;
     private final Duration pollInterval = Duration.ofMillis(100);
     private TimerPoller poller;
+    private RunningLoop running;
 
     @BeforeEach
     void setUp() {
@@ -61,8 +62,8 @@ class TimerPollerTest {
 
     @AfterEach
     void tearDown() {
-        if (poller != null) {
-            poller.stop();
+        if (running != null) {
+            running.stop();
         }
         executor.shutdown();
     }
@@ -80,11 +81,11 @@ class TimerPollerTest {
         try {
             var stuckPoller = new TimerPoller(stuck, stuckExecutor, new InMemoryDistributedLock(), "svc",
                     Duration.ofMillis(20), 10);
-            stuckPoller.start();
+            var stuckLoop = RunningLoop.start(stuckPoller.spec(), stuckPoller);
             assertTrue(stuck.entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
-            stuckPoller.requestStop();
+            stuckLoop.requestStop();
             stuck.release.countDown();
-            assertTrue(stuckPoller.awaitStopped(Duration.ofSeconds(5)));
+            assertTrue(stuckLoop.awaitStopped(Duration.ofSeconds(5)));
             assertFalse(stuck.interrupted.get(), "the store call was never interrupted");
         } finally {
             stuck.release.countDown();
@@ -103,7 +104,7 @@ class TimerPollerTest {
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
 
         poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
             var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
@@ -119,7 +120,7 @@ class TimerPollerTest {
                 Instant.now().plusSeconds(600), TimerStatus.PENDING, Instant.now()));
 
         poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
 
         // Wait a few poll cycles, then assert the timer is still pending
         await().during(Duration.ofMillis(300)).atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
@@ -144,7 +145,7 @@ class TimerPollerTest {
                 Instant.now().minusSeconds(5), TimerStatus.PENDING, Instant.now()));
 
         poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
             var remaining = store.getDueTimers(Instant.now().plusSeconds(60), 100);
@@ -164,7 +165,7 @@ class TimerPollerTest {
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
 
         poller = new TimerPoller(store, executor, lock, "test-service", pollInterval, 100);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
 
         // Timer should remain PENDING across several poll cycles
         await().during(Duration.ofMillis(500)).atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
@@ -183,7 +184,7 @@ class TimerPollerTest {
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
 
         poller = new TimerPoller(store, executor, lock, "test-service", pollInterval, 100);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
             var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
@@ -199,7 +200,7 @@ class TimerPollerTest {
                 Instant.now().minusSeconds(10), TimerStatus.PENDING, Instant.now()));
 
         poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
-        poller.start();
+        running = RunningLoop.start(poller.spec(), poller);
 
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() -> {
             var dueTimers = store.getDueTimers(Instant.now().plusSeconds(60), 100);
@@ -213,12 +214,12 @@ class TimerPollerTest {
     @DisplayName("stop terminates the poller")
     void stopTerminatesPoller() {
         poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "test-service", pollInterval, 100);
-        poller.start();
-        assertTrue(poller.isRunning());
+        running = RunningLoop.start(poller.spec(), poller);
+        assertTrue(running.isRunning());
 
-        poller.stop();
+        running.stop();
         await().atMost(Duration.ofSeconds(2)).untilAsserted(() ->
-                assertFalse(poller.isRunning()));
+                assertFalse(running.isRunning()));
     }
 
     // ── Lock implementations ────────────────────────────────────────

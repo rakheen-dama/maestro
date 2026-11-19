@@ -1,5 +1,15 @@
 # Release Notes — Maestro
 
+## Unreleased — pilot readiness P2 (tasks 4–6): every loop supervised, health that tells the truth
+
+### Changed — the timer poller, the recovery poller and the instance-lock renewer run under the loop supervisor (P2 task 4; Issues 64, 68)
+
+- **No engine loop is interrupted any more.** The timer poller and the recovery poller were stopped by `Thread.interrupt()`, which on a virtual thread inside a JDBC call closes the connection (Issue 64). They now stop like every supervised loop: a latch ends their waits, a store call in progress finishes, and the loop ends as soon as it returns (`BackgroundLoopStopTest.aStopNeverInterruptsTheStoreCall`, `TimerPollerTest.aStopNeverInterruptsAStoreCall`). The recovery poller's waits are its own (`Next.await`), woken by its stop hook and by the capacity signal's epoch read before each pass. A stop ends the timer poller's batch at the next timer.
+- **The renewer starts with the executor.** `WorkflowExecutor.Builder.build()` starts the instance-lock renewer; a renewer that cannot start fails the build, and so the context (`WorkflowExecutorBuilderTest.aRenewerThatCannotStartFailsTheBuild`, `WorkflowInstanceLockManagerTest.theRenewerRunsBeforeTheFirstAcquisition`). The lazy start on the first acquisition, its retry latch and the `ERROR Instance lock renewer failed to start …` line are gone; `hasInstanceLockRenewerStarted()` is always `true`. The renewer is still stopped by `shutdown()` after the drain (runs need it), never with the other loops. New: `WorkflowExecutor.instanceLocksHeld()`.
+- **One loop list.** `WorkflowExecutor.loops()` now lists every engine loop, the renewer included: `instance-lock-renewer`, `recovery-poller`, `retention-sweeper`, `signal-janitor`, `startup-recovery`, `timer-poller`. Both pollers note `leader`/nothing as before; the timer poller notes `leader: true|false`.
+- **Logs.** The three loops' failure lines are the supervisor's (text unchanged, logger `io.b2mash.maestro.core.loop.LoopSupervisor`, was `…engine.BackgroundLoopGuard`, which is deleted). `Timer poller stopped` / `Recovery poller stopped` become `Background loop '<name>' stopped`; the start lines keep their text, logged by `…engine.WorkflowExecutor`.
+- **Behaviour change.** A prompt recovery pass requested while a *failed* pass waits out its back-off (`pollInterval`) is served by the pass after the back-off, no earlier.
+
 ## Unreleased — pilot readiness P2 (tasks 1–3): observer isolation, absorbed store faults, the loop supervisor
 
 ### Fixed — an observer's `Error` no longer changes what the engine does (Issues 81, 68 part 2)
