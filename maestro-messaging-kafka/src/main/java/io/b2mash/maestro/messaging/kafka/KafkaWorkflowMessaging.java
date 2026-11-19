@@ -1,5 +1,6 @@
 package io.b2mash.maestro.messaging.kafka;
 
+import io.b2mash.maestro.core.engine.LifecycleRegistry;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -15,6 +16,7 @@ import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListener;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
@@ -343,7 +345,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
      * @param registry the engine's lifecycle registry
      * @return {@code false} if the registry refused it (shutdown has begun)
      */
-    public boolean joinLifecycle(io.b2mash.maestro.core.engine.LifecycleRegistry registry) {
+    public boolean joinLifecycle(LifecycleRegistry registry) {
         return containers.join(registry);
     }
 
@@ -367,7 +369,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     static final Duration STANDALONE_STOP_WAIT = Duration.ofSeconds(10);
 
     /** @return the signal containers still running (tests) */
-    List<org.springframework.kafka.listener.MessageListenerContainer> runningContainers() {
+    List<MessageListenerContainer> runningContainers() {
         return containers.running();
     }
 

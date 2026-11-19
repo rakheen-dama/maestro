@@ -2797,7 +2797,8 @@ public final class WorkflowExecutor {
      *       janitor and retention sweeper, and the Postgres lock cleaner and
      *       wake listener when started under this executor — is asked to stop,
      *       never by an interrupt (the instance-lock renewer is not: it stops
-     *       after the drain and the give-up);
+     *       after the drain and the give-up), and so is every other registry
+     *       member, such as Maestro's Kafka listener containers;
      *       every park and retry backoff is abandoned; every run queued for a
      *       task-queue slot is released.</li>
      *   <li>Drain the runs in flight until the deadline — a launch admitted
@@ -2807,13 +2808,14 @@ public final class WorkflowExecutor {
      *       release when {@code shutdown()} returns. The lock is free if the
      *       backend's release succeeded; if it failed, the lock's row is left
      *       to expire by TTL.</li>
-     *   <li>Join the background loops for what is left. A loop still inside
-     *       a store call at the deadline is named in a {@code WARN} and ends
+     *   <li>Wait for every member asked to stop — the background loops and any
+     *       consumer — to leave the registry, for what is left. One still
+     *       inside a call at the deadline is named in a {@code WARN} and ends
      *       after that call.</li>
-     *   <li>Stop the instance-lock renewer, waiting at most two seconds of
-     *       what is left.</li>
-     *   <li>Flush queued lifecycle events, for at most five seconds of what is
-     *       left; events still queued then are counted as dropped.</li>
+     *   <li>Stop the instance-lock renewer, waiting {@code min(2 s, what is
+     *       left)}.</li>
+     *   <li>Flush queued lifecycle events, waiting {@code min(5 s, what is
+     *       left)}; events still queued then are counted as dropped.</li>
      * </ol>
      * <p>One summary line follows: {@code INFO Maestro shutdown finished in …}
      * when no run is left, otherwise {@code WARN Maestro shutdown hit its …

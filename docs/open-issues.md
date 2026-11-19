@@ -38,14 +38,14 @@ Every open issue carries one label, set against `docs/support-matrix.md`:
 Within a label the list is ranked, most important first. Five issues were closed by this
 triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Pilot readiness P2 resolved [81](#issue-81) and [86](#issue-86) (tasks 1–3), [67](#issue-67), [68](#issue-68), [73](#issue-73) and, by decision, [75](#issue-75) (tasks 4–5), and [64](#issue-64) and [65](#issue-65) (task 6). Nothing below was deleted or renumbered; each section keeps its text and anchor.
 
-**`blocks-pilot`** (4 open; 80 and 70 closed by P1, 64, 65, 67, 68 and 75 by P2, 2026-11-19)
+**`blocks-pilot`** (2 open; 80, 70, 69 and 66 closed by P1, 64, 65, 67, 68 and 75 by P2, 2026-11-19)
 
 1. [41](#issue-41) — An older node replaying history appended by a newer node is untested
 2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 3. ~~[80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it~~ — closed (P1)
 4. ~~[70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown~~ — closed (P1)
-5. [69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`
-6. [66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query
+5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
+6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
 **`blocks-1.0`** (10)
 
@@ -474,11 +474,11 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | `limitation` — Open |
 | [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | **Resolved** (P2) |
 | [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | **Resolved** (P2) |
-| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | `blocks-pilot` — Open |
+| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | **Closed** (P1: fixed) |
 | [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | **Resolved** (P2) |
 | [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | **Resolved** (P2) |
-| [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | `blocks-pilot` — Open |
-| [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | `blocks-pilot` — Open |
+| [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | **Closed** (P1: fixed) |
+| [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | **Closed** (P1: fixed) |
 | [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | `limitation` — Open |
 | [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | **Resolved** (P2) |
 | [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | **Closed** (P3: fixed) |
@@ -487,7 +487,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | `limitation` — Open (reopened after the P3 review) |
 | [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | **Closed** (P3: out of scope) |
 | [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | **Closed** (P3: fixed) |
-| [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | `blocks-pilot` — Open |
+| [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | **Closed** (P1: fixed) |
 | [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | **Resolved** (P2) |
 | [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | `limitation` — Open |
 | [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | `blocks-1.0` — Open |
@@ -5040,6 +5040,20 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 
 ### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
 
+> **Closed (pilot-readiness P1, 2026-11-19, PR #TBD-P1): fixed (design note
+> Question 4, option (c)).** `Probe.abandon()` no longer interrupts: a
+> timed-out probe's store call finishes and its result is ignored. A probe
+> stuck for `SUPERSEDE_AFTER` (10 s, 5 × the 2 s bound) is superseded by one
+> fresh probe on the next health call; while that superseded probe is still
+> stuck no third starts, so at most two probes — two connections — exist.
+> Both done-when conditions are pinned: `HealthProbeOnHikariTest.aTimedOutProbeEvictsNoConnection`
+> (real Postgres, a Hikari pool of one, a probe timed out inside
+> `pg_sleep(4)`: no pool `WARN`, the same backend handed out again; red
+> against the pre-fix indicator) and
+> `MaestroHealthIndicatorTest.aStuckProbeDoesNotHoldUnknownOnceTheStoreAnswers`,
+> `atMostTwoProbesAreEverStuckAtOnce`, `aTimedOutProbeIsNotInterrupted`
+> (the inverted `aTimedOutProbeIsInterrupted`).
+
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** P1's design note decides the health probe's interrupt.
 
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
@@ -5231,6 +5245,25 @@ an observer `Error` on one lost lock does not delay the others.
 <a id="issue-69"></a>
 
 ### Issue 69 — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` {#issue-69}
+
+> **Closed (pilot-readiness P1, 2026-11-19, PR #TBD-P1): fixed, inside the
+> engine's shutdown rather than in an earlier phase (design note Question 1).**
+> The engine's signal container and the `@MaestroSignalListener` containers are
+> now members of the executor's `LifecycleRegistry` (`KafkaContainerGroup`,
+> one member each for the engine's container and the post-processor's). Each
+> joins before its container starts; the engine's shutdown asks them to stop
+> at its step 2 — Spring Kafka's asynchronous `stop(Runnable)`, never an
+> interrupt — and waits for them at step 6 on its one deadline; a container
+> offered after shutdown began is never started. Both `destroy()` methods are
+> request-only backstops (a container with no engine keeps the old bounded
+> wait). So no Maestro consumer remains in its group while the drain waits, and
+> none handles a record after the `DataSource` closes. Pinned by
+> `MaestroContainersStopInTheDrainIT` (broker-backed: every Maestro consumer
+> has left its group while a registry member still holds the drain open) and
+> `KafkaContainerGroupTest`. The grace arithmetic loses its per-container term
+> ([Operations §15.4](operations.md#154-the-grace-period-arithmetic)); the
+> refused-Retry redelivery table is rewritten
+> ([Operations §15.1](operations.md#151-the-sequence)).
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Shutdown completeness, P1.
 

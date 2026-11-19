@@ -1,5 +1,29 @@
 # Release Notes — Maestro
 
+## Unreleased — pilot readiness P1 (part 2): one lifecycle owner for loops, Kafka consumers and the health probe
+
+### Changed — every supervised loop is a lifecycle-registry member (P1 tasks 3–4)
+
+- **What changes.** `WorkflowExecutor.supervise` joins each loop to the executor's lifecycle registry (`Kind.LOOP`) before its thread starts and the loop leaves as its thread's last act, after its end state is published. Shutdown asks loops to stop with every other member at its start and waits for them after the drain, on what is left of its one deadline, as before. A loop start after shutdown began is refused with `IllegalStateException` before any thread exists — the start path's fixed 5 s join for a start racing shutdown is gone — so no loop can be started and then forgotten (`LoopMembershipTest`).
+- **The Postgres loops** (`lock-cleaner`, `wake-listener`) follow, since their auto-configurations start them through `supervise` (`PostgresLoopsRegistryTest`). Under an engine, the wake listener's connection is back in the pool before `shutdown()` returns. The standalone lock cleaner (no engine, so no deadline) keeps its bounded 5 s close.
+- **New API (internal until 1.0).** `LoopSupervisor.whenEnded(Runnable)`: a hook that runs once the loop's thread has ended, or at once if it already has. `StoppableLoop` is gone from the main sources.
+- **The renewer is not a member**: runs need it during the drain. It is still stopped after the drain, waiting `min(2 s, what is left)`; the lifecycle-event flush waits `min(5 s, what is left)`. Neither cap extends the deadline.
+
+### Fixed — Maestro's Kafka listener containers stop inside the engine's shutdown (Issue 69)
+
+- **What was wrong.** Maestro's containers stopped only at bean destruction: the engine's signal container after `shutdown()` returned, the `@MaestroSignalListener` containers after the `DataSource` closed. They stayed in their consumer groups through the drain, each `stop()` could add up to 10 s to the grace period, and a listener record in flight after the `DataSource` closed failed.
+- **What changes.** Both are now lifecycle-registry members (`KafkaContainerGroup`, `Kind.CONSUMER`), joined before any container starts. The engine's shutdown asks them to stop at its start — Spring Kafka's asynchronous `stop(Runnable)`, no interrupt — and waits for them on its one deadline; a container offered after shutdown began is never started. Measured on a broker: every Maestro consumer had left its group about 200 ms into the shutdown, while the drain was still held open (`MaestroContainersStopInTheDrainIT`). Both `destroy()` methods are request-only backstops.
+- **An admin Retry refused during the drain** is no longer redelivered to the draining node until its budget runs out: the container stops at the record in hand, the redelivery back-off ends at once, and a peer consumes the command after the rebalance (with `max-attempts` 2 or more, the default 10). With `max-attempts: 1` it is dead-lettered at the first refusal, as any failure; with redelivery disabled it is skipped (Operations §15.1).
+- **Grace period.** Maestro's Kafka containers and the wake listener no longer add terms: `terminationGracePeriodSeconds ≥ preStop + host lifecycle beans + max(maestro.shutdown.timeout + 1 s, web drain) + 5 s` (Operations §15.4). No new Spring phase requirement.
+- **New API (internal until 1.0).** `KafkaWorkflowMessaging.joinLifecycle(LifecycleRegistry)`, called by the Kafka auto-configuration; an embedder without it keeps the old bounded wait at `destroy()`. No change to the `WorkflowMessaging` SPI.
+- **Logs.** `Stopping {n} Kafka listener container(s)` and `Stopping {n} @MaestroSignalListener container(s)` become `Stopping {n} Maestro Kafka listener container(s) ({name})`, logged when shutdown begins. A group not stopped by the deadline is named: `Maestro consumer '{name}' did not stop within the shutdown deadline; it ends after its current call`.
+
+### Fixed — a timed-out health probe is never interrupted (Issue 66)
+
+- **What was wrong.** A probe that missed its 2 s bound was interrupted; on a virtual thread inside a JDBC call that closes the connection, so a slow database lost one pooled connection, with a pool `WARN`, per timed-out health call.
+- **What changes.** The probe is abandoned without an interrupt: its query finishes and its result is ignored (`HealthProbeOnHikariTest`). A probe stuck for 10 s is superseded once by a fresh probe, so health reads the store as it is now instead of `UNKNOWN` for as long as a half-open socket stays stuck; at most two probes — two connections — exist. Configure pgjdbc's `socketTimeout`/`tcpKeepAlive` to free such a connection for good.
+- **Nothing in Maestro interrupts a thread that may be inside a JDBC call any more.**
+
 ## Unreleased — pilot readiness P2 (tasks 4–6): every loop supervised, health that tells the truth
 
 ### Changed — the timer poller, the recovery poller and the instance-lock renewer run under the loop supervisor (P2 task 4; Issues 64, 68)

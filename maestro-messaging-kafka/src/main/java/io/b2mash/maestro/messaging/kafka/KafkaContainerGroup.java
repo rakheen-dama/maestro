@@ -6,9 +6,12 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.listener.MessageListenerContainer;
 
+import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A set of Maestro's Kafka listener containers as one member of the engine's
@@ -45,7 +48,7 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
     private boolean stopRequested;
     private boolean left;
     /** Counted down once every container has stopped after a stop request. */
-    private final java.util.concurrent.CountDownLatch allStopped = new java.util.concurrent.CountDownLatch(1);
+    private final CountDownLatch allStopped = new CountDownLatch(1);
 
     /**
      * @param name the member's name in shutdown's log, e.g. {@code "kafka-signal-containers"}
@@ -167,9 +170,9 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
      * @param bound the longest to wait
      * @return whether every container has stopped
      */
-    public boolean awaitStopped(java.time.Duration bound) {
+    public boolean awaitStopped(Duration bound) {
         try {
-            return allStopped.await(bound.toNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+            return allStopped.await(bound.toNanos(), TimeUnit.NANOSECONDS);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return allStopped.getCount() == 0;

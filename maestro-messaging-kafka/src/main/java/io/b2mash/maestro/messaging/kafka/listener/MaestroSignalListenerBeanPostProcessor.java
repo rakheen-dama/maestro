@@ -34,6 +34,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -258,7 +259,7 @@ public class MaestroSignalListenerBeanPostProcessor
         if (!group.joined()) {
             // No engine owns them: no shutdown deadline; wait as the blocking
             // stop did before.
-            group.awaitStopped(java.time.Duration.ofSeconds(10));
+            group.awaitStopped(Duration.ofSeconds(10));
         }
         containers.clear();
     }
