@@ -1,5 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.loop.LoopSupervisor;
+
 import java.time.Duration;
 
 /**
@@ -16,22 +18,19 @@ import java.time.Duration;
 interface StoppableLoop {
 
     /**
-     * The loop's name in shutdown's log: for the five engine loops, as
-     * {@link BackgroundLoopGuard} names it in logs and on
-     * {@code maestro.loop.errors}; the one-shot startup recovery names itself
-     * {@code startup-recovery} here while its guard counts as
-     * {@code recovery-poller}.
+     * The loop's name in shutdown's log, as it is named in its other logs and
+     * on {@code maestro.loop.errors}.
      *
-     * @return one of the {@link BackgroundLoopGuard} loop-name constants, or
-     *         {@code startup-recovery}
+     * @return the loop's fixed name
      */
     String loopName();
 
     /**
      * Asks the loop to stop and returns at once: the loop starts no new
-     * iteration. A store call already in progress may be interrupted
-     * (Issue 64); a driver that ignores the interrupt finishes the call first.
-     * Idempotent.
+     * iteration. A supervised loop is never interrupted; a store call already
+     * in progress in the timer or recovery poller may still be (Issue 64,
+     * until they move under the supervisor); a driver that ignores the
+     * interrupt finishes the call first. Idempotent.
      */
     void requestStop();
 
@@ -45,4 +44,32 @@ interface StoppableLoop {
      *         {@code false} if it is still running when the wait ends
      */
     boolean awaitStopped(Duration bound);
+
+    /**
+     * The shutdown seam of a supervised loop: its name, its
+     * {@link LoopSupervisor#requestStop()} and its
+     * {@link LoopSupervisor#awaitStopped(Duration)}. (P1's lifecycle registry
+     * replaces this seam later; the two methods it calls stay.)
+     *
+     * @param supervisor the supervised loop
+     * @return the loop as shutdown stops it
+     */
+    static StoppableLoop of(LoopSupervisor supervisor) {
+        return new StoppableLoop() {
+            @Override
+            public String loopName() {
+                return supervisor.name();
+            }
+
+            @Override
+            public void requestStop() {
+                supervisor.requestStop();
+            }
+
+            @Override
+            public boolean awaitStopped(Duration bound) {
+                return supervisor.awaitStopped(bound);
+            }
+        };
+    }
 }

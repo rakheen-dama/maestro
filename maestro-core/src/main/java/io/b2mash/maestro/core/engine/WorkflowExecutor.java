@@ -33,7 +33,12 @@ import io.b2mash.maestro.core.model.WorkflowFailureDetail;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTerminationDetail;
+import io.b2mash.maestro.core.loop.LoopBody;
+import io.b2mash.maestro.core.loop.LoopSnapshot;
+import io.b2mash.maestro.core.loop.LoopSpec;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.observe.AbandonReason;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.StandDownReason;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
@@ -185,7 +190,7 @@ public final class WorkflowExecutor {
     private final boolean lifecycleEventsEnabled;
     private final Duration shutdownTimeout;
     private final Duration wakeRecheckInterval;
-    private final EngineObserver observer;
+    private final CompositeEngineObserver observer;
     private final InstantSource instantSource;
     private final LifecycleEventPublisher lifecycleEventPublisher;
     private final LifecycleEventSink lifecycleEventSink;
@@ -273,12 +278,14 @@ public final class WorkflowExecutor {
     private final AtomicBoolean shuttingDown;
     private final AtomicReference<TimerPoller> timerPoller = new AtomicReference<>();
     private final AtomicReference<RecoveryPoller> recoveryPoller = new AtomicReference<>();
-    private final AtomicReference<OneShotRecovery> oneShotRecovery = new AtomicReference<>();
     private final AtomicBoolean timerPollerStarted = new AtomicBoolean(false);
     private final AtomicBoolean recoveryPollerStarted = new AtomicBoolean(false);
-    private final AtomicReference<SignalJanitor> signalJanitor = new AtomicReference<>();
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
-    private final AtomicReference<RetentionSweeper> retentionSweeper = new AtomicReference<>();
+    /**
+     * Every loop this executor supervises ({@link #supervise}), by loop name.
+     * A loop stays here once ended, so {@link #loops()} still shows it.
+     */
+    private final ConcurrentHashMap<String, LoopSupervisor> supervised = new ConcurrentHashMap<>();
     private volatile @Nullable RetentionSettings retentionSettings;
 
     /**
@@ -349,9 +356,16 @@ public final class WorkflowExecutor {
         // reads/appends are retried briefly, and a final StoreUnavailableException
         // latches the run's STORE_UNAVAILABLE stand-down (see StoreFaultGuard).
         // Idempotent: an already-guarded store is used as is.
-        this.store = StoreFaultGuard.wrap(store);
+        // The guard counts every in-place retry through the observer
+        // (storeRetried, Issue 86), so the observer is contained first.
+        // Contained once (Issue 81) and handed to every component this
+        // executor builds: an observer that throws — anything but a control-flow
+        // signal or a VirtualMachineError — is logged, counted
+        // (observerErrorCount()) and otherwise ignored, at every emission site,
+        // whether or not the host wrapped it in CompositeEngineObserver.of.
+        this.observer = CompositeEngineObserver.contain(observer);
+        this.store = StoreFaultGuard.wrap(store, this.observer);
         this.distributedLock = distributedLock;
-        this.observer = observer;
         // Wrapped once, here, and handed to every component this executor builds
         // (SignalManager, SagaManager, DefaultWorkflowOperations below) so the
         // enabled flag is honoured by every lifecycle-event publisher this
@@ -378,11 +392,11 @@ public final class WorkflowExecutor {
         this.lifecycleEventSink = buildLifecycleEventSink(this.messaging, lifecycleEventsEnabled);
         this.signalManager = new SignalManager(
                 this.store, this.lifecycleEventSink, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
-                observer, taskQueueGovernor, instantSource);
-        this.sagaManager = new SagaManager(this.store, serializer, serviceName, observer, this.lifecycleEventSink);
+                this.observer, taskQueueGovernor, instantSource);
+        this.sagaManager = new SagaManager(this.store, serializer, serviceName, this.observer, this.lifecycleEventSink);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
-                instanceLockTtl.dividedBy(3), observer);
+                instanceLockTtl.dividedBy(3), this.observer);
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
         this.instanceLockTtl = instanceLockTtl;
@@ -886,8 +900,7 @@ public final class WorkflowExecutor {
                         + "poller adopts it once the lock can be taken (a prompt pass is requested)",
                 instance.workflowId(), heldElsewhere
                         ? "is held elsewhere" : "could not be taken (lock backend unavailable)");
-        emit("workflowStartDeferred", instance.workflowId(),
-                () -> observer.workflowStartDeferred(observed(instance), heldElsewhere));
+        observer.workflowStartDeferred(observed(instance), heldElsewhere);
         var poller = recoveryPoller.get();
         if (poller != null) {
             poller.requestPromptPass();
@@ -1168,7 +1181,7 @@ public final class WorkflowExecutor {
             recoveryDeferred = pass.deferred();
         }
         logPass(pass, true);
-        emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+        observer.recoveryPass(pass.scanned(), pass.adopted());
         return pass;
     }
 
@@ -1237,7 +1250,7 @@ public final class WorkflowExecutor {
         var pass = tally.toPass();
         if (pass.scanned() > 0) {
             logPass(pass, false);
-            emit("recoveryPass", null, () -> observer.recoveryPass(pass.scanned(), pass.adopted()));
+            observer.recoveryPass(pass.scanned(), pass.adopted());
         }
         return pass;
     }
@@ -1685,7 +1698,7 @@ public final class WorkflowExecutor {
             }
 
             publishLifecycleEvent(terminated, LifecycleEventType.WORKFLOW_TERMINATED, null);
-            emit("workflowTerminated", workflowId, () -> observer.workflowTerminated(observed(terminated)));
+            observer.workflowTerminated(observed(terminated));
 
             // Best-effort local eviction. Only this node's threads can be
             // abandoned; a remote owner converges via the terminal-status guard.
@@ -2202,13 +2215,13 @@ public final class WorkflowExecutor {
      * own virtual thread, {@code maestro-startup-recovery-<service>}, so the
      * caller does not wait for it.
      *
-     * <p>A pass that throws is logged like a recovery-poller failure (one
+     * <p>It runs under the loop supervisor as loop {@code startup-recovery}
+     * ({@link #loops()}). A pass that throws is a failed iteration (one
      * {@code ERROR} with the stack trace, then an {@code ERROR} reminder every
-     * 5 minutes while it continues) and retried after {@code retryInterval},
-     * with no limit, until one pass completes; then the thread ends. Only an
-     * {@link Error} it contains is counted, on
-     * {@code maestro.loop.errors{loop=recovery-poller}}; a store fault is
-     * logged, not counted. No health detail or meter reports the pass itself.
+     * 5 minutes while it continues) and is retried after {@code retryInterval},
+     * with no limit, until one pass completes; then the loop ends
+     * {@code DONE}. An {@link Error} it contains is counted on
+     * {@code maestro.loop.errors{loop=startup-recovery}}.
      * A {@code MaestroControlFlowError} ends it at once.
      * {@link #shutdown()} stops it. It does not occupy the recovery poller's
      * slot: {@link #startRecoveryPoller(Map, Duration)} may still be called,
@@ -2230,8 +2243,8 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start the one-shot startup recovery");
         }
-        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval, observer);
-        installAndStart(oneShotRecovery, recovery, "One-shot startup recovery", recovery::start, recovery::stop);
+        var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval);
+        supervise(recovery.spec(), recovery);
     }
 
     // ── Signal janitor ──────────────────────────────────────────────────
@@ -2257,8 +2270,9 @@ public final class WorkflowExecutor {
      * (see its Javadoc for what survives — notably {@code FAILED} workflows,
      * which may still be retried). Every node runs one, without leader
      * election; it deletes this service's signals only, in batches of 1,000,
-     * at most 1,000 batches per sweep.
-     * A store failure is logged and retried on the next interval.
+     * at most 1,000 batches per sweep. It runs under the loop supervisor as
+     * loop {@code signal-janitor}: a failed sweep, store faults included,
+     * counts in its streak, and the next sweep runs one interval later.
      * {@link #shutdown()} stops it.
      *
      * <p>If this method is never called, nothing is purged. The Spring Boot
@@ -2279,9 +2293,10 @@ public final class WorkflowExecutor {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, serviceName, interval, retention, observer);
-        installAndStart(signalJanitor, janitor, "Signal janitor", janitor::start, janitor::stop);
+        var janitor = new SignalJanitor(store, serviceName, interval, retention);
+        supervise(janitor.spec(), janitor);
         signalJanitorSettings = new SignalJanitorSettings(interval, retention);
+        logger.info("Signal janitor started ({})", janitor.describeSettings());
     }
 
     // ── Retention sweeper ───────────────────────────────────────────────
@@ -2360,9 +2375,10 @@ public final class WorkflowExecutor {
      * {@link WorkflowStore#purgeTerminalInstancesBefore(String, io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)},
      * in batches of {@code settings.batchSize()}. Leadership is held on
      * {@code maestro:leader:retention:<serviceName>} through the
-     * {@link DistributedLock} (always held when there is none) and re-checked
-     * before every batch. A store failure is logged and retried on the next
-     * interval. {@link #shutdown()} stops it.
+     * {@link DistributedLock} and re-checked before every batch. It runs under
+     * the loop supervisor as loop {@code retention-sweeper}: a failed sweep —
+     * a store or a leader-election fault included — counts in its streak, and
+     * the next sweep runs one interval later. {@link #shutdown()} stops it.
      *
      * <p>If this method is never called, nothing is ever purged and the store
      * grows without bound. The Spring Boot starter calls it automatically
@@ -2380,8 +2396,9 @@ public final class WorkflowExecutor {
                     "WorkflowExecutor is shutting down — cannot start retention sweeper");
         }
         var sweeper = new RetentionSweeper(store, distributedLock, serviceName, settings, observer);
-        installAndStart(retentionSweeper, sweeper, "Retention sweeper", sweeper::start, sweeper::stop);
+        supervise(sweeper.spec(), sweeper);
         retentionSettings = settings;
+        logger.info("Retention sweeper started ({})", sweeper.describeSettings());
     }
 
     // ── Service-name check ──────────────────────────────────────────────
@@ -2436,6 +2453,89 @@ public final class WorkflowExecutor {
             return;
         }
         ForeignServiceCheck.run(store, serviceName, mode, timeout);
+    }
+
+    // ── Supervised loops ────────────────────────────────────────────────
+
+    /**
+     * How long a loop started concurrently with {@link #shutdown()} is waited
+     * for before its start reports the race (the start path, not a shutdown
+     * step: shutdown's own steps take what is left of its deadline).
+     */
+    static final Duration RACED_START_JOIN = Duration.ofSeconds(5);
+
+    /**
+     * Runs a background loop under a {@link LoopSupervisor} this executor owns:
+     * started at once, given this executor's (contained) observer, listed by
+     * {@link #loops()}, and stopped by {@link #shutdown()} — asked to stop with
+     * the other loops at its step 2, and joined against what is left of the
+     * deadline at its step 6. Never interrupted. Internal until 1.0 (see
+     * {@code io.b2mash.maestro.core.loop}); {@code maestro-store-postgres}
+     * declares its loops through it.
+     *
+     * <p>A start racing a shutdown never outlives it: the loop is registered
+     * before it starts and the shutdown flag re-checked after, so whichever of
+     * the two runs last stops it.
+     *
+     * @param spec what the loop is and how it is run; its name must be unique
+     *             on this executor
+     * @param body the loop's work
+     * @return the running supervisor
+     * @throws IllegalStateException if a loop of that name was already
+     *                               supervised here, or the executor is shutting down
+     */
+    public LoopSupervisor supervise(LoopSpec spec, LoopBody body) {
+        Objects.requireNonNull(spec, "spec");
+        Objects.requireNonNull(body, "body");
+        if (shuttingDown.get()) {
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — cannot start background loop '" + spec.name() + "'");
+        }
+        // A name claims its entry once, and the loop is in the map from the
+        // moment its thread starts (the start runs no executor code). An
+        // ended loop keeps its entry: a name is supervised once per executor.
+        var holder = new LoopSupervisor[1];
+        var claimed = supervised.computeIfAbsent(spec.name(), name -> {
+            holder[0] = LoopSupervisor.start(spec, body, observer);
+            return holder[0];
+        });
+        if (holder[0] == null || claimed != holder[0]) {
+            throw new IllegalStateException("Background loop '" + spec.name() + "' already started");
+        }
+        var supervisor = holder[0];
+        if (shuttingDown.get()) {
+            supervisor.requestStop();
+            supervisor.awaitStopped(RACED_START_JOIN);
+            throw new IllegalStateException(
+                    "WorkflowExecutor is shutting down — background loop '" + spec.name() + "' stopped");
+        }
+        return supervisor;
+    }
+
+    /**
+     * A snapshot of every loop this executor supervises ({@link #supervise}),
+     * ended ones included, ordered by name. Safe from any thread; never blocks
+     * and never touches the store.
+     *
+     * @return one snapshot per supervised loop
+     */
+    public List<LoopSnapshot> loops() {
+        return supervised.values().stream()
+                .map(LoopSupervisor::snapshot)
+                .sorted(java.util.Comparator.comparing(LoopSnapshot::name))
+                .toList();
+    }
+
+    /** The snapshot of the supervised loop {@code name}, or {@code null} if it was never started. */
+    private @Nullable LoopSnapshot loop(String name) {
+        var supervisor = supervised.get(name);
+        return supervisor == null ? null : supervisor.snapshot();
+    }
+
+    /** Whether the supervised loop {@code name} was started and is neither stopping nor ended. */
+    private boolean loopRunning(String name) {
+        var snapshot = loop(name);
+        return snapshot != null && snapshot.running();
     }
 
     /**
@@ -2567,13 +2667,19 @@ public final class WorkflowExecutor {
         // recovery launches — and join them only after the drain (step 6),
         // so a loop stuck in a store call never delays it.
         var loops = new ArrayList<StoppableLoop>(5);
-        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(
-                timerPoller, recoveryPoller, oneShotRecovery, signalJanitor, retentionSweeper)) {
+        for (var slot : List.<AtomicReference<? extends StoppableLoop>>of(timerPoller, recoveryPoller)) {
             var loop = slot.getAndSet(null);
             if (loop != null) {
                 loop.requestStop();
                 loops.add(loop);
             }
+        }
+        // The supervised loops (startup recovery, signal janitor, retention
+        // sweeper): asked once, never interrupted; they stay in the map, so
+        // loops() reads them STOPPED afterwards.
+        for (var supervisor : supervised.values()) {
+            supervisor.requestStop();
+            loops.add(StoppableLoop.of(supervisor));
         }
         // Step 3: abandon every park so those threads exit promptly. Their
         // workflows keep the WAITING_* status they parked in and stay
@@ -2849,6 +2955,56 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * The store this executor and its components call: the {@link WorkflowStore}
+     * it was built with, wrapped once in the store-fault guard (bounded
+     * in-place retries of the idempotent run operations, the
+     * {@code STORE_UNAVAILABLE} latch, {@code storeRetried} counting through
+     * {@link #observer()}, one node-wide retry episode). Hand it — not the raw
+     * store — to {@code ActivityProxyFactory.createProxy}, so activity memo
+     * reads and outcome appends share the executor's guard, its counter and its
+     * episode (review F1). The Spring Boot starter and {@code TestWorkflowEnvironment} do.
+     *
+     * <p><b>Internal until 1.0</b>, like the {@code WorkflowStore} SPI.
+     *
+     * @return the guarded store; never {@code null}
+     */
+    public WorkflowStore guardedStore() {
+        return store;
+    }
+
+    /**
+     * The observer this executor and its components call: the
+     * {@link EngineObserver} it was built with, contained once
+     * ({@link CompositeEngineObserver#contain}). Hand it — not a second
+     * composite — to {@code ActivityProxyFactory.createProxy}, so containments
+     * from the activity callbacks are counted on {@link #observerErrorCount()}
+     * too (review F2). The Spring Boot starter and {@code TestWorkflowEnvironment} do.
+     *
+     * <p><b>Internal until 1.0.</b>
+     *
+     * @return the contained observer; never {@code null}
+     */
+    public EngineObserver observer() {
+        return observer;
+    }
+
+    /**
+     * How many times an observer callback threw and was contained, on any
+     * thread, since this executor was built (Issue 81). Every
+     * {@link EngineObserver} the executor is given is wrapped by
+     * {@link CompositeEngineObserver#contain}: a callback that throws anything
+     * but a {@code MaestroControlFlowError} or a {@code VirtualMachineError} is
+     * logged ({@code WARN} once per callback and delegate, then {@code DEBUG}
+     * until it succeeds again), counted here, and otherwise ignored. The
+     * Spring Boot starter exports it as {@code maestro.observer.errors}.
+     *
+     * @return the number of contained observer failures
+     */
+    public long observerErrorCount() {
+        return observer.containedErrorCount();
+    }
+
+    /**
      * Returns the sink through which this executor — and every component it
      * built — publishes lifecycle events <em>off</em> the workflow thread.
      *
@@ -2902,8 +3058,7 @@ public final class WorkflowExecutor {
      *         it down, or it was never started
      */
     boolean isOneShotRecoveryRunning() {
-        var recovery = oneShotRecovery.get();
-        return recovery != null && recovery.isRunning();
+        return loopRunning(OneShotRecovery.LOOP_NAME);
     }
 
     /**
@@ -2980,8 +3135,7 @@ public final class WorkflowExecutor {
      *         {@link #shutdown()})
      */
     public boolean isSignalJanitorRunning() {
-        var janitor = signalJanitor.get();
-        return janitor != null && janitor.isRunning();
+        return loopRunning(SignalJanitor.LOOP_NAME);
     }
 
     /**
@@ -3008,8 +3162,7 @@ public final class WorkflowExecutor {
      *         {@link #shutdown()})
      */
     public boolean isRetentionSweeperRunning() {
-        var sweeper = retentionSweeper.get();
-        return sweeper != null && sweeper.isRunning();
+        return loopRunning(RetentionSweeper.LOOP_NAME);
     }
 
     /**
@@ -3183,8 +3336,7 @@ public final class WorkflowExecutor {
                 // A fresh start reports itself only once its object exists, so a
                 // throwing factory leaves no unmatched WORKFLOW_STARTED behind.
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_STARTED, null);
-                emit("workflowStarted", instance.workflowId(),
-                        () -> observer.workflowStarted(observed(instance)));
+                observer.workflowStarted(observed(instance));
             }
             // Set as executeWorkflow is entered. Until then no finally of the
             // run owns the lock, the entry or the reservation, so a Throwable
@@ -3292,8 +3444,7 @@ public final class WorkflowExecutor {
             throw e;
         }
         if (replaying) {
-            emit("workflowResumed", instance.workflowId(),
-                    () -> observer.workflowResumed(observed(instance)));
+            observer.workflowResumed(observed(instance));
         }
         return true;
     }
@@ -3470,11 +3621,8 @@ public final class WorkflowExecutor {
                 // may decide whether the completion is observed. Contained, so
                 // a throwing observer cannot land in catch (Exception) — which
                 // would compensate a workflow that just succeeded.
-                emit("workflowCompleted", ctx.workflowId(),
-                        () -> observer.workflowCompleted(observed(instance)));
-                emit("workflowFinished", ctx.workflowId(),
-                        () -> observer.workflowFinished(observed(instance), WorkflowStatus.COMPLETED,
-                                elapsedSince(instance)));
+                observer.workflowCompleted(observed(instance));
+                observer.workflowFinished(observed(instance), WorkflowStatus.COMPLETED, elapsedSince(instance));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_COMPLETED, null);
 
@@ -3831,8 +3979,7 @@ public final class WorkflowExecutor {
                         + "now {}) — no failure recorded, no compensation run; the concurrent runner's "
                         + "durable state governs",
                 ctx.workflowId(), reason, detail, status);
-        emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(reason, ctx.workflowId(), detail));
+        observer.standDown(reason, ctx.workflowId(), detail);
     }
 
     // ── Internal: unknown-history stand-down (spec §C2) ────────────────
@@ -3887,8 +4034,7 @@ public final class WorkflowExecutor {
         // only (stored values must not reach log backends). The full chain —
         // including the deserializer's raw message — is available at DEBUG.
         logger.debug("Stand-down cause for workflow '{}'", ctx.workflowId(), e);
-        emit("standDown", ctx.workflowId(), () ->
-                observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail()));
+        observer.standDown(standDownReason(e.kind()), ctx.workflowId(), e.detail());
     }
 
     /**
@@ -4066,11 +4212,8 @@ public final class WorkflowExecutor {
                 // durable outcome (status and event, one write) is already
                 // in, so nothing that follows may decide whether it is
                 // observed.
-                emit("workflowFailed", ctx.workflowId(), () ->
-                        observer.workflowFailed(observed(instance), failure.getClass().getName()));
-                emit("workflowFinished", ctx.workflowId(), () ->
-                        observer.workflowFinished(observed(instance), WorkflowStatus.FAILED,
-                                elapsedSince(instance)));
+                observer.workflowFailed(observed(instance), failure.getClass().getName());
+                observer.workflowFinished(observed(instance), WorkflowStatus.FAILED, elapsedSince(instance));
 
                 publishLifecycleEvent(instance, LifecycleEventType.WORKFLOW_FAILED, null);
             } else {
@@ -4249,46 +4392,13 @@ public final class WorkflowExecutor {
      * Emits {@link EngineObserver#runAbandoned} for a local run that ended on
      * the workflow thread without recording an outcome (design §11, RULING 5).
      *
-     * <p>Contained like every other emission here: a throwing observer must not
-     * turn a routine shutdown into an escaping exception on the unwind path.
+     * <p>Contained like every other emission here: the observer is the
+     * executor's {@link CompositeEngineObserver#contain contained} form, so a
+     * throwing observer cannot turn a routine shutdown into an escaping
+     * exception on the unwind path.
      */
     private void emitRunAbandoned(WorkflowContext ctx, AbandonReason reason) {
-        emit("runAbandoned", ctx.workflowId(),
-                () -> observer.runAbandoned(observed(ctx), reason));
-    }
-
-    /**
-     * Invokes one observer callback, containing a misbehaving observer.
-     *
-     * <p>Since coordinator Ruling 4, containment is structural at the seam:
-     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
-     * wraps, so a registered adapter's {@code RuntimeException} is contained
-     * before it ever reaches here. This guard stays as depth — the
-     * builder accepts <em>any</em> {@code EngineObserver}, so nothing
-     * forces an embedder or a test wiring the engine by hand through
-     * {@code of(...)} — and because every emission in this class sits on a
-     * durable path where an escaping {@code RuntimeException} would be read as
-     * something else entirely: a workflow failure (and its compensations), an
-     * aborted recovery pass, a leaked instance lock, or a terminated workflow
-     * whose local thread never gets abandoned.
-     *
-     * <p>{@code RuntimeException} only: {@code Error}s — the engine's
-     * control-flow signals {@code ExecutorShutdownException} and
-     * {@code WorkflowTerminatedException} — always propagate, exactly as the
-     * composite does it.
-     *
-     * @param callback   the callback name, for the containment log line
-     * @param workflowId the workflow the callback described, or {@code null}
-     *                   for node-scoped callbacks such as {@code recoveryPass}
-     * @param emission   the observer invocation
-     */
-    private void emit(String callback, @Nullable String workflowId, Runnable emission) {
-        try {
-            emission.run();
-        } catch (RuntimeException e) {
-            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
-                    callback, workflowId, e.toString());
-        }
+        observer.runAbandoned(observed(ctx), reason);
     }
 
     /**

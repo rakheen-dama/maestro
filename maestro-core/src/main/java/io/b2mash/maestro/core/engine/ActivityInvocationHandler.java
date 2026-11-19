@@ -14,6 +14,7 @@ import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.observe.ActivityInfo;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
@@ -496,7 +497,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.startToCloseTimeout = startToCloseTimeout;
         this.serializer = serializer;
         this.retryExecutor = retryExecutor;
-        this.observer = observer;
+        this.observer = CompositeEngineObserver.contain(observer);
         this.governor = governor;
         this.verifyArguments = verifyArguments;
     }

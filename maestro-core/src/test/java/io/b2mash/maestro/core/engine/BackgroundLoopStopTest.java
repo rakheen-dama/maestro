@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.test.InMemoryDistributedLock;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
@@ -38,7 +39,11 @@ class BackgroundLoopStopTest {
 
     private static final Duration INTERVAL = Duration.ofMillis(20);
 
-    /** The four loops, each built over the stuck store with its package-private constructor. */
+    /**
+     * The four loops, each built over the stuck store with its package-private
+     * constructor; the janitor and the sweeper run under a
+     * {@link LoopSupervisor}, as the executor runs them.
+     */
     enum Loop {
         TIMER_POLLER {
             @Override
@@ -59,19 +64,17 @@ class BackgroundLoopStopTest {
         SIGNAL_JANITOR {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new SignalJanitor(store, "svc", INTERVAL, Duration.ofDays(1));
-                loop.start();
-                return loop;
+                var janitor = new SignalJanitor(store, "svc", INTERVAL, Duration.ofDays(1));
+                return StoppableLoop.of(LoopSupervisor.start(janitor.spec(), janitor, EngineObserver.NOOP));
             }
         },
         RETENTION_SWEEPER {
             @Override
             StoppableLoop create(StuckStore store, WorkflowExecutor executor) {
-                var loop = new RetentionSweeper(store, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
+                var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
                         INTERVAL, Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1),
                         EngineObserver.NOOP);
-                loop.start();
-                return loop;
+                return StoppableLoop.of(LoopSupervisor.start(sweeper.spec(), sweeper, EngineObserver.NOOP));
             }
         };
 

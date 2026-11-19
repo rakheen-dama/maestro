@@ -6,7 +6,6 @@ import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
-import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.PurgeResult;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -54,7 +53,7 @@ class SignalJanitorBatchingTest {
     @Test
     void aSweepDeletesThisServicesSignalsInBatchesUntilAShortBatch() {
         store.script(1000, ms(40)).script(1000, ms(70)).script(37, ms(10));
-        var janitor = new SignalJanitor(store, "orders", Duration.ofHours(1), Duration.ofDays(7), EngineObserver.NOOP, pacer);
+        var janitor = new SignalJanitor(store, "orders", Duration.ofHours(1), Duration.ofDays(7), pacer);
         assertEquals(2037, janitor.sweepOnce());
         assertEquals(List.of("orders", "orders", "orders"), store.calls().stream().map(Call::serviceName).toList());
         assertTrue(store.calls().stream().allMatch(c -> c.limit() == SignalJanitor.BATCH_SIZE));
@@ -83,7 +82,7 @@ class SignalJanitorBatchingTest {
             done.complete(swept);
         });
         assertTrue(entered.await(5, SECONDS), "the sweep reached its first pause");
-        janitor.requestStop();                                            // never started: no loop thread to interrupt
+        janitor.spec().onStop().forEach(Runnable::run);                   // what the supervisor's requestStop runs
         var result = done.completeOnTimeout(null, 1, SECONDS).get();
         assertNotNull(result, "sweepOnce was still paused 1 s after requestStop");
         assertEquals(1000, result);
@@ -91,16 +90,25 @@ class SignalJanitorBatchingTest {
         assertFalse(interruptedAfter.get(), "nothing interrupted the sweeping thread");
     }
 
+    /**
+     * P2: a store fault fails the sweep — it propagates to the supervisor,
+     * which counts it — and what the batches before it deleted is still
+     * logged.
+     */
     @Test
     void aStoreFaultMidSweepReportsWhatWasDeletedSoFar() {
         store.script(1000, ms(5)).failOnCall(2, new StoreUnavailableException("down", new SQLException()));
-        assertEquals(1000, janitor(pacer).sweepOnce());
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(SignalJanitor.class)) {
+            assertThrows(StoreUnavailableException.class, () -> janitor(pacer).sweepOnce());
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Signal janitor purged 1000 ")),
+                    "what was deleted so far is logged: " + logs.records());
+        }
     }
 
     @Test
     void aStoreWithoutTheOverloadIsSweptByItsUnscopedDelete() {
         var unscoped = new UnscopedStore(3);
-        var janitor = new SignalJanitor(unscoped, "orders", Duration.ofHours(1), Duration.ofDays(7), EngineObserver.NOOP, pacer);
+        var janitor = new SignalJanitor(unscoped, "orders", Duration.ofHours(1), Duration.ofDays(7), pacer);
         assertEquals(3, janitor.sweepOnce());
         assertEquals(1, unscoped.calls.get(), "one call, through the overload's default");
     }
@@ -128,7 +136,7 @@ class SignalJanitorBatchingTest {
     @Test
     void anUnscopedDeleteOfAFullBatchOrMoreIsCalledOnceMore() {
         var unscoped = new UnscopedStore(1_500);
-        var janitor = new SignalJanitor(unscoped, "orders", Duration.ofHours(1), Duration.ofDays(7), EngineObserver.NOOP, pacer);
+        var janitor = new SignalJanitor(unscoped, "orders", Duration.ofHours(1), Duration.ofDays(7), pacer);
         assertEquals(1_500, janitor.sweepOnce());
         assertEquals(2, unscoped.calls.get(), "one more call, which deleted nothing");
     }
@@ -142,7 +150,7 @@ class SignalJanitorBatchingTest {
     // ── fixtures ──────────────────────────────────────────────────────────
 
     private SignalJanitor janitor(BatchPacer pacer) {
-        return new SignalJanitor(store, "orders", Duration.ofHours(1), Duration.ofDays(7), EngineObserver.NOOP, pacer);
+        return new SignalJanitor(store, "orders", Duration.ofHours(1), Duration.ofDays(7), pacer);
     }
 
     private static Duration ms(long millis) {

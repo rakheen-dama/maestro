@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,7 +17,14 @@ import java.util.function.LongSupplier;
  * threw, whether the throwable ends the loop or is contained — and rate-limits
  * what is logged while a loop keeps failing.
  *
- * <p>Each loop wraps its iteration body as
+ * <p><b>Being replaced (pilot readiness P2).</b> The signal janitor, the
+ * retention sweeper and the one-shot startup recovery run under
+ * {@link io.b2mash.maestro.core.loop.LoopSupervisor}, which carries this
+ * guard's rules and log text unchanged. This guard remains only for the timer
+ * poller, the recovery poller and the instance-lock renewer until they move
+ * too (P2 task 4), when it is deleted.
+ *
+ * <p>Each of those loops wraps its iteration body as
  * {@code try { …; guard.succeeded(); } catch (InterruptedException e) { …exit… }
  * catch (Throwable t) { guard.failed(t); }} and builds its thread with
  * {@link #uncaughtExceptionHandler()}. The loop's own wait follows unchanged:
@@ -67,10 +75,8 @@ final class BackgroundLoopGuard {
     static final String TIMER_POLLER = "timer-poller";
     /** Loop name of {@link RecoveryPoller}. */
     static final String RECOVERY_POLLER = "recovery-poller";
-    /** Loop name of {@link SignalJanitor}. */
-    static final String SIGNAL_JANITOR = "signal-janitor";
-    /** Loop name of {@link RetentionSweeper}. */
-    static final String RETENTION_SWEEPER = "retention-sweeper";
+    /** Loop name of {@link SignalJanitor} (now supervised; kept for this guard's own test until T4). */
+    static final String SIGNAL_JANITOR = SignalJanitor.LOOP_NAME;
     /** Loop name of {@link WorkflowInstanceLockManager}'s renewer. */
     static final String INSTANCE_LOCK_RENEWER = "instance-lock-renewer";
 
@@ -92,7 +98,7 @@ final class BackgroundLoopGuard {
     private final String loop;
     private final Duration retryInterval;
     private final BooleanSupplier stopping;
-    private final EngineObserver observer;
+    private final CompositeEngineObserver observer;
     private final LongSupplier nanoTime;
 
     private volatile int streak;
@@ -125,7 +131,7 @@ final class BackgroundLoopGuard {
         this.loop = Objects.requireNonNull(loop, "loop");
         this.retryInterval = Objects.requireNonNull(retryInterval, "retryInterval");
         this.stopping = Objects.requireNonNull(stopping, "stopping");
-        this.observer = Objects.requireNonNull(observer, "observer");
+        this.observer = CompositeEngineObserver.contain(Objects.requireNonNull(observer, "observer"));
         this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
     }
 
@@ -179,7 +185,10 @@ final class BackgroundLoopGuard {
             log(failure, () -> logger.debug("Background loop '{}' failed again ({} in a row)", loop, n, failure));
         }
         if (failure instanceof Error) {
-            notifyObserver(failure);
+            // Contained by the composite (Issue 81): a throwing observer cannot
+            // end the loop this guard is keeping alive; a control-flow Error
+            // from it is still rethrown.
+            observer.backgroundLoopError(loop, failure.getClass().getName());
         }
         return logged;
     }
@@ -295,21 +304,5 @@ final class BackgroundLoopGuard {
                         + "node until the node restarts", loop, describe(failure), failure);
             }
         };
-    }
-
-    /**
-     * Reports a contained {@code Error}. An observer that throws is contained
-     * too, so it cannot end the loop the guard is keeping alive; a
-     * control-flow {@code Error} from it is still rethrown.
-     */
-    private void notifyObserver(Throwable error) {
-        try {
-            observer.backgroundLoopError(loop, error.getClass().getName());
-        } catch (Throwable t) {
-            if (t instanceof MaestroControlFlowError controlFlow) {
-                throw controlFlow;
-            }
-            logger.debug("EngineObserver.backgroundLoopError threw for loop '{}' — ignoring: {}", loop, t.toString());
-        }
     }
 }

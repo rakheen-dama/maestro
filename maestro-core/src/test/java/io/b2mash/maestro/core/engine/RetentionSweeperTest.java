@@ -1,11 +1,13 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.test.InMemoryDistributedLock;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
@@ -26,7 +28,6 @@ import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.awaitility.Awaitility.await;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -148,8 +149,12 @@ class RetentionSweeperTest {
             assertEquals(2 * 2 + 1 + 4 * 2, result.instances());
         }
 
+        /**
+         * P2: a store fault fails the sweep — it propagates to the supervisor,
+         * which counts it — and what was purged so far is still reported.
+         */
         @Test
-        @DisplayName("a store failure is logged, the sweep ends, and what was purged so far is still reported")
+        @DisplayName("a store failure fails the sweep, and what was purged so far is still reported")
         void storeFailureEndsTheSweepAndReportsThePartialTotal() {
             var store = new RecordingStore();
             store.enqueue(new PurgeResult(5, 20, 0, 0));
@@ -157,11 +162,12 @@ class RetentionSweeperTest {
             var observer = new RecordingEngineObserver();
             var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(500, 100), observer);
 
-            var result = sweeper.sweepOnce();
+            assertThrows(IllegalStateException.class, sweeper::sweepOnce);
 
-            assertEquals(Optional.of(new PurgeResult(5, 20, 0, 0)), result);
             assertEquals(2, store.calls.size(), "the sweep stops at the failing batch");
-            assertEquals(1, observer.retentionPasses().size());
+            assertEquals(List.of(new PurgeResult(5, 20, 0, 0)),
+                    observer.retentionPasses().stream().map(RecordingEngineObserver.RetentionPassCall::purged).toList(),
+                    "one retentionPass carrying what was purged before the fault");
         }
 
         @Test
@@ -241,16 +247,44 @@ class RetentionSweeperTest {
             assertEquals(1, observer.retentionPasses().size());
         }
 
+        /** P2: a lock-backend fault on the election fails the sweep; it no longer counts as "not the leader". */
         @Test
-        @DisplayName("a lock-backend failure counts as not the leader")
+        @DisplayName("a lock-backend failure fails the sweep before any batch")
         void lockBackendFailureIsNotTheLeader() {
             var store = new RecordingStore();
             var lock = new ScriptedLeaderLock(true);
             lock.failWith(new IllegalStateException("lock table unreachable"));
-            var sweeper = new RetentionSweeper(store, lock, SERVICE, settings(2, 100), new RecordingEngineObserver());
+            var observer = new RecordingEngineObserver();
+            var sweeper = new RetentionSweeper(store, lock, SERVICE, settings(2, 100), observer);
 
-            assertEquals(Optional.empty(), sweeper.sweepOnce());
+            assertThrows(IllegalStateException.class, sweeper::sweepOnce);
             assertTrue(store.calls.isEmpty());
+            assertTrue(observer.retentionPasses().isEmpty(), "not the leader: nothing to report");
+        }
+
+        /**
+         * P2: a lock-backend fault on the election is a failed sweep, on every
+         * node. It used to be read as "not the leader" and swallowed, so the
+         * loop's streak never moved (Issue 67).
+         */
+        @Test
+        @DisplayName("a leader-election fault is a failed sweep: it extends the loop's streak")
+        void aLeaderElectionFaultExtendsTheStreak() {
+            var store = new RecordingStore();
+            var lock = new ScriptedLeaderLock(true);
+            lock.failWith(new IllegalStateException("lock table unreachable"));
+            var sweeper = new RetentionSweeper(store, lock, SERVICE, new WorkflowExecutor.RetentionSettings(
+                    Duration.ofMillis(20), Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 2, 100),
+                    new RecordingEngineObserver());
+            var loop = LoopSupervisor.start(sweeper.spec(), sweeper, EngineObserver.NOOP);
+            try {
+                await().atMost(Duration.ofSeconds(5)).until(() -> loop.snapshot().consecutiveFailures() >= 2);
+                assertEquals(IllegalStateException.class.getName(), loop.snapshot().lastFailureType());
+                assertTrue(store.calls.isEmpty(), "no batch without a leader");
+            } finally {
+                loop.requestStop();
+                loop.awaitStopped(Duration.ofSeconds(5));
+            }
         }
 
         private static PurgeResult full() {
@@ -262,24 +296,35 @@ class RetentionSweeperTest {
     @DisplayName("loop lifecycle")
     class LoopLifecycle {
 
+        /** Runs the sweeper under a supervisor, as the executor does. */
+        private LoopSupervisor supervise(RetentionSweeper sweeper) {
+            return LoopSupervisor.start(sweeper.spec(), sweeper, EngineObserver.NOOP);
+        }
+
+        /** Stops it as shutdown does: request, then a bounded wait that must see it end. */
+        private void stop(LoopSupervisor loop) {
+            loop.requestStop();
+            assertTrue(loop.awaitStopped(Duration.ofSeconds(5)), "the loop ended within 5 s");
+        }
+
         @Test
-        @DisplayName("start() sweeps at once and then every interval; stop() ends the loop")
+        @DisplayName("the loop sweeps at once and then every interval; a stop ends the loop")
         void startSweepsThenStopEnds() {
             var store = new RecordingStore();
             var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE,
                     new WorkflowExecutor.RetentionSettings(Duration.ofMillis(20),
                             Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 500, 100),
                     new RecordingEngineObserver());
-            sweeper.start();
+            var loop = supervise(sweeper);
             await().atMost(Duration.ofSeconds(5)).until(() -> store.calls.size() >= 6);
-            assertTrue(sweeper.isRunning());
-            sweeper.stop();
-            assertFalse(sweeper.isRunning());
-            assertThrows(IllegalStateException.class, sweeper::start, "a stopped sweeper cannot be restarted");
+            assertTrue(loop.snapshot().running());
+            stop(loop);
+            assertFalse(loop.snapshot().running());
+            // "cannot be restarted" is the executor's rule now: ExecutorSeams below.
         }
 
         @Test
-        @DisplayName("a store failure is swallowed and the loop keeps running")
+        @DisplayName("a store failure is a failed sweep and the loop keeps running")
         void storeFailureIsSwallowedAndTheLoopKeepsRunning() {
             var store = new RecordingStore();
             store.failOnCall(1, new IllegalStateException("db down"));
@@ -287,14 +332,14 @@ class RetentionSweeperTest {
                     new WorkflowExecutor.RetentionSettings(Duration.ofMillis(20),
                             Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 500, 100),
                     new RecordingEngineObserver());
-            sweeper.start();
+            var loop = supervise(sweeper);
             await().atMost(Duration.ofSeconds(5)).until(() -> store.calls.size() >= 4);
-            assertTrue(sweeper.isRunning());
-            sweeper.stop();
+            assertTrue(loop.snapshot().running());
+            stop(loop);
         }
 
         @Test
-        @DisplayName("stop() during a batch ends the sweep before the next batch, even when the store swallowed the interrupt")
+        @DisplayName("a stop during a batch ends the sweep before the next batch")
         void stopMidSweepEndsBeforeTheNextBatch() throws Exception {
             var store = new RecordingStore();
             // Every batch comes back full, so without the stop check the sweep
@@ -303,34 +348,45 @@ class RetentionSweeperTest {
             store.enqueue(java.util.Collections.nCopies(300, full).toArray(PurgeResult[]::new));
             store.blockFirstCallUntilReleased(full);
             var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(2, 100), new RecordingEngineObserver());
-            sweeper.start();
+            var loop = supervise(sweeper);
             assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
 
-            var stopper = Thread.startVirtualThread(sweeper::stop);
-            await().atMost(Duration.ofSeconds(5)).until(() -> !sweeper.isRunning());
+            var stopper = Thread.startVirtualThread(() -> stop(loop));
+            await().atMost(Duration.ofSeconds(5)).until(() -> !loop.snapshot().running());
             store.release.countDown(); // the blocked batch now returns full
             stopper.join(Duration.ofSeconds(10).toMillis());
             assertFalse(stopper.isAlive(), "stop() must have returned");
+            assertTrue(loop.awaitStopped(Duration.ZERO), "the loop has ended, not only been asked to");
 
             assertEquals(1, store.calls.size(), "no batch may start after stop()");
         }
 
+        /**
+         * A stop never interrupts the sweeper's thread (Issue 64): the batch in
+         * progress finishes, and the loop ends as soon as it returns, without
+         * sleeping an interval first. (It used to be stopped by an interrupt a
+         * driver could swallow.)
+         */
         @Test
-        @DisplayName("stop() ends the loop promptly even when the store swallows the interrupt mid-sweep")
+        @DisplayName("a stop never interrupts a batch in progress; the loop ends once it returns")
         void stopWhileTheStoreSwallowsTheInterruptEndsPromptly() throws Exception {
             var store = new RecordingStore();
-            store.swallowInterruptOnNextCall();
+            store.blockFirstCallUntilReleased(PurgeResult.EMPTY);
             var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(500, 100), new RecordingEngineObserver());
-            sweeper.start();
+            var loop = supervise(sweeper);
             assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
 
+            loop.requestStop();
+            var stoppedWhileInTheBatch = loop.awaitStopped(Duration.ofMillis(100));
+            store.release.countDown();
             var started = System.nanoTime();
-            sweeper.stop();
+            var stopped = loop.awaitStopped(Duration.ofSeconds(5));
             var elapsed = Duration.ofNanos(System.nanoTime() - started);
 
-            var thread = store.sweepThread.get();
-            assertTrue(thread != null && !thread.isAlive(), "the sweeper thread must have exited");
-            assertTrue(elapsed.compareTo(Duration.ofSeconds(2)) < 0, "stop() took " + elapsed);
+            assertFalse(stoppedWhileInTheBatch, "the batch is still in progress");
+            assertTrue(stopped, "the loop ended once the batch returned");
+            assertTrue(elapsed.compareTo(Duration.ofSeconds(2)) < 0, "it did not sleep an interval first: " + elapsed);
+            assertFalse(store.interruptedInStoreCall.get(), "the batch was never interrupted");
         }
     }
 
@@ -384,9 +440,8 @@ class RetentionSweeperTest {
         private final Deque<PurgeResult> scripted = new ArrayDeque<>();
         private int failOnCall = -1;
         private @Nullable RuntimeException failure;
-        private volatile boolean swallowInterrupt;
         final java.util.concurrent.CountDownLatch sweepEntered = new java.util.concurrent.CountDownLatch(1);
-        final AtomicReference<@Nullable Thread> sweepThread = new AtomicReference<>();
+        final AtomicBoolean interruptedInStoreCall = new AtomicBoolean();
 
         synchronized void enqueue(PurgeResult... results) {
             scripted.addAll(List.of(results));
@@ -397,15 +452,10 @@ class RetentionSweeperTest {
             this.failure = failure;
         }
 
-        /** The next call blocks until interrupted and then swallows the interrupt, like some JDBC drivers. */
-        void swallowInterruptOnNextCall() {
-            swallowInterrupt = true;
-        }
-
         private volatile @Nullable PurgeResult blockedResult;
         final java.util.concurrent.CountDownLatch release = new java.util.concurrent.CountDownLatch(1);
 
-        /** The first call blocks (swallowing any interrupt) until {@link #release} is counted down, then returns {@code result}. */
+        /** The first call blocks (recording and swallowing any interrupt) until {@link #release} is counted down, then returns {@code result}. */
         void blockFirstCallUntilReleased(PurgeResult result) {
             blockedResult = result;
         }
@@ -422,21 +472,11 @@ class RetentionSweeperTest {
                         release.await();
                         break;
                     } catch (InterruptedException swallowed) {
-                        // deliberately swallowed — keep waiting, like a driver that ignores interrupts
+                        // swallowed — keep waiting, like a driver that ignores interrupts
+                        interruptedInStoreCall.set(true);
                     }
                 }
                 return blocked;
-            }
-            if (swallowInterrupt) {
-                swallowInterrupt = false;
-                sweepThread.set(Thread.currentThread());
-                sweepEntered.countDown();
-                try {
-                    Thread.sleep(Duration.ofMinutes(1));
-                } catch (InterruptedException swallowed) {
-                    // deliberately not restored
-                }
-                return PurgeResult.EMPTY;
             }
             if (calls.size() == failOnCall && failure != null) {
                 throw failure;

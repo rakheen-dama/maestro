@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
@@ -85,7 +86,7 @@ final class WorkflowInstanceLockManager {
     private final String keyPrefix;
     private final Duration ttl;
     private final Duration renewInterval;
-    private final EngineObserver observer;
+    private final CompositeEngineObserver observer;
     private final BackgroundLoopGuard guard;
     private final ConcurrentHashMap<String, LockHandle> heldLocks = new ConcurrentHashMap<>();
     private final AtomicBoolean renewerStarted = new AtomicBoolean(false);
@@ -98,9 +99,9 @@ final class WorkflowInstanceLockManager {
     /**
      * Registers the callback {@link #renewLoop} invokes with a workflow ID and
      * the lost handle when a renewal reports that an instance lock was lost.
-     * Invoked at most once per lost handle, on the renewer thread, through the
-     * same containment as the observer callbacks — a throwing callback cannot
-     * kill the renewer. The handle tells the caller <em>which</em> run lost it:
+     * Invoked at most once per lost handle, on the renewer thread; a
+     * {@code RuntimeException} from it is contained, so a throwing callback
+     * cannot end the renewal pass. The handle tells the caller <em>which</em> run lost it:
      * a newer run of the same workflow ID holds a different handle (L1).
      * Replaces any previously registered callback.
      *
@@ -183,9 +184,13 @@ final class WorkflowInstanceLockManager {
         this.keyPrefix = keyPrefix;
         this.ttl = ttl;
         this.renewInterval = renewInterval;
-        this.observer = observer;
+        // Contained once, here (Issue 81): a throwing observer can neither
+        // report a held lock as UNAVAILABLE nor end a renewal pass early.
+        this.observer = CompositeEngineObserver.contain(observer);
+        // The same composite (PR #74 review): one containment count and one
+        // quiet period per observer, not one per consumer.
         this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.INSTANCE_LOCK_RENEWER, renewInterval,
-                closed::get, observer);
+                closed::get, this.observer);
         this.renewerThreadStarter = () -> Thread.ofVirtual()
                 .name("maestro-instance-lock-renewer-" + this.serviceName)
                 .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
@@ -282,10 +287,10 @@ final class WorkflowInstanceLockManager {
                                 + "until then they expire via TTL: {}",
                         workflowId, e.getMessage(), e);
             }
-            emit("instanceLockAcquired", workflowId, () -> observer.instanceLockAcquired(workflowId));
+            observer.instanceLockAcquired(workflowId);
         } catch (RuntimeException | Error e) {
-            // An Error (from the renewer start or the observer) reaches the
-            // caller instead of ACQUIRED, so no run will ever own — or release
+            // An Error (from the renewer start, or a control-flow or VM error
+            // from the observer) reaches the caller instead of ACQUIRED, so no run will ever own — or release
             // — this handle. Kept, the renewer would renew it forever and the
             // workflow would be unacquirable on every node until this one
             // restarts: give it back first, then rethrow (a control-flow
@@ -579,8 +584,7 @@ final class WorkflowInstanceLockManager {
                     guard.failed(e);
                     return false;
                 }
-                snapshot.forEach((_, workflowId) -> emit("instanceLockRenewFailed", workflowId,
-                        () -> observer.instanceLockRenewFailed(workflowId)));
+                snapshot.forEach((_, workflowId) -> observer.instanceLockRenewFailed(workflowId));
                 guard.failed(e);
                 return false;
             }
@@ -634,34 +638,26 @@ final class WorkflowInstanceLockManager {
         // at its next stop point rather than after a write the store fences —
         // and before anyone observing the loss can act on it (a run that has
         // not entered the workflow method yet never runs user code).
-        emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId, handle));
+        notifyLockLost(workflowId, handle);
         // Then the report, outside the backend call so a throwing observer is
-        // not reported as a transient renew failure, and contained so it cannot
-        // escape renewLoop() and kill the single renewer thread — that would
-        // silently stop renewing EVERY held lock.
+        // not reported as a transient renew failure. The observer is contained
+        // (Issue 81), so an observer's Error no longer leaves renewPass's loop
+        // over the lost handles: each one is handled in the same pass (68.2).
         if (!afterClose) {
-            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
+            observer.instanceLockLost(workflowId);
         }
     }
 
     /**
-     * Invokes one observer callback, containing a misbehaving observer.
-     *
-     * <p>Since coordinator Ruling 4, containment is structural at the seam:
-     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
-     * wraps. This guard stays as depth — the constructors accept <em>any</em>
-     * {@code EngineObserver}, so nothing forces an embedder or a test wiring
-     * the engine by hand through {@code of(...)}, and an escape here would
-     * either report a held lock as {@code UNAVAILABLE} or kill the single
-     * renewer thread. {@code RuntimeException} only: {@code Error}s (the
-     * engine's control-flow signals) always propagate.
+     * Runs the executor's lost-lock callback, containing a
+     * {@code RuntimeException} from it: engine code, not an observer, but an
+     * escape would end the renewal pass before the remaining lost handles.
      */
-    private void emit(String callback, String workflowId, Runnable emission) {
+    private void notifyLockLost(String workflowId, LockHandle handle) {
         try {
-            emission.run();
+            lockLostCallback.accept(workflowId, handle);
         } catch (RuntimeException e) {
-            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
-                    callback, workflowId, e.toString());
+            logger.warn("The lost-lock callback threw for workflow '{}' — ignoring: {}", workflowId, e.toString());
         }
     }
 }

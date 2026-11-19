@@ -6,6 +6,8 @@ import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SharedLock;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.WorkWorkflow;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
+import io.b2mash.maestro.core.loop.LoopSnapshot;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.RecoveryCursor;
@@ -189,9 +191,8 @@ class OneShotRecoveryTest {
             interruptedInStoreCall.compareAndSet(false, Thread.currentThread().isInterrupted());
             return actual;
         });
-        var recovery = new OneShotRecovery(a, registrations(a, store), SERVICE, Duration.ofHours(1),
-                EngineObserver.NOOP);
-        recovery.start();
+        var body = new OneShotRecovery(a, registrations(a, store), SERVICE, Duration.ofHours(1));
+        var recovery = LoopSupervisor.start(body.spec(), body, EngineObserver.NOOP);
         try {
             assertTrue(inAdoption.await(5, TimeUnit.SECONDS), "the pass is adopting wf-0");
             recovery.requestStop();
@@ -199,6 +200,7 @@ class OneShotRecoveryTest {
             resume.countDown();
         }
         assertTrue(recovery.awaitStopped(Duration.ofSeconds(5)), "the pass ended");
+        assertEquals(LoopSnapshot.State.STOPPED, recovery.snapshot().state(), "a pass cut short is not DONE");
         assertAll(
                 () -> assertFalse(interruptedInStoreCall.get(), "the store call was not interrupted"),
                 () -> assertEquals(1, lock.heldCount(), "only wf-0, adopted before the stop"));
@@ -207,14 +209,32 @@ class OneShotRecoveryTest {
     /**
      * Shutdown's "did not stop within the deadline" WARN names the loop by
      * {@code loopName()}: the one-shot pass names itself, not the recovery
-     * poller. Its failures still count on {@code maestro.loop.errors} under the
-     * fixed {@code recovery-poller} tag (its guard's name).
+     * poller — and since P2 its failures count under that name too
+     * ({@link #countsUnderStartupRecovery()}).
      */
     @Test
     void itNamesItselfInShutdownsLogNotAsTheRecoveryPoller() {
         var a = node(new CountingStore(), 1);
-        var recovery = new OneShotRecovery(a, Map.of(), SERVICE, Duration.ofHours(1), EngineObserver.NOOP);
-        assertEquals("startup-recovery", recovery.loopName());
+        var recovery = new OneShotRecovery(a, Map.of(), SERVICE, Duration.ofHours(1));
+        assertEquals("startup-recovery", recovery.spec().name());
+        assertTrue(recovery.spec().threadName().startsWith("maestro-startup-recovery-"));
+    }
+
+    /**
+     * P2: the one-shot pass is its own loop, {@code startup-recovery} — in
+     * shutdown's log, and now on {@code maestro.loop.errors} too, where it used
+     * to count under {@code recovery-poller}.
+     */
+    @Test
+    void countsUnderStartupRecovery() {
+        var store = new FailingStore(1, () -> new AssertionError("injected in the first pass"));
+        seedRecoverable(store, "wf-1", "orders");
+        var observer = new io.b2mash.maestro.core.observe.RecordingEngineObserver();
+        var a = node(store, 1, Duration.ofSeconds(2), observer);
+        a.startOneShotRecovery(registrations(a, store), Duration.ofMillis(50));
+        assertEquals(1, valueWithin(lock::heldCount, 1, Duration.ofSeconds(5)), "the retried pass adopted it");
+        assertEquals(List.of(new io.b2mash.maestro.core.observe.RecordingEngineObserver.LoopErrorCall(
+                "startup-recovery", AssertionError.class.getName())), observer.loopErrors());
     }
 
     // ── helpers ──────────────────────────────────────────────────────
@@ -254,10 +274,14 @@ class OneShotRecoveryTest {
     }
 
     private WorkflowExecutor node(CountingStore store, int c, Duration shutdownTimeout) {
+        return node(store, c, shutdownTimeout, EngineObserver.NOOP);
+    }
+
+    private WorkflowExecutor node(CountingStore store, int c, Duration shutdownTimeout, EngineObserver observer) {
         var executor = WorkflowExecutor.builder(store, serializer, SERVICE)
                 .distributedLock(lock)
                 .lifecycleEventsEnabled(false)
-                .observer(EngineObserver.NOOP)
+                .observer(observer)
                 .defaultTaskQueueLimits(c > 0 ? new TaskQueueLimits(c, c) : null)
                 .shutdownTimeout(shutdownTimeout)
                 .build();
