@@ -6,6 +6,13 @@ name: Pre-release to GitHub Packages
 #
 # No secrets to configure: the job's GITHUB_TOKEN publishes. Artifacts are not
 # signed. A published version cannot be overwritten: publish a new suffix.
+#
+# The release gate (RELEASING.md, "The release gate") runs before anything is
+# published: the previous release must have its upgrade fixtures, and the
+# rolling test against it must pass. An experimental release
+# (X.Y.Z-exp.<topic>.<n>, RELEASING.md, "Experimental releases") goes through
+# the same gate; its name is checked, and its GitHub pre-release says it must
+# never run against a database that matters.
 
 on:
   push:
@@ -24,7 +31,7 @@ jobs:
   publish:
     name: Publish pre-release
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
 
     steps:
       - name: Checkout
@@ -43,6 +50,25 @@ jobs:
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Check an experimental release's name
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          if [[ "$VERSION" == *-exp* && ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-exp\.[a-z0-9]+(-[a-z0-9]+)*\.[0-9]+$ ]]; then
+            echo "::error title=Experimental release name::$VERSION is not X.Y.Z-exp.<topic>.<n> (RELEASING.md, Experimental releases)"
+            exit 1
+          fi
+
+      - name: "Release gate: the previous release has its upgrade fixtures"
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: scripts/previous-release.sh --check-release "$VERSION"
+
+      - name: "Release gate: the rolling test against the previous release"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew :maestro-integration-tests:rollingUpgradeTest
+
       - name: Build and test
         # The version reaches the shell as data (an environment variable), never as script text.
         env:
@@ -60,4 +86,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ github.ref_name }}
           VERSION: ${{ steps.version.outputs.VERSION }}
-        run: gh release create "$TAG" --title "Maestro $VERSION" --generate-notes --prerelease
+        run: |
+          if [[ "$VERSION" == *-exp.* ]]; then
+            gh release create "$TAG" --title "Maestro $VERSION (experimental)" --prerelease \
+              --notes "Experimental release from a branch: it may change events, payloads or migrations that no released build reads. Never run it against a database that matters. It is deleted when its branch closes (RELEASING.md, Experimental releases)."
+          else
+            gh release create "$TAG" --title "Maestro $VERSION" --generate-notes --prerelease
+          fi

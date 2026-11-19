@@ -12,12 +12,14 @@ concurrency:
 
 permissions:
   contents: write
+  # The release gate's rolling test resolves the previous release from GitHub Packages.
+  packages: read
 
 jobs:
   release:
     name: Publish & Release
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     environment: maven-central
 
     steps:
@@ -36,6 +38,17 @@ jobs:
       - name: Extract version from tag
         id: version
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # The release gate (RELEASING.md, "The release gate"), before anything is published.
+      - name: "Release gate: the previous release has its upgrade fixtures"
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: scripts/previous-release.sh --check-release "$VERSION"
+
+      - name: "Release gate: the rolling test against the previous release"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./gradlew :maestro-integration-tests:rollingUpgradeTest
 
       - name: Build and test
         env:
