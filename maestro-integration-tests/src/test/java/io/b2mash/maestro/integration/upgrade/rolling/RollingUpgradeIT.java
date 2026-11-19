@@ -115,6 +115,7 @@ class RollingUpgradeIT {
     private static final String SIGNAL_TYPE = "rolling-signal";
     private static final String TIMER_TYPE = "rolling-timer";
     private static final String SAGA_TYPE = "rolling-saga";
+    private static final String FORK_TYPE = "rolling-fork";
 
     /** Starting a run and reaching its first park. */
     private static final Duration PARK_TIMEOUT = Duration.ofSeconds(30);
@@ -216,19 +217,30 @@ class RollingUpgradeIT {
 
     @Test
     void signalParkedOnPreviousIsResumedByCurrent() {
-        signalParkedThenAdopted(previous(), current(), Direction.UPGRADE);
+        signalParkedThenAdopted(SIGNAL_TYPE, previous(), current(), Direction.UPGRADE);
     }
 
     @Test
     void signalParkedOnCurrentIsAdoptedByPrevious() {
-        signalParkedThenAdopted(current(), previous(), Direction.ROLLBACK);
+        signalParkedThenAdopted(SIGNAL_TYPE, current(), previous(), Direction.ROLLBACK);
     }
 
-    private void signalParkedThenAdopted(NodeBuild parkedOn, NodeBuild adoptedBy, Direction direction) {
+    /** As above, the park inside a {@code parallel()} branch (its own sequence block). */
+    @Test
+    void signalParkedInAForkBranchOnPreviousIsResumedByCurrent() {
+        signalParkedThenAdopted(FORK_TYPE, previous(), current(), Direction.UPGRADE);
+    }
+
+    @Test
+    void signalParkedInAForkBranchOnCurrentIsAdoptedByPrevious() {
+        signalParkedThenAdopted(FORK_TYPE, current(), previous(), Direction.ROLLBACK);
+    }
+
+    private void signalParkedThenAdopted(String type, NodeBuild parkedOn, NodeBuild adoptedBy, Direction direction) {
         this.direction = direction;
-        var wf = workflowId("signal");
+        var wf = workflowId(type.equals(FORK_TYPE) ? "fork" : "signal");
         var first = launch(parkedOn, "a");
-        first.start(SIGNAL_TYPE, wf, wf);
+        first.start(type, wf, wf);
         awaitStatus(wf, "WAITING_SIGNAL", PARK_TIMEOUT, first);
         var epoch = db.leaseEpoch(wf);
         first.stopGracefully();
@@ -244,7 +256,8 @@ class RollingUpgradeIT {
         assertSignalsStoredOnceAndConsumed(wf, "go");
         assertNoAlarms(wf, false, first);
         assertNoAlarms(wf, false, finish.finisher());
-        observed("signal parked on " + parkedOn.label() + ", adopted and signalled on " + adoptedBy.label()
+        observed((type.equals(FORK_TYPE) ? "signal parked in a fork branch on " : "signal parked on ")
+                + parkedOn.label() + ", adopted and signalled on " + adoptedBy.label()
                 + ": " + finishedBy(finish, "COMPLETED"));
     }
 
@@ -394,6 +407,7 @@ class RollingUpgradeIT {
         direction = Direction.MIXED;
         var kafka = RollingKafka.get();
         var group = kafka.freshGroup();
+        var deadLettersBefore = kafka.eventsDeadLetterEnd();
         var wf = workflowId("kafka");
         var owner = launch(ownerBuild, "owner");
         var consumer = launchKafka(consumerBuild, "consumer", group);
@@ -413,6 +427,7 @@ class RollingUpgradeIT {
         assertThat(eventTypes(wf)).as("one consumption").containsOnlyOnce("SIGNAL_RECEIVED");
         assertThat(db.leaseEpoch(wf)).as("the run never left its owner").isEqualTo(epoch);
         assertNoAlarms(wf, false, owner, consumer);
+        assertNothingDeadLettered(kafka, deadLettersBefore);
         consumer.stopGracefully();
         observed("Kafka record consumed on " + consumerBuild.label() + " (stored as kafka:<topicId>:0:" + offset
                 + "), run parked on " + ownerBuild.label() + " woken and COMPLETED there");
@@ -441,6 +456,7 @@ class RollingUpgradeIT {
         direction = Direction.MIXED;
         var kafka = RollingKafka.get();
         var group = kafka.freshGroup();
+        var deadLettersBefore = kafka.eventsDeadLetterEnd();
         var wf = workflowId("kafka-hdr");
         var owner = launch(current(), "owner");
         owner.start(SIGNAL_TYPE, wf, wf);
@@ -465,28 +481,29 @@ class RollingUpgradeIT {
                         + messageId));
         assertThat(eventTypes(wf)).as("one consumption").containsOnlyOnce("SIGNAL_RECEIVED");
         assertNoAlarms(wf, false, owner, first, second);
+        assertNothingDeadLettered(kafka, deadLettersBefore);
         second.stopGracefully();
         observed("one header id through " + firstBuild.label() + " then " + secondBuild.label()
                 + " in one consumer group: stored once as hdr:<topic>:<id>, the republish suppressed");
     }
 
     @Test
-    void aKafkaRecordRedeliveredToCurrentAfterARebalanceIsStoredOnce() {
+    void aKafkaRecordRedeliveredToCurrentAfterALostOffsetCommitIsStoredOnce() {
         redeliveryAcrossRebalance(previous(), current());
     }
 
     @Test
-    void aKafkaRecordRedeliveredToPreviousAfterARebalanceIsStoredOnce() {
+    void aKafkaRecordRedeliveredToPreviousAfterALostOffsetCommitIsStoredOnce() {
         redeliveryAcrossRebalance(current(), previous());
     }
 
     /**
-     * The redelivery a rebalance causes when the previous owner of a
-     * partition stored a signal but its offset commit was lost: a node of one
-     * build consumes a record without a header (stored under its coordinate),
-     * leaves the group, the group's offset is moved back to that record (the
-     * lost commit), and a node of the other build joins and reads the same
-     * record again. It derives the same coordinate id and suppresses it. A
+     * A redelivery of an already-consumed record to the other build — what a
+     * consumer sees when the previous owner of a partition stored a signal but
+     * its offset commit was lost: a node of one build consumes a record
+     * without a header (stored under its coordinate), leaves the group, the
+     * group's offset is rewound to that record while the group is empty, and a
+     * node of the other build joins and reads the same record again. It derives the same coordinate id and suppresses it. A
      * second record, for a second run, published after it is delivered by the
      * second node, which proves it read past the redelivered one.
      */
@@ -494,6 +511,7 @@ class RollingUpgradeIT {
         direction = Direction.MIXED;
         var kafka = RollingKafka.get();
         var group = kafka.freshGroup();
+        var deadLettersBefore = kafka.eventsDeadLetterEnd();
         var wf = workflowId("kafka-redeliver");
         var later = workflowId("kafka-later");
         var owner = launch(current(), "owner");
@@ -526,9 +544,10 @@ class RollingUpgradeIT {
                 .containsExactly(new RollingDatabase.Signal("go", true, "kafka:" + topicId + ":0:" + laterOffset));
         assertNoAlarms(wf, false, owner, first, second);
         assertNoAlarms(later, false, owner, second);
+        assertNothingDeadLettered(kafka, deadLettersBefore);
         second.stopGracefully();
         observed("record consumed on " + firstBuild.label() + ", redelivered to " + secondBuild.label()
-                + " after a rebalance (offset moved back to " + offset + "): stored once as kafka:<topicId>:0:"
+                + " after a lost offset commit (group offset rewound to " + offset + "): stored once as kafka:<topicId>:0:"
                 + offset);
     }
 
@@ -819,7 +838,8 @@ class RollingUpgradeIT {
      * A node with Maestro's Kafka messaging, in consumer group {@code group}
      * (for its {@code @MaestroSignalListener} and the engine's signal topic).
      * A short session timeout lets a group rebalance within seconds of a member
-     * leaving or dying.
+     * leaving or dying; a short redelivery budget dead-letters a failing
+     * record within seconds.
      */
     private RollingNode launchKafka(NodeBuild build, String suffix, String group) {
         var properties = nodeProperties();
@@ -827,6 +847,11 @@ class RollingUpgradeIT {
         properties.put("maestro.messaging.consumer-group", group);
         properties.put("spring.kafka.consumer.properties.session.timeout.ms", "6000");
         properties.put("spring.kafka.consumer.properties.heartbeat.interval.ms", "1000");
+        // A record the listener fails on is dead-lettered after two attempts,
+        // within seconds rather than the default 151 s budget, so a duplicate
+        // that throws instead of being suppressed reaches .DLT inside the test.
+        properties.put("maestro.messaging.redelivery.max-attempts", "2");
+        properties.put("maestro.messaging.redelivery.initial-interval", "200ms");
         return launch(build, suffix, properties);
     }
 
@@ -867,6 +892,16 @@ class RollingUpgradeIT {
     private void awaitStatus(String wf, String status, Duration timeout, RollingNode... watched) {
         RollingDatabase.await(wf + " to reach " + status, timeout,
                 () -> db.status(wf).orElse("").equals(status), () -> diagnostics(wf, watched));
+    }
+
+    /**
+     * The duplicate was suppressed, not failed: a listener that threw on it
+     * would, once its retries were spent, have published it to the
+     * dead-letter topic and committed the offset all the same.
+     */
+    private static void assertNothingDeadLettered(RollingKafka kafka, long endBefore) {
+        assertThat(kafka.eventsDeadLetterEnd()).as("records dead-lettered on " + RollingKafka.EVENTS_TOPIC + ".DLT")
+                .isEqualTo(endBefore);
     }
 
     /** Waits until the consumer group has committed {@code offset} on the events topic (it read every record before it). */

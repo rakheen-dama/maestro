@@ -148,6 +148,21 @@ final class RollingKafka {
     }
 
     /**
+     * @return the end offset of {@value #EVENTS_TOPIC}'s dead-letter topic: a
+     *         duplicate the listener failed on, instead of suppressing it,
+     *         lands there once its retries are spent
+     */
+    long eventsDeadLetterEnd() {
+        var partition = new TopicPartition(EVENTS_TOPIC + ".DLT", 0);
+        try (var admin = admin()) {
+            return admin.listOffsets(Map.of(partition, OffsetSpec.latest())).all().get(30, TimeUnit.SECONDS)
+                    .get(partition).offset();
+        } catch (Exception e) {
+            throw new IllegalStateException("Cannot read the end of " + partition, e);
+        }
+    }
+
+    /**
      * @param group a consumer group
      * @return the group's committed offset on {@value #EVENTS_TOPIC}, or {@code -1} for none
      */
