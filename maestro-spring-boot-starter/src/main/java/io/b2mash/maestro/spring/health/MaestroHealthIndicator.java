@@ -2,6 +2,7 @@ package io.b2mash.maestro.spring.health;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.loop.LoopSnapshot;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.springframework.boot.health.contributor.Health;
@@ -9,6 +10,9 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.boot.health.contributor.Status;
 
 import java.time.Duration;
+import java.time.Instant;
+import java.util.HashMap;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -227,74 +231,99 @@ public class MaestroHealthIndicator implements HealthIndicator {
     @Override
     public Health health() {
         var storeProbe = probeStore();
-        var timer = pollerState(executor.hasTimerPollerStarted(), executor.isTimerPollerRunning(), false);
-        var recovery = pollerState(executor.hasRecoveryPollerStarted(), executor.isRecoveryPollerRunning(),
-                !recoveryPollerEnabled);
-        var retention = pollerState(executor.hasRetentionSweeperStarted(), executor.isRetentionSweeperRunning(),
-                !retentionSweeperEnabled);
-        var janitor = pollerState(executor.signalJanitorSettings() != null, executor.isSignalJanitorRunning(), false);
-        var renewerFailures = executor.instanceLockRenewerFailureStreak();
-        var renewer = renewerState(executor.hasInstanceLockRenewerStarted(), executor.isInstanceLockRenewerRunning(),
-                renewerFailures);
+        return assess(new Inputs(storeProbe.status(), storeProbe.exception(), executor.loops(),
+                executor.instanceLocksHeld(), executor.instanceLockTtl(), Instant.now(), executor.runningCount()));
+    }
+
+    /**
+     * What {@link #health()} reads, gathered once: the store probe's outcome
+     * and one snapshot of every loop. A test seam: {@link #assess} is a pure
+     * function of it.
+     *
+     * @param storeStatus    {@link #REACHABLE}, {@link #UNREACHABLE} or {@link #TIMED_OUT}
+     * @param storeException what the probe threw, if it did
+     * @param loops          {@code WorkflowExecutor.loops()}
+     * @param locksHeld      instance locks this node holds
+     * @param lockTtl        the instance lock TTL
+     * @param now            the wall clock, for the age of a last success
+     * @param runningCount   workflows running here
+     */
+    record Inputs(String storeStatus, @Nullable Throwable storeException, List<LoopSnapshot> loops, int locksHeld,
+                  Duration lockTtl, Instant now, int runningCount) {
+    }
+
+    /** The status and details for {@code in}; see the class Javadoc. */
+    Health assess(Inputs in) {
+        var byName = new HashMap<String, LoopSnapshot>();
+        in.loops().forEach(loop -> byName.put(loop.name(), loop));
+        var timer = pollerState(byName.get(TIMER_POLLER), false);
+        var recovery = pollerState(byName.get(RECOVERY_POLLER), !recoveryPollerEnabled);
+        var retention = pollerState(byName.get(RETENTION_SWEEPER), !retentionSweeperEnabled);
+        var janitor = pollerState(byName.get(SIGNAL_JANITOR), false);
+        var renewerSnapshot = byName.get(RENEWER);
+        var renewerFailures = renewerSnapshot == null ? 0 : renewerSnapshot.consecutiveFailures();
+        var renewer = renewerState(renewerSnapshot);
 
         var loopFault = timer.fault() || recovery.fault() || retention.fault() || janitor.fault() || renewer.fault();
-        var status = (loopFault || storeProbe.status().equals(UNREACHABLE)) ? Status.DOWN
-                : storeProbe.status().equals(TIMED_OUT) ? Status.UNKNOWN
+        var status = (loopFault || in.storeStatus().equals(UNREACHABLE)) ? Status.DOWN
+                : in.storeStatus().equals(TIMED_OUT) ? Status.UNKNOWN
                 : Status.UP;
 
         var builder = Health.status(status)
-                .withDetail("store", storeProbe.status())
+                .withDetail("store", in.storeStatus())
                 .withDetail("timerPollerRunning", timer.detail())
                 .withDetail("recoveryPollerRunning", recovery.detail())
                 .withDetail("retentionSweeperRunning", retention.detail())
                 .withDetail("signalJanitorRunning", janitor.detail())
                 .withDetail("instanceLockRenewerRunning", renewer.detail())
                 .withDetail("instanceLockRenewerConsecutiveFailures", renewerFailures)
-                .withDetail("runningWorkflowCount", executor.runningCount());
+                .withDetail("runningWorkflowCount", in.runningCount());
 
-        if (storeProbe.exception() != null) {
-            builder.withException(storeProbe.exception());
+        if (in.storeException() != null) {
+            builder.withException(in.storeException());
         }
 
         return builder.build();
     }
 
+    static final String TIMER_POLLER = "timer-poller";
+    static final String RECOVERY_POLLER = "recovery-poller";
+    static final String STARTUP_RECOVERY = "startup-recovery";
+    static final String SIGNAL_JANITOR = "signal-janitor";
+    static final String RETENTION_SWEEPER = "retention-sweeper";
+    static final String RENEWER = "instance-lock-renewer";
+
     /**
      * Computes the reported detail value and fault status for one poller.
      *
-     * @param everStarted whether the poller has been started at least once
-     * @param running     whether the poller is currently running
-     * @param disabled    whether the poller is turned off by configuration
+     * @param loop     the loop's snapshot, or {@code null} if it was never started
+     * @param disabled whether the poller is turned off by configuration
      */
-    private static PollerState pollerState(boolean everStarted, boolean running, boolean disabled) {
+    private static PollerState pollerState(@Nullable LoopSnapshot loop, boolean disabled) {
         if (disabled) {
             return new PollerState(DISABLED, false);
         }
-        if (!everStarted) {
+        if (loop == null) {
             return new PollerState(STARTING, false);
         }
+        var running = loop.running();
         return new PollerState(running, !running);
     }
 
     /**
-     * The instance-lock renewer's detail and fault. It starts lazily, with this
-     * node's first instance lock, and may never start, so an unstarted renewer
-     * is {@link #IDLE}, not {@link #STARTING}. A renewer that is running but
-     * whose last {@link #RENEWER_FAULT_STREAK} passes in a row failed is a
+     * The instance-lock renewer's detail and fault. A renewer that is running
+     * but whose last {@link #RENEWER_FAULT_STREAK} passes in a row failed is a
      * fault too (review d7, fix wave e3): its thread is alive, but the locks
      * it holds are not being renewed. One failed pass is not (see
      * {@link #RENEWER_FAULT_STREAK}): a single refused {@code renewAll} must
      * not take a node out of readiness.
-     *
-     * @param everStarted         whether the renewer has been started
-     * @param running             whether its thread is alive
-     * @param consecutiveFailures its current failure streak
      */
-    private static PollerState renewerState(boolean everStarted, boolean running, int consecutiveFailures) {
-        if (!everStarted) {
+    private static PollerState renewerState(@Nullable LoopSnapshot renewer) {
+        if (renewer == null) {
             return new PollerState(IDLE, false);
         }
-        return new PollerState(running, !running || consecutiveFailures >= RENEWER_FAULT_STREAK);
+        var running = renewer.running();
+        return new PollerState(running, !running || renewer.consecutiveFailures() >= RENEWER_FAULT_STREAK);
     }
 
     /** {@code detail} is a {@link Boolean}, or one of {@link #STARTING}/{@link #DISABLED}/{@link #IDLE}. */

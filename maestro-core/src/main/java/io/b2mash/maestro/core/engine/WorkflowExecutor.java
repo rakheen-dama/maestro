@@ -3091,6 +3091,15 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * The instance lock TTL this executor was built with.
+     *
+     * @return the instance lock TTL
+     */
+    public Duration instanceLockTtl() {
+        return instanceLockTtl;
+    }
+
+    /**
      * How many instance locks this node holds right now.
      *
      * @return the number of held instance locks
