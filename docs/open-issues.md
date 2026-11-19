@@ -4853,14 +4853,14 @@ page.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** The pollers and cleaner still interrupt JDBC; P1.
 
-> **Resolved** (pilot readiness P2 task 6, PR #TBD-P2b). The lock cleaner runs
+> **Resolved** (pilot readiness P2 task 6, PR #76). The lock cleaner runs
 > under `LoopSupervisor` too: `close()` asks it to stop and never interrupts,
 > so a delete in progress finishes
 > (`PostgresLockCleanerSchedulerTest.closeWhileARunIsInProgressNeverInterruptsItAndTheCleanerEndsAfterIt`).
 > No background loop is interrupted any more. The health probe's interrupt
 > is Issue 66, not this one.
 
-> **Partly resolved further** (pilot readiness P2 task 4, PR #TBD-P2b): the
+> **Partly resolved further** (pilot readiness P2 task 4, PR #76): the
 > timer poller and the recovery poller run under `LoopSupervisor` too: no core
 > engine loop is interrupted any more (the renewer since WP5; the janitor,
 > sweeper and startup recovery since PR #74). Open: the lock cleaner (task 6).
@@ -4971,7 +4971,7 @@ renewal failure.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Loop supervision, P2. Kept `blocks-pilot` after the P3 review: a dead wake listener leaves an operator blind to a real fault — every cross-node signal then waits the 30 s recheck — though the lock-cleaner half alone would be a `limitation`.
 
-> **Resolved** (pilot readiness P2 task 6, PR #TBD-P2b). Both loops run under
+> **Resolved** (pilot readiness P2 task 6, PR #76). Both loops run under
 > the executor's `LoopSupervisor` (`lock-cleaner`, `wake-listener`): they are
 > in `WorkflowExecutor.loops()`, so `maestro` reports `lockCleanerRunning`,
 > `wakeListenerRunning` and `wakeListenerConnected` — a dead one reads `DOWN`,
@@ -5095,7 +5095,7 @@ after the store answers again.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Health that tells the truth, P2.
 
-> **Resolved** (pilot readiness P2 task 5, PR #TBD-P2b). Every loop runs
+> **Resolved** (pilot readiness P2 task 5, PR #76). Every loop runs
 > under `LoopSupervisor`; health reads its snapshot: a critical loop whose
 > failure streak reaches its rule reads `DOWN` (`UNKNOWN` while the probe
 > times out), a housekeeping loop `UP` and named in `degraded`; every failure,
@@ -5160,7 +5160,7 @@ reads `DOWN`, with its streak in the details, and one that recovers reads
 > and otherwise ignored, so every handle a pass reports lost is dropped and
 > its run stood down in that same pass. Pinned by
 > `WorkflowInstanceLockManagerTest.anObserverErrorOnOneLostLockDoesNotDelayTheOthers`.
-> **Part 1 resolved** (pilot readiness P2 tasks 4–5, PR #TBD-P2b): the
+> **Part 1 resolved** (pilot readiness P2 tasks 4–5, PR #76): the
 > renewer starts while the executor is built, and a renewer that cannot start
 > fails the build (`WorkflowExecutorBuilderTest.aRenewerThatCannotStartFailsTheBuild`);
 > the `"idle"` reading is gone, and a node holding locks whose renewer is not
@@ -5391,7 +5391,7 @@ pinned by kit tests.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** The log line reports the startup pass; no readiness detail yet.
 
-> **Resolved** (pilot readiness P2 task 5, PR #TBD-P2b). The `maestro`
+> **Resolved** (pilot readiness P2 task 5, PR #76). The `maestro`
 > detail `startupRecovery` reads `"running"` until the recovery poller's first
 > pass, or the one-shot startup pass, completes, then `"complete"`
 > (`MaestroHealthSemanticsTest.startupRecoveryIsRunningThenComplete`).
@@ -5487,7 +5487,7 @@ the just-started row.
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Needs the maintainer's decision in P2 on what the root health endpoint does.
 
 > **Resolved by decision** (pilot readiness P2, option A of the design note,
-> approved 2026-11-18; PR #TBD-P2b). Documentation only: probe the groups,
+> approved 2026-11-18; PR #76). Documentation only: probe the groups,
 > never the root — readiness `readinessState,maestro` without `db`, liveness
 > `livenessState,maestroLiveness` (Operations §14); the support matrix lists
 > probing the root on a shared pool as not supported.
