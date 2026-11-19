@@ -401,6 +401,36 @@ class WorkflowInstanceLockManagerTest {
         assertEquals(0, lock.renewCalls.get());
     }
 
+    /**
+     * The stand-down is the safety action, the observer only a report: by the
+     * time an observer hears of a lost lock, the run that held it has already
+     * been told to stand down. (Seen as a 1-in-20 flake of
+     * {@code HandleScopedLockRaceTest}: a run that waited for the observer's
+     * report could start before its stand-down was requested.)
+     */
+    @Test
+    @DisplayName("a lost lock stands its run down before the observer is told")
+    void theRunIsStoodDownBeforeTheObserverHearsOfTheLoss() {
+        var lock = new BatchRecordingLock();
+        lock.lostKey.set("maestro:lock:workflow:wf-1");
+        var stoodDown = new java.util.concurrent.atomic.AtomicBoolean();
+        var stoodDownWhenObserved = new AtomicReference<Boolean>();
+        var observer = new io.b2mash.maestro.core.observe.EngineObserver() {
+            @Override
+            public void instanceLockLost(String workflowId) {
+                stoodDownWhenObserved.compareAndSet(null, stoodDown.get());
+            }
+        };
+        manager = new WorkflowInstanceLockManager(lock, "svc", WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                BATCH_TTL, BATCH_RENEW, observer);
+        manager.onLockLost((workflowId, _) -> stoodDown.set(true));
+        assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("wf-1"));
+
+        await().atMost(Duration.ofSeconds(5)).until(() -> stoodDownWhenObserved.get() != null);
+
+        assertEquals(Boolean.TRUE, stoodDownWhenObserved.get(), "the observer heard of the loss before the stand-down");
+    }
+
     // ── heldElsewhere ──────────────────────────────────────────────────
 
     @Test

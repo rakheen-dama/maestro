@@ -248,14 +248,22 @@ final class WorkflowInstanceLockManager {
                 return Acquired.HELD_ELSEWHERE;
             }
             handle = acquired.get();
-            heldLocks.put(workflowId, handle);
+            // Conditional (PR #72 review): a grant that arrived late — this
+            // attempt paused after the backend granted it, its grant expired,
+            // and a newer acquisition published its own handle meanwhile — must
+            // not overwrite the newer handle. It is rejected below, and gives
+            // back only its own backend token.
+            if (heldLocks.putIfAbsent(workflowId, handle) != null) {
+                releaseLateGrant(workflowId, handle);
+                return Acquired.HELD_ELSEWHERE;
+            }
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — not running it now; recovery "
                     + "retries it once the lock can be taken: {}", workflowId, e.getMessage());
             return Acquired.UNAVAILABLE;
         }
         // Deliberately outside the backend try: the lock IS held from the
-        // heldLocks.put() above, so neither a renewer-start failure nor a
+        // heldLocks.putIfAbsent() above, so neither a renewer-start failure nor a
         // throwing observer may be reported as UNAVAILABLE — the caller would
         // then skip release() and this node would renew a lock nobody
         // releases, making the workflowId permanently unacquirable here and
@@ -294,6 +302,20 @@ final class WorkflowInstanceLockManager {
             throw e;
         }
         return new Acquired(Acquisition.ACQUIRED, handle);
+    }
+
+    /**
+     * Gives back a backend grant that lost the race to publish (see
+     * {@link #acquire}): only its own token, which the backend releases only
+     * if it still holds the key — never the newer, published handle.
+     */
+    private void releaseLateGrant(String workflowId, LockHandle handle) {
+        try {
+            distributedLock.release(handle);
+        } catch (Exception e) {
+            logger.warn("Failed to give back a late instance-lock grant for workflow '{}' — TTL will expire it: {}",
+                    workflowId, e.getMessage());
+        }
     }
 
     /**
@@ -608,21 +630,17 @@ final class WorkflowInstanceLockManager {
                             + "store's lease fence rejects any write it still attempts",
                     workflowId);
         }
-        // Emitted outside the backend call so a throwing observer is not
-        // reported as a transient renew failure, and contained so it cannot
+        // Proactive stand-down first: tell the executor now, so the run stops
+        // at its next stop point rather than after a write the store fences —
+        // and before anyone observing the loss can act on it (a run that has
+        // not entered the workflow method yet never runs user code).
+        emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId, handle));
+        // Then the report, outside the backend call so a throwing observer is
+        // not reported as a transient renew failure, and contained so it cannot
         // escape renewLoop() and kill the single renewer thread — that would
         // silently stop renewing EVERY held lock.
-        try {
-            if (!afterClose) {
-                emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
-            }
-        } finally {
-            // Proactive stand-down: tell the executor now, so the run stops at
-            // its next stop point rather than after a write the store fences.
-            // In a finally: the handle is already dropped, so no later pass
-            // reports this loss again — an observer Error (which emit lets
-            // through, to the renewer's guard) must not skip the stand-down.
-            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId, handle));
+        if (!afterClose) {
+            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
         }
     }
 
