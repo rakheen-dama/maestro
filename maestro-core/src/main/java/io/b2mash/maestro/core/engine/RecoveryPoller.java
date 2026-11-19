@@ -235,6 +235,21 @@ final class RecoveryPoller implements StoppableLoop {
         signal.signal();
     }
 
+    /** Guarded by {@link #promptMonitor}: the loop is inside its wait for the next full pass. */
+    private boolean awaitingFullPass;
+
+    /**
+     * Test seam: the loop is waiting for its next full pass with no prompt
+     * pending — no pass in progress and none requested. A test waits for it to
+     * know that a prompted pass has run to its end (a prompt requested before
+     * the first pass is served by that pass, so counting passes cannot tell).
+     */
+    boolean idleUntilNextFullPass() {
+        synchronized (promptMonitor) {
+            return awaitingFullPass && promptRequestedAt == null;
+        }
+    }
+
     /** Whether a prompt request is pending (L3). */
     private boolean promptPending() {
         synchronized (promptMonitor) {
@@ -532,7 +547,12 @@ final class RecoveryPoller implements StoppableLoop {
                     promptRequestedAt = null; // the full pass due now serves the prompt too
                     return true;
                 }
-                TimeUnit.NANOSECONDS.timedWait(promptMonitor, remaining);
+                awaitingFullPass = true;
+                try {
+                    TimeUnit.NANOSECONDS.timedWait(promptMonitor, remaining);
+                } finally {
+                    awaitingFullPass = false;
+                }
             }
             return false;
         }

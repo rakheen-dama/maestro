@@ -445,14 +445,18 @@ class LaunchOutcomeRegistryTest {
     }
 
     /**
-     * PR #75 review 4626925634: waits until the recovery poller has finished
-     * its first pass and the pass the deferral prompted (a prompt requested
-     * during a pass stays pending, so there are at least two), so no pass is
-     * still holding a membership when the test shuts down.
+     * PR #75 review 4626925634: waits until the recovery poller has served
+     * the deferral's prompt and is idle again — no pass in progress, none
+     * pending — so no pass holds a membership when the test shuts down.
+     *
+     * <p>Not "at least two passes": a prompt requested before the poller's
+     * first wait is served by the first pass itself (the full pass due at
+     * start "serves the prompt too"), so there may be only one. Waiting for a
+     * second pass that never comes was this test's 1-in-30 flake.
      */
     private void awaitThePromptedPass() {
-        assertTrue(valueWithin(() -> observer.recoveryPasses().size() >= 2, true, Duration.ofSeconds(10)),
-                "the prompted recovery pass completed");
+        assertTrue(valueWithin(() -> !observer.recoveryPasses().isEmpty() && executor.isRecoveryPollerIdle(), true,
+                Duration.ofSeconds(10)), "the prompted recovery pass ran and the poller is idle");
     }
 
     /** Runs {@code wf-x} to {@code FAILED} on this executor and waits until that run has left. */

@@ -3334,6 +3334,15 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Test seam: the recovery poller is waiting for its next full pass, with
+     * no pass in progress and no prompt pending. Package-private.
+     */
+    boolean isRecoveryPollerIdle() {
+        var poller = recoveryPoller.get();
+        return poller != null && poller.idleUntilNextFullPass();
+    }
+
+    /**
      * Returns whether the one-shot startup recovery
      * ({@link #startOneShotRecovery(Map, Duration)}) is still in progress or
      * waiting to retry a failed pass.
