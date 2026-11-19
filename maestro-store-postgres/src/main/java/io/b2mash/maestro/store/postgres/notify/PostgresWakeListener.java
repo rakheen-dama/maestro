@@ -195,6 +195,15 @@ public final class PostgresWakeListener implements AutoCloseable {
     }
 
     /**
+     * Starts the listener under {@code executor} (stub: not yet supervised).
+     *
+     * @param executor the executor whose supervisor runs the loop
+     */
+    public void start(io.b2mash.maestro.core.engine.WorkflowExecutor executor) {
+        start();
+    }
+
+    /**
      * Routes future wakes for {@code workflowId} to {@code onSignal}. Replaces
      * any earlier consumer for the same ID. In-memory only — no I/O.
      *

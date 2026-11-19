@@ -54,6 +54,7 @@ class PostgresWakeListenerLoopErrorTest {
     private final ScriptedPgDataSource scripted = new ScriptedPgDataSource();
     private final List<PostgresWakeListener> listeners = new ArrayList<>();
     private Logger listenerLogger;
+    private Logger supervisorLogger;
     private ListAppender<ILoggingEvent> listenerLog;
 
     @BeforeEach
@@ -62,6 +63,10 @@ class PostgresWakeListenerLoopErrorTest {
         listenerLog = new ListAppender<>();
         listenerLog.start();
         listenerLogger.addAppender(listenerLog);
+        // The supervisor logs a failing poll and the loop's end (P2 task 6):
+        // one appender sees both loggers, in order.
+        supervisorLogger = (Logger) LoggerFactory.getLogger("io.b2mash.maestro.core.loop.LoopSupervisor");
+        supervisorLogger.addAppender(listenerLog);
     }
 
     @AfterEach
@@ -69,6 +74,7 @@ class PostgresWakeListenerLoopErrorTest {
         scripted.releasePolls();
         listeners.forEach(PostgresWakeListener::close);
         listenerLogger.detachAppender(listenerLog);
+        supervisorLogger.detachAppender(listenerLog);
         listenerLog.stop();
     }
 
@@ -190,6 +196,36 @@ class PostgresWakeListenerLoopErrorTest {
         assertTrue(errors().stream().anyMatch(m -> m.contains("java.lang.NoClassDefFoundError")),
                 "the contained Error is logged at ERROR: " + errors());
         assertTrue(listener.isConnected());
+    }
+
+    /**
+     * Issue 65 (P2 task 6): a driver {@code Error} that repeats on every poll
+     * takes the supervisor's back-off — one second, doubling to 30 s — and its
+     * rate-limited log: one {@code ERROR} when the streak starts, {@code DEBUG}
+     * for the repeats, a reminder at most every five minutes. Before, every
+     * poll paused one second and logged at {@code ERROR} with the stack trace,
+     * about 3,600 lines an hour. The session is kept: an {@code Error} says
+     * nothing about the connection.
+     */
+    @Test
+    @DisplayName("a driver Error on every poll takes a growing back-off and is logged at ERROR once")
+    void aDriverErrorOnEveryPollBacksOffAndIsRateLimited() {
+        scripted.failPollsWith(() -> {
+            throw new NoClassDefFoundError("org/postgresql/Missing");
+        });
+        var listener = track(scripted.newListener());
+        listener.start();
+        await("three polls").atMost(Duration.ofSeconds(10)).until(() -> scripted.pollStartNanos().size() >= 3);
+
+        var starts = scripted.pollStartNanos();
+        var secondGap = Duration.ofNanos(starts.get(2) - starts.get(1));
+        assertTrue(secondGap.compareTo(Duration.ofMillis(1900)) >= 0,
+                "the back-off grows while the Error repeats: " + secondGap);
+        var loud = errors().stream().filter(m -> m.contains("java.lang.NoClassDefFoundError")).toList();
+        assertEquals(1, loud.size(), "one ERROR for the streak, not one per poll: " + loud);
+        assertTrue(listener.isConnected(), "a driver Error keeps the session");
+        assertEquals(1, scripted.events().stream().filter(e -> e.startsWith("LISTEN")).count(),
+                "no reconnect after an Error");
     }
 
     @Test

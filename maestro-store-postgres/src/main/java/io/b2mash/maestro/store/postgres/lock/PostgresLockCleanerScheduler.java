@@ -63,6 +63,15 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable {
         logger.info("Postgres lock cleaner scheduled every {}", interval);
     }
 
+    /**
+     * Starts the loop under {@code executor} (stub: not yet supervised).
+     *
+     * @param executor the executor whose supervisor runs the loop
+     */
+    public void start(io.b2mash.maestro.core.engine.WorkflowExecutor executor) {
+        start();
+    }
+
     /** Stops the loop; a run in progress finishes. Idempotent. */
     @Override
     public void close() {

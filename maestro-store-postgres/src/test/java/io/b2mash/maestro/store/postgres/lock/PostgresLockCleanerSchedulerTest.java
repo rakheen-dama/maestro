@@ -4,7 +4,12 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import io.b2mash.maestro.core.engine.PayloadSerializer;
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.observe.EngineObserver;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
+import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Named;
@@ -12,6 +17,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.slf4j.LoggerFactory;
+import tools.jackson.databind.ObjectMapper;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;
@@ -19,6 +25,7 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -93,6 +100,39 @@ class PostgresLockCleanerSchedulerTest extends PostgresLockTestSupport {
         try (var scheduler = new PostgresLockCleanerScheduler(new PostgresLockCleaner(faulty), Duration.ofMillis(50))) {
             scheduler.start();
             assertTrue(faulty.secondRun.await(5, TimeUnit.SECONDS), "the cleaner made no second run");
+        }
+    }
+
+    /**
+     * Issue 65's done-when (P2 task 6): supervised by the executor, the
+     * cleaner reports a contained {@code Error} to the engine's observer under
+     * its loop name, which is what moves {@code maestro.loop.errors{loop=lock-cleaner}},
+     * and it shows in {@link WorkflowExecutor#loops()}.
+     */
+    @Test
+    @DisplayName("supervised by the executor, an Error from a run reaches the observer as loop 'lock-cleaner'")
+    void anErrorMovesLoopErrors() throws Exception {
+        var loopErrors = new CopyOnWriteArrayList<String>();
+        var executor = WorkflowExecutor.builder(new InMemoryWorkflowStore(),
+                        new PayloadSerializer(new ObjectMapper()), "svc")
+                .distributedLock(new InMemoryDistributedLock())
+                .lifecycleEventsEnabled(false)
+                .observer(new EngineObserver() {
+                    @Override
+                    public void backgroundLoopError(String loop, String errorType) {
+                        loopErrors.add(loop + " " + errorType);
+                    }
+                })
+                .build();
+        var faulty = new FaultyDataSource(dataSource, () -> new AssertionError("x"));
+        try (var scheduler = new PostgresLockCleanerScheduler(new PostgresLockCleaner(faulty), Duration.ofMillis(50))) {
+            scheduler.start(executor);
+            assertTrue(faulty.secondRun.await(5, TimeUnit.SECONDS), "the cleaner made no second run");
+            assertEquals(List.of("lock-cleaner java.lang.AssertionError"), loopErrors);
+            assertTrue(executor.loops().stream().anyMatch(l -> l.name().equals("lock-cleaner")),
+                    "the cleaner is one of the executor's loops: " + executor.loops());
+        } finally {
+            executor.shutdown();
         }
     }
 

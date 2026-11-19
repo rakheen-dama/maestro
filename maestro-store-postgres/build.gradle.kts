@@ -36,6 +36,9 @@ dependencies {
     testImplementation(libs.spring.boot.starter.flyway)
     testImplementation(libs.testcontainers.junit5)
     testImplementation(libs.testcontainers.postgresql)
+    // PostgresLoopsHealthTest reads the two Postgres loops through the
+    // starter's MaestroHealthIndicator (an optional dependency of the starter).
+    testImplementation(libs.spring.boot.starter.actuator)
     // NOTIFY is delivered asynchronously; the wake tests poll for it.
     testImplementation(libs.awaitility)
 }
