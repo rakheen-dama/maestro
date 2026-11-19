@@ -64,13 +64,13 @@ class MaestroHealthSemanticsTest {
     }
 
     private static LoopSnapshot running(String name, LoopRole role) {
-        return new LoopSnapshot(name, role, LoopSnapshot.State.RUNNING, 0, null, NOW.minusSeconds(1), null, null,
-                false, Map.of());
+        return new LoopSnapshot(name, role, LoopSnapshot.State.RUNNING, 0, null, NOW.minusSeconds(1),
+                Duration.ofSeconds(1), null, null, false, Map.of());
     }
 
     private static LoopSnapshot failingFor(String name, LoopRole role, Duration age, boolean failing) {
         return new LoopSnapshot(name, role, LoopSnapshot.State.RUNNING, 2, NOW.minus(age), NOW.minusSeconds(300),
-                IllegalStateException.class.getName(), null, failing, Map.of());
+                Duration.ofSeconds(300), IllegalStateException.class.getName(), null, failing, Map.of());
     }
 
     private static List<LoopSnapshot> healthyLoopsBut(LoopSnapshot replaced) {
@@ -119,7 +119,7 @@ class MaestroHealthSemanticsTest {
     @Test
     void aDeadLoopIsDownThroughATimedOutProbe() {
         var dead = new LoopSnapshot("timer-poller", LoopRole.CRITICAL, LoopSnapshot.State.DEAD, 0, null, null, null,
-                null, false, Map.of());
+                null, null, false, Map.of());
         assertThat(indicator().assess(inputs("timed out", healthyLoopsBut(dead))).getStatus()).isEqualTo(Status.DOWN);
     }
 
@@ -193,6 +193,21 @@ class MaestroHealthSemanticsTest {
         } finally {
             stuck.countDown();
         }
+    }
+
+    /**
+     * P2b review m4: the renewer's "no renewal for a TTL" rule measures on the
+     * monotonic clock. A wall clock that stepped 40 s forward moves
+     * {@code lastSuccess} 40 s into the past, but the renewer renewed 5 s ago
+     * by the monotonic clock: holding locks with a 30 s TTL, it is not stale.
+     */
+    @Test
+    void aWallClockStepDoesNotMakeTheRenewerStale() {
+        var renewer = new LoopSnapshot("instance-lock-renewer", LoopRole.CRITICAL, LoopSnapshot.State.RUNNING, 0,
+                null, NOW.minusSeconds(40), Duration.ofSeconds(5), null, null, false, Map.of());
+        var in = new MaestroHealthIndicator.Inputs("reachable", null, healthyLoopsBut(renewer), 1,
+                Duration.ofSeconds(30), NOW, 1);
+        assertThat(indicator().assess(in).getStatus()).isEqualTo(Status.UP);
     }
 
     /** Issue 73's done-when: startupRecovery reads running until the first pass completes, then complete. */

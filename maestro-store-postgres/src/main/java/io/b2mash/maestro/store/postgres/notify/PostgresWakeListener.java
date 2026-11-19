@@ -163,6 +163,8 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
     private volatile @Nullable Connection connection;
     private volatile @Nullable PGConnection pgConnection;
     private volatile @Nullable LoopSupervisor supervisor;
+    /** The spec the loop was started with; read by tests. */
+    private volatile @Nullable LoopSpec startedSpec;
     /** The last {@link #CONNECTED} note; the loop's thread only. */
     private @Nullable Boolean notedConnected;
 
@@ -242,6 +244,7 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
                     .withInitialDelay(connected ? Duration.ZERO : INITIAL_BACKOFF)
                     .withBackoff(Backoff.exponential(INITIAL_BACKOFF, MAX_BACKOFF))
                     .withFailing(FailingRule.streakFor(2, failingAfter));
+            startedSpec = spec;
             try {
                 supervisor = starter.apply(spec);
             } catch (RuntimeException | Error e) {
@@ -252,6 +255,11 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
         } finally {
             lifecycle.unlock();
         }
+    }
+
+    /** @return the spec the loop was started with, or {@code null} before a start; for tests */
+    @Nullable LoopSpec startedSpec() {
+        return startedSpec;
     }
 
     /**

@@ -107,6 +107,33 @@ class PostgresLoopsHealthTest {
         }
     }
 
+    /**
+     * P2b review m3: under an executor the listener reads failing after two
+     * failures in a row spanning at least the executor's wake recheck
+     * interval, and backs off from 1 s doubling to 30 s.
+     */
+    @Test
+    @DisplayName("the listener's failing rule is the executor's wake recheck interval")
+    void theListenersFailingRuleIsTheExecutorsWakeRecheckInterval() {
+        var executor45 = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "svc45")
+                .distributedLock(new InMemoryDistributedLock())
+                .lifecycleEventsEnabled(false)
+                .wakeRecheckInterval(Duration.ofSeconds(45))
+                .build();
+        var listener = new ScriptedPgDataSource().newListener();
+        try {
+            listener.start(executor45);
+            var spec = listener.startedSpec();
+            assertEquals(io.b2mash.maestro.core.loop.FailingRule.streakFor(2, Duration.ofSeconds(45)), spec.failing());
+            assertEquals(io.b2mash.maestro.core.loop.LoopRole.OPTIMISATION, spec.role());
+            assertEquals(Duration.ofSeconds(1), spec.backoff().after(1));
+            assertEquals(Duration.ofSeconds(30), spec.backoff().after(10));
+        } finally {
+            listener.close();
+            executor45.shutdown();
+        }
+    }
+
     /** A data source whose {@code getConnection} throws {@code failure.get()}, sneakily if checked. */
     private static DataSource failing(java.util.function.Supplier<Throwable> failure) {
         return (DataSource) Proxy.newProxyInstance(DataSource.class.getClassLoader(), new Class<?>[]{DataSource.class},

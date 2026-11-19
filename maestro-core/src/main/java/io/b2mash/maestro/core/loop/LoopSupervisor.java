@@ -273,6 +273,7 @@ public final class LoopSupervisor {
         var inIterationFor = s.iterationStartNanos() == NOT_IN_ITERATION
                 ? null : Duration.ofNanos(now - s.iterationStartNanos());
         return new LoopSnapshot(spec.name(), spec.role(), state, s.streak(), s.failingSince(), s.lastSuccess(),
+                null,
                 s.lastFailureType(), inIterationFor, spec.failing().isFailing(s.streak(), streakAge), s.notes());
     }
 

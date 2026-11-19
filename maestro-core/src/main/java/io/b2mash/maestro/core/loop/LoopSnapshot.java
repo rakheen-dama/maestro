@@ -20,6 +20,11 @@ import java.util.Objects;
  *                            {@code null} without a streak
  * @param lastSuccess         when the last successful iteration ended;
  *                            {@code null} before the first
+ * @param sinceLastSuccess    how long ago, on the monotonic clock, the last
+ *                            successful iteration ended — the one to measure
+ *                            durations with (a wall-clock step moves
+ *                            {@code lastSuccess}, not this); {@code null}
+ *                            before the first
  * @param lastFailureType     the class name of the streak's latest failure;
  *                            {@code null} without a streak
  * @param inIterationFor      how long the iteration in progress has run;
@@ -36,6 +41,7 @@ public record LoopSnapshot(
         int consecutiveFailures,
         @Nullable Instant failingSince,
         @Nullable Instant lastSuccess,
+        @Nullable Duration sinceLastSuccess,
         @Nullable String lastFailureType,
         @Nullable Duration inIterationFor,
         boolean failing,

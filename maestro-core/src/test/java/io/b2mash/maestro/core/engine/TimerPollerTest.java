@@ -93,6 +93,21 @@ class TimerPollerTest {
         }
     }
 
+    /**
+     * P2b review m3: the timer poller's failing rule — two failures in a row
+     * spanning at least {@code max(60 s, 2 × pollInterval)} — is pinned here;
+     * health's DOWN for a failing timer poller reads it.
+     */
+    @Test
+    @DisplayName("the failing rule is two failures over max(60 s, two poll intervals)")
+    void theFailingRuleIsTwoFailuresOverMax60sAndTwoPollIntervals() {
+        var lock = new InMemoryDistributedLock();
+        assertEquals(io.b2mash.maestro.core.loop.FailingRule.streakFor(2, Duration.ofSeconds(60)),
+                new TimerPoller(store, executor, lock, "svc", Duration.ofSeconds(5), 100).spec().failing());
+        assertEquals(io.b2mash.maestro.core.loop.FailingRule.streakFor(2, Duration.ofSeconds(80)),
+                new TimerPoller(store, executor, lock, "svc", Duration.ofSeconds(40), 100).spec().failing());
+    }
+
     // ── Timer firing ─────────────────────────────────────────────────
 
     @Test

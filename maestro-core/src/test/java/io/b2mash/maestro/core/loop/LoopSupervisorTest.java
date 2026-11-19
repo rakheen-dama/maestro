@@ -415,8 +415,39 @@ class LoopSupervisorTest {
             throw new IllegalStateException("the wait fails");
         }));
         awaitUntil(() -> waits.get() >= 3);
-        awaitUntil(() -> loop.snapshot().consecutiveFailures() >= 2);
-        assertTrue(loop.snapshot().failing(), "two failures in a row: failing under streak(2)");
+        // Since the P2b review (M1) each iteration's success is published before
+        // its wait and taken back when the wait throws, so the streak is read
+        // once it holds rather than at an arbitrary instant.
+        awaitUntil(() -> loop.snapshot().failing());
+        assertTrue(loop.snapshot().consecutiveFailures() >= 2, "two failures in a row: failing under streak(2)");
+    }
+
+    /**
+     * P2b review M1: an iteration that succeeds ends the streak at once, even
+     * when it returns {@code Next.await}. The recovery poller waits a whole
+     * poll interval after each pass; were its success published only after
+     * that wait, a poller that recovered would read failing — readiness
+     * {@code DOWN} on every node — for one more interval.
+     */
+    @Test
+    void aSuccessfulIterationEndsTheStreakBeforeItsCustomWait() throws Exception {
+        var calls = new AtomicInteger();
+        var waiting = new CountDownLatch(1);
+        var loop = start(fast("recovering"), ctx -> {
+            if (calls.incrementAndGet() <= 2) {
+                throw new IllegalStateException("down");
+            }
+            return Next.await(c -> {
+                waiting.countDown();
+                return c.sleep(Duration.ofMinutes(1));
+            });
+        });
+        assertTrue(waiting.await(5, TimeUnit.SECONDS), "the third iteration reached its wait");
+        var snapshot = loop.snapshot();
+        assertAll(
+                () -> assertEquals(0, snapshot.consecutiveFailures(), "the success ended the streak"),
+                () -> assertFalse(snapshot.failing(), "not failing while it waits after a success"),
+                () -> assertNotNull(snapshot.lastSuccess()));
     }
 
     /**
