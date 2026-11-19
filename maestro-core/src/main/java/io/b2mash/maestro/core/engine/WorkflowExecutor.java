@@ -877,7 +877,7 @@ public final class WorkflowExecutor {
             try {
                 instanceLockManager.release(workflowId, handle);
             } catch (RuntimeException | Error releaseFailure) {
-                e.addSuppressed(releaseFailure);
+                suppress(e, releaseFailure);
             }
             throw e;
         }
@@ -2254,7 +2254,7 @@ public final class WorkflowExecutor {
                     if (failure == null) {
                         throw releaseFailure;
                     }
-                    failure.addSuppressed(releaseFailure);
+                    suppress(failure, releaseFailure);
                 }
             }
         }
@@ -2983,6 +2983,19 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * Adds {@code extra} to {@code primary}'s suppressed exceptions unless they
+     * are the same instance — a backend or a JVM can throw one shared instance
+     * twice (a preallocated {@code OutOfMemoryError}), and suppressing a
+     * throwable into itself throws {@code IllegalArgumentException}, which
+     * would replace the failure being reported (PR #75 review).
+     */
+    static void suppress(Throwable primary, Throwable extra) {
+        if (primary != extra) {
+            primary.addSuppressed(extra);
+        }
+    }
+
+    /**
      * Asks each member to stop, containing each one's failure (see the call
      * site); returns the first {@link VirtualMachineError}, with any later ones
      * suppressed on it, for the caller to rethrow once shutdown has run.
@@ -2996,7 +3009,7 @@ public final class WorkflowExecutor {
                 if (deferred == null) {
                     deferred = vmError;
                 } else {
-                    deferred.addSuppressed(vmError);
+                    suppress(deferred, vmError);
                 }
             } catch (Throwable t) {
                 logger.warn("Maestro {} threw from its stop request — contained; shutdown continues", member, t);
@@ -3758,13 +3771,13 @@ public final class WorkflowExecutor {
                     // permit; no run will park on it now (3.2).
                     parkingLot.clearPending(instance.workflowId());
                 } catch (RuntimeException | Error cleanupFailure) {
-                    e.addSuppressed(cleanupFailure);
+                    suppress(e, cleanupFailure);
                 }
             }
             try {
                 instanceLockManager.release(instance.workflowId(), handle);
             } catch (RuntimeException | Error releaseFailure) {
-                e.addSuppressed(releaseFailure);
+                suppress(e, releaseFailure);
             }
             throw e;
         }
@@ -3792,24 +3805,24 @@ public final class WorkflowExecutor {
         try {
             runningWorkflows.computeIfPresent(workflowId, (_, r) -> r.thread() == self ? null : r);
         } catch (RuntimeException | Error cleanupFailure) {
-            cause.addSuppressed(cleanupFailure);
+            suppress(cause, cleanupFailure);
         }
         try {
             parkingLot.clearPending(workflowId);
         } catch (RuntimeException | Error cleanupFailure) {
-            cause.addSuppressed(cleanupFailure);
+            suppress(cause, cleanupFailure);
         }
         try {
             if (reservation != null) {
                 reservation.release();
             }
         } catch (RuntimeException | Error cleanupFailure) {
-            cause.addSuppressed(cleanupFailure);
+            suppress(cause, cleanupFailure);
         }
         try {
             instanceLockManager.release(workflowId, handle);
         } catch (RuntimeException | Error cleanupFailure) {
-            cause.addSuppressed(cleanupFailure);
+            suppress(cause, cleanupFailure);
         }
     }
 

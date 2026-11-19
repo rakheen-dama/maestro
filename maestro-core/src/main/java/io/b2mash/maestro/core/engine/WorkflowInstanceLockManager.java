@@ -302,7 +302,7 @@ final class WorkflowInstanceLockManager {
             try {
                 release(workflowId, handle);
             } catch (RuntimeException | Error releaseFailure) {
-                e.addSuppressed(releaseFailure);
+                WorkflowExecutor.suppress(e, releaseFailure);
             }
             throw e;
         }
