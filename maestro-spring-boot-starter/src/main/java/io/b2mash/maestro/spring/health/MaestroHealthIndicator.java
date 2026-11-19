@@ -20,6 +20,7 @@ import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadFactory;
+import java.util.function.LongSupplier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicReference;
@@ -162,6 +163,13 @@ public class MaestroHealthIndicator implements HealthIndicator {
      */
     static final int RENEWER_FAULT_STREAK = 2;
 
+    /**
+     * How long a timed-out probe must have been stuck before the next call
+     * supersedes it with one fresh probe: five times {@link #STORE_PROBE_TIMEOUT}
+     * (Issue 66).
+     */
+    static final Duration SUPERSEDE_AFTER = STORE_PROBE_TIMEOUT.multipliedBy(5);
+
     /** Name of the virtual thread a store probe runs on. */
     static final String PROBE_THREAD_NAME = "maestro-health-probe";
 
@@ -170,6 +178,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
     private final boolean recoveryPollerEnabled;
     private final boolean retentionSweeperEnabled;
     private final ThreadFactory probeThreads;
+    private final LongSupplier nanoClock;
 
     /**
      * The probe whose store call has not returned yet, if any. At most one
@@ -204,6 +213,16 @@ public class MaestroHealthIndicator implements HealthIndicator {
      */
     MaestroHealthIndicator(WorkflowStore store, WorkflowExecutor executor, boolean recoveryPollerEnabled,
                            boolean retentionSweeperEnabled, ThreadFactory probeThreads) {
+        this(store, executor, recoveryPollerEnabled, retentionSweeperEnabled, probeThreads, System::nanoTime);
+    }
+
+    /**
+     * Test seam: {@code nanoClock} is the monotonic clock that times how long a
+     * timed-out probe has been stuck.
+     */
+    MaestroHealthIndicator(WorkflowStore store, WorkflowExecutor executor, boolean recoveryPollerEnabled,
+                           boolean retentionSweeperEnabled, ThreadFactory probeThreads, LongSupplier nanoClock) {
+        this.nanoClock = nanoClock;
         this.store = store;
         this.executor = executor;
         this.recoveryPollerEnabled = recoveryPollerEnabled;

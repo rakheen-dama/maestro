@@ -34,6 +34,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -420,27 +421,93 @@ class MaestroHealthIndicatorTest {
     }
 
     /**
-     * A probe that timed out is still interrupted (best effort), so a store
-     * call that honours the interrupt frees its thread. Issue 66 records the
-     * cost of that interrupt mid-query.
+     * Issue 66: a probe that timed out is never interrupted. On a virtual thread
+     * inside a JDBC call an interrupt closes the socket, and the pool evicts
+     * the connection — one evicted connection per timed-out health call on a
+     * slow database. The store call is left to finish; its result is ignored.
      */
     @Test
-    void aTimedOutProbeIsInterrupted() throws Exception {
+    void aTimedOutProbeIsNotInterrupted() throws Exception {
         var interrupted = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
         var store = new DelegatingWorkflowStore() {
             @Override
             public Optional<WorkflowInstance> getInstance(String workflowId) {
                 try {
-                    new CountDownLatch(1).await();
+                    release.await();
                 } catch (InterruptedException e) {
                     interrupted.countDown();
                 }
                 return Optional.empty();
             }
         };
-        var health = new MaestroHealthIndicator(store, executor, false, false).health();
-        assertThat(health.getStatus()).isEqualTo(Status.UNKNOWN);
-        assertThat(interrupted.await(5, TimeUnit.SECONDS)).as("the timed-out probe was interrupted").isTrue();
+        try {
+            var health = new MaestroHealthIndicator(store, executor, false, false).health();
+            assertThat(health.getStatus()).isEqualTo(Status.UNKNOWN);
+            assertThat(interrupted.await(1, TimeUnit.SECONDS)).as("the timed-out probe was not interrupted").isFalse();
+        } finally {
+            release.countDown();
+        }
+    }
+
+    /**
+     * Issue 66's second half: with no interrupt, a probe stuck for good (a
+     * half-open socket, no driver socket timeout) would hold {@code UNKNOWN}
+     * for ever. Once it has been abandoned for {@code 5 ×} the probe bound, the
+     * next call supersedes it with one fresh probe, which reports the store as
+     * it is now.
+     */
+    @Test
+    void aStuckProbeDoesNotHoldUnknownOnceTheStoreAnswers() {
+        var clock = new AtomicLong();
+        var store = new FirstCallStuckStore();
+        var indicator = new MaestroHealthIndicator(store, executor, false, false,
+                Thread.ofVirtual().name(MaestroHealthIndicator.PROBE_THREAD_NAME).factory(), clock::get);
+        try {
+            assertThat(indicator.health().getDetails()).containsEntry("store", "timed out");
+            clock.addAndGet(MaestroHealthIndicator.SUPERSEDE_AFTER.toNanos() - 1);
+            assertThat(indicator.health().getDetails()).as("not yet superseded").containsEntry("store", "timed out");
+            assertThat(store.entered.get()).isEqualTo(1);
+
+            clock.addAndGet(1);
+            var health = indicator.health();
+            assertThat(health.getDetails()).as("a fresh probe reaches the store").containsEntry("store", "reachable");
+            assertThat(health.getStatus()).isEqualTo(Status.UP);
+            assertThat(store.entered.get()).isEqualTo(2);
+        } finally {
+            store.release.countDown();
+        }
+    }
+
+    /**
+     * Supersede-once: at most one superseded probe exists, so at most two
+     * store calls — two connections — are ever held by health probes. While
+     * the superseded probe is still stuck, a stuck fresh probe is not
+     * superseded again.
+     */
+    @Test
+    void atMostTwoProbesAreEverStuckAtOnce() {
+        var clock = new AtomicLong();
+        var store = new UninterruptibleBlockingStore();
+        var indicator = new MaestroHealthIndicator(store, executor, false, false,
+                Thread.ofVirtual().name(MaestroHealthIndicator.PROBE_THREAD_NAME).factory(), clock::get);
+        try {
+            assertThat(indicator.health().getDetails()).containsEntry("store", "timed out");
+            clock.addAndGet(MaestroHealthIndicator.SUPERSEDE_AFTER.toNanos());
+            assertThat(indicator.health().getDetails()).containsEntry("store", "timed out");
+            assertThat(store.entered.get()).as("the stuck probe was superseded once").isEqualTo(2);
+            for (int call = 0; call < 3; call++) {
+                clock.addAndGet(MaestroHealthIndicator.SUPERSEDE_AFTER.toNanos());
+                var start = Instant.now();
+                assertThat(indicator.health().getDetails()).containsEntry("store", "timed out");
+                assertThat(Duration.between(start, Instant.now())).isLessThan(Duration.ofMillis(500));
+            }
+            assertThat(store.entered.get()).as("no third probe while the superseded one is stuck").isEqualTo(2);
+        } finally {
+            store.release.countDown();
+        }
+        await().atMost(Duration.ofSeconds(10)).until(() -> store.inside.get() == 0);
+        assertThat(indicator.health().getDetails()).containsEntry("store", "reachable");
     }
 
     /**
@@ -585,6 +652,25 @@ class MaestroHealthIndicatorTest {
             } finally {
                 inside.decrementAndGet();
             }
+        }
+    }
+
+    /** Its first call blocks until {@link #release} opens; every later call answers at once. */
+    private static final class FirstCallStuckStore extends DelegatingWorkflowStore {
+
+        final CountDownLatch release = new CountDownLatch(1);
+        final AtomicInteger entered = new AtomicInteger();
+
+        @Override
+        public Optional<WorkflowInstance> getInstance(String workflowId) {
+            if (entered.incrementAndGet() == 1) {
+                try {
+                    release.await();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return Optional.empty();
         }
     }
 
