@@ -5068,6 +5068,10 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 > `MaestroHealthIndicatorTest.aStuckProbeDoesNotHoldUnknownOnceTheStoreAnswers`,
 > `atMostTwoProbesAreEverStuckAtOnce`, `aTimedOutProbeIsNotInterrupted`
 > (the inverted `aTimedOutProbeIsInterrupted`).
+> The second condition holds for one stuck probe: if the superseding probe is
+> stuck for good too, no third starts (the two-connection bound) and health
+> reads `UNKNOWN` until one returns — set pgjdbc's `socketTimeout` (P1 review
+> L5).
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** P1's design note decides the health probe's interrupt.
 
@@ -5271,11 +5275,18 @@ an observer `Error` on one lost lock does not delay the others.
 > interrupt — and waits for them at step 6 on its one deadline; a container
 > offered after shutdown began is never started. Both `destroy()` methods are
 > request-only backstops (a container with no engine keeps the old bounded
-> wait). So no Maestro consumer remains in its group while the drain waits, and
-> none handles a record after the `DataSource` closes. Pinned by
-> `MaestroContainersStopInTheDrainIT` (broker-backed: every Maestro consumer
-> has left its group while a registry member still holds the drain open) and
-> `KafkaContainerGroupTest`. The grace arithmetic loses its per-container term
+> wait). Each container stops after the record in hand (`stopImmediate`;
+> before the P1 review it finished its whole last poll): the rest of the poll
+> stays uncommitted for the partition's next owner. So no Maestro consumer
+> remains in its group while the drain waits, and a container that stopped by
+> the deadline handles no record after the `DataSource` closes; one whose
+> record in hand is still in its listener call at the deadline is named in a
+> `WARN`, and that one call can meet the closing `DataSource` and be
+> redelivered (Operations §15.5). Pinned by `MaestroContainersStopInTheDrainIT`
+> (broker-backed: every Maestro consumer has left its group while a registry
+> member still holds the drain open), `MaestroListenerStopsAfterTheRecordInHandIT`
+> (a one-poll backlog: nothing invoked after the record in hand, the rest
+> handled exactly once by the next node) and `KafkaContainerGroupTest`. The grace arithmetic loses its per-container term
 > ([Operations §15.4](operations.md#154-the-grace-period-arithmetic)); the
 > refused-Retry redelivery table is rewritten
 > ([Operations §15.1](operations.md#151-the-sequence)).

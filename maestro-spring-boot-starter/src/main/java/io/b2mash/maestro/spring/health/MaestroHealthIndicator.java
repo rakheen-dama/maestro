@@ -60,10 +60,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * probe is in flight per indicator: a call that finds one still running joins
  * it; a call that finds it already timed out answers {@code "timed out"} at
  * once — until it has been stuck for {@link #SUPERSEDE_AFTER}, when the next
- * call starts one fresh probe beside it, so a probe stuck for good (a
- * half-open socket and no driver socket timeout) cannot hold {@code UNKNOWN}
- * once the store answers again. A probe is superseded at most once while it
- * is stuck, so at most two probes — two connections — exist at a time. If the
+ * call starts one fresh probe beside it, so one probe stuck for good (a
+ * half-open socket and no driver socket timeout) does not hold
+ * {@code UNKNOWN} once the store answers again. A probe is superseded at most
+ * once while it is stuck, so at most two probes — two connections — exist at
+ * a time; the price is that if the fresh probe is stuck for good too, the
+ * status stays {@code UNKNOWN} until one of the two returns (a driver socket
+ * timeout makes sure one does). If the
  * probe thread cannot be started, the call reports {@code DOWN} with that
  * failure.
  *
