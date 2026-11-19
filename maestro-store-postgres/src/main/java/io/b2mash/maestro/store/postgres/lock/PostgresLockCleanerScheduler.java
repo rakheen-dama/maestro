@@ -46,10 +46,14 @@ import java.util.function.Function;
  * run.
  *
  * <h2>Stopping</h2>
- * <p>{@link #close()} asks the loop to stop and returns without waiting; it
- * never interrupts the thread, so a delete in progress is never interrupted
- * (CLAUDE.md; Issue 64) — it finishes and the loop ends after it. Under an
- * executor, the executor's shutdown waits for it within its one deadline.
+ * <p>{@link #close()} asks the loop to stop and never interrupts the thread,
+ * so a delete in progress is never interrupted (CLAUDE.md; Issue 64) — it
+ * finishes and the loop ends after it. Under an executor, {@code close()}
+ * returns at once: the executor's shutdown waits for the loop within its one
+ * deadline. Standalone, nothing else waits for it, so {@code close()} waits
+ * for the delete in progress for at most {@link #STANDALONE_CLOSE_JOIN}
+ * (PR #76 review), so a context closing does not close the data source under
+ * it; past that bound it returns and the delete ends on its own.
  *
  * <h2>Thread Safety</h2>
  * <p>Thread-safe: {@code start} and {@link #close()} may be called from any
@@ -61,11 +65,16 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable, LoopBo
     /** The loop's name: the {@code loop} tag of its meters and its name in health. */
     public static final String LOOP_NAME = "lock-cleaner";
 
+    /** How long {@link #close()} waits for a standalone loop's delete in progress. */
+    static final Duration STANDALONE_CLOSE_JOIN = Duration.ofSeconds(5);
+
     private static final Logger logger = LoggerFactory.getLogger(PostgresLockCleanerScheduler.class);
 
     private final PostgresLockCleaner cleaner;
     private final Duration interval;
     private @Nullable LoopSupervisor supervisor;
+    /** Whether the loop runs under a supervisor of its own: no executor joins it. */
+    private boolean standalone;
     private boolean closed;
 
     /**
@@ -89,7 +98,7 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable, LoopBo
      */
     public void start(WorkflowExecutor executor) {
         Objects.requireNonNull(executor, "executor");
-        startWith(spec -> executor.supervise(spec, this));
+        startWith(spec -> executor.supervise(spec, this), false);
     }
 
     /**
@@ -98,14 +107,15 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable, LoopBo
      * if already started or closed.
      */
     public void start() {
-        startWith(spec -> LoopSupervisor.start(spec, this, EngineObserver.NOOP));
+        startWith(spec -> LoopSupervisor.start(spec, this, EngineObserver.NOOP), true);
     }
 
-    private synchronized void startWith(Function<LoopSpec, LoopSupervisor> starter) {
+    private synchronized void startWith(Function<LoopSpec, LoopSupervisor> starter, boolean ownSupervisor) {
         if (closed || supervisor != null) {
             return;
         }
         supervisor = starter.apply(spec());
+        standalone = ownSupervisor;
         logger.info("Postgres lock cleaner scheduled every {}", interval);
     }
 
@@ -132,18 +142,26 @@ public final class PostgresLockCleanerScheduler implements AutoCloseable, LoopBo
     }
 
     /**
-     * Asks the loop to stop, without an interrupt and without waiting: a run
-     * in progress finishes. Idempotent and terminal.
+     * Asks the loop to stop, without an interrupt: a run in progress
+     * finishes. Under an executor it returns at once (the executor's shutdown
+     * joins the loop); standalone it waits for the run for at most
+     * {@link #STANDALONE_CLOSE_JOIN}. Idempotent and terminal.
      */
     @Override
     public void close() {
         LoopSupervisor loop;
+        boolean waitForIt;
         synchronized (this) {
             closed = true;
             loop = supervisor;
+            waitForIt = standalone;
         }
         if (loop != null) {
             loop.requestStop();
+            if (waitForIt && !loop.awaitStopped(STANDALONE_CLOSE_JOIN)) {
+                logger.info("Postgres lock cleaner did not stop within {} ms (a delete is still in progress); it "
+                        + "ends when that delete returns", STANDALONE_CLOSE_JOIN.toMillis());
+            }
         }
     }
 

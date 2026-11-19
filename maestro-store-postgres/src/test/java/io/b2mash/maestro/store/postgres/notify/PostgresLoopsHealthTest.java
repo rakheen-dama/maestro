@@ -190,6 +190,8 @@ class PostgresLoopsHealthTest {
         await("connected").atMost(Duration.ofSeconds(5)).until(() -> Boolean.TRUE.equals(wakeNotes().get("connected")));
 
         listener.close();
+        await("the loop ended").atMost(Duration.ofSeconds(5)).until(() -> executor.loops().stream()
+                .filter(l -> l.name().equals(PostgresWakeListener.LOOP_NAME)).allMatch(l -> l.state().ended()));
 
         assertEquals(false, wakeNotes().get("connected"), "the terminal snapshot: " + wakeNotes());
     }

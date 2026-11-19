@@ -93,7 +93,19 @@ final class WorkflowInstanceLockManager {
     private final Duration renewInterval;
     private final CompositeEngineObserver observer;
     private final ConcurrentHashMap<String, LockHandle> heldLocks = new ConcurrentHashMap<>();
-    private final AtomicBoolean closed = new AtomicBoolean(false);
+    /**
+     * When each held lock was last renewed — or, before its first renewal,
+     * when its acquisition began — on {@link System#nanoTime()}: the oldest
+     * entry is how close the node is to losing a lock it believes it holds
+     * (PR #76 review). One entry per handle in {@link #heldLocks}.
+     */
+    private final ConcurrentHashMap<LockHandle, Long> renewedAt = new ConcurrentHashMap<>();
+    /**
+     * Makes {@link #close} idempotent. Not the stop state: that is the
+     * renewer's own {@link LoopSupervisor#stopRequested()} (PR #76 review), so
+     * failure reporting and the supervisor's count read one flag.
+     */
+    private final AtomicBoolean closeCalled = new AtomicBoolean(false);
     /** The renewer, started with this manager (P2 task 4) and stopped only by {@link #close(Duration)}. */
     private final LoopSupervisor renewer;
     private volatile BiConsumer<String, LockHandle> lockLostCallback = (_, _) -> { };
@@ -252,7 +264,7 @@ final class WorkflowInstanceLockManager {
      *         attempt's own handle was given back
      */
     Acquired acquire(String workflowId) {
-        if (closed.get()) {
+        if (renewer.stopRequested()) {
             // After close() the renewer is gone — a lock acquired now would
             // silently expire mid-run, so nothing is acquired and the caller
             // does not launch
@@ -263,6 +275,9 @@ final class WorkflowInstanceLockManager {
             return Acquired.HELD_ELSEWHERE;
         }
         LockHandle handle;
+        // Taken before the backend call: the lock's TTL runs from no earlier
+        // than this, so its age is never under-stated.
+        var attemptStart = System.nanoTime();
         try {
             var acquired = distributedLock.tryAcquire(lockKey(workflowId), ttl);
             if (acquired.isEmpty()) {
@@ -274,7 +289,9 @@ final class WorkflowInstanceLockManager {
             // and a newer acquisition published its own handle meanwhile — must
             // not overwrite the newer handle. It is rejected below, and gives
             // back only its own backend token.
+            renewedAt.put(handle, attemptStart);
             if (heldLocks.putIfAbsent(workflowId, handle) != null) {
+                renewedAt.remove(handle);
                 releaseLateGrant(workflowId, handle);
                 return Acquired.HELD_ELSEWHERE;
             }
@@ -351,6 +368,7 @@ final class WorkflowInstanceLockManager {
         if (handle == null || !heldLocks.remove(workflowId, handle)) {
             return;
         }
+        renewedAt.remove(handle);
         try {
             distributedLock.release(handle);
         } catch (Exception e) {
@@ -375,7 +393,7 @@ final class WorkflowInstanceLockManager {
      * @return the subset whose lock another node holds; may be empty
      */
     Set<String> heldElsewhere(Collection<String> workflowIds) {
-        if (closed.get() || workflowIds.isEmpty()) {
+        if (renewer.stopRequested() || workflowIds.isEmpty()) {
             return Set.of();
         }
         var idByKey = new HashMap<String, String>();
@@ -423,7 +441,7 @@ final class WorkflowInstanceLockManager {
      * @return {@code true} while the renewer runs and the manager is open
      */
     boolean isRenewerRunning() {
-        return !closed.get() && renewer.snapshot().running();
+        return renewer.snapshot().running();
     }
 
     /**
@@ -442,6 +460,26 @@ final class WorkflowInstanceLockManager {
      */
     int heldCount() {
         return heldLocks.size();
+    }
+
+    /**
+     * How long the held lock closest to expiry has gone without renewal: since
+     * its last successful renewal or, if it has had none, since its
+     * acquisition began. Monotonic; a failed renewal attempt resets nothing.
+     * Health reads the node {@code DOWN} once this reaches the lock TTL — every
+     * lock that old has expired (PR #76 review).
+     *
+     * @return that age, or {@code null} when no lock is held
+     */
+    @Nullable Duration oldestRenewalAge() {
+        var now = System.nanoTime();
+        Long oldest = null;
+        for (var at : renewedAt.values()) {
+            if (oldest == null || at - oldest < 0) {
+                oldest = at;
+            }
+        }
+        return oldest == null ? null : Duration.ofNanos(now - oldest);
     }
 
     /**
@@ -480,9 +518,12 @@ final class WorkflowInstanceLockManager {
      *             does not wait
      */
     void close(Duration join) {
-        if (!closed.compareAndSet(false, true)) {
+        if (!closeCalled.compareAndSet(false, true)) {
             return;
         }
+        // The stop state itself (PR #76 review): from its first instruction,
+        // acquire() refuses, a failed pass is neither reported to the observer
+        // nor counted by the supervisor — one flag, no window between them.
         renewer.requestStop();
         if (join.isPositive()) {
             renewer.awaitStopped(join);
@@ -521,15 +562,23 @@ final class WorkflowInstanceLockManager {
                 // Backend failure — nothing is known, so nothing is lost: keep
                 // every handle and retry next pass. The supervisor logs it
                 // once loudly, then quietly with a reminder every 5 minutes.
-                if (!closed.get()) {
+                if (!ctx.stopRequested()) {
                     snapshot.forEach((_, workflowId) -> observer.instanceLockRenewFailed(workflowId));
                 }
                 throw e;
             }
+            // Renewed from the pass's start (an under-statement of the TTL
+            // left): every handle the backend did not report lost. One
+            // released meanwhile has no entry and gets none.
+            for (var handle : snapshot.keySet()) {
+                if (!lost.contains(handle)) {
+                    renewedAt.replace(handle, started);
+                }
+            }
             for (var handle : lost) {
                 var workflowId = snapshot.get(handle);
                 if (workflowId != null) {
-                    lockLost(workflowId, handle);
+                    lockLost(workflowId, handle, ctx.stopRequested());
                 }
             }
             return Next.afterPeriod();
@@ -556,11 +605,11 @@ final class WorkflowInstanceLockManager {
      * routine deploy fires no lost-lock alert. The run is still stood down —
      * one still executing must be fenced.
      */
-    private void lockLost(String workflowId, LockHandle handle) {
+    private void lockLost(String workflowId, LockHandle handle, boolean afterClose) {
         if (!heldLocks.remove(workflowId, handle)) {
             return;
         }
-        var afterClose = closed.get();
+        renewedAt.remove(handle);
         if (afterClose) {
             logger.info("Instance lock for workflow '{}' was lost after shutdown began — this run is "
                             + "being stood down and the store's lease fence rejects any write it still "

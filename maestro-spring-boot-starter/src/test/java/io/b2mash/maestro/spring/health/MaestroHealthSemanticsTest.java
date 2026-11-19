@@ -88,7 +88,7 @@ class MaestroHealthSemanticsTest {
     }
 
     private static MaestroHealthIndicator.Inputs inputs(String store, List<LoopSnapshot> loops) {
-        return new MaestroHealthIndicator.Inputs(store, null, loops, 0, Duration.ofSeconds(30), 0);
+        return new MaestroHealthIndicator.Inputs(store, null, loops, 0, Duration.ofSeconds(30), null, 0);
     }
 
     /**
@@ -253,15 +253,17 @@ class MaestroHealthSemanticsTest {
     /**
      * P2b review m4: the renewer's "no renewal for a TTL" rule measures on the
      * monotonic clock. A wall clock that stepped 40 s forward moves
-     * {@code lastSuccess} 40 s into the past, but the renewer renewed 5 s ago
-     * by the monotonic clock: holding locks with a 30 s TTL, it is not stale.
+     * {@code lastSuccess} 40 s into the past, but the oldest held lock was
+     * renewed 5 s ago by the monotonic clock (since PR #76's review the rule
+     * reads the executor's {@code oldestInstanceLockRenewalAge}): with a 30 s
+     * TTL, it is not stale.
      */
     @Test
     void aWallClockStepDoesNotMakeTheRenewerStale() {
         var renewer = new LoopSnapshot("instance-lock-renewer", LoopRole.CRITICAL, LoopSnapshot.State.RUNNING, 0,
                 null, NOW.minusSeconds(40), Duration.ofSeconds(5), null, null, false, Map.of());
         var in = new MaestroHealthIndicator.Inputs("reachable", null, healthyLoopsBut(renewer), 1,
-                Duration.ofSeconds(30), 1);
+                Duration.ofSeconds(30), Duration.ofSeconds(5), 1);
         assertThat(indicator().assess(in).getStatus()).isEqualTo(Status.UP);
     }
 

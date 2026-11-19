@@ -106,17 +106,32 @@ public class PostgresSignalWakeAutoConfiguration {
      * Starts the listener under the executor's loop supervisor once every
      * singleton exists — before any lifecycle bean starts, so before the
      * startup recovery. A wake published before then is covered by the
-     * recheck, as any lost {@code NOTIFY} is. An application-supplied
-     * listener is started too ({@code start} is idempotent).
+     * recheck, as any lost {@code NOTIFY} is.
+     *
+     * <p>Only the listener the configured {@link SignalNotifier} uses is
+     * started (PR #76 review): a listener beside an application-supplied
+     * notifier would hold a pool connection for nothing. An
+     * application-supplied listener that the default
+     * {@link PostgresSignalNotifier} uses is started here too — and must be
+     * left unstarted by the application: one it started itself (its
+     * no-argument {@code start()}) runs outside the executor's supervision —
+     * not in {@code WorkflowExecutor.loops()}, health or meters, and not
+     * stopped by the executor's shutdown — and this start does nothing for it.
      *
      * @param listener this node's listener, if there is one
+     * @param notifier the configured notifier, if there is one
      * @param executor the executor whose supervisor runs it
      * @return the callback that starts it
      */
     @Bean
     public SmartInitializingSingleton maestroPostgresWakeListenerStart(
-            ObjectProvider<PostgresWakeListener> listener, WorkflowExecutor executor) {
-        return () -> listener.ifAvailable(l -> l.start(executor));
+            ObjectProvider<PostgresWakeListener> listener, ObjectProvider<SignalNotifier> notifier,
+            WorkflowExecutor executor) {
+        return () -> listener.ifAvailable(l -> {
+            if (notifier.getIfAvailable() instanceof PostgresSignalNotifier postgres && postgres.uses(l)) {
+                l.start(executor);
+            }
+        });
     }
 
     /**

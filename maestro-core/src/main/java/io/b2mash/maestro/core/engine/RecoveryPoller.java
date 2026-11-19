@@ -97,6 +97,13 @@ final class RecoveryPoller implements LoopBody {
     private final Duration pollInterval;
     private final CapacitySignal signal;
     private final Duration capacitySpacing;
+    /**
+     * The least time between the start of a failed pass and a retry a prompt
+     * triggers during its back-off (PR #76 review): at most one prompt-driven
+     * retry a second, whatever {@code capacitySpacing} is.
+     */
+    static final Duration PROMPT_RETRY_SPACING = Duration.ofSeconds(1);
+
     /** Guards {@link #promptRequestedAt}; notified by a prompt request and by a stop. */
     private final Object promptMonitor = new Object();
     /** {@link System#nanoTime()} of the pending prompt request (L3), or {@code null} for none. */
@@ -183,15 +190,21 @@ final class RecoveryPoller implements LoopBody {
     /**
      * The back-off after a failed pass (P2b review m2): {@code backoff} (one
      * {@code pollInterval}), ended early by a prompt request at least
-     * {@code capacitySpacing} old — the same wait, and the same bound, as
-     * between successful passes: a deferred start is served about a second
-     * after it was deferred even while passes fail, and a storm of prompts
-     * runs at most one pass per {@code capacitySpacing} (≤ 1 s). The prompt is
-     * cleared when the wait returns, so a pending one causes one pass, not two.
-     * A stop ends it. The failure streak and its logging are the supervisor's.
+     * {@code capacitySpacing} old, but never sooner than
+     * {@link #PROMPT_RETRY_SPACING} (1 s) after the failed pass started (PR #76
+     * review): a deferred start is served about a second after it was deferred
+     * even while passes fail, and a storm of prompts runs at most one pass a
+     * second. The prompt is cleared when the wait returns, so a pending one
+     * causes one pass, not two. A stop ends it. The failure streak and its
+     * logging are the supervisor's.
      */
     private boolean backOff(LoopContext ctx, Duration backoff) throws InterruptedException {
-        return sleepUntilFullPassOrPrompt(ctx, System.nanoTime() + backoff.toNanos());
+        // A prompt-triggered retry has its own bound (PR #76 review): no sooner
+        // than PROMPT_RETRY_SPACING after the failed pass started, whatever
+        // capacitySpacing is (with a short poll interval it is shorter), so a
+        // prompt can never skip the back-off of a pass that fails fast.
+        return sleepUntilFullPassOrPrompt(ctx, System.nanoTime() + backoff.toNanos(),
+                lastPassStart + PROMPT_RETRY_SPACING.toNanos());
     }
 
     /** The default spacing of capacity passes, {@code min(1 s, pollInterval)}: at most one per second. */
@@ -308,11 +321,15 @@ final class RecoveryPoller implements LoopBody {
                 cursors = new HashMap<>(pass.resumeAfterByQueue());
             }
             log(pass, capacityPass, first);
-            if (first) {
-                // Read by health's startupRecovery detail (Issue 73).
+            // Read by health's startupRecovery detail (Issue 73): the first
+            // full pass that assessed every row. A pass that skipped a row
+            // because the lock backend was unavailable has not (PR #76 review,
+            // as the one-shot recovery since PR #72): `first` stays set and the
+            // next full pass, which retries the row, may complete it.
+            if (first && !capacityPass && pass.lockUnavailable() == 0) {
                 ctx.note(FIRST_PASS_COMPLETE, true);
+                first = false;
             }
-            first = false;
             awaitingCapacity = !cursors.isEmpty();
         } catch (RuntimeException | Error e) {
             // The cursor is discarded and the next attempt is a full pass,
@@ -464,6 +481,16 @@ final class RecoveryPoller implements LoopBody {
      * @return {@code false} if the poller is stopping
      */
     private boolean sleepUntilFullPassOrPrompt(LoopContext ctx, long deadline) throws InterruptedException {
+        return sleepUntilFullPassOrPrompt(ctx, deadline, null);
+    }
+
+    /**
+     * As {@link #sleepUntilFullPassOrPrompt(LoopContext, long)}, a prompt
+     * also waiting until {@code promptNotBefore} ({@link System#nanoTime()})
+     * when given.
+     */
+    private boolean sleepUntilFullPassOrPrompt(LoopContext ctx, long deadline, @Nullable Long promptNotBefore)
+            throws InterruptedException {
         var spacingNanos = capacitySpacing.toNanos();
         synchronized (promptMonitor) {
             // The stop flag is set before the stop hook notifies this monitor,
@@ -473,6 +500,9 @@ final class RecoveryPoller implements LoopBody {
                 var wakeAt = deadline;
                 if (promptRequestedAt != null) {
                     var promptDue = promptRequestedAt + spacingNanos;
+                    if (promptNotBefore != null && promptNotBefore - promptDue > 0) {
+                        promptDue = promptNotBefore;
+                    }
                     if (promptDue - now <= 0) {
                         promptRequestedAt = null;
                         return true;

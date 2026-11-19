@@ -35,4 +35,16 @@ public interface LoopBody {
      */
     default void onExit() {
     }
+
+    /**
+     * As {@link #onExit()}, with the loop's context, so the body can publish a
+     * last note (the wake listener's {@code connected=false}) before the
+     * terminal snapshot. The supervisor calls this one; the default calls
+     * {@link #onExit()}.
+     *
+     * @param ctx the loop's context
+     */
+    default void onExit(LoopContext ctx) {
+        onExit();
+    }
 }

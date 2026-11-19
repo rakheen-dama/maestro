@@ -72,13 +72,16 @@ import java.util.function.Function;
  * never throws for a connection: if the first one cannot be had, the loop
  * tries again one second later, with the same back-off.
  *
- * <p>At {@link #close()} the loop is stopped without an interrupt (an
- * interrupt of a virtual thread blocked in a socket read closes the socket
- * under the pool, Issue 38). It leaves within one poll and, as it ends
- * ({@link #onExit()}), puts a one-second network timeout on the connection,
- * issues {@code UNLISTEN *} and closes it, which hands it back to the pool
- * listening on nothing. A session that has failed with an
- * {@code SQLException} is closed without {@code UNLISTEN}.
+ * <p>At {@link #close()}, or the executor's stop, the loop is stopped without
+ * an interrupt (an interrupt of a virtual thread blocked in a socket read
+ * closes the socket under the pool, Issue 38). It leaves within one poll and,
+ * as it ends ({@link #onExit(LoopContext)}), puts a one-second network
+ * timeout on the connection, issues {@code UNLISTEN *} and closes it, which
+ * hands it back to the pool listening on nothing, and notes
+ * {@code connected=false}. A session that has failed with an
+ * {@code SQLException} is closed without {@code UNLISTEN}. A stop that lands
+ * while a reconnect waits on the pool is honoured when the borrow returns: no
+ * {@code LISTEN}, no poll, the connection handed straight back.
  *
  * <h2>Failures</h2>
  * <p>A consumer that throws — a {@code RuntimeException} or an {@code Error}
@@ -245,9 +248,9 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
                     .withInitialDelay(connected ? Duration.ZERO : INITIAL_BACKOFF)
                     .withBackoff(Backoff.exponential(INITIAL_BACKOFF, MAX_BACKOFF))
                     .withFailing(FailingRule.streakFor(2, failingAfter));
-            startedSpec = spec;
             try {
                 supervisor = starter.apply(spec);
+                startedSpec = spec;                           // published only once the claim is won
             } catch (RuntimeException | Error e) {
                 running.set(false);
                 releaseWithInterruptCleared();
@@ -356,8 +359,15 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
                 logger.info("Re-established the Postgres LISTEN session on channel '{}'", channel);
             }
             noteConnected(ctx, true);
+            // A stop (the executor's, which does not go through close()) that
+            // landed during the connect: no poll; onExit releases the session.
+            if (ctx.stopRequested()) {
+                return Next.immediately();
+            }
             var notifications = pg.getNotifications(POLL_TIMEOUT_MS);
-            if (notifications != null) {
+            // ... or during the poll: nothing is dispatched after a stop. A wake
+            // dropped here is covered by the recheck, as any lost NOTIFY is.
+            if (notifications != null && !ctx.stopRequested()) {
                 for (PGNotification notification : notifications) {
                     dispatch(notification);
                 }
@@ -380,10 +390,15 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
         }
     }
 
-    /** Runs on the loop's thread as it ends: returns the session to the pool listening on nothing. */
+    /**
+     * Runs on the loop's thread as it ends: returns the session to the pool
+     * listening on nothing, and publishes {@code connected=false} before the
+     * terminal snapshot (PR #76 review).
+     */
     @Override
-    public void onExit() {
+    public void onExit(LoopContext ctx) {
         releaseWithInterruptCleared();
+        noteConnected(ctx, false);
     }
 
     private void noteConnected(LoopContext ctx, boolean connected) {
@@ -441,9 +456,12 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
             if (conn == null) {
                 throw new SQLException("DataSource returned no connection");
             }
-            if (!running.get()) {
-                // close() ran while we were borrowing: hand the connection straight back.
-                throw new SQLException("listener closed during connect");
+            var loop = supervisor;
+            if (!running.get() || (loop != null && loop.stopRequested())) {
+                // close() — or the executor's stop, which does not go through
+                // close() (PR #76 review) — ran while we were borrowing: no
+                // LISTEN; hand the connection straight back.
+                throw new SQLException("listener stopping during connect");
             }
             conn.setAutoCommit(true);
             var pg = conn.unwrap(PGConnection.class);

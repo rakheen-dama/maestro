@@ -41,7 +41,7 @@ import java.util.function.LongSupplier;
  *     Next.done() → the loop ends DONE; otherwise wait as next says
  *                   (a Next.await wait that throws takes the success back:
  *                   the streak continues, previous streak + 1)
- * finally: body.onExit(), then the end is published
+ * finally: body.onExit(ctx), then the end is published
  * </pre>
  *
  * <h2>What is contained</h2>
@@ -277,6 +277,18 @@ public final class LoopSupervisor {
     }
 
     /**
+     * Whether a stop was requested: {@code true} from the first instruction of
+     * {@link #requestStop()} on, for ever. The one stop state a body's owner
+     * can read (the lock manager's {@code close()}, the wake listener's
+     * connect). Safe from any thread.
+     *
+     * @return whether {@link #requestStop()} has been called
+     */
+    public boolean stopRequested() {
+        return stopRequested.get();
+    }
+
+    /**
      * One consistent reading of the loop, from any thread, without locking.
      *
      * @return the loop's current snapshot
@@ -351,7 +363,7 @@ public final class LoopSupervisor {
     private void end(boolean done) {
         MaestroControlFlowError exitFailure = null;
         try {
-            body.onExit();
+            body.onExit(context);
         } catch (Throwable t) {
             if (t instanceof MaestroControlFlowError controlFlow) {
                 exitFailure = controlFlow;
@@ -524,11 +536,15 @@ public final class LoopSupervisor {
             log(failure, () -> logger.debug("Background loop '{}' failed again ({} in a row)", spec.name(), n,
                     failure));
         }
-        // Contained by the composite (Issue 81): a throwing observer cannot
-        // end the loop; a control-flow Error from it is still rethrown.
-        observer.backgroundLoopFailed(spec.name(), failure.getClass().getName());
+        // A loop must not die because an observer threw (PR #76 review): the
+        // composite contains most of what a delegate throws (Issue 81) but
+        // rethrows a VirtualMachineError, and on this path that would skip the
+        // back-off and end the loop — though the same Error from the body is
+        // contained. So the failure report contains everything but a
+        // control-flow Error itself; the failure is already counted.
+        report(() -> observer.backgroundLoopFailed(spec.name(), failure.getClass().getName()));
         if (failure instanceof Error) {
-            observer.backgroundLoopError(spec.name(), failure.getClass().getName());
+            report(() -> observer.backgroundLoopError(spec.name(), failure.getClass().getName()));
         }
         return logged;
     }
@@ -539,6 +555,23 @@ public final class LoopSupervisor {
      *
      * @return {@code true} when a streak ended and the recovery line was logged
      */
+    /**
+     * Runs one observer report of a counted failure, containing everything it
+     * throws except a {@link MaestroControlFlowError}: logged best-effort, then
+     * dropped, so the loop backs off and continues.
+     */
+    private void report(Runnable call) {
+        try {
+            call.run();
+        } catch (Throwable t) {
+            if (t instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            quietly(() -> logger.warn("Background loop '{}': an observer threw {} while its failure was reported "
+                    + "— contained; the loop continues", spec.name(), describe(t)));
+        }
+    }
+
     boolean succeeded() {
         var n = recordSuccess();
         logRecovery(n);

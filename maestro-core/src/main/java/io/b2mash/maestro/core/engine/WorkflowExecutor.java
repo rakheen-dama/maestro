@@ -2367,10 +2367,12 @@ public final class WorkflowExecutor {
         }
         var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval,
                 taskQueueGovernor.capacitySignal(), capacitySpacing);
-        // Published before the loop starts: a start deferred by its first pass
-        // can prompt it at once.
-        recoveryPoller = poller;
-        supervise(poller.spec(), poller);
+        // Published once this call has won the loop's name, before the loop
+        // starts (PR #76 review): a start deferred by its first pass can prompt
+        // it at once, and a refused second start never replaces the body the
+        // running loop uses — canDeferStart reads the running body's
+        // registrations.
+        supervise(poller.spec(), poller, () -> recoveryPoller = poller);
         logger.info("Recovery poller started ({})", poller.describeSettings());
     }
 
@@ -2648,10 +2650,31 @@ public final class WorkflowExecutor {
      * @return the running supervisor
      * @throws IllegalStateException if a loop of that name was already
      *                               supervised here, or the executor is shutting down
+     * @throws IllegalArgumentException for the reserved name
+     *                                  {@code instance-lock-renewer}
      */
     public LoopSupervisor supervise(LoopSpec spec, LoopBody body) {
+        return supervise(spec, body, () -> { });
+    }
+
+    /**
+     * As {@link #supervise(LoopSpec, LoopBody)}, running {@code onClaim} once
+     * this call has won the loop's name and before its thread starts — never
+     * for a call that loses the name (PR #76 review): what the winner
+     * publishes there is visible to its first iteration, and a refused
+     * duplicate publishes nothing.
+     */
+    LoopSupervisor supervise(LoopSpec spec, LoopBody body, Runnable onClaim) {
         Objects.requireNonNull(spec, "spec");
         Objects.requireNonNull(body, "body");
+        Objects.requireNonNull(onClaim, "onClaim");
+        if (spec.name().equals(WorkflowInstanceLockManager.RENEWER_LOOP_NAME)) {
+            // Reserved (PR #76 review): loops() lists the renewer from outside
+            // the supervised map, and a second loop of that name would hide its
+            // snapshot from health and the gauge.
+            throw new IllegalArgumentException("Background loop name '" + spec.name()
+                    + "' is reserved for the instance-lock renewer");
+        }
         if (shuttingDown.get()) {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start background loop '" + spec.name() + "'");
@@ -2661,6 +2684,7 @@ public final class WorkflowExecutor {
         // ended loop keeps its entry: a name is supervised once per executor.
         var holder = new LoopSupervisor[1];
         var claimed = supervised.computeIfAbsent(spec.name(), name -> {
+            onClaim.run();
             holder[0] = LoopSupervisor.start(spec, body, observer);
             return holder[0];
         });
@@ -3427,6 +3451,19 @@ public final class WorkflowExecutor {
      */
     public int instanceLocksHeld() {
         return instanceLockManager.heldCount();
+    }
+
+    /**
+     * How long the instance lock this node holds that is closest to expiry
+     * has gone without renewal — since its last successful renewal or, before
+     * any, since its acquisition began — on the monotonic clock; a failed
+     * renewal attempt resets nothing. Health reads {@code DOWN} once this
+     * reaches the lock TTL. Never blocks; never touches the lock backend.
+     *
+     * @return that age, or {@code null} when this node holds no instance lock
+     */
+    public @Nullable Duration oldestInstanceLockRenewalAge() {
+        return instanceLockManager.oldestRenewalAge();
     }
 
     /**

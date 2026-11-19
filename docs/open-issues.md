@@ -5098,7 +5098,9 @@ after the store answers again.
 > **Resolved** (pilot readiness P2 task 5, PR #76). Every loop runs
 > under `LoopSupervisor`; health reads its snapshot: a critical loop whose
 > failure streak reaches its rule reads `DOWN` (`UNKNOWN` while the probe
-> times out), a housekeeping loop `UP` and named in `degraded`; every failure,
+> times out — except the renewer, whose two failed passes in a row or a held
+> lock a TTL without renewal read `DOWN` whatever the probe did), a
+> housekeeping loop `UP` and named in `degraded`; every failure,
 > a store fault included, counts on `maestro.loop.failures{loop}`, and
 > `maestro.loop.failing{loop}` reads 1 while it lasts. Pinned by
 > `MaestroHealthSemanticsTest` and `MicrometerEngineObserverTest.loopFailureSeriesExistAtZero`.
@@ -5164,7 +5166,8 @@ reads `DOWN`, with its streak in the details, and one that recovers reads
 > renewer starts while the executor is built, and a renewer that cannot start
 > fails the build (`WorkflowExecutorBuilderTest.aRenewerThatCannotStartFailsTheBuild`);
 > the `"idle"` reading is gone, and a node holding locks whose renewer is not
-> running, or has not renewed for a TTL, reads `DOWN`
+> running, or holds a lock a TTL without renewal (from its last renewal or
+> its acquisition; PR #76 review), reads `DOWN`
 > (`MaestroHealthSemanticsTest.aNodeHoldingLocksWithNoRunningRenewerIsDown`,
 > `…aRenewerHoldingLocksWithNoRenewalForATtlIsDown`). Issue 68 is resolved.
 
