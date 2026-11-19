@@ -142,82 +142,6 @@ jobs:
             maestro-integration-tests/build/reports/tests/rollingUpgradeTest/
           retention-days: 14
 
-  # The consumer smoke test (maestro-integration-tests/consumer-smoke, a
-  # standalone build outside this repository's settings.gradle.kts): a service
-  # that consumes the previous release exactly as a user does — the BOM and the
-  # starter from GitHub Packages, the Spring Boot platform imported by itself —
-  # runs one workflow to completion on Testcontainers Postgres + Kafka. The
-  # previous release is the newest row of previousReleases in
-  # maestro-integration-tests/rolling-node/build.gradle.kts. Same fork and
-  # Dependabot gate, and the same permissions, as the rolling-upgrade job.
-  consumer-smoke:
-    name: Consumer smoke (previous release from GitHub Packages)
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-      packages: read
-
-    steps:
-      - name: Decide whether this run can read GitHub Packages
-        id: gate
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          REPOSITORY: ${{ github.repository }}
-          ACTOR: ${{ github.actor }}
-        run: |
-          reason=""
-          if [[ "$EVENT_NAME" == "pull_request" && "$HEAD_REPO" != "$REPOSITORY" ]]; then
-            reason="a pull request from a fork"
-          elif [[ "$ACTOR" == "dependabot[bot]" ]]; then
-            reason="a Dependabot run"
-          fi
-          if [[ -n "$reason" ]]; then
-            echo "::notice title=Consumer smoke skipped::${reason} may not read the GitHub Packages registry the previous release comes from; the consumer smoke test did not run"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "run=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Checkout
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/checkout@v7
-
-      - name: Find the previous release
-        if: steps.gate.outputs.run == 'true'
-        id: previous
-        run: scripts/previous-release.sh >> "$GITHUB_OUTPUT"
-
-      - name: Set up Java 25
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/setup-java@v6
-        with:
-          java-version: '25'
-          distribution: 'temurin'
-
-      - name: Set up Gradle
-        if: steps.gate.outputs.run == 'true'
-        uses: gradle/actions/setup-gradle@v5
-
-      - name: Run one workflow on the published previous release
-        if: steps.gate.outputs.run == 'true'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          MAESTRO_VERSION: ${{ steps.previous.outputs.maestro-version }}
-          SPRING_BOOT_VERSION: ${{ steps.previous.outputs.spring-boot-version }}
-        run: >-
-          ./gradlew -p maestro-integration-tests/consumer-smoke test
-          "-Pmaestro.version=$MAESTRO_VERSION" "-Pmaestro.springBootVersion=$SPRING_BOOT_VERSION"
-
-      - name: Upload consumer-smoke reports
-        uses: actions/upload-artifact@v7
-        if: always() && steps.gate.outputs.run == 'true'
-        with:
-          name: consumer-smoke-reports
-          path: maestro-integration-tests/consumer-smoke/build/reports/tests/
-          retention-days: 14
-
   # The API compatibility report: japicmp compares the public API of every
   # published module of this build with the previous release's jars from
   # GitHub Packages (maestro-integration-tests/api-compat, a standalone build).
@@ -315,7 +239,8 @@ jobs:
   # this cycle). A scheduled keepalive would be disabled with it; a push is
   # the only event that proves the repository is alive, so the first push
   # after a dormant period turns the scheduled workflows back on: the nightly
-  # E2E (e2e-nightly.yml) and the weekly k6 load job (perf.yml).
+  # E2E (e2e-nightly.yml), the weekly k6 load job (perf.yml) and the weekly
+  # consumer smoke test (consumer-smoke.yml).
   keep-nightly-enabled:
     name: Re-enable the nightly E2E schedule
     if: github.event_name == 'push'
@@ -337,3 +262,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: gh workflow enable perf.yml
+
+      - name: Enable Consumer smoke if GitHub disabled it
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh workflow enable consumer-smoke.yml
