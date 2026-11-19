@@ -59,15 +59,16 @@ import java.util.concurrent.atomic.AtomicReference;
  * evicts; the store call is left to finish and its result is ignored. One
  * probe is in flight per indicator: a call that finds one still running joins
  * it; a call that finds it already timed out answers {@code "timed out"} at
- * once — until it has been stuck for {@link #SUPERSEDE_AFTER}, when the next
- * call starts one fresh probe beside it, so one probe stuck for good (a
+ * once — until {@link #SUPERSEDE_AFTER} has passed since it was abandoned
+ * (its first caller's timeout), when the next call starts one fresh probe
+ * beside it, so one probe stuck for good (a
  * half-open socket and no driver socket timeout) does not hold
  * {@code UNKNOWN} once the store answers again. A probe is superseded at most
  * once while it is stuck, so at most two probes — two connections — exist at
  * a time; the price is that if the fresh probe is stuck for good too, the
  * status stays {@code UNKNOWN} until the fresh (in-flight) probe returns — or,
- * if the superseded one returns first, until the fresh one has in turn been
- * stuck for {@link #SUPERSEDE_AFTER} and is superseded (a driver socket
+ * if the superseded one returns first, until {@link #SUPERSEDE_AFTER} has
+ * passed since the fresh one's own abandonment and it is superseded (a driver socket
  * timeout makes sure a stuck call does return). If the
  * probe thread cannot be started, the call reports {@code DOWN} with that
  * failure.
@@ -178,9 +179,11 @@ public class MaestroHealthIndicator implements HealthIndicator {
     static final int RENEWER_FAULT_STREAK = 2;
 
     /**
-     * How long a timed-out probe must have been stuck before the next call
-     * supersedes it with one fresh probe: five times {@link #STORE_PROBE_TIMEOUT}
-     * (Issue 66).
+     * How long after its abandonment — the first call's {@link #STORE_PROBE_TIMEOUT}
+     * running out, so {@code STORE_PROBE_TIMEOUT} after the probe started — a
+     * probe still stuck is superseded by the next call with one fresh probe:
+     * five times {@link #STORE_PROBE_TIMEOUT}, so a probe is superseded no
+     * sooner than 12 s after it started (Issue 66).
      */
     static final Duration SUPERSEDE_AFTER = STORE_PROBE_TIMEOUT.multipliedBy(5);
 
@@ -558,8 +561,11 @@ public class MaestroHealthIndicator implements HealthIndicator {
         }
 
         /**
-         * Clears {@link #inFlight} (or the superseded slot) first, so a call
-         * after the result is known starts a fresh probe.
+         * Clears this probe's slot first — {@link #inFlight}, or the superseded
+         * slot — before completing the result. When this was the in-flight
+         * probe, a call after the result is known starts a fresh probe; when it
+         * was the superseded one, the in-flight probe stays and is joined (or,
+         * once it is old enough, superseded) as before.
          */
         private void finish(@Nullable Throwable failure) {
             inFlight.compareAndSet(this, null);

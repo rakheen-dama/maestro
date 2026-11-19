@@ -5057,9 +5057,10 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 
 > **Closed (pilot-readiness P1, 2026-11-19, PR #78): fixed (design note
 > Question 4, option (c)).** `Probe.abandon()` no longer interrupts: a
-> timed-out probe's store call finishes and its result is ignored. A probe
-> stuck for `SUPERSEDE_AFTER` (10 s, 5 × the 2 s bound) is superseded by one
-> fresh probe on the next health call; while that superseded probe is still
+> timed-out probe's store call finishes and its result is ignored. A probe is
+> abandoned at its 2 s timeout and superseded by one fresh probe on the first
+> health call `SUPERSEDE_AFTER` (10 s, 5 × the bound) or more after that
+> abandonment — at least 12 s after it started; while that superseded probe is still
 > stuck no third starts, so at most two probes — two connections — exist.
 > Both done-when conditions are pinned: `HealthProbeOnHikariTest.aTimedOutProbeEvictsNoConnection`
 > (real Postgres, a Hikari pool of one, a probe timed out inside
@@ -5071,7 +5072,7 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 > The second condition holds for one stuck probe: if the superseding probe is
 > stuck for good too, no third starts (the two-connection bound) and health
 > reads `UNKNOWN` until the in-flight one returns, or the superseded one
-> returns and the in-flight one has in turn been stuck 10 s (Operations §14) —
+> returns and 10 s pass after the in-flight one's own abandonment (Operations §14) —
 > set pgjdbc's `socketTimeout` (P1 review
 > L5).
 
@@ -5281,8 +5282,11 @@ an observer `Error` on one lost lock does not delay the others.
 > before the P1 review it finished its whole last poll): the rest of the poll
 > stays uncommitted for the partition's next owner. Shutdown requests the
 > stop before it drains; a consumer leaves its group — and its partitions
-> move — once its record in hand has returned (at once when idle; a blocking
-> listener call keeps it in the group until the call returns or the deadline).
+> move — once its record in hand has returned (at once when idle). A blocking
+> listener call keeps it in the group for as long as it blocks: the deadline
+> ends Maestro's wait, not the consumer's membership, which ends when the call
+> returns, at JVM exit or after the broker's session timeout — so partitions
+> can be reassigned after the deadline.
 > A container that stopped by the deadline handles no record after the
 > `DataSource` closes; one whose
 > record in hand is still in its listener call at the deadline is named in a
