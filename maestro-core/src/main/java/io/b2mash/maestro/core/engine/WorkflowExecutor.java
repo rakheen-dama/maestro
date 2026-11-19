@@ -228,6 +228,14 @@ public final class WorkflowExecutor {
     volatile Runnable beforeResumeLaunch = () -> { };
 
     /**
+     * Test seam: runs on the recovery poller's thread, in its wait for
+     * task-queue capacity, just before it reads the capacity epoch for a
+     * headroom check. A test requests a prompt here to show the prompt is not
+     * lost (PR #72 review). Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRecoveryHeadroomCheck = () -> { };
+
+    /**
      * Test seam: runs on the run's own thread before the run body — after
      * the thread started, before {@code executeWorkflow} is entered. A test
      * makes it throw to show that a run whose thread dies there still
@@ -2021,9 +2029,31 @@ public final class WorkflowExecutor {
             handedOver = true;
             if (!launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
                     running.input(), true, handle, null)) {
-                logger.info("Workflow '{}' CAS'd to RUNNING but lost its instance lock before its run started — "
-                        + "left for recovery to adopt", workflowId);
-                return RetryOutcome.LOCK_HELD_ELSEWHERE;
+                if (canDeferStart(running.workflowType())) {
+                    logger.info("Workflow '{}' CAS'd to RUNNING but lost its instance lock before its run "
+                            + "started — left for recovery to adopt (a prompt pass is requested)", workflowId);
+                    var poller = recoveryPoller.get();
+                    if (poller != null) {
+                        poller.requestPromptPass();
+                    }
+                    return RetryOutcome.LOCK_HELD_ELSEWHERE;
+                }
+                // PR #72 review, as on the start path: nothing on this node
+                // would adopt the reopened row. Relaunch once, with a fresh
+                // acquisition; if that cannot run either, say so — an acked
+                // LOCK_HELD_ELSEWHERE would leave it RUNNING with no run, and a
+                // repeated Retry would answer NOT_FAILED.
+                if (resumeWorkflow(running, registration.workflowFactory(), registration.workflowMethod())) {
+                    logger.info("Workflow '{}' lost its instance lock after its retry reopened it; relaunched it",
+                            workflowId);
+                } else {
+                    throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was reopened for retry "
+                            + "(RUNNING, its failure memos deleted) but not launched: its instance lock was lost "
+                            + "before its run started and could not be taken again, and this node runs no recovery "
+                            + "poller for its type. It is not lost: it runs when a node of this service starts with "
+                            + "recovery enabled (maestro.recovery.enabled=true), or when this node restarts. "
+                            + "Retrying it again would answer NOT_FAILED.").formatted(workflowId));
+                }
             }
 
             publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);

@@ -467,6 +467,11 @@ final class RecoveryPoller implements StoppableLoop {
         // No check before one spacing after the pass, nor within one spacing of a check that found no room.
         var notBefore = lastPassStart + spacingNanos;
         while (running) {
+            // A prompt is checked before every wait. One requested after this
+            // check moves the epoch the wait watches, so the wait returns.
+            if (promptPending()) {
+                return false;
+            }
             var untilFull = nextFull - System.nanoTime();
             if (untilFull <= 0 || !signal.awaitChange(epoch, Duration.ofNanos(untilFull))) {
                 return false;
@@ -478,11 +483,18 @@ final class RecoveryPoller implements StoppableLoop {
             if (spacingLeft > 0 && !sleepUntil(Math.min(notBefore, nextFull))) {
                 return false;
             }
-            if (nextFull - System.nanoTime() <= 0 || promptPending()) {
+            if (nextFull - System.nanoTime() <= 0) {
                 return false;
             }
-            // Read before the headroom check: a release after it wakes the next wait.
+            executor.beforeRecoveryHeadroomCheck.run();
+            // Read before the prompt and headroom checks: a release or a
+            // prompt after this read moves the epoch and wakes the next wait
+            // (PR #72 review: a prompt checked before this read could be
+            // absorbed by it and then wait out the full pass).
             epoch = signal.epoch();
+            if (promptPending()) {
+                return false;
+            }
             headroomChecks.incrementAndGet();
             if (executor.recoveryHeadroom(queues) > 0) {
                 return true;

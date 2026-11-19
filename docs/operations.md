@@ -290,7 +290,14 @@ poller, where a reopened row would otherwise have had nothing to run it
 left `RUNNING` for a recovery pass. `ALREADY_RUNNING_LOCALLY` and
 `LOCK_HELD_ELSEWHERE` now mean only a launch refused after the reopen (a
 stale local entry, a lock reported lost before the run started, a lost
-adoption compare-and-set); the row is then `RUNNING` for recovery.
+adoption compare-and-set); the row is then `RUNNING` for recovery, and a
+recovery poller that registers the type is prompted at once. On a node
+without one, a lock lost after the reopen is met with one relaunch, and if
+that fails too with `WorkflowNotLaunchedException` (the row was reopened and
+not launched; a node with recovery, or a restart, runs it). Redelivery of a
+thrown Retry depends on the transport: with
+`maestro.messaging.redelivery.enabled=false` the command is not redelivered,
+and an operator retries it by hand.
 
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only

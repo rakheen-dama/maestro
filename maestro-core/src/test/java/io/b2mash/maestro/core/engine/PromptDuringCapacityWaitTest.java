@@ -70,4 +70,48 @@ class PromptDuringCapacityWaitTest {
                 "the prompt ended the capacity wait; the 60 s poll interval was not waited for");
         assertTrue(work.order().contains("wf-other"));
     }
+
+    /**
+     * PR #72 review, follow-up: a prompt requested in the capacity wait after
+     * its last pending-prompt check but before it reads the capacity epoch for
+     * a headroom check must not be absorbed by that read; with no headroom the
+     * next wait would otherwise sleep to the full pass.
+     */
+    @Test
+    void aPromptRequestedJustBeforeAHeadroomCheckIsNotLost() throws Exception {
+        for (var i = 0; i < 3; i++) {
+            seedRecoverable(store, "full-" + i, "full");
+        }
+        work.completeAtOnceFor("wf-other"::equals);
+        var proxy = work.proxy(node, store, serializer, "A");
+        var registrations = Map.of("WorkWorkflow",
+                new WorkflowRegistration("WorkWorkflow", "full", () -> new WorkWorkflow(proxy), workMethod()));
+        node.startRecoveryPoller(registrations, Duration.ofSeconds(60));
+        assertEquals(1, valueWithin(node::recoveryDeferredCount, 1, Duration.ofSeconds(5)));
+
+        // In the gap, another thread defers a start: its prompt is requested there.
+        var elsewhere = lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow();
+        var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var hookRan = new java.util.concurrent.CountDownLatch(1);
+        node.beforeRecoveryHeadroomCheck = () -> {
+            if (first.compareAndSet(true, false)) {
+                var starter = Thread.ofVirtual().start(() -> node.startWorkflow("wf-other", "WorkWorkflow", "other",
+                        null, () -> new WorkWorkflow(proxy), workMethod()));
+                try {
+                    starter.join(Duration.ofSeconds(5));
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                lock.release(elsewhere);
+                hookRan.countDown();
+            }
+        };
+        // A capacity signal with no headroom brings the wait to its headroom check.
+        node.taskQueueGovernor().capacitySignal().signal();
+        assertTrue(hookRan.await(5, java.util.concurrent.TimeUnit.SECONDS), "the wait reached its headroom check");
+
+        assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance("wf-other")
+                        .map(i -> i.status()).orElse(WorkflowStatus.RUNNING), WorkflowStatus.COMPLETED,
+                Duration.ofSeconds(5)), "the prompt requested in the gap was not lost");
+    }
 }

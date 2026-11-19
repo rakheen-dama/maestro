@@ -608,21 +608,17 @@ final class WorkflowInstanceLockManager {
                             + "store's lease fence rejects any write it still attempts",
                     workflowId);
         }
-        // Emitted outside the backend call so a throwing observer is not
-        // reported as a transient renew failure, and contained so it cannot
+        // Proactive stand-down first: tell the executor now, so the run stops
+        // at its next stop point rather than after a write the store fences —
+        // and before anyone observing the loss can act on it (a run that has
+        // not entered the workflow method yet never runs user code).
+        emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId, handle));
+        // Then the report, outside the backend call so a throwing observer is
+        // not reported as a transient renew failure, and contained so it cannot
         // escape renewLoop() and kill the single renewer thread — that would
         // silently stop renewing EVERY held lock.
-        try {
-            if (!afterClose) {
-                emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
-            }
-        } finally {
-            // Proactive stand-down: tell the executor now, so the run stops at
-            // its next stop point rather than after a write the store fences.
-            // In a finally: the handle is already dropped, so no later pass
-            // reports this loss again — an observer Error (which emit lets
-            // through, to the renewer's guard) must not skip the stand-down.
-            emit("onLockLost", workflowId, () -> lockLostCallback.accept(workflowId, handle));
+        if (!afterClose) {
+            emit("instanceLockLost", workflowId, () -> observer.instanceLockLost(workflowId));
         }
     }
 

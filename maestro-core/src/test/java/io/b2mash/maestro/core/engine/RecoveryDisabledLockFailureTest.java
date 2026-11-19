@@ -138,6 +138,34 @@ class RecoveryDisabledLockFailureTest {
                 WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
     }
 
+    @Test
+    void aRetryWhoseLockIsLostAfterTheReopenIsRelaunchedOnceAndRuns() throws Exception {
+        var fail = new AtomicBoolean(true);
+        var registration = failedBoom(fail);
+        fail.set(false);
+        loseTheLockOnFirstAdmission(false);
+
+        assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, node.retryWorkflow(ID, registration),
+                "the relaunch ran the reopened row");
+        assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance(ID).orElseThrow().status(),
+                WorkflowStatus.COMPLETED, Duration.ofSeconds(5)));
+    }
+
+    @Test
+    void aRetryWhoseLockIsLostAfterTheReopenAndWhoseRelaunchFailsReportsTheReopenedRow() throws Exception {
+        var fail = new AtomicBoolean(true);
+        var registration = failedBoom(fail);
+        loseTheLockOnFirstAdmission(true);
+
+        var e = assertThrows(WorkflowNotLaunchedException.class, () -> node.retryWorkflow(ID, registration));
+
+        assertEquals(ID, e.workflowId());
+        assertTrue(e.getMessage().contains("was reopened"), e.getMessage());
+        assertTrue(e.getMessage().contains("not launched"), e.getMessage());
+        assertEquals(WorkflowStatus.RUNNING, store.getInstance(ID).orElseThrow().status(),
+                "the reopen committed; the row waits for a node with recovery");
+    }
+
     // ── 4622153294 ───────────────────────────────────────────────────
 
     @Test
@@ -171,6 +199,16 @@ class RecoveryDisabledLockFailureTest {
     }
 
     // ── helpers ──────────────────────────────────────────────────────
+
+    /** Runs a BoomWorkflow to FAILED and returns its registration; {@code fail} decides later attempts. */
+    private WorkflowRegistration failedBoom(AtomicBoolean fail) {
+        var registration = new WorkflowRegistration("BoomWorkflow", "default",
+                () -> new BoomWorkflow(boomProxy(fail)), boomMethod());
+        node.startWorkflow(ID, "BoomWorkflow", "default", null, registration.workflowFactory(), boomMethod());
+        assertEquals(WorkflowStatus.FAILED, valueWithin(() -> store.getInstance(ID).orElseThrow().status(),
+                WorkflowStatus.FAILED, Duration.ofSeconds(5)));
+        return registration;
+    }
 
     /**
      * On the first launch admission, frees the key behind its holder's back and
