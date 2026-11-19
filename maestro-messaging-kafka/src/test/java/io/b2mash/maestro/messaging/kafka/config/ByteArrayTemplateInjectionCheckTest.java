@@ -674,8 +674,9 @@ class ByteArrayTemplateInjectionCheckTest {
             runner.withUserConfiguration(LegacyBytesSenderConfiguration.class).run(ctx -> {
                 assertThat(rootCause(ctx)).hasMessage(LEGACY_VIOLATION);
                 assertThat(listenerLog.list).extracting(ILoggingEvent::getFormattedMessage)
-                        .as("the post-processor's afterSingletonsInstantiated never ran: only its close, with nothing to stop")
-                        .containsExactly("Stopping 0 @MaestroSignalListener container(s)");
+                        .as("the post-processor's afterSingletonsInstantiated never ran: it activated and "
+                                + "started nothing (its close, a request-only backstop since P1, logs nothing)")
+                        .noneMatch(m -> m.startsWith("Activating") || m.startsWith("Started"));
             });
         }
         finally {
