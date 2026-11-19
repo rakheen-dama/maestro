@@ -5,6 +5,7 @@ import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.MockEngines;
 import io.b2mash.maestro.messaging.kafka.config.CoexistenceFixtures.HostSenderConfiguration;
 import io.b2mash.maestro.messaging.kafka.listener.MaestroSignalListenerBeanPostProcessor;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
@@ -657,7 +658,7 @@ class ByteArrayTemplateInjectionCheckTest {
         try {
             var runner = coexistenceRunner()
                     .withUserConfiguration(SignalListenerConfiguration.class)
-                    .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class));
+                    .withBean(WorkflowExecutor.class, MockEngines::executor);
             // Positive control: without a misinjection, the post-processor starts the consumer.
             runner.run(ctx -> {
                 assertThat(ctx).hasNotFailed();

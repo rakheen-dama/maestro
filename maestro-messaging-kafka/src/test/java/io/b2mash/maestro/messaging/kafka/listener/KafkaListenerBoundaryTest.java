@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.MockEngines;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -88,7 +89,7 @@ class KafkaListenerBoundaryTest {
 
     private final ApplicationContextRunner runner = coexistenceRunner()
             .withUserConfiguration(BoundaryConfiguration.class)
-            .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class))
+            .withBean(WorkflowExecutor.class, MockEngines::executor)
             .withPropertyValues(
                     "maestro.service-name=boundary",
                     "spring.kafka.consumer.value-deserializer=org.apache.kafka.common.serialization.LongDeserializer",
@@ -164,7 +165,7 @@ class KafkaListenerBoundaryTest {
     void withoutAHostErrorHandler_aPlainKafkaListenerHasNoDeadLetterRecoverer() {
         coexistenceRunner()
                 .withUserConfiguration(ListenersOnlyConfiguration.class)
-                .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class))
+                .withBean(WorkflowExecutor.class, MockEngines::executor)
                 .withPropertyValues(
                         "maestro.service-name=boundary",
                         "spring.kafka.bootstrap-servers=" + UNREACHABLE,

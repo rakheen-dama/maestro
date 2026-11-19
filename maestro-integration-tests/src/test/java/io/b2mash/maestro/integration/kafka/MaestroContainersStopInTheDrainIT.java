@@ -11,10 +11,9 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.WebApplicationType;
+import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.TestConfiguration;
-import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
 
 import java.time.Duration;
@@ -37,22 +36,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>The drain is held open by a registry member that leaves only when the
  * test lets it, so "while the drain is still waiting" is deterministic. The
  * consumer groups are read from the broker: a stopped container has left its
- * group.
+ * group. The test closes the context itself, so it builds its own rather than
+ * borrowing the test framework's cached one.
  */
-@SpringBootTest(
-        classes = {
-                KafkaSignalTestApplication.class,
-                MaestroContainersStopInTheDrainIT.RouterConfiguration.class
-        },
-        webEnvironment = SpringBootTest.WebEnvironment.NONE,
-        properties = {
-                "maestro.service-name=" + MaestroContainersStopInTheDrainIT.SERVICE,
-                "maestro.lock.type=postgres",
-                "maestro.messaging.type=kafka",
-                "maestro.messaging.topics.admin-events=" + MaestroContainersStopInTheDrainIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false",
-                "maestro.shutdown.timeout=20s"
-        })
 @Tag("integration")
 @DisplayName("Maestro's Kafka containers stop inside the engine's shutdown, while the drain still waits")
 class MaestroContainersStopInTheDrainIT extends KafkaSpringIntegrationSupport {
@@ -61,12 +47,6 @@ class MaestroContainersStopInTheDrainIT extends KafkaSpringIntegrationSupport {
     static final String EVENT_TOPIC = "it.drain.approvals";
     static final String ADMIN_TOPIC = "it.drain.admin";
     private static final String GROUP_PREFIX = "maestro-" + SERVICE;
-
-    @Autowired
-    private ConfigurableApplicationContext context;
-
-    @Autowired
-    private WorkflowExecutor executor;
 
     @BeforeAll
     static void createDrainTopics() throws ExecutionException, InterruptedException {
@@ -77,6 +57,22 @@ class MaestroContainersStopInTheDrainIT extends KafkaSpringIntegrationSupport {
     @Test
     @DisplayName("every Maestro container has left its consumer group while the drain is still waiting")
     void everyMaestroContainerHasStoppedWhileTheDrainIsStillWaiting() throws Exception {
+        var dataSource = newDataSource();
+        var context = new SpringApplicationBuilder(KafkaSignalTestApplication.class, RouterConfiguration.class)
+                .web(WebApplicationType.NONE)
+                .properties(
+                        "spring.datasource.url=" + dataSource.getUrl(),
+                        "spring.datasource.username=" + dataSource.getUser(),
+                        "spring.datasource.password=" + dataSource.getPassword(),
+                        "spring.kafka.bootstrap-servers=" + bootstrapServers(),
+                        "maestro.service-name=" + SERVICE,
+                        "maestro.lock.type=postgres",
+                        "maestro.messaging.type=kafka",
+                        "maestro.messaging.topics.admin-events=" + ADMIN_TOPIC,
+                        "maestro.recovery.enabled=false",
+                        "maestro.shutdown.timeout=20s")
+                .run();
+        var executor = context.getBean(WorkflowExecutor.class);
         try (var admin = AdminClient.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers()))) {
             // The engine's signal container and the listener's container have
             // joined (both may share one group id: count members, not groups).
@@ -110,6 +106,8 @@ class MaestroContainersStopInTheDrainIT extends KafkaSpringIntegrationSupport {
 
             hold.leave();
             assertTrue(closer.join(Duration.ofSeconds(30)), "the context closed once the drain was released");
+        } finally {
+            context.close();
         }
     }
 

@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.MockEngines;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -41,7 +42,7 @@ class MaestroSignalListenerCoexistenceTest {
     void theListenerContainerDeadLettersThroughMaestrosTemplate() {
         coexistenceRunner()
                 .withUserConfiguration(ListenerConfiguration.class)
-                .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class))
+                .withBean(WorkflowExecutor.class, MockEngines::executor)
                 .run(ctx -> {
                     assertThat(ctx).hasNotFailed()
                             .as("Boot's beans exist, so a by-type lookup would find them")

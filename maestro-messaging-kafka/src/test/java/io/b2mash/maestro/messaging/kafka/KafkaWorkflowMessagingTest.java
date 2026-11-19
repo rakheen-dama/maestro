@@ -311,9 +311,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             try {
                 disabledMessaging.subscribeSignals("svc-flagoff-" + testSuffix, message -> { });
 
-                @SuppressWarnings("unchecked")
-                var containers = (List<ConcurrentMessageListenerContainer<String, byte[]>>)
-                        ReflectionTestUtils.getField(disabledMessaging, "containers");
+                var containers = disabledMessaging.runningContainers().stream()
+                        .map(c -> (ConcurrentMessageListenerContainer<?, ?>) c).toList();
                 assertEquals(1, containers.size());
 
                 var handler = containers.get(0).getCommonErrorHandler();
@@ -360,9 +359,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                     List.of("maestro.signals." + fatalService), List.of(), List.of()));
             messaging.subscribeSignals(fatalService, message -> { });
 
-            @SuppressWarnings("unchecked")
-            var containers = (List<ConcurrentMessageListenerContainer<String, byte[]>>)
-                    ReflectionTestUtils.getField(messaging, "containers");
+            var containers = messaging.runningContainers().stream()
+                    .map(c -> (ConcurrentMessageListenerContainer<?, ?>) c).toList();
             assertEquals(2, containers.size());
             assertFalse(containers.get(0).getContainerProperties().isMissingTopicsFatal(),
                     "before any verification outcome nothing was confirmed, so nothing is fatal");

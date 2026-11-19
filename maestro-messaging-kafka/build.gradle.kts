@@ -29,6 +29,8 @@ dependencies {
     testImplementation(libs.spring.boot.micrometer.tracing.opentelemetry)
     testImplementation(libs.spring.boot.starter.test)
     testImplementation(libs.spring.kafka.test)
+    // An engine for the lifecycle-registry tests of KafkaContainerGroup (P1 task 5).
+    testImplementation(project(":maestro-test"))
     testImplementation(libs.testcontainers.junit5)
     testImplementation(libs.testcontainers.kafka)
 }

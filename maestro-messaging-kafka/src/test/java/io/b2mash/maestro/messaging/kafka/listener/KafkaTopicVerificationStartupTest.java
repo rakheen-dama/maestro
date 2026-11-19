@@ -3,6 +3,7 @@ package io.b2mash.maestro.messaging.kafka.listener;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.MockEngines;
 import io.b2mash.maestro.messaging.kafka.KafkaTestSupport;
 import io.b2mash.maestro.messaging.kafka.KafkaTopicVerifier;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
@@ -77,7 +78,7 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
                 .withConfiguration(AutoConfigurations.of(KafkaMessagingAutoConfiguration.class))
                 .withUserConfiguration(PropertiesConfiguration.class, listenerConfiguration)
                 .withBean(ObjectMapper.class, ObjectMapper::new)
-                .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class))
+                .withBean(WorkflowExecutor.class, MockEngines::executor)
                 .withPropertyValues(
                         "maestro.service-name=" + service,
                         "spring.kafka.bootstrap-servers=" + kafka.getBootstrapServers());
