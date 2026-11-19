@@ -77,6 +77,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 /**
@@ -277,7 +278,21 @@ public final class WorkflowExecutor {
      * The recovery poller's body, once started: for prompt passes and its
      * registrations. Its loop is the supervisor in {@link #supervised}.
      */
-    private volatile @Nullable RecoveryPoller recoveryPoller;
+    /**
+     * The recovery poller's body with the supervisor that runs it, published
+     * as one reference — read once, so a body is never paired with another
+     * start's supervisor — and only once its loop has started: a start that
+     * fails publishes nothing, and a start refused after it unpublishes only
+     * its own (PR #76 review follow-up 4630155427).
+     */
+    private final AtomicReference<@Nullable RecoveryLoop> recoveryLoop = new AtomicReference<>();
+
+    /** The recovery poller's body and its supervisor. */
+    private record RecoveryLoop(RecoveryPoller body, LoopSupervisor supervisor) {
+        boolean running() {
+            return supervisor.snapshot().running();
+        }
+    }
     /** Starts every loop {@link #supervise} starts (the builder's test seam). */
     private final LoopStarter loopStarter;
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
@@ -980,8 +995,10 @@ public final class WorkflowExecutor {
      * before anything is written.
      */
     private boolean canDeferStart(String workflowType) {
-        var poller = recoveryPoller;
-        return poller != null && loopRunning(RecoveryPoller.LOOP_NAME) && poller.registers(workflowType);
+        // One read: the body and the supervisor it is checked against belong
+        // to the same start (PR #76 review follow-up).
+        var loop = recoveryLoop.get();
+        return loop != null && loop.running() && loop.body().registers(workflowType);
     }
 
     /**
@@ -997,9 +1014,9 @@ public final class WorkflowExecutor {
                 instance.workflowId(), heldElsewhere
                         ? "is held elsewhere" : "could not be taken (lock backend unavailable)");
         observer.workflowStartDeferred(observed(instance), heldElsewhere);
-        var poller = recoveryPoller;
-        if (poller != null) {
-            poller.requestPromptPass();
+        var loop = recoveryLoop.get();
+        if (loop != null) {
+            loop.body().requestPromptPass();
         }
     }
 
@@ -2214,9 +2231,9 @@ public final class WorkflowExecutor {
                 if (canDeferStart(running.workflowType())) {
                     logger.info("Workflow '{}' CAS'd to RUNNING but lost its instance lock before its run "
                             + "started — left for recovery to adopt (a prompt pass is requested)", workflowId);
-                    var poller = recoveryPoller;
-                    if (poller != null) {
-                        poller.requestPromptPass();
+                    var loop = recoveryLoop.get();
+                    if (loop != null) {
+                        loop.body().requestPromptPass();
                     }
                     return RetryOutcome.LOCK_HELD_ELSEWHERE;
                 }
@@ -2372,12 +2389,28 @@ public final class WorkflowExecutor {
         }
         var poller = new RecoveryPoller(this, registrations, serviceName, pollInterval,
                 taskQueueGovernor.capacitySignal(), capacitySpacing);
-        // Published once this call has won the loop's name, before the loop
-        // starts (PR #76 review): a start deferred by its first pass can prompt
-        // it at once, and a refused second start never replaces the body the
-        // running loop uses — canDeferStart reads the running body's
-        // registrations.
-        supervise(poller.spec(), poller, () -> recoveryPoller = poller);
+        // Published with its supervisor, by the start that won the loop's name,
+        // once its loop has started (PR #76 review and follow-up): a refused
+        // second start never replaces it, a start whose loop cannot start
+        // publishes nothing, and one stopped by a raced shutdown takes back
+        // only its own. A start deferred before the publish is refused
+        // instead (canDeferStart reads nothing yet) — never a deferral
+        // without a poller that registers its type; every deferral therefore
+        // has a published body to prompt.
+        var published = new AtomicReference<@Nullable RecoveryLoop>();
+        try {
+            supervise(poller.spec(), poller, supervisor -> {
+                var loop = new RecoveryLoop(poller, supervisor);
+                published.set(loop);
+                recoveryLoop.set(loop);
+            });
+        } catch (RuntimeException | Error e) {
+            var mine = published.get();
+            if (mine != null) {
+                recoveryLoop.compareAndSet(mine, null);
+            }
+            throw e;
+        }
         logger.info("Recovery poller started ({})", poller.describeSettings());
     }
 
@@ -2659,20 +2692,21 @@ public final class WorkflowExecutor {
      *                                  {@code instance-lock-renewer}
      */
     public LoopSupervisor supervise(LoopSpec spec, LoopBody body) {
-        return supervise(spec, body, () -> { });
+        return supervise(spec, body, supervisor -> { });
     }
 
     /**
-     * As {@link #supervise(LoopSpec, LoopBody)}, running {@code onClaim} once
-     * this call has won the loop's name and before its thread starts — never
-     * for a call that loses the name (PR #76 review): what the winner
-     * publishes there is visible to its first iteration, and a refused
-     * duplicate publishes nothing.
+     * As {@link #supervise(LoopSpec, LoopBody)}, running {@code onStarted}
+     * with the new supervisor once this call has won the loop's name and its
+     * loop has started — never for a call that loses the name, nor for one
+     * whose loop could not start (PR #76 review and follow-up): what it
+     * publishes there belongs to the running loop, and a refused or failed
+     * start publishes nothing.
      */
-    LoopSupervisor supervise(LoopSpec spec, LoopBody body, Runnable onClaim) {
+    LoopSupervisor supervise(LoopSpec spec, LoopBody body, Consumer<LoopSupervisor> onStarted) {
         Objects.requireNonNull(spec, "spec");
         Objects.requireNonNull(body, "body");
-        Objects.requireNonNull(onClaim, "onClaim");
+        Objects.requireNonNull(onStarted, "onStarted");
         if (spec.name().equals(WorkflowInstanceLockManager.RENEWER_LOOP_NAME)) {
             // Reserved (PR #76 review): loops() lists the renewer from outside
             // the supervised map, and a second loop of that name would hide its
@@ -2689,8 +2723,8 @@ public final class WorkflowExecutor {
         // ended loop keeps its entry: a name is supervised once per executor.
         var holder = new LoopSupervisor[1];
         var claimed = supervised.computeIfAbsent(spec.name(), name -> {
-            onClaim.run();
             holder[0] = loopStarter.start(spec, body, observer);
+            onStarted.accept(holder[0]);
             return holder[0];
         });
         if (holder[0] == null || claimed != holder[0]) {
@@ -3363,12 +3397,13 @@ public final class WorkflowExecutor {
      */
     /** Test seam: the recovery poller body {@code canDeferStart} consults, or {@code null}. Package-private. */
     @Nullable RecoveryPoller publishedRecoveryPoller() {
-        return recoveryPoller;
+        var loop = recoveryLoop.get();
+        return loop == null ? null : loop.body();
     }
 
     boolean isRecoveryPollerIdle() {
-        var poller = recoveryPoller;
-        return poller != null && loopRunning(RecoveryPoller.LOOP_NAME) && poller.idleUntilNextFullPass();
+        var loop = recoveryLoop.get();
+        return loop != null && loop.running() && loop.body().idleUntilNextFullPass();
     }
 
     /**
