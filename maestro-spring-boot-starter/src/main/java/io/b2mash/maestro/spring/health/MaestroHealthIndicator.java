@@ -52,12 +52,20 @@ import java.util.concurrent.atomic.AtomicReference;
  *       named in {@code degraded}, and {@code maestro.loop.failing{loop}} reads
  *       {@code 1}.</li>
  * </ol>
- * The probe runs on a separate virtual thread and is abandoned (best-effort
- * interrupted, Issue 66) on timeout, so a store that is merely slow cannot
- * hang this method or the endpoint. At most one probe is in flight per
- * indicator: a call that finds one still running joins it; a call that finds
- * it already timed out answers {@code "timed out"} at once. If the probe
- * thread cannot be started, the call reports {@code DOWN} with that failure.
+ * The probe runs on a separate virtual thread and is abandoned on timeout, so
+ * a store that is merely slow cannot hang this method or the endpoint. An
+ * abandoned probe is <b>never interrupted</b> (Issue 66): on a virtual thread
+ * inside a JDBC call an interrupt closes the connection, which the pool then
+ * evicts; the store call is left to finish and its result is ignored. One
+ * probe is in flight per indicator: a call that finds one still running joins
+ * it; a call that finds it already timed out answers {@code "timed out"} at
+ * once — until it has been stuck for {@link #SUPERSEDE_AFTER}, when the next
+ * call starts one fresh probe beside it, so a probe stuck for good (a
+ * half-open socket and no driver socket timeout) cannot hold {@code UNKNOWN}
+ * once the store answers again. A probe is superseded at most once while it
+ * is stuck, so at most two probes — two connections — exist at a time. If the
+ * probe thread cannot be started, the call reports {@code DOWN} with that
+ * failure.
  *
  * <p>A loop that has never been started yet is <b>not</b> a fault: the timer
  * and recovery pollers are started by the starter's {@code StartupRecoveryRunner},
@@ -102,9 +110,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * </ul>
  *
  * <p><b>Thread safety:</b> safe for concurrent use. The only state is the
- * reference to the probe in flight, swapped atomically (lock-free); no call
- * blocks beyond {@link #STORE_PROBE_TIMEOUT} and no call starts a second probe
- * thread while one is in flight. Every {@link #health()} call re-reads the
+ * reference to the probe in flight and to the one superseded probe, each
+ * swapped atomically (lock-free); no call blocks beyond
+ * {@link #STORE_PROBE_TIMEOUT}, and no call starts a probe thread while one
+ * is in flight, except the one supersession. Every {@link #health()} call re-reads the
  * executor's current loop and running-workflow state, and re-probes the store
  * unless a probe is still in flight, which it joins.
  *
@@ -185,11 +194,17 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * probe thread per indicator exists at a time: a call that finds one in
      * flight waits on it (within the same bound; a probe an earlier call already
      * timed out is answered {@code "timed out"} at once) instead of starting another,
-     * so a store call that ignores the interrupt cannot pile up one stuck
-     * thread per health call. Cleared by the probe thread when its store call
-     * returns or throws.
+     * so a stuck store call cannot pile up one stuck thread per health call.
+     * Cleared by the probe thread when its store call returns or throws.
      */
     private final AtomicReference<@Nullable Probe> inFlight = new AtomicReference<>();
+
+    /**
+     * The probe a fresh one superseded, while its store call is still stuck.
+     * Non-null blocks a second supersession, so at most two probes exist.
+     * Cleared by that probe's thread when its store call returns or throws.
+     */
+    private final AtomicReference<@Nullable Probe> superseded = new AtomicReference<>();
 
     /**
      * Creates a health indicator backed by the given store and executor.
@@ -428,8 +443,9 @@ public class MaestroHealthIndicator implements HealthIndicator {
     /**
      * Probes the store with a bounded timeout, never letting the probe
      * itself hang this method. Joins the probe already in flight, if any; on
-     * timeout the probe is abandoned and its thread interrupted (best effort),
-     * and later calls answer "timed out" at once until its store call returns.
+     * timeout the probe is abandoned — never interrupted — and later calls
+     * answer "timed out" at once until its store call returns or, after
+     * {@link #SUPERSEDE_AFTER}, one fresh probe supersedes it.
      */
     private StoreProbe probeStore() {
         var probe = inFlightOrNewProbe();
@@ -446,11 +462,6 @@ public class MaestroHealthIndicator implements HealthIndicator {
             probe.abandon();
             return new StoreProbe(TIMED_OUT, null);
         } catch (ExecutionException e) {
-            if (probe.abandoned) {
-                // Another call already timed this probe out and interrupted it, so its
-                // failure is most likely that interrupt, not a store that refused.
-                return new StoreProbe(TIMED_OUT, null);
-            }
             var cause = e.getCause();
             return new StoreProbe(UNREACHABLE, cause != null ? cause : e);
         } catch (InterruptedException e) {
@@ -462,11 +473,11 @@ public class MaestroHealthIndicator implements HealthIndicator {
     private Probe inFlightOrNewProbe() {
         while (true) {
             var current = inFlight.get();
-            if (current != null) {
+            if (current != null && !supersedes(current)) {
                 return current;
             }
             var fresh = new Probe();
-            if (inFlight.compareAndSet(null, fresh)) {
+            if (inFlight.compareAndSet(current, fresh)) {
                 try {
                     fresh.thread.start();
                 } catch (Throwable t) {
@@ -488,6 +499,29 @@ public class MaestroHealthIndicator implements HealthIndicator {
     }
 
     /**
+     * Whether {@code current} — the probe in flight — is to be superseded by a
+     * fresh one, and if so claims the one superseded slot for it. Only a probe
+     * abandoned for at least {@link #SUPERSEDE_AFTER} whose store call has not
+     * returned, and only while no earlier superseded probe is still stuck.
+     */
+    private boolean supersedes(Probe current) {
+        // abandoned is written after abandonedAtNanos: read it first.
+        if (!current.abandoned || current.result.isDone()
+                || nanoClock.getAsLong() - current.abandonedAtNanos < SUPERSEDE_AFTER.toNanos()) {
+            return false;
+        }
+        if (!superseded.compareAndSet(null, current)) {
+            return false; // one superseded probe is still stuck: never a third
+        }
+        if (current.result.isDone() || inFlight.get() != current) {
+            // It returned, or another call replaced it, while this one decided.
+            superseded.compareAndSet(current, null);
+            return false;
+        }
+        return true;
+    }
+
+    /**
      * One store call on its own virtual thread. Thread-safe: {@code result}
      * and {@code abandoned} are read by every caller that joined it.
      */
@@ -496,6 +530,8 @@ public class MaestroHealthIndicator implements HealthIndicator {
         final CompletableFuture<@Nullable Void> result = new CompletableFuture<>();
         final Thread thread = probeThreads.newThread(this::run);
         volatile boolean abandoned;
+        /** {@link #nanoClock} when first abandoned; read only once {@link #abandoned} is set. */
+        volatile long abandonedAtNanos;
 
         private void run() {
             try {
@@ -512,9 +548,13 @@ public class MaestroHealthIndicator implements HealthIndicator {
             }
         }
 
-        /** Clears {@link #inFlight} first, so a call after the result is known starts a fresh probe. */
+        /**
+         * Clears {@link #inFlight} (or the superseded slot) first, so a call
+         * after the result is known starts a fresh probe.
+         */
         private void finish(@Nullable Throwable failure) {
             inFlight.compareAndSet(this, null);
+            superseded.compareAndSet(this, null);
             if (failure == null) {
                 result.complete(null);
             } else {
@@ -522,10 +562,19 @@ public class MaestroHealthIndicator implements HealthIndicator {
             }
         }
 
-        /** Marks the probe timed out, then interrupts it; the order lets a joined caller see the mark. */
+        /**
+         * Marks the probe timed out — never interrupts it (Issue 66). The first
+         * abandonment's time is kept: callers joined to the same probe that
+         * time out after it do not restart the supersede clock.
+         */
         void abandon() {
-            abandoned = true;
-            thread.interrupt();
+            synchronized (this) {
+                if (abandoned) {
+                    return;
+                }
+                abandonedAtNanos = nanoClock.getAsLong();
+                abandoned = true;
+            }
         }
     }
 

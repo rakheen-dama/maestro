@@ -511,9 +511,10 @@ class MaestroHealthIndicatorTest {
     }
 
     /**
-     * A caller that joined a probe another caller has already abandoned — and
-     * interrupted — must not report the store as unreachable because the
-     * store call then failed on that interrupt.
+     * A caller that joins a probe another caller has already abandoned reports
+     * it as timed out, not unreachable. (Before Issue 66 the abandonment also
+     * interrupted the probe, and this pinned that the interrupt's failure was
+     * not read as a refusing store; no probe is interrupted now.)
      */
     @Test
     void aCallerSharingAnAbandonedProbeReportsTimedOutNotUnreachable() throws Exception {
