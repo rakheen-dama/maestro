@@ -100,7 +100,9 @@ public final class RetryExecutor {
      *                                     ({@code STORE_UNAVAILABLE}), at the same
      *                                     points
      * @throws ExecutorShutdownException   if this node began shutting down during a
-     *                                     backoff wait
+     *                                     backoff wait, or shutdown gave the run up
+     *                                     at its deadline (checked where a store
+     *                                     fault is)
      */
     public <T> T executeWithRetry(
             RetryPolicy policy,
@@ -156,8 +158,11 @@ public final class RetryExecutor {
                 // was requested while it ran (R30): retrying is ruled out by the
                 // pre-attempt check anyway, and surfacing the failure would
                 // persist ACTIVITY_FAILED — and run the workflow's failure path
-                // — on a run that must stop.
-                throwIfStopRequested(cancellation, workflowId);
+                // — on a run that must stop. A run shutdown gave up on (P1,
+                // Issue 70) carries the attempt's failure as the cause, so the
+                // proxy can still report the attempt it executed to observers
+                // (PR #75 review), persisting nothing.
+                throwIfStopRequested(cancellation, workflowId, unwrapped);
 
                 if (!isRetryable(policy, unwrapped)) {
                     logger.error("Activity '{}' failed with non-retryable exception in workflow '{}'",
@@ -187,12 +192,32 @@ public final class RetryExecutor {
      * Throws if the run was terminated, then if it was asked to stand down as
      * stale or because its store is unavailable — terminate first, as the
      * stronger request (stale and store-unavailable share a rank, so at most
-     * one of them is ever set). A shutdown is not checked.
+     * one of them is ever set) — then if shutdown has given it up at its
+     * deadline. A shutdown that has not given it up is not checked: in-flight
+     * work drains.
      */
     private static void throwIfStopRequested(RunCancellation cancellation, String workflowId) {
         cancellation.throwIfTerminated(workflowId);
         cancellation.throwIfStale(workflowId);
         cancellation.throwIfStoreUnavailable(workflowId);
+        cancellation.throwIfAbandoned(workflowId);
+    }
+
+    /**
+     * {@link #throwIfStopRequested(RunCancellation, String)} after an attempt
+     * failed: a given-up run's {@code ExecutorShutdownException} carries
+     * {@code attemptFailure} as its cause.
+     */
+    private static void throwIfStopRequested(RunCancellation cancellation, String workflowId,
+                                             Throwable attemptFailure) {
+        cancellation.throwIfTerminated(workflowId);
+        cancellation.throwIfStale(workflowId);
+        cancellation.throwIfStoreUnavailable(workflowId);
+        if (cancellation.isAbandoned()) {
+            var givenUp = RunCancellation.givenUp(workflowId);
+            givenUp.initCause(attemptFailure);
+            throw givenUp;
+        }
     }
 
     /**

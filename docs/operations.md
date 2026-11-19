@@ -1705,11 +1705,12 @@ Tomcat itself was not run). The host's `@KafkaListener` containers (phase
 
 | # | Step | Waits? | For at most |
 |---|---|---|---|
-| 1 | Logs `Maestro shutdown started` and starts the deadline | no | — |
+| 1 | Starts the deadline; closes the lifecycle registry — from here every `startWorkflow`, recovery adoption and admin Retry is refused before it takes a lock or writes — and takes the runs it holds; logs `Maestro shutdown started` | no | — |
 | 2 | Asks every supervised loop — timer poller, recovery poller, startup recovery, signal janitor, retention sweeper, and with `maestro-store-postgres` the lock cleaner and the wake listener — to stop, never by an interrupt: no new timer fires, no new recovery starts | no | — |
 | 3 | Abandons every park (`awaitSignal`, `sleep`) and every retry backoff | no | — |
 | 4 | Releases every run queued for a task-queue slot (Issue 29) | no | — |
-| 5 | Drains the runs still executing | yes | what is left |
+| 5 | Drains the runs still executing: every run admitted before step 1, a launch still taking its lock included, until it has released its instance lock | yes | what is left |
+| 5a | Gives up every run still executing (Issue 70): from here nothing it does is recorded | no | — |
 | 6 | Joins the loops asked to stop at step 2 (up to seven) | yes | what is left |
 | 7 | Takes back the permits lent at step 4, so the task-queue slot counts are exact again (a pool with a thread still queued keeps its loan) | no | — |
 | 8 | Stops the instance-lock renewer, without an interrupt | yes | 2 s of what is left |
@@ -1719,6 +1720,14 @@ Tomcat itself was not run). The host's `@KafkaListener` containers (phase
 Nothing is interrupted: not a run executing an activity, not the lock renewer.
 Once the drain has used the whole deadline, steps 6, 8 and 9 only signal and
 return.
+
+**Admission (Issue 80).** Every launch joins the executor's lifecycle registry
+as its first act, before it takes the instance lock, and leaves it as its
+last, after the lock's release. Step 1 closes the registry and copies its
+runs in one critical section, so every launch either is in the drain or was
+refused; none can slip in after the drain started and go unwaited
+(`ShutdownAdmissionTest.aLaunchPastItsAdmissionCheckWhenShutdownBeginsIsWaitedFor`,
+`LaunchOutcomeRegistryTest`, every launch exit path).
 
 A second `shutdown()` call — Spring's inferred destroy method on the executor
 bean — waits for the first to finish, for at most what is left of its deadline
@@ -1745,26 +1754,92 @@ the HTTP status is traced, not tested). Because the web server now stops
 accepting new requests at the start of the drain instead of after it, only
 requests already in flight can meet this.
 
+An admin Retry (`$maestro:retry`) consumed during or after the drain is refused
+with `ExecutorShuttingDownException` (`… cannot retry workflow '…'`; a
+`MaestroException`, so the dispatcher can tell it from any other failure): it
+reads and writes nothing, the row stays `FAILED`, and the admin dispatcher
+rethrows, so the record is not acknowledged. The dispatcher logs this
+refusal, and only this one, as one `WARN` without a stack trace; any other
+exception, an `IllegalStateException` from the store included, keeps its
+`ERROR` and stack trace. Until the engine's Kafka signal container stops — at bean destruction, after
+`shutdown()` returns, until [Issue 69](open-issues.md#issue-69) is fixed — the
+record is redelivered to this same draining node and refused again on each
+attempt. What happens next depends on whether the redelivery budget of
+`maestro.messaging.redelivery.*` runs out **before the container stops**. The
+budget is counted from the record's **first refusal**, not from the start of
+shutdown: a Retry first refused 19 s into a 20 s drain has used almost none of it,
+while one refused at the start of a drain longer than the budget's 151 s of
+backoff (the defaults) has used all of it. Compare the budget with the time from
+the first refusal to the container's stop, whatever the settings.
+
+| Redelivery setting | What becomes of the refused Retry |
+|---|---|
+| The container stops before the budget is spent — the usual case at the defaults: the default budget (`max-attempts` 10, backoff 1, 2, 4, 8, 16, 30, 30, 30, 30 s, 151 s in all) outlasts the default 20 s `maestro.shutdown.timeout` plus bean destruction | The offset stays uncommitted and a peer consumes the command after the rebalance |
+| The budget is spent before the container stops — whenever the backoff fits between the first refusal and the container's stop, **with the default redelivery settings too**: a `maestro.shutdown.timeout` of 3 min (with matching Spring and platform grace) gives a Retry refused early in the drain time to spend all 151 s; a smaller budget (1 + 2 + 4 + 8 = 15 s for `max-attempts` 5) fits in a 20 s drain | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
+| `maestro.messaging.redelivery.enabled=false` | Logged and skipped after one attempt: the Retry is lost — click it again once a node is up |
+
+Before P1 such a Retry reopened the row on the draining node and launched a run
+nothing waited for (`ShutdownAdmissionTest.aRetryDuringShutdownIsRefusedAndWritesNothing`,
+`AdminCommandDispatcherRefusalTest.aRetryRefusedBecauseTheNodeIsShuttingDown_isRethrownAndLoggedAtWarn`).
+
+**Calling `shutdown()` from a run's own thread.** `shutdown()` called on a
+thread that belongs to a run — a workflow's or compensation's own code, a
+`parallel()` branch, an activity body, or the thread still launching the run
+(an observer callback such as `instanceLockAcquired`, `workflowStarted` or
+`workflowStartDeferred`, or a `WorkflowStore` decorator) — does not wait for
+that run, which cannot end while its own thread waits; it waits for every other
+run as usual. That run is given up at step 5a with the rest, and a `WARN`
+names it (`Maestro shutdown() was called from a thread of workflow '…' …`).
+Call `shutdown()` from another thread
+(`ShutdownAdmissionTest.aShutdownCalledOnALaunchingThreadDoesNotWaitForThatLaunch`,
+`…aShutdownCalledFromAWorkflowsOwnThreadDoesNotWaitForThatRun`). A thread the
+run's code starts itself is not recognised: a `shutdown()` call there waits
+for the run like any other caller.
+
 ### 15.2 What each workflow looks like afterwards
 
 Shutdown itself appends nothing. A run that keeps executing writes what it
-normally writes.
+normally writes until the deadline; after it, nothing (step 5a).
 
 | State when shutdown began | What happens | Instance row afterwards | Instance lock | Recovered |
 |---|---|---|---|---|
 | Executing an activity that ends before the deadline | Its outcome is recorded; the run goes on until it parks, needs a slot, or completes | as the run leaves it | released by the run | at once |
-| Executing an activity past the deadline | Not interrupted; `shutdown()` returns and the run keeps going until the JVM exits (`aShutdownThatHitsItsDeadlineNamesTheRunsStillRunning`) | `RUNNING` (or `COMPENSATING`) | held, no longer renewed; expires after `maestro.lock.ttl` (traced) | by a peer's next recovery pass; the activity runs again, so it must be idempotent |
+| Executing an activity past the deadline | Given up: not interrupted, but its outcome — failure or success — is not recorded, it starts no further activity, and it is never failed or compensated; it ends `runAbandoned(SHUTDOWN)` when the activity returns (`ShutdownGiveUpTest`, activity, parallel-branch and compensation shapes) | `RUNNING` (or `COMPENSATING`), as at the deadline | released when the activity returns; if the JVM exits first, no longer renewed and expires after `maestro.lock.ttl` (traced) | by a peer's next recovery pass; the activity runs again — even one that succeeded late — so it must be idempotent |
+| A launch still in progress at the deadline (taking its lock, writing its row, reading the row it adopts, building its workflow object) | Given up: every launcher write after that point is skipped — no row (a start, which then throws `IllegalStateException`), no orphan-signal adoption, no adoption compare-and-set (a resume or a Retry's relaunch), no `WORKFLOW_STARTED`, no run (`GivenUpLaunchTest`). A start or Retry whose row was already written throws `WorkflowNotLaunchedException`, which says so | unchanged, or `RUNNING` if the row was written | released | as before the launch, or by a peer's recovery pass |
 | Parked on `awaitSignal` / `sleep` | The park throws `ExecutorShutdownException` | `WAITING_SIGNAL` / `WAITING_TIMER` | released at unwind | at once |
 | In a retry backoff | The backoff is abandoned | `RUNNING`, no `ACTIVITY_FAILED` | released | at once |
 | Queued for a workflow or activity slot | Leaves at once, never interrupted (`ShutdownReleasesSlotWaitersTest`) | `RUNNING` | released at unwind — normally before `shutdown()` returns; the drain waits for the unwind only within the deadline, so one still unwinding when it passes releases later, or by TTL | at once |
 | Woken from a park, waiting for its slot again | Leaves; the signal stays unconsumed, a fired timer row stays `FIRED` | `WAITING_SIGNAL` / `WAITING_TIMER` | released | at once |
 | Compensating: parked, queued or in a backoff | `ExecutorShutdownException` passes through the saga without recording the step | `COMPENSATING` | released | at once |
 
-**Residual (Issue 70, traced, not tested).** A run still executing past the
-deadline whose activity then fails because a host bean was destroyed after the
-deadline can record `ACTIVITY_FAILED` on its last attempt, and the workflow
-may then fail and compensate. Keep the deadline long enough for your
-activities, and keep them idempotent.
+**A run given up at the deadline records nothing more (Issue 70, fixed in
+P1).** Spring destroys the host's beans once Maestro's phase has ended, so an
+activity still executing then can fail for a reason that is not the
+workflow's. At the deadline every run still registered is given up: from then
+on the store-fault guard refuses every store call made under its context with
+`ExecutorShutdownException` (an advisory log-line read and the activity body's
+own calls excepted), and every stop point raises it. A launch still in
+progress, whose thread has no workflow context for the guard to read, checks
+the same flag before each of its own writes (the table above). Give-up
+refuses **new** calls: a write already inside the store when it lands — an
+append, a status write, a launch's row insert — can still commit. That write
+is a legitimate prefix: replay returns it, exactly as after a node that died
+just after sending it. What give-up guarantees is that nothing *starts* after
+it: an activity result that first arrives after the deadline is never
+appended, because its append begins after the give-up. To the store this is the
+node dying at the deadline: what is recorded is a prefix of what the run would
+have written, and the adopting node runs the rest. The node still reports the
+attempt it executed to `EngineObserver` (`activityFailed` or
+`activityCompleted`, so a tracing span closes); nothing about it is persisted. The one behaviour change: a
+**successful** activity result that arrives after the deadline is discarded,
+and the activity runs once more on the adopting node — at-least-once, as for a
+crash. Keep the deadline long enough for your activities, and keep them
+idempotent.
+
+**Not enforced:** if `spring.lifecycle.timeout-per-shutdown-phase` is shorter
+than `maestro.shutdown.timeout`, Spring can destroy host beans before the
+deadline, and so before the runs are given up. §15.4 requires the phase
+timeout to be at least `maestro.shutdown.timeout + 2 s`.
 
 ### 15.3 What you see in the log
 
@@ -1772,7 +1847,8 @@ activities, and keep them idempotent.
 |---|---|---|
 | Start | INFO | `Maestro shutdown started: {n} run(s) in flight; deadline {budget} ms (maestro.shutdown.timeout)` |
 | Within the deadline | INFO | `Maestro shutdown finished in {total} ms of its {budget} ms deadline: {n} run(s) in flight at start, 0 still running (drain … ms, background loops … ms, instance locks … ms, lifecycle events … ms)` |
-| Deadline hit, runs left | WARN | `Maestro shutdown hit its {budget} ms deadline (maestro.shutdown.timeout): {m} of {n} run(s) still running [ids]; shutdown does not interrupt them and records nothing for them; their instance locks expire after {ttl} ms (maestro.lock.ttl) and a peer recovers them (…)` — at most ten ids, then `and {k} more`; without a lock backend the clause reads `a restarted node recovers them` |
+| Deadline hit, runs left | WARN | `Maestro shutdown hit its {budget} ms deadline (maestro.shutdown.timeout): {m} of {n} run(s) still running [ids]; shutdown does not interrupt them and records nothing for them: it gave them up, so nothing they do from now on is recorded; their instance locks expire after {ttl} ms (maestro.lock.ttl) and a peer recovers them (…)` — at most ten ids, then `and {k} more` |
+| A given-up run ends | INFO | `Workflow '{}' suspended by shutdown while {} — left recoverable`, with `runAbandoned(SHUTDOWN)` |
 | A loop still inside a store call at the deadline | WARN | `Background loop '{name}' did not stop within the shutdown deadline; it ends after its current store call` |
 | Events dropped at the flush deadline | WARN | `Lifecycle event publisher stopped with {k} queued event(s) unpublished` (also added to the publisher's internal drop count) |
 | A second `shutdown()` call | INFO | `Shutdown already in progress — waiting up to {} ms for it to finish` (a WARN if that wait runs out) |
