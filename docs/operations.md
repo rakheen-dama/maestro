@@ -1756,12 +1756,15 @@ record is redelivered to this same draining node and refused again on each
 attempt. What happens next depends on whether the redelivery budget of
 `maestro.messaging.redelivery.*` runs out **before the container stops**. The
 budget is counted from the record's **first refusal**, not from the start of
-shutdown: a Retry first refused 19 s into a 20 s drain has used almost none of it.
+shutdown: a Retry first refused 19 s into a 20 s drain has used almost none of it,
+while one refused at the start of a drain longer than the budget's 151 s of
+backoff (the defaults) has used all of it. Compare the budget with the time from
+the first refusal to the container's stop, whatever the settings.
 
 | Redelivery setting | What becomes of the refused Retry |
 |---|---|
-| The container stops before the budget is spent — always with the default `max-attempts` 10 (backoff 1, 2, 4, 8, 16, 30 … s, about 2.5 min), and with any budget for a Retry refused late enough in the drain | The offset stays uncommitted and a peer consumes the command after the rebalance |
-| The budget is spent before the container stops — possible only when its backoff (1 + 2 + 4 + 8 = 15 s for `max-attempts` 5 at the default intervals) fits between the first refusal and the container's stop | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
+| The container stops before the budget is spent — the usual case at the defaults: the default budget (`max-attempts` 10, backoff 1, 2, 4, 8, 16, 30, 30, 30, 30 s, 151 s in all) outlasts the default 20 s `maestro.shutdown.timeout` plus bean destruction | The offset stays uncommitted and a peer consumes the command after the rebalance |
+| The budget is spent before the container stops — whenever the backoff fits between the first refusal and the container's stop, **with the default redelivery settings too**: a `maestro.shutdown.timeout` of 3 min (with matching Spring and platform grace) gives a Retry refused early in the drain time to spend all 151 s; a smaller budget (1 + 2 + 4 + 8 = 15 s for `max-attempts` 5) fits in a 20 s drain | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
 | `maestro.messaging.redelivery.enabled=false` | Logged and skipped after one attempt: the Retry is lost — click it again once a node is up |
 
 Before P1 such a Retry reopened the row on the draining node and launched a run
