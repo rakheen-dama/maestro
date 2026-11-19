@@ -496,7 +496,9 @@ prompted at once and runs it about a second later if the lock can be taken by
 then, otherwise at its next full pass; when this node runs no recovery poller
 (`maestro.recovery.enabled=false`, or before startup recovery has begun) the
 start is refused instead with `LockAcquisitionException` and nothing is
-persisted. A resume is skipped until a later pass. Tests use `maestro-test`'s
+persisted — likewise when the poller does not register the workflow's type
+(an embedder that starts it with a partial registration map). A resume is
+skipped until a later pass. Tests use `maestro-test`'s
 `InMemoryDistributedLock`.
 
 | Property                        | Type       | Default          | Description                                                                                  |

@@ -9,6 +9,7 @@ import io.b2mash.maestro.core.exception.LockAcquisitionException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
+import io.b2mash.maestro.core.exception.WorkflowNotLaunchedException;
 import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -90,6 +91,9 @@ class LaunchOutcomeRegistryTest {
         START_THREAD_START_FAILS(0),
         START_RUN_THREAD_DIES_BEFORE_ITS_BODY(0),
         START_LOCK_LOST_BEFORE_IT_REGISTERS(0),
+        START_LOCK_LOST_BEFORE_IT_REGISTERS_RELAUNCHED_ONCE(0),
+        START_LOCK_LOST_BEFORE_IT_REGISTERS_NOT_LAUNCHED(0),
+        START_DEFERRAL_REFUSED_FOR_AN_UNREGISTERED_TYPE(0),
         RESUME_LOCK_HELD_ELSEWHERE(0),
         RESUME_TURNED_TERMINAL(0),
         RESUME_ADOPTION_CAS_LOST(0),
@@ -101,9 +105,10 @@ class LaunchOutcomeRegistryTest {
         RESUME_OBSERVER_ERROR_AFTER_THE_RUN_STARTED(1),
         RETRY_NOT_FOUND(0),
         RETRY_NOT_FAILED(0),
-        RETRY_LOCK_HELD_ELSEWHERE(0),
+        RETRY_REFUSED_AT_THE_LOCK(0),
+        RETRY_LOCK_LOST_BEFORE_ITS_RUN_STARTED(0),
         RETRY_RELAUNCHES(0),
-        RETRY_ALREADY_RUNNING_LOCALLY(1),
+        RETRY_WHILE_RUNNING_HERE_REFUSED_AT_THE_LOCK(1),
         RETRY_OBSERVER_ERROR_AFTER_THE_RUN_STARTED(1);
 
         final int stillRegistered;
@@ -177,13 +182,32 @@ class LaunchOutcomeRegistryTest {
                 assertEquals(0, valueWithin(lock::heldCount, 0, Duration.ofSeconds(5)));
             }
             case START_LOCK_LOST_BEFORE_IT_REGISTERS -> {
-                executor.afterLaunchAdmission = () -> {
-                    lock.forceRelease(KEY);
-                    assertTrue(valueWithin(() -> observer.lockLost().contains(ID), true, Duration.ofSeconds(5)),
-                            "the renewer reported the lock lost");
-                };
+                // A recovery poller that registers the type runs here: deferred.
+                executor.startRecoveryPoller(registrations(), Duration.ofHours(1));
+                loseTheLockOnTheFirstAdmission(false);
                 start(QuickWorkflow.class, QuickWorkflow::new);
                 assertEquals(1, observer.startDeferrals().size(), "the start was deferred to recovery");
+            }
+            case START_LOCK_LOST_BEFORE_IT_REGISTERS_RELAUNCHED_ONCE -> {
+                // No recovery poller: the start relaunches once as a resume,
+                // which joins the registry on its own.
+                loseTheLockOnTheFirstAdmission(false);
+                start(QuickWorkflow.class, QuickWorkflow::new);
+                assertEquals(WorkflowStatus.COMPLETED, valueWithin(this::status, WorkflowStatus.COMPLETED,
+                        Duration.ofSeconds(5)));
+            }
+            case START_LOCK_LOST_BEFORE_IT_REGISTERS_NOT_LAUNCHED -> {
+                // No recovery poller, and the relaunch cannot take the lock.
+                loseTheLockOnTheFirstAdmission(true);
+                assertThrows(WorkflowNotLaunchedException.class, () -> start(QuickWorkflow.class, QuickWorkflow::new));
+                assertEquals(WorkflowStatus.RUNNING, status(), "persisted, left for a node with recovery");
+            }
+            case START_DEFERRAL_REFUSED_FOR_AN_UNREGISTERED_TYPE -> {
+                executor.startRecoveryPoller(Map.of("OtherWorkflow", new WorkflowRegistration("OtherWorkflow",
+                        "default", QuickWorkflow::new, method(QuickWorkflow.class))), Duration.ofHours(1));
+                holdElsewhere();
+                assertThrows(LockAcquisitionException.class, () -> start(QuickWorkflow.class, QuickWorkflow::new));
+                assertTrue(store.getInstance(ID).isEmpty(), "a refused start writes nothing");
             }
             case RESUME_LOCK_HELD_ELSEWHERE -> {
                 var seeded = seed(WorkflowStatus.RUNNING);
@@ -246,13 +270,17 @@ class LaunchOutcomeRegistryTest {
                 assertEquals(WorkflowStatus.WAITING_SIGNAL, valueWithin(this::status, WorkflowStatus.WAITING_SIGNAL,
                         Duration.ofSeconds(5)));
             }
-            case RETRY_ALREADY_RUNNING_LOCALLY -> {
+            case RETRY_WHILE_RUNNING_HERE_REFUSED_AT_THE_LOCK -> {
+                // A run of the id is live here and holds its lock: since the
+                // retry takes the lock before reopening (P3 review), it is
+                // refused there, before any write (was ALREADY_RUNNING_LOCALLY).
                 start(ParkWorkflow.class, ParkWorkflow::new);
                 assertEquals(WorkflowStatus.WAITING_SIGNAL, valueWithin(this::status, WorkflowStatus.WAITING_SIGNAL,
                         Duration.ofSeconds(5)));
                 store.forceStatus(ID, WorkflowStatus.FAILED);
-                assertEquals(WorkflowExecutor.RetryOutcome.ALREADY_RUNNING_LOCALLY,
-                        executor.retryWorkflow(ID, registration()));
+                var failed = store.getInstance(ID).orElseThrow();
+                assertThrows(LockAcquisitionException.class, () -> executor.retryWorkflow(ID, registration()));
+                assertEquals(failed.version(), store.getInstance(ID).orElseThrow().version(), "nothing written");
             }
             case RETRY_OBSERVER_ERROR_AFTER_THE_RUN_STARTED -> {
                 runToFailed();
@@ -269,9 +297,18 @@ class LaunchOutcomeRegistryTest {
                 seed(WorkflowStatus.RUNNING);
                 assertEquals(WorkflowExecutor.RetryOutcome.NOT_FAILED, executor.retryWorkflow(ID, registration()));
             }
-            case RETRY_LOCK_HELD_ELSEWHERE -> {
+            case RETRY_REFUSED_AT_THE_LOCK -> {
                 runToFailed();
+                var failed = store.getInstance(ID).orElseThrow();
                 holdElsewhere();
+                assertThrows(LockAcquisitionException.class, () -> executor.retryWorkflow(ID, registration()));
+                var now = store.getInstance(ID).orElseThrow();
+                assertEquals(WorkflowStatus.FAILED, now.status(), "nothing written");
+                assertEquals(failed.version(), now.version(), "nothing written");
+            }
+            case RETRY_LOCK_LOST_BEFORE_ITS_RUN_STARTED -> {
+                runToFailed();
+                loseTheLockOnTheFirstAdmission(false);
                 assertEquals(WorkflowExecutor.RetryOutcome.LOCK_HELD_ELSEWHERE,
                         executor.retryWorkflow(ID, registration()));
             }
@@ -282,6 +319,25 @@ class LaunchOutcomeRegistryTest {
                         Duration.ofSeconds(5)));
             }
         }
+    }
+
+    /**
+     * On the next launch admission only, frees wf-x's lock behind the
+     * launch's back and waits until the renewer reports it lost — and, when
+     * {@code keepItElsewhere}, takes it as another node, so no relaunch can.
+     */
+    private void loseTheLockOnTheFirstAdmission(boolean keepItElsewhere) {
+        var first = new java.util.concurrent.atomic.AtomicBoolean(true);
+        executor.afterLaunchAdmission = () -> {
+            if (first.compareAndSet(true, false)) {
+                lock.forceRelease(KEY);
+                assertTrue(valueWithin(() -> observer.lockLost().contains(ID), true, Duration.ofSeconds(5)),
+                        "the renewer reported the lock lost");
+                if (keepItElsewhere) {
+                    holdElsewhere();
+                }
+            }
+        };
     }
 
     /** Runs {@code wf-x} to {@code FAILED} on this executor and waits until that run has left. */

@@ -66,6 +66,56 @@ fun Test.declareFrozenUpgradeFixtures() {
 
 tasks.named<Test>("test") {
     declareFrozenUpgradeFixtures()
+    // The rolling-upgrade test runs only through rollingUpgradeTest (below).
+    useJUnitPlatform {
+        excludeTags("rolling-upgrade")
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The two-build rolling test (P4, Issue 41): RollingUpgradeIT runs a node of
+// each previous release beside a node of this build, as separate JVMs, against
+// one Postgres. The nodes are the :maestro-integration-tests:rolling-node
+// project, compiled once per build; its rollingNodeManifest task resolves the
+// previous releases and writes every node's classpath.
+//
+// A task of its own, not part of `test` or `build`: it resolves the previous
+// releases, which needs a token for GitHub Packages (or a local repository,
+// -Pmaestro.rolling.oldRepo=<dir>; see rolling-node/build.gradle.kts), and it
+// launches about twenty node JVMs (a few minutes). CI runs it in its own job
+// with `packages: read` (.github/workflows/build-test.yml).
+//
+//   ./gradlew --no-watch-fs :maestro-integration-tests:rollingUpgradeTest
+//   ./gradlew --no-watch-fs :maestro-integration-tests:rollingUpgradeTest -Pmaestro.rolling.oldRepo=<dir>
+// ---------------------------------------------------------------------------
+val rollingNodeManifest = project(":maestro-integration-tests:rolling-node").layout.buildDirectory
+    .file("rolling-node/manifest.properties")
+
+tasks.register<Test>("rollingUpgradeTest") {
+    group = "verification"
+    description = "Runs the two-build rolling test: each previous release's node beside this build's, on one database."
+
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    useJUnitPlatform {
+        includeTags("rolling-upgrade")
+    }
+    dependsOn(":maestro-integration-tests:rolling-node:rollingNodeManifest")
+    inputs.file(rollingNodeManifest).withPathSensitivity(PathSensitivity.NONE).withPropertyName("rollingNodeManifest")
+    systemProperty("maestro.rolling.manifest", rollingNodeManifest.get().asFile.absolutePath)
+    val logDir = layout.buildDirectory.dir("rolling-upgrade")
+    systemProperty("maestro.rolling.logDir", logDir.get().asFile.absolutePath)
+    outputs.dir(logDir).withPropertyName("rollingUpgradeLogs")
+    // Every run starts from scratch: the previous releases' artifacts may have
+    // been re-resolved, and a cached pass would prove nothing about this one.
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
+    doFirst { delete(logDir) }
+    maxParallelForks = 1
+    testLogging {
+        events("passed", "skipped", "failed")
+        showStandardStreams = true
+    }
 }
 
 // ---------------------------------------------------------------------------

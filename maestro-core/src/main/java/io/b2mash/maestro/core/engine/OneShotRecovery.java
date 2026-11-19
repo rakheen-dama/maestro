@@ -26,7 +26,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * logged like the poller's failures, and an {@link Error} counted on
  * {@code maestro.loop.errors} under that name; a store fault is logged, not
  * counted) and retried after {@code retryInterval}, with no limit, until one
- * pass completes. Then the thread ends. A {@code MaestroControlFlowError}
+ * pass completes. A pass that skipped a row because the lock backend failed
+ * (not one whose lock another node holds) has not completed: it is retried
+ * the same way (PR #72 review). Then the thread ends. A {@code MaestroControlFlowError}
  * ends it at once.
  *
  * <p>{@link #requestStop()} never interrupts the thread: it ends the retry
@@ -168,13 +170,22 @@ final class OneShotRecovery implements StoppableLoop {
     private void runUntilOnePassCompletes() {
         while (running) {
             try {
-                var adopted = executor.recoverWorkflowsUntil(registrations, () -> !running);
+                var pass = executor.recoverWorkflowsUntil(registrations, () -> !running);
                 guard.succeeded();
-                if (running) {
-                    logger.info("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) without "
-                            + "a capacity check; runs beyond a task queue's bound wait for their slots", adopted);
+                if (pass.lockUnavailable() == 0) {
+                    if (running) {
+                        logger.info("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) "
+                                + "without a capacity check; runs beyond a task queue's bound wait for their slots",
+                                pass.adopted());
+                    }
+                    return;
                 }
-                return;
+                // PR #72 review: a pass that skipped rows because the lock
+                // backend failed is not finished — nothing else on this node
+                // would ever adopt them. Retry after the interval.
+                logger.warn("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) but skipped "
+                        + "{} because the lock backend failed; retrying in {}", pass.adopted(),
+                        pass.lockUnavailable(), retryInterval);
             } catch (Throwable t) {
                 // Rethrows a MaestroControlFlowError (ending the thread through
                 // its uncaught handler); contains and logs everything else.
