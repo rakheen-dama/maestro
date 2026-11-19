@@ -1744,18 +1744,24 @@ accepting new requests at the start of the drain instead of after it, only
 requests already in flight can meet this.
 
 An admin Retry (`$maestro:retry`) consumed during or after the drain is refused
-the same way (`… cannot retry workflow '…'`): it reads and writes nothing, the
-row stays `FAILED`, and the admin dispatcher rethrows, so the record is not
-acknowledged. Until the engine's Kafka signal container stops — at bean destruction, after
+with `ExecutorShuttingDownException` (`… cannot retry workflow '…'`; a
+`MaestroException`, so the dispatcher can tell it from any other failure): it
+reads and writes nothing, the row stays `FAILED`, and the admin dispatcher
+rethrows, so the record is not acknowledged. The dispatcher logs this
+refusal, and only this one, as one `WARN` without a stack trace; any other
+exception, an `IllegalStateException` from the store included, keeps its
+`ERROR` and stack trace. Until the engine's Kafka signal container stops — at bean destruction, after
 `shutdown()` returns, until [Issue 69](open-issues.md#issue-69) is fixed — the
 record is redelivered to this same draining node and refused again on each
-attempt (one `WARN` each, no stack trace). What happens next depends on
-`maestro.messaging.redelivery.*`:
+attempt. What happens next depends on whether the redelivery budget of
+`maestro.messaging.redelivery.*` runs out **before the container stops**. The
+budget is counted from the record's **first refusal**, not from the start of
+shutdown: a Retry first refused 19 s into a 20 s drain has used almost none of it.
 
 | Redelivery setting | What becomes of the refused Retry |
 |---|---|
-| Default: `max-attempts` 10, backoff 1, 2, 4, 8, 16, 30 … s (about 2.5 min) | The container stops before the budget is spent; the offset stays uncommitted and a peer consumes the command after the rebalance |
-| A budget whose backoff fits inside the drain (`max-attempts` ≤ 5 with the default intervals and the default 20 s `maestro.shutdown.timeout`) | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
+| The container stops before the budget is spent — always with the default `max-attempts` 10 (backoff 1, 2, 4, 8, 16, 30 … s, about 2.5 min), and with any budget for a Retry refused late enough in the drain | The offset stays uncommitted and a peer consumes the command after the rebalance |
+| The budget is spent before the container stops — possible only when its backoff (1 + 2 + 4 + 8 = 15 s for `max-attempts` 5 at the default intervals) fits between the first refusal and the container's stop | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
 | `maestro.messaging.redelivery.enabled=false` | Logged and skipped after one attempt: the Retry is lost — click it again once a node is up |
 
 Before P1 such a Retry reopened the row on the draining node and launched a run
@@ -1785,7 +1791,7 @@ normally writes until the deadline; after it, nothing (step 5a).
 |---|---|---|---|---|
 | Executing an activity that ends before the deadline | Its outcome is recorded; the run goes on until it parks, needs a slot, or completes | as the run leaves it | released by the run | at once |
 | Executing an activity past the deadline | Given up: not interrupted, but its outcome — failure or success — is not recorded, it starts no further activity, and it is never failed or compensated; it ends `runAbandoned(SHUTDOWN)` when the activity returns (`ShutdownGiveUpTest`, activity, parallel-branch and compensation shapes) | `RUNNING` (or `COMPENSATING`), as at the deadline | released when the activity returns; if the JVM exits first, no longer renewed and expires after `maestro.lock.ttl` (traced) | by a peer's next recovery pass; the activity runs again — even one that succeeded late — so it must be idempotent |
-| A launch still taking its instance lock at the deadline | Given up: writes no row (a start, which then throws `IllegalStateException`), no adoption (a resume), and starts no run (`GivenUpLaunchTest`) | unchanged | released | as before the launch |
+| A launch still in progress at the deadline (taking its lock, writing its row, reading the row it adopts, building its workflow object) | Given up: every launcher write after that point is skipped — no row (a start, which then throws `IllegalStateException`), no orphan-signal adoption, no adoption compare-and-set (a resume or a Retry's relaunch), no `WORKFLOW_STARTED`, no run (`GivenUpLaunchTest`). A start or Retry whose row was already written throws `WorkflowNotLaunchedException`, which says so | unchanged, or `RUNNING` if the row was written | released | as before the launch, or by a peer's recovery pass |
 | Parked on `awaitSignal` / `sleep` | The park throws `ExecutorShutdownException` | `WAITING_SIGNAL` / `WAITING_TIMER` | released at unwind | at once |
 | In a retry backoff | The backoff is abandoned | `RUNNING`, no `ACTIVITY_FAILED` | released | at once |
 | Queued for a workflow or activity slot | Leaves at once, never interrupted (`ShutdownReleasesSlotWaitersTest`) | `RUNNING` | released at unwind — normally before `shutdown()` returns; the drain waits for the unwind only within the deadline, so one still unwinding when it passes releases later, or by TTL | at once |
@@ -1798,9 +1804,19 @@ activity still executing then can fail for a reason that is not the
 workflow's. At the deadline every run still registered is given up: from then
 on the store-fault guard refuses every store call made under its context with
 `ExecutorShutdownException` (an advisory log-line read and the activity body's
-own calls excepted), and every stop point raises it. To the store this is the
+own calls excepted), and every stop point raises it. A launch still in
+progress, whose thread has no workflow context for the guard to read, checks
+the same flag before each of its own writes (the table above). Give-up
+refuses **new** calls: a write already inside the store when it lands — an
+append, a status write, a launch's row insert — can still commit. That write
+is a legitimate prefix: replay returns it, exactly as after a node that died
+just after sending it. What give-up guarantees is that nothing *starts* after
+it: an activity result that first arrives after the deadline is never
+appended, because its append begins after the give-up. To the store this is the
 node dying at the deadline: what is recorded is a prefix of what the run would
-have written, and the adopting node runs the rest. The one behaviour change: a
+have written, and the adopting node runs the rest. The node still reports the
+attempt it executed to `EngineObserver` (`activityFailed` or
+`activityCompleted`, so a tracing span closes); nothing about it is persisted. The one behaviour change: a
 **successful** activity result that arrives after the deadline is discarded,
 and the activity runs once more on the adopting node — at-least-once, as for a
 crash. Keep the deadline long enough for your activities, and keep them

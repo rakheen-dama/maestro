@@ -3,6 +3,7 @@ package io.b2mash.maestro.spring.config;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.engine.WorkflowRegistration;
 import io.b2mash.maestro.core.exception.AdminCommandException;
+import io.b2mash.maestro.core.exception.ExecutorShuttingDownException;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -113,10 +114,13 @@ public class AdminCommandDispatcher {
                         "Unknown admin command '%s' for workflow '%s'".formatted(command, workflowId));
             }
         } catch (RuntimeException e) {
-            if (e instanceof IllegalStateException && executor.isShuttingDown()) {
-                // A stopping node refusing work, not an error (P1): no stack
-                // trace. Not acknowledged either; see retryWorkflow's Javadoc
-                // for where the redelivered record ends up.
+            if (e instanceof ExecutorShuttingDownException) {
+                // The executor's own admission refusal — a stopping node
+                // refusing work, not an error (P1): no stack trace. Only that
+                // type (PR #75 review): any other exception during shutdown,
+                // a store failure inside Terminate included, keeps its ERROR
+                // and stack trace. Not acknowledged either way; see
+                // retryWorkflow's Javadoc for where the redelivered record ends up.
                 logger.warn("Admin command '{}' for workflow '{}' refused: this node is shutting down — not "
                         + "acknowledged, rethrowing for transport redelivery ({})", command, workflowId,
                         e.getMessage());

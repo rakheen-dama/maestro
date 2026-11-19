@@ -26,6 +26,7 @@ import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.exception.WorkflowNotLaunchedException;
+import io.b2mash.maestro.core.exception.ExecutorShuttingDownException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -829,6 +830,10 @@ public final class WorkflowExecutor {
         // recovery poller can only see the workflow after createInstance, and
         // by then this node already owns the lock — closing the race where a
         // poller cycle steals a just-created workflow before launch (Issue 74).
+        // Every launcher write is fenced by the launch's cancellation (P1,
+        // Issue 70, PR #75 review): the launcher has no WorkflowContext bound,
+        // so the store-fault guard cannot refuse its calls for it.
+        refuseIfGivenUp(cancellation, workflowId, "its lock acquisition", false);
         var acquired = instanceLockManager.acquire(workflowId);
         // The handle this run carries for its whole life (L1): the one this
         // acquisition took, never re-read by id; null when not acquired.
@@ -853,13 +858,17 @@ public final class WorkflowExecutor {
             // A start still taking its lock when shutdown gave it up at the
             // deadline (P1, Issue 70) writes nothing: it is refused like a
             // start that arrived after shutdown began.
-            if (cancellation.isAbandoned()) {
-                throw new IllegalStateException(("WorkflowExecutor is shutting down — the start of workflow '%s' "
-                        + "was given up at the shutdown deadline; nothing was persisted").formatted(workflowId));
-            }
+            refuseIfGivenUp(cancellation, workflowId, "its instance row was written", false);
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
             // signals sent before workflow starts are stored with null instanceId)
             store.createInstance(instance);
+            // A createInstance that returned only after the give-up: the row
+            // is committed, so the start says so (WorkflowNotLaunchedException,
+            // not "nothing was persisted") and writes nothing more — no
+            // adoption, no run. Skipping the adoption is crash-equivalent: an
+            // await selects signals by workflow id, and the JDBC store adopts
+            // inside createInstance anyway (Issue 83).
+            refuseIfGivenUp(cancellation, workflowId, "its orphaned signals were adopted", true);
             signalManager.adoptOrphanedSignals(workflowId, instanceId);
         } catch (RuntimeException | Error e) {
             // An Error too (control-flow ones included): no run owns this lock yet, so
@@ -886,6 +895,9 @@ public final class WorkflowExecutor {
         // the run's workflow object has been built)
         if (!launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null,
                 cancellation, membership)) {
+            // Given up at the deadline before the run started (the launch
+            // released its lock): the row is durable; say so, nothing more.
+            refuseIfGivenUp(cancellation, workflowId, "its run started", true);
             // The lock was reported lost between the acquire and the run's
             // registration (a stall of a whole TTL): the row is durable.
             if (canDeferStart(workflowType)) {
@@ -915,6 +927,42 @@ public final class WorkflowExecutor {
         }
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
+    }
+
+    /**
+     * The launcher-side give-up fence (P1, Issue 70; PR #75 review): throws if
+     * shutdown gave this launch up at its deadline. The launcher runs with no
+     * {@code WorkflowContext} bound, so the store-fault guard cannot refuse
+     * its writes; each one is preceded by this check instead.
+     *
+     * @param step      what was about to happen, for the message
+     * @param persisted whether this launch's row is already durable
+     * @throws IllegalStateException       if given up and nothing was persisted
+     * @throws WorkflowNotLaunchedException if given up after the row was written
+     */
+    private static void refuseIfGivenUp(RunCancellation cancellation, String workflowId, String step,
+                                        boolean persisted) {
+        if (!cancellation.isAbandoned()) {
+            return;
+        }
+        if (persisted) {
+            throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was persisted (RUNNING) but not "
+                    + "launched: this node gave its launch up at the shutdown deadline before %s, and wrote "
+                    + "nothing more. It is not lost: a node of this service adopts it through recovery (or this "
+                    + "node after a restart). Starting or retrying it again would only find it.")
+                    .formatted(workflowId, step));
+        }
+        throw new IllegalStateException(("WorkflowExecutor is shutting down — the start of workflow '%s' was given "
+                + "up at the shutdown deadline before %s; nothing was persisted").formatted(workflowId, step));
+    }
+
+    /** {@link #refuseIfGivenUp} for a Retry that has written nothing yet: the routine refusal type. */
+    private static void refuseRetryIfGivenUp(RunCancellation cancellation, String workflowId) {
+        if (cancellation.isAbandoned()) {
+            throw new ExecutorShuttingDownException(workflowId, ("WorkflowExecutor is shutting down — the retry "
+                    + "of workflow '%s' was given up at the shutdown deadline; nothing was written")
+                    .formatted(workflowId));
+        }
     }
 
     /**
@@ -2007,19 +2055,22 @@ public final class WorkflowExecutor {
      *                                 the row is left {@code RUNNING} and the
      *                                 recovery poller adopts it once the
      *                                 factory works.
-     * @throws IllegalStateException   if this executor is shutting down or has
-     *                                 shut down ({@link #isShuttingDown()}):
-     *                                 nothing was read or written and the row
+     * @throws ExecutorShuttingDownException if this executor is shutting down
+     *                                 or has shut down ({@link #isShuttingDown()}),
+     *                                 or gave this Retry up at its shutdown
+     *                                 deadline before it wrote anything: the row
      *                                 stays {@code FAILED}. The caller should
      *                                 <em>not</em> acknowledge. With the starter's
      *                                 Kafka transport the record is then
      *                                 redelivered to this same node until its
      *                                 consumer stops at bean destruction (Issue
-     *                                 69): with the default redelivery budget a
-     *                                 peer consumes it after the rebalance; a
-     *                                 budget shorter than the drain dead-letters
-     *                                 it, and disabled redelivery drops it
-     *                                 ({@code docs/operations.md} §15.1).
+     *                                 69); what becomes of it then depends on
+     *                                 whether the redelivery budget runs out
+     *                                 first ({@code docs/operations.md} §15.1).
+     * @throws WorkflowNotLaunchedException if this node gave the Retry up at its
+     *                                 shutdown deadline after the reopen
+     *                                 committed: the row is {@code RUNNING} and a
+     *                                 node with recovery adopts it.
      */
     public RetryOutcome retryWorkflow(String workflowId, WorkflowRegistration registration) {
         // Joined before anything is read, written or locked (P1): a retry
@@ -2030,7 +2081,7 @@ public final class WorkflowExecutor {
         var cancellation = new RunCancellation();
         var membership = lifecycle.joinRun(workflowId, cancellation);
         if (membership == null) {
-            throw new IllegalStateException(
+            throw new ExecutorShuttingDownException(workflowId,
                     "WorkflowExecutor is shutting down — cannot retry workflow '%s'".formatted(workflowId));
         }
         try {
@@ -2097,6 +2148,7 @@ public final class WorkflowExecutor {
         // left RUNNING with nothing to run it. Holding the lock across the
         // reopen also keeps every node's recovery from adopting the row before
         // this launch does.
+        refuseRetryIfGivenUp(cancellation, workflowId);
         var acquired = instanceLockManager.acquire(workflowId);
         var handle = acquired.handle();
         if (handle == null) {
@@ -2112,10 +2164,7 @@ public final class WorkflowExecutor {
             // A retry still reading the history or taking the lock when
             // shutdown gave it up at the deadline (P1, Issue 70) writes
             // nothing: refused, not acknowledged; the finally releases the lock.
-            if (cancellation.isAbandoned()) {
-                throw new IllegalStateException(("WorkflowExecutor is shutting down — the retry of workflow '%s' "
-                        + "was given up at the shutdown deadline; nothing was written").formatted(workflowId));
-            }
+            refuseRetryIfGivenUp(cancellation, workflowId);
             var now = Instant.now();
             var running = latest.toBuilder()
                     .status(WorkflowStatus.RUNNING)
@@ -2151,6 +2200,9 @@ public final class WorkflowExecutor {
             handedOver = true;
             if (!launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
                     running.input(), true, handle, null, cancellation, membership)) {
+                // Given up at the deadline after the reopen committed (the
+                // launch adopted nothing and released the lock): say so.
+                refuseIfGivenUp(cancellation, workflowId, "its reopened run started", true);
                 if (canDeferStart(running.workflowType())) {
                     logger.info("Workflow '{}' CAS'd to RUNNING but lost its instance lock before its run "
                             + "started — left for recovery to adopt (a prompt pass is requested)", workflowId);
@@ -2804,12 +2856,12 @@ public final class WorkflowExecutor {
         // launching it (an observer callback, a store decorator) — cannot wait
         // for that run: it cannot end while this thread waits. It is not
         // waited for, and it is given up with the rest at S4.
-        var caller = lifecycle.callerRun();
-        if (caller != null) {
+        var caller = lifecycle.callerRuns();
+        if (!caller.isEmpty()) {
             logger.warn("Maestro shutdown() was called from a thread of workflow '{}' (its own run, an activity, "
                     + "an observer callback or a store decorator on its launch): that run is not waited for and "
                     + "is given up — nothing it does from now on is recorded. Call shutdown() from another thread",
-                    caller.name());
+                    caller.getLast().name());
         }
 
         // Steps 2–4 never wait, so their order does not matter. Step 2: ask
@@ -2841,7 +2893,14 @@ public final class WorkflowExecutor {
         // first stop point). Shutdown is not checked before an activity
         // attempt, so in-flight work still drains. Idempotent, and inert for
         // a member that has already ended.
-        members.forEach(LifecycleRegistry.Membership::requestStop);
+        // Each member contained (PR #75 review): a member joined through the
+        // public join() may throw from requestStop(), and one that does must
+        // not cut shutdown short — the members after it, the drain, the
+        // give-up, the renewer stop and the flush still run. Anything but a
+        // VirtualMachineError is logged and dropped (a control-flow Error from
+        // member code means nothing to the shutdown thread); a
+        // VirtualMachineError is kept and rethrown once shutdown has run.
+        var memberFailure = requestStopEach(members);
         // Step 4: release every run queued for a task-queue slot (Issue 29):
         // the governor's poison permit wakes each waiter in turn, without an
         // interrupt, and each stands down recoverable.
@@ -2914,12 +2973,47 @@ public final class WorkflowExecutor {
 
         // Step 10 (S9): close the registry for good, then the summary line.
         lifecycle.terminate();
+        try {
+            logSummary(deadline, caller, inFlightAtStart, drainMs, loopsMs, locksMs, eventsMs);
+        } finally {
+            if (memberFailure != null) {
+                throw memberFailure;
+            }
+        }
+    }
+
+    /**
+     * Asks each member to stop, containing each one's failure (see the call
+     * site); returns the first {@link VirtualMachineError}, with any later ones
+     * suppressed on it, for the caller to rethrow once shutdown has run.
+     */
+    private @Nullable VirtualMachineError requestStopEach(List<LifecycleRegistry.Membership> members) {
+        VirtualMachineError deferred = null;
+        for (var member : members) {
+            try {
+                member.requestStop();
+            } catch (VirtualMachineError vmError) {
+                if (deferred == null) {
+                    deferred = vmError;
+                } else {
+                    deferred.addSuppressed(vmError);
+                }
+            } catch (Throwable t) {
+                logger.warn("Maestro {} threw from its stop request — contained; shutdown continues", member, t);
+            }
+        }
+        return deferred;
+    }
+
+    /** Step 10's summary line. */
+    private void logSummary(ShutdownDeadline deadline, List<LifecycleRegistry.Membership> caller,
+                            int inFlightAtStart, long drainMs, long loopsMs, long locksMs, long eventsMs) {
         var steps = "drain %d ms, background loops %d ms, instance locks %d ms, lifecycle events %d ms"
                 .formatted(drainMs, loopsMs, locksMs, eventsMs);
         // A run stuck in its lock release counts as still running too.
         // The calling run (F4) was named in its own WARN above.
         var stillRunning = LifecycleRegistry.runNames(lifecycle.remaining().stream()
-                .filter(m -> m != caller).toList());
+                .filter(m -> !caller.contains(m)).toList());
         if (stillRunning.isEmpty()) {
             logger.info("Maestro shutdown finished in {} ms of its {} ms deadline: {} run(s) in flight at start, "
                             + "0 still running ({})",
@@ -3425,6 +3519,10 @@ public final class WorkflowExecutor {
         if (preAcquired != null) {
             handle = preAcquired;
         } else {
+            // A resume given up at the deadline takes no lock (P1, Issue 70).
+            if (cancellation.isAbandoned()) {
+                return false;
+            }
             var acquired = instanceLockManager.acquire(snapshot.workflowId());
             handle = acquired.handle();
             if (handle == null) {
@@ -3490,6 +3588,15 @@ public final class WorkflowExecutor {
                             snapshot.workflowId());
                     return false;
                 }
+                // Given up while the re-read above was in the store (PR #75
+                // review): no adoption — the epoch must not move on a node
+                // that has stopped. Release the lock, as the earlier check does.
+                if (cancellation.isAbandoned()) {
+                    logger.debug("Workflow '{}' resume was given up at the shutdown deadline before its adoption "
+                            + "— skipping", snapshot.workflowId());
+                    instanceLockManager.release(snapshot.workflowId(), handle);
+                    return false;
+                }
                 var adopted = adopt(current.get());
                 if (adopted == null) {
                     instanceLockManager.release(snapshot.workflowId(), handle);
@@ -3546,6 +3653,15 @@ public final class WorkflowExecutor {
                 // recovery isolates only this wrapper per instance, so unwrapped
                 // it would end every pass at the same keyset position.
                 throw new WorkflowInstantiationException(instance.workflowId(), instance.workflowType(), e);
+            }
+            // The last launcher step before the run exists: given up at the
+            // deadline meanwhile (a slow factory, a slow adoption), it publishes
+            // no WORKFLOW_STARTED, registers nothing and starts no run.
+            if (cancellation.isAbandoned()) {
+                logger.debug("Workflow '{}' launch was given up at the shutdown deadline before its run started",
+                        instance.workflowId());
+                instanceLockManager.release(instance.workflowId(), handle);
+                return false;
             }
             if (!replaying) {
                 // A fresh start reports itself only once its object exists, so a

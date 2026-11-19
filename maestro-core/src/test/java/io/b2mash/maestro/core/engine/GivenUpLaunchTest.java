@@ -4,6 +4,7 @@ import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.CountingStore;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.SharedLock;
+import io.b2mash.maestro.core.exception.ExecutorShuttingDownException;
 import io.b2mash.maestro.core.exception.WorkflowNotLaunchedException;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
@@ -261,7 +262,7 @@ class GivenUpLaunchTest {
         lock.nextOpen.countDown();
 
         assertTrue(launcher.join(Duration.ofSeconds(10)));
-        assertInstanceOf(IllegalStateException.class, thrown.get(), String.valueOf(thrown.get()));
+        assertInstanceOf(ExecutorShuttingDownException.class, thrown.get(), String.valueOf(thrown.get()));
         var row = store.getInstance("wf-retry-lock").orElseThrow();
         assertEquals(io.b2mash.maestro.core.model.WorkflowStatus.FAILED, row.status());
         assertEquals(failed.version(), row.version(), "nothing written");

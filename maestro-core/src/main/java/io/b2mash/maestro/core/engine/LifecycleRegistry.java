@@ -5,6 +5,7 @@ import io.b2mash.maestro.core.context.WorkflowContext;
 import org.jspecify.annotations.Nullable;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Objects;
@@ -185,19 +186,19 @@ public final class LifecycleRegistry {
      *         when the calling thread is interrupted (its flag is restored)
      */
     boolean awaitNoRuns(ShutdownDeadline deadline) {
-        return awaitNoRuns(deadline, null);
+        return awaitNoRuns(deadline, List.of());
     }
 
     /**
      * {@link #awaitNoRuns(ShutdownDeadline)}, not counting {@code excluded}:
-     * the run the waiting thread itself belongs to (see {@link #callerRun()}),
+     * the runs the waiting thread itself belongs to (see {@link #callerRuns()}),
      * which cannot leave while that thread waits.
      *
      * @param deadline the shutdown's deadline
-     * @param excluded a membership not to wait for, or {@code null}
+     * @param excluded memberships not to wait for
      * @return {@code true} if no other run is left
      */
-    boolean awaitNoRuns(ShutdownDeadline deadline, @Nullable Membership excluded) {
+    boolean awaitNoRuns(ShutdownDeadline deadline, Collection<Membership> excluded) {
         return awaitUntil(deadline, true, excluded);
     }
 
@@ -209,25 +210,30 @@ public final class LifecycleRegistry {
      *         when the calling thread is interrupted (its flag is restored)
      */
     boolean awaitNoMembers(ShutdownDeadline deadline) {
-        return awaitNoMembers(deadline, null);
+        return awaitNoMembers(deadline, List.of());
     }
 
     /**
      * {@link #awaitNoMembers(ShutdownDeadline)}, not counting {@code excluded}.
      *
      * @param deadline the shutdown's deadline
-     * @param excluded a membership not to wait for, or {@code null}
+     * @param excluded memberships not to wait for
      * @return {@code true} if nothing else is left
      */
-    boolean awaitNoMembers(ShutdownDeadline deadline, @Nullable Membership excluded) {
+    boolean awaitNoMembers(ShutdownDeadline deadline, Collection<Membership> excluded) {
         return awaitUntil(deadline, false, excluded);
     }
 
-    private boolean awaitUntil(ShutdownDeadline deadline, boolean runsOnly, @Nullable Membership excluded) {
+    private boolean awaitUntil(ShutdownDeadline deadline, boolean runsOnly, Collection<Membership> excluded) {
         lock.lock();
         try {
             while (true) {
-                var discount = excluded != null && members.contains(excluded) ? 1 : 0;
+                var discount = 0;
+                for (var membership : excluded) {
+                    if (members.contains(membership) && (!runsOnly || membership.isRun())) {
+                        discount++;
+                    }
+                }
                 var waitingFor = (runsOnly ? runs : members.size()) - discount;
                 if (waitingFor <= 0) {
                     break;
@@ -250,28 +256,31 @@ public final class LifecycleRegistry {
     }
 
     /**
-     * The run the calling thread itself belongs to, if any: the run whose
+     * The runs the calling thread itself belongs to, in join order: the run whose
      * cancellation is that of the {@link WorkflowContext} bound to this
      * thread (its run thread, a branch, an activity attempt, a compensation),
      * or the run this thread is launching and has not yet handed to a run
      * thread. A shutdown called from such a thread must not wait for that run:
-     * it cannot end while its own thread waits.
+     * it cannot end while its own thread waits. More than one when a launch
+     * relaunches on the same thread (a start or Retry whose lock was lost
+     * relaunches once, as a resume): the innermost is the last.
      *
-     * @return that membership, or {@code null}
+     * @return those memberships, possibly empty
      */
-    @Nullable Membership callerRun() {
+    List<Membership> callerRuns() {
         var bound = WorkflowContext.scopedValue();
         var cancellation = bound.isBound() ? bound.get().cancellation() : null;
         var self = Thread.currentThread();
+        var mine = new ArrayList<Membership>();
         lock.lock();
         try {
             for (var membership : members) {
                 if (membership.isRun()
                         && (membership.cancellation == cancellation || membership.owner == self)) {
-                    return membership;
+                    mine.add(membership);
                 }
             }
-            return null;
+            return List.copyOf(mine);
         } finally {
             lock.unlock();
         }

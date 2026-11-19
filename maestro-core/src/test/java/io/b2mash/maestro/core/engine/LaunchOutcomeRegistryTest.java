@@ -162,6 +162,7 @@ class LaunchOutcomeRegistryTest {
                 holdElsewhere();
                 start(QuickWorkflow.class, QuickWorkflow::new);
                 assertEquals(1, observer.startDeferrals().size());
+                awaitThePromptedPass();
             }
             case START_REFUSED_NO_RECOVERY_POLLER -> {
                 holdElsewhere();
@@ -194,6 +195,11 @@ class LaunchOutcomeRegistryTest {
                 loseTheLockOnTheFirstAdmission(false, false);
                 start(QuickWorkflow.class, QuickWorkflow::new);
                 assertEquals(1, observer.startDeferrals().size(), "the start was deferred to recovery");
+                // PR #75 review 4626925634: the prompted pass adopts and runs it;
+                // wait for that, so the drain count below is not a race with it.
+                assertEquals(WorkflowStatus.COMPLETED, valueWithin(this::status, WorkflowStatus.COMPLETED,
+                        Duration.ofSeconds(10)));
+                awaitThePromptedPass();
             }
             case START_LOCK_LOST_BEFORE_IT_REGISTERS_RELAUNCHED_ONCE -> {
                 // No recovery poller: the start relaunches once as a resume,
@@ -438,6 +444,17 @@ class LaunchOutcomeRegistryTest {
         }
     }
 
+    /**
+     * PR #75 review 4626925634: waits until the recovery poller has finished
+     * its first pass and the pass the deferral prompted (a prompt requested
+     * during a pass stays pending, so there are at least two), so no pass is
+     * still holding a membership when the test shuts down.
+     */
+    private void awaitThePromptedPass() {
+        assertTrue(valueWithin(() -> observer.recoveryPasses().size() >= 2, true, Duration.ofSeconds(10)),
+                "the prompted recovery pass completed");
+    }
+
     /** Runs {@code wf-x} to {@code FAILED} on this executor and waits until that run has left. */
     private void runToFailed() throws Exception {
         start(FailingWorkflow.class, FailingWorkflow::new);
@@ -543,9 +560,22 @@ class LaunchOutcomeRegistryTest {
         /** Run once, after the backend's next grant and before it is returned. */
         volatile @Nullable Runnable afterGrant;
 
+        /** Which launch's membership took each handle: the one the acquiring thread belongs to. */
+        private final java.util.Map<LockHandle, LifecycleRegistry.Membership> owners =
+                new java.util.concurrent.ConcurrentHashMap<>();
+
         @Override
         public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
             var granted = lock.tryAcquire(key, ttl);
+            var node = self.get();
+            if (granted.isPresent() && node != null) {
+                var mine = node.lifecycle().callerRuns();
+                if (!mine.isEmpty()) {
+                    // The innermost launch on this thread (a relaunch-once is
+                    // a resume joined while the start's membership is still in).
+                    owners.put(granted.get(), mine.getLast());
+                }
+            }
             var hook = afterGrant;
             if (hook != null && granted.isPresent()) {
                 afterGrant = null;
@@ -557,9 +587,17 @@ class LaunchOutcomeRegistryTest {
         @Override
         public void release(LockHandle handle) {
             var node = self.get();
-            if (handle.key().equals(KEY) && node != null && node.lifecycle().remaining().stream()
-                    .noneMatch(m -> m.isRun() && m.name().equals(ID))) {
-                leftBeforeRelease.add(handle.toString());
+            // PR #75 review 4626925649: the exact membership that took this
+            // handle must still be registered — not just any run of the id
+            // (in the late-grant case, B is registered when A gives back its grant).
+            var owner = owners.remove(handle);
+            if (handle.key().equals(KEY) && node != null) {
+                var remaining = node.lifecycle().remaining();
+                var member = owner != null ? remaining.contains(owner)
+                        : remaining.stream().anyMatch(m -> m.isRun() && m.name().equals(ID));
+                if (!member) {
+                    leftBeforeRelease.add(handle + (owner != null ? " of " + owner : ""));
+                }
             }
             lock.release(handle);
         }

@@ -895,6 +895,18 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                     ctx.workflowId(),
                     ctx.cancellation()
             );
+        } catch (ExecutorShutdownException givenUp) {
+            // PR #75 review: shutdown gave the run up while an attempt this
+            // node executed was failing (RetryExecutor attaches that failure
+            // as the cause). Nothing is persisted and no ACTIVITY_FAILED is
+            // published, but the observer still gets the attempt's terminal
+            // callback — it measures this node's executions (and a tracing
+            // adapter closes the span). A shutdown in a backoff carries no cause.
+            if (givenUp.getCause() != null) {
+                observer.activityFailed(info, Duration.ofNanos(System.nanoTime() - startNanos),
+                        givenUp.getCause().getClass().getName(), false);
+            }
+            throw givenUp;
         } catch (ActivityExecutionException e) {
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
             // Retries exhausted — persist the failure.

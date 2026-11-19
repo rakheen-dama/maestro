@@ -158,8 +158,11 @@ public final class RetryExecutor {
                 // was requested while it ran (R30): retrying is ruled out by the
                 // pre-attempt check anyway, and surfacing the failure would
                 // persist ACTIVITY_FAILED — and run the workflow's failure path
-                // — on a run that must stop.
-                throwIfStopRequested(cancellation, workflowId);
+                // — on a run that must stop. A run shutdown gave up on (P1,
+                // Issue 70) carries the attempt's failure as the cause, so the
+                // proxy can still report the attempt it executed to observers
+                // (PR #75 review), persisting nothing.
+                throwIfStopRequested(cancellation, workflowId, unwrapped);
 
                 if (!isRetryable(policy, unwrapped)) {
                     logger.error("Activity '{}' failed with non-retryable exception in workflow '{}'",
@@ -198,6 +201,23 @@ public final class RetryExecutor {
         cancellation.throwIfStale(workflowId);
         cancellation.throwIfStoreUnavailable(workflowId);
         cancellation.throwIfAbandoned(workflowId);
+    }
+
+    /**
+     * {@link #throwIfStopRequested(RunCancellation, String)} after an attempt
+     * failed: a given-up run's {@code ExecutorShutdownException} carries
+     * {@code attemptFailure} as its cause.
+     */
+    private static void throwIfStopRequested(RunCancellation cancellation, String workflowId,
+                                             Throwable attemptFailure) {
+        cancellation.throwIfTerminated(workflowId);
+        cancellation.throwIfStale(workflowId);
+        cancellation.throwIfStoreUnavailable(workflowId);
+        if (cancellation.isAbandoned()) {
+            var givenUp = RunCancellation.givenUp(workflowId);
+            givenUp.initCause(attemptFailure);
+            throw givenUp;
+        }
     }
 
     /**

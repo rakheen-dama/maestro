@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.exception.ExecutorShuttingDownException;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.BlockingWork;
@@ -127,7 +128,7 @@ class ShutdownAdmissionTest {
         var shutter = Thread.ofVirtual().start(executor::shutdown);
         await(draining, "shutdown reached its drain");
 
-        var refused = assertThrows(IllegalStateException.class, () -> executor.retryWorkflow("wf-failed",
+        var refused = assertThrows(ExecutorShuttingDownException.class, () -> executor.retryWorkflow("wf-failed",
                 registration));
         assertTrue(refused.getMessage().contains("shutting down"), refused.getMessage());
         assertTrue(shutter.isAlive(), "the drain was still in progress");
@@ -136,7 +137,7 @@ class ShutdownAdmissionTest {
         work.releaseAll();
         assertTrue(shutter.join(Duration.ofSeconds(10)), "shutdown returned");
 
-        assertThrows(IllegalStateException.class, () -> executor.retryWorkflow("wf-failed", registration),
+        assertThrows(ExecutorShuttingDownException.class, () -> executor.retryWorkflow("wf-failed", registration),
                 "a retry after shutdown returned is refused too");
         assertUntouched(failed, eventsBefore);
     }

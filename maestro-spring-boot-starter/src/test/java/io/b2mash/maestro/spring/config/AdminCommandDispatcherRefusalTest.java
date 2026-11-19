@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.core.exception.ExecutorShuttingDownException;
 import io.b2mash.maestro.test.InMemoryDistributedLock;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
@@ -148,7 +149,7 @@ class AdminCommandDispatcherRefusalTest {
         appender.start();
         dispatcherLog.addAppender(appender);
         try {
-            assertThrows(IllegalStateException.class,
+            assertThrows(ExecutorShuttingDownException.class,
                     () -> dispatcher.dispatch(new SignalMessage("wf-draining", "$maestro:retry", null)));
         } finally {
             dispatcherLog.detachAppender(appender);
