@@ -419,6 +419,28 @@ class LoopSupervisorTest {
         assertTrue(loop.snapshot().failing(), "two failures in a row: failing under streak(2)");
     }
 
+    /**
+     * P2 task 5: every counted failure — an {@code Exception} as well as an
+     * {@code Error} — is reported to {@code backgroundLoopFailed}, which feeds
+     * {@code maestro.loop.failures}; a failure while stopping is not.
+     */
+    @Test
+    void everyCountedFailureIsReportedToBackgroundLoopFailed() {
+        var body = new ScriptedBody();
+        start(fast("reported"), body);
+        body.step(() -> {
+            throw new IllegalStateException("an Exception");
+        });
+        body.step(() -> {
+            throw new AssertionError("an Error");
+        });
+        body.awaitIterations(3);
+        assertEquals(List.of(
+                        new RecordingEngineObserver.LoopErrorCall("reported", IllegalStateException.class.getName()),
+                        new RecordingEngineObserver.LoopErrorCall("reported", AssertionError.class.getName())),
+                observer.loopFailures());
+    }
+
     @Test
     void notesAreShownInTheSnapshot() {
         var noted = new CountDownLatch(1);

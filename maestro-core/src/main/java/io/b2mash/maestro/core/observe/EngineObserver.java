@@ -297,6 +297,9 @@ public interface EngineObserver {
      */
     default void backgroundLoopError(String loop, String errorType) {}
 
+    /** Stub: documented with the fix. */
+    default void backgroundLoopFailed(String loop, String failureType) {}
+
     // ── Store faults ──────────────────────────────────────────────────
 
     /**
