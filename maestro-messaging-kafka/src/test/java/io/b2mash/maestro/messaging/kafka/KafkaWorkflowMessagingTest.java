@@ -368,6 +368,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                     "fail (the config's default) + every topic confirmed present → fatal");
             assertEquals(Duration.ofSeconds(10),
                     containers.get(1).getContainerProperties().getAuthExceptionRetryInterval());
+            assertTrue(containers.get(1).getContainerProperties().isStopImmediate(),
+                    "stops after the record in hand (P1 review M1)");
             messaging.destroy();
         }
     }

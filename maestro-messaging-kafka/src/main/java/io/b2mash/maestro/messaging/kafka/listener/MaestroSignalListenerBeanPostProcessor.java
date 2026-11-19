@@ -341,6 +341,12 @@ public class MaestroSignalListenerBeanPostProcessor
         var containerProps = new ContainerProperties(reg.topic());
         containerProps.setGroupId(groupId);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
+        // Stop after the record in hand (review M1; as KafkaWorkflowMessaging): without it a stopping
+        // consumer invokes the listener for the rest of its last poll — up to
+        // max.poll.records — which can outlast the shutdown deadline and reach
+        // a closed DataSource. The records not handled stay uncommitted (AckMode
+        // RECORD commits each handled one) and go to the partition's next owner.
+        containerProps.setStopImmediate(true);
         // Same two settings, same reasons, as KafkaWorkflowMessaging.createContainer:
         // fatal on a missing topic only under verify-on-startup=fail AND only when
         // the startup probe confirmed every topic present (KafkaTopicVerifier

@@ -108,6 +108,7 @@ class MaestroSignalListenerContainerConfigTest {
             var props = bpp.containersForTesting().get(0).getContainerProperties();
             assertThat(props.isMissingTopicsFatal()).isFalse();
             assertThat(props.getAuthExceptionRetryInterval()).isEqualTo(java.time.Duration.ofSeconds(10));
+            assertThat(props.isStopImmediate()).as("stops after the record in hand (P1 review M1)").isTrue();
         });
     }
 

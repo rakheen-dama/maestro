@@ -23,14 +23,17 @@ import java.util.concurrent.TimeUnit;
  * The engine's shutdown asks it to stop at the start of its drain:
  * {@link #requestStop()} calls Spring Kafka's asynchronous
  * {@code stop(Runnable)} on each container — it returns at once and never
- * interrupts; each consumer finishes the record in hand, leaves its consumer
- * group (its uncommitted offsets go to a peer) and runs the callback — and
- * shutdown waits for the group on its one deadline. A container offered after
- * the stop is never started.
+ * interrupts; each consumer finishes the record in hand and, because Maestro's
+ * containers set {@code stopImmediate}, invokes the listener for nothing else
+ * from its last poll; it commits what it handled, leaves its consumer group
+ * (the records not handled stay uncommitted, for the partition's next owner)
+ * and runs the callback — and shutdown waits for the group on its one
+ * deadline. A container offered after the stop is never started.
  *
- * <p>Without a registry (no engine in the context) the group still tracks its
- * containers; {@link #requestStop()} from a bean's {@code destroy()} then stops
- * them without waiting.
+ * <p>Without a registry (no engine in the context, or the registry refused
+ * the join) the group still tracks its containers; a bean's {@code destroy()}
+ * then calls {@link #requestStop()} and {@link #awaitStopped}, which returns at
+ * once when nothing was started.
  *
  * <p>Thread-safe: the state is guarded by this object's monitor; no container
  * call is made while holding it.
@@ -77,12 +80,24 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
             }
         }
         var joined = registry.join(LifecycleRegistry.Kind.CONSUMER, this);
+        if (joined.isEmpty()) {
+            // Refused (shutdown began): a stop. It stops what was already
+            // started, and — nothing left to wait for — counts the group as
+            // stopped, so a bean's destroy() does not wait its bound (review L1).
+            requestStop();
+            return false;
+        }
+        boolean alreadyLeft;
         synchronized (this) {
-            if (joined.isEmpty()) {
-                stopRequested = true;
-                return false;
-            }
             membership = joined.get();
+            // A stop that reached this member (S2) before this assignment, with
+            // nothing started, has already left — without a membership to
+            // leave. leave() and this block read each other's field under this
+            // monitor, so exactly one of them sees both and leaves.
+            alreadyLeft = left;
+        }
+        if (alreadyLeft) {
+            joined.get().leave();
         }
         return true;
     }

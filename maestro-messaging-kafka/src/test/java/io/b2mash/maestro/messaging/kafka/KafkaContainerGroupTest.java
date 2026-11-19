@@ -97,6 +97,26 @@ class KafkaContainerGroupTest {
     }
 
     /**
+     * A stop that reaches the member between the registry's admission and the
+     * group recording its membership (shutdown's S2 racing the join) still
+     * makes the group leave, so shutdown does not wait out its deadline for a
+     * member that started nothing.
+     */
+    @Test
+    void aStopRacingTheJoinStillLeavesTheRegistry() {
+        var group = new KafkaContainerGroup("racing-join");
+        var membership = org.mockito.Mockito.mock(io.b2mash.maestro.core.engine.LifecycleRegistry.Membership.class);
+        var registry = org.mockito.Mockito.mock(io.b2mash.maestro.core.engine.LifecycleRegistry.class);
+        org.mockito.Mockito.when(registry.join(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> {
+                    ((io.b2mash.maestro.core.engine.LifecycleRegistry.Member) call.getArgument(1)).requestStop();
+                    return java.util.Optional.of(membership);
+                });
+        assertTrue(group.join(registry));
+        org.mockito.Mockito.verify(membership).leave();
+    }
+
+    /**
      * A container started before the group joined (an embedder subscribing
      * first) is stopped when the registry refuses the join, and the group is
      * stopped once its callback has run.
