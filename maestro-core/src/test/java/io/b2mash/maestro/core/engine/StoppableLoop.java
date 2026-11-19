@@ -5,15 +5,10 @@ import io.b2mash.maestro.core.loop.LoopSupervisor;
 import java.time.Duration;
 
 /**
- * A background loop the executor stops in two halves: {@link #requestStop()}
- * never blocks, and {@link #awaitStopped(Duration) awaitStopped(bound)} waits
- * at most {@code bound}. So a shutdown can ask every loop to stop at once and
- * then join them all against one deadline, instead of giving each loop its
- * own timeout.
- *
- * <h2>Thread Safety</h2>
- * <p>Thread-safe: both halves may be called from any thread, in any order and
- * more than once.
+ * Test seam: a loop as the stop tests drive it — its name, a request to stop,
+ * and a bounded wait. Production no longer uses it: since P1 task 3 every
+ * supervised loop is a member of the executor's lifecycle registry, and
+ * shutdown stops and waits for loops through the registry.
  */
 interface StoppableLoop {
 
