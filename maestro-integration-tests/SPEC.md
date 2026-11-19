@@ -221,17 +221,19 @@ Bugs found so far:
   `PostgresSignalNotifierTest.publishDoesNotWaitForAConnection`.
 - **BUG7 (fixed, P2):** `WorkflowExecutor` finalised a workflow by writing
   `version + 1` from an earlier read. Any concurrent writer of that row — a
-  second node running the workflow (no-lock-backend degradation, a lock lost
-  mid-run, a stale lock on a fresh start), or another status transition on this
-  node — made that write throw `OptimisticLockException`, which fell into the
+  second node running the workflow (then: the no-lock-backend degradation, a
+  lock lost mid-run, a stale lock on a fresh start; since pilot readiness P3
+  only a lock lost mid-run), or another status transition on this node — made that write throw `OptimisticLockException`, which fell into the
   generic `catch (Exception)` for *workflow* failures. A workflow that had
   succeeded was recorded `FAILED`, its output replaced by the conflict message,
   contradicting its own `WORKFLOW_COMPLETED` event, and a saga's compensations
   ran after a successful run. Fixed with a convergent terminal transition
   (bounded retry against a fresh read; stand down if another runner already
   reached a terminal state). Reproduced by
-  `core.engine.WorkflowExecutorTerminalTransitionTest`, pinned end-to-end by
-  `multinode.MultiNodeNoLockBackendIT`.
+  `core.engine.WorkflowExecutorTerminalTransitionTest`; it was pinned
+  end-to-end by `multinode.MultiNodeNoLockBackendIT` until pilot readiness P3
+  made a lock mandatory and removed that suite (the lost-lock twin is pinned by
+  `multinode.MultiNodeFencingIT` and `engine.EnginePostgresDualExecutionIT`).
 
 ## Open items (decide before the phase that needs them)
 

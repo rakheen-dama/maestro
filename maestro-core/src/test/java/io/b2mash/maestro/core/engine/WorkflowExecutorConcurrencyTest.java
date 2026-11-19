@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -190,7 +191,7 @@ class WorkflowExecutorConcurrencyTest {
 
     @Test
     void aRunStillWaitingForASlotAtShutdownStandsDownRecoverable() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofMillis(200))
                 .wakeRecheckInterval(Duration.ofMillis(200))
@@ -214,7 +215,7 @@ class WorkflowExecutorConcurrencyTest {
 
     @Test
     void aRunStillWaitingForAnActivitySlotAtShutdownStandsDownRecoverable() throws Exception {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofMillis(200))
                 .wakeRecheckInterval(Duration.ofMillis(200))
@@ -329,7 +330,7 @@ class WorkflowExecutorConcurrencyTest {
     // ── helpers ────────────────────────────────────────────────────────
 
     private void newExecutor(Map<String, TaskQueueLimits> limits, TaskQueueLimits defaults) {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .wakeRecheckInterval(Duration.ofMillis(200))
@@ -356,7 +357,7 @@ class WorkflowExecutorConcurrencyTest {
     }
 
     private void newExecutor(Map<String, TaskQueueLimits> limits) {
-        executor = WorkflowExecutor.builder(store, serializer, "node-a")
+        executor = WorkflowExecutor.builder(store, serializer, "node-a").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .wakeRecheckInterval(Duration.ofMillis(200))

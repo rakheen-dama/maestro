@@ -12,6 +12,7 @@ Read these before making architectural decisions:
 - `docs/maestro-prd.md` — Product requirements, API design, e-commerce example
 - `docs/maestro-architecture.md` — System architecture, diagrams, failure modes
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
+- `docs/support-matrix.md` — What is supported, not supported and untested (one service per set of tables, mandatory lock, Postgres-only store, previous-release rolling upgrades, tested Postgres/pool/Kafka setups)
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
 - `docs/pitfalls.md` — The thirteen workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them, no workflow operations inside an activity)
 
@@ -80,13 +81,15 @@ maestro/
 
 ## Three SPIs
 
+`WorkflowStore` is **internal until 1.0** (Postgres is the only supported store; methods and defaults change without deprecation). A `DistributedLock` is **mandatory**: `WorkflowExecutor.Builder.build()` and the starter fail without one.
+
 ```java
 public interface WorkflowStore {
     WorkflowInstance createInstance(WorkflowInstance instance);
     Optional<WorkflowInstance> getInstance(String workflowId);
     List<WorkflowInstance> getRecoverableInstances();     // unbounded, all services; the engine no longer calls it
     default List<WorkflowInstance> getRecoverableInstances(String serviceName, @Nullable RecoveryCursor after, int limit); // keyset page on (started_at, id), this service only (V101 index)
-    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, Set<String> workflowTypes, int limit); // startup advisory (Issue 39); default empty
+    default Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, int limit); // shared-table startup check (P3): active rows of ANY other service, any type; default empty
     void updateInstance(WorkflowInstance instance);       // optimistic locking
     boolean completeInstance(WorkflowInstance terminal, WorkflowEvent terminalEvent); // atomic terminal write (CAS + event in one transaction)
     default void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences, Set<String> deleteTimerIds); // manual Retry: exact deletes + FAILED→RUNNING CAS, one transaction in JDBC; the default is today's non-atomic two-step
@@ -219,13 +222,13 @@ maestro:leader:timer-poller:{service}         — Timer leader in maestro_leader
 maestro:leader:retention:{service}            — Retention sweeper leader in maestro_leader_election (15s TTL, re-elected per batch)
 ```
 
-There is no per-activity lock (3.10). With a lock backend, two runners execute a step concurrently only in the window after a node lost its instance lock, or after a node's instance-lock acquire failed and it proceeded unlocked (traced, not tested); lease fencing (V6) rejects the stale runner's outcome append, so the stale runner records nothing, and the adopting node, finding no recorded outcome, runs the step again — so activities must be idempotent. A duplicate Kafka delivery is deduplicated by the signal's message id (V9), not by a lock.
+There is no per-activity lock (3.10). A lock is mandatory and no run executes without its instance lock (P3): a start whose acquire fails (held elsewhere, or the backend threw) is persisted `RUNNING`, reported (`workflowStartDeferred`, `maestro.workflow.start.deferred`) and run by a prompted recovery pass — or, when this node runs no recovery poller, refused with `LockAcquisitionException` before anything is written; a resume is skipped. Every release and lost-lock stand-down goes by the run's own `LockHandle`, never by workflow id, so a run that lost its lock cannot release or stand down a newer run of the same id. So two runners execute a step concurrently only in the window after a node lost its instance lock; lease fencing (V6) rejects the stale runner's outcome append, so the stale runner records nothing, and the adopting node, finding no recorded outcome, runs the step again — so activities must be idempotent. A duplicate Kafka delivery is deduplicated by the signal's message id (V9), not by a lock.
 
 Due timers are polled on the database clock (`fire_at <= now()`); `fire_at` and await deadlines are armed on the scheduling node's clock, and every node WARNs when its clock is more than 1 s from the database's (checked at timer-poller start and every 10 min).
 
 Cross-node signal wake is Postgres `LISTEN/NOTIFY` on ONE channel per service, `maestro_signal_wake_<service ≤32 chars>_<8-hex sha256>` (always ≤63 bytes); the payload carries workflowId + signalName and `PostgresWakeListener` dispatches in memory to the parked waiter. `NOTIFY` runs on a virtual thread after the signal row commits and never blocks `deliverSignal`. The listener holds one `DataSource` connection for the app lifetime; at shutdown its poll thread `UNLISTEN`s and returns it to the pool (no interrupt, Issue 38); `maestro.signal.wake-recheck-interval` (30s) is the correctness fallback. Maestro's Postgres beans use the `DataSource` qualified `@MaestroDataSource` (`io.b2mash.maestro.store.postgres`) if one exists, else the host's single/`@Primary` one; declare it `@Bean(defaultCandidate = false)` when the host keeps its own `DataSource` (`docs/configuration.md` § A dedicated connection pool).
 
-Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via at most one `heldKeys` read per page (none when every row of the page runs here): every node of a service must share one service name, or its workflows are stranded. At startup each node runs one advisory read off the runner thread and WARNs once per other `service_name` holding active instances of its workflow types (`WorkflowExecutor.startForeignServiceCheck`). Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
+Recovery reads only this node's service (`service_name = maestro.service-name`, pages of 200) and skips instances locked elsewhere via at most one `heldKeys` read per page (none when every row of the page runs here): every node of a service must share one service name, or its workflows are stranded. Services never share Maestro tables: at context refresh each node runs one bounded read (≤ 5 s, its own thread, never interrupted) for active instances under any other `service_name`, any type, and by default fails startup (`WorkflowExecutor.checkForeignServices`, `ForeignServiceRowsException`; `maestro.store.foreign-service-check` = fail | warn | off, `warn` for a rename in progress); a failed or late read is inconclusive — one WARN, never fatal. Recovery admits per queue at most its free slots plus `concurrency` queued runs (`TaskQueueGovernor.admitRecovery`, never blocking, never barging), takes the lock only after that, and re-polls as soon as capacity frees; `recoverWorkflows` is the ungated pass. `StartupRecoveryRunner` only starts loops, never adopts. Instance-lock renewal is one `renewAll` per pass (every TTL/3). A lock cleaner deletes rows expired for more than a minute every `maestro.lock.cleanup-interval` (10m).
 
 There are no `maestro.tasks.*` topics: `maestro.messaging.topics.tasks` fails startup. `taskQueue` on `@DurableWorkflow` is a per-node concurrency bucket (`maestro.worker.task-queues[]`), not a route.
 
@@ -273,7 +276,9 @@ queue per node; `0` on both = unbounded, `0` on one or negative fails
 startup), `maestro.store.schema.mode`
 (flyway | validate | none), `maestro.signal.wake-notify.enabled` (default `true`;
 set `false` behind PgBouncer transaction pooling — wake then falls back to the
-recheck interval), `maestro.lock.cleanup-interval` (default 10m). `maestro.lock.type`
+recheck interval), `maestro.lock.cleanup-interval` (default 10m), `maestro.store.foreign-service-check`
+(fail | warn | off, default `fail`: active rows of another service name fail
+startup; an inconclusive read only WARNs). `maestro.lock.type`
 and `maestro.messaging.type` each accept exactly one value (`postgres`, `kafka`);
 any other value fails startup. Removed (setting either fails startup):
 `maestro.store.table-prefix`, `maestro.messaging.topics.tasks`.
@@ -342,6 +347,7 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never use `Thread.sleep()` in workflow code** — use `workflow.sleep()`.
 - **Never store workflow state in memory only** — Postgres is truth; locks and NOTIFY wake are an optimisation.
 - **Never assume signal ordering.**
+- **Never point two services at one set of `maestro_*` tables, and never build an executor without a `DistributedLock`** — both are unsupported (`docs/support-matrix.md`) and refused at startup; never reintroduce a launch that proceeds without its instance lock.
 - **Never break `(workflow_instance_id, sequence_number)` uniqueness.**
 - **Never auto-create Kafka topics** — pre-created, declared in config, and enforced at startup: `KafkaTopicVerifier` fails the context on a confirmed-missing topic (`maestro.messaging.topics.verify-on-startup=fail`, the default), the engine consumer defaults `allow.auto.create.topics=false`, and under `fail` — once the probe has confirmed every required topic present (`KafkaTopicVerifier.fatalOnMissing`; never after an inconclusive probe, which must not turn into a restart loop) — every Maestro container is `missingTopicsFatal`. Every suite that touches a broker pre-creates its topics — `.DLT` companions included — against a broker with `KAFKA_AUTO_CREATE_TOPICS_ENABLE=false`.
 - **Never inject a Maestro Kafka bean by type** — `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` are `@Bean(defaultCandidate = false)`, so Spring Boot's Kafka beans exist beside them; Maestro code injects them only with `@Qualifier(MaestroKafkaBeans.TEMPLATE)` (or `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). An unqualified `KafkaTemplate<String, byte[]>` receives Spring Boot's template (with Boot's `StringSerializer`, which `ByteArrayTemplateInjectionCheck` fails startup over) or, once the host declares a template of its own for another value type, nothing at all (a `NoSuchBeanDefinitionException` that `ByteArrayTemplateMissingFailureAnalyzer` explains).

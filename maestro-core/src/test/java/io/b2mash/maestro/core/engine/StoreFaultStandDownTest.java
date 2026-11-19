@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Compensate;
 import io.b2mash.maestro.core.annotation.Saga;
 import io.b2mash.maestro.core.context.RunCancellation;
@@ -92,7 +93,7 @@ class StoreFaultStandDownTest {
     }
 
     private WorkflowExecutor newExecutor(WorkflowStore store, Duration wakeRecheckInterval) {
-        return WorkflowExecutor.builder(store, serializer, "test-service")
+        return WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .wakeRecheckInterval(wakeRecheckInterval)
                 .observer(observer)

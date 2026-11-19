@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.spi.DistributedLock;
@@ -45,8 +46,8 @@ class TimerPollerDatabaseClockTest {
     @Test
     void thePollerAsksTheStoreForTimersDueByItsOwnClock() throws Exception {
         var store = new ClockRecordingStore();
-        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
-        poller = new TimerPoller(store, executor, null, "svc", Duration.ofMillis(50), 10);
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
+        poller = new TimerPoller(store, executor, new InMemoryDistributedLock(), "svc", Duration.ofMillis(50), 10);
         poller.start();
         awaitPolls(store);
         poller.stop();
@@ -62,7 +63,7 @@ class TimerPollerDatabaseClockTest {
     @Test
     void theExecutorsPollerReachesTheStoreClockThroughTheFaultGuard() throws Exception {
         var store = new ClockRecordingStore();
-        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         executor.startTimerPoller(Duration.ofMillis(50), 10);
         awaitPolls(store);
 
@@ -78,7 +79,7 @@ class TimerPollerDatabaseClockTest {
     @Test
     void everyNodesPollerReadsTheStoreClockOnStartEvenWhenItIsNotTheLeader() throws Exception {
         var store = new ClockRecordingStore();
-        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         poller = new TimerPoller(store, executor, new NeverLeaderLock(), "svc", Duration.ofMillis(50), 10);
         var started = System.nanoTime();
         poller.start();
@@ -116,7 +117,7 @@ class TimerPollerDatabaseClockTest {
                 return super.trySetLeader(electionKey, candidateId, ttl);
             }
         };
-        executor = WorkflowExecutor.builder(store, serializer, "svc").build();
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).build();
         poller = new TimerPoller(store, executor, lock, "svc", Duration.ofMillis(50), 10);
         poller.start();
         var deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();

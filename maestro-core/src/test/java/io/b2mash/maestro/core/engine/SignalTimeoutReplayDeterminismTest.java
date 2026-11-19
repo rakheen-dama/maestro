@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -62,7 +63,7 @@ class SignalTimeoutReplayDeterminismTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach
@@ -101,7 +102,7 @@ class SignalTimeoutReplayDeterminismTest {
         nodeA = null;
 
         // The gate signal arrives LATE, between the stop and the recovery.
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeB.deliverSignal(workflowId, "gate", "late-arrival");
 
         // Recovery replay on the replacement node.
@@ -153,7 +154,7 @@ class SignalTimeoutReplayDeterminismTest {
         // Graceful stop; the withdrawal lands late, before the replacement recovers.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeB.deliverSignal(workflowId, "withdraw", "late-withdrawal");
 
         var reg = new WorkflowRegistration("SagaGateWorkflow", "default",

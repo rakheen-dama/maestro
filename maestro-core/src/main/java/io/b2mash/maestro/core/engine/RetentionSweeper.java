@@ -41,8 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code maestro:leader:retention:<serviceName>} with a 15-second TTL — the
  * call both elects and renews, exactly as {@link TimerPoller} does for the
  * timer leader — and a node that is not (or no longer) the leader stops
- * sweeping at once. With no lock backend the node is always the leader
- * (single-node mode). Postgres's {@code FOR UPDATE SKIP LOCKED} on the
+ * sweeping at once. A {@link DistributedLock} is mandatory (pilot readiness
+ * P3). Postgres's {@code FOR UPDATE SKIP LOCKED} on the
  * candidate select means two leaders overlapping briefly at a TTL boundary
  * take disjoint batches anyway.
  *
@@ -97,7 +97,7 @@ final class RetentionSweeper implements StoppableLoop {
     static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     private final WorkflowStore store;
-    private final @Nullable DistributedLock distributedLock;
+    private final DistributedLock distributedLock;
     private final String serviceName;
     private final WorkflowExecutor.RetentionSettings settings;
     private final EngineObserver observer;
@@ -127,17 +127,16 @@ final class RetentionSweeper implements StoppableLoop {
      * Creates a new retention sweeper.
      *
      * @param store           the store whose terminal workflows are purged
-     * @param distributedLock optional lock backend for leader election
-     *                        ({@code null} means this node is always the leader)
+     * @param distributedLock lock backend for leader election; never {@code null}
      * @param serviceName     the owning service name (suffix of the election key)
      * @param settings        interval, per-status retention and batching
      * @param observer        receives one {@code retentionPass} per sweep run as leader
-     * @throws NullPointerException     if {@code store}, {@code settings} or
-     *                                  {@code observer} is {@code null}
+     * @throws NullPointerException     if {@code store}, {@code distributedLock},
+     *                                  {@code settings} or {@code observer} is {@code null}
      * @throws IllegalArgumentException if {@code serviceName} is null or blank
      */
     RetentionSweeper(WorkflowStore store,
-                     @Nullable DistributedLock distributedLock,
+                     DistributedLock distributedLock,
                      String serviceName,
                      WorkflowExecutor.RetentionSettings settings,
                      EngineObserver observer) {
@@ -148,23 +147,23 @@ final class RetentionSweeper implements StoppableLoop {
      * Creates a new retention sweeper with the given pacer (a test seam).
      *
      * @param store           the store whose terminal workflows are purged
-     * @param distributedLock optional lock backend for leader election
-     *                        ({@code null} means this node is always the leader)
+     * @param distributedLock lock backend for leader election; never {@code null}
      * @param serviceName     the owning service name (suffix of the election key)
      * @param settings        interval, per-status retention and batching
      * @param observer        receives one {@code retentionPass} per sweep run as leader
      * @param pacer           times each batch and pauses between batches
-     * @throws NullPointerException     if {@code store}, {@code settings},
+     * @throws NullPointerException     if {@code store}, {@code distributedLock}, {@code settings},
      *                                  {@code observer} or {@code pacer} is {@code null}
      * @throws IllegalArgumentException if {@code serviceName} is null or blank
      */
     RetentionSweeper(WorkflowStore store,
-                     @Nullable DistributedLock distributedLock,
+                     DistributedLock distributedLock,
                      String serviceName,
                      WorkflowExecutor.RetentionSettings settings,
                      EngineObserver observer,
                      BatchPacer pacer) {
         if (store == null) throw new NullPointerException("store must not be null");
+        if (distributedLock == null) throw new NullPointerException("distributedLock must not be null");
         if (settings == null) throw new NullPointerException("settings must not be null");
         if (observer == null) throw new NullPointerException("observer must not be null");
         if (pacer == null) throw new NullPointerException("pacer must not be null");
@@ -386,9 +385,6 @@ final class RetentionSweeper implements StoppableLoop {
      * treated as "not the leader" for this check and logged at {@code WARN}.
      */
     private boolean isLeader() {
-        if (distributedLock == null) {
-            return true; // No lock backend — single-node mode
-        }
         try {
             return distributedLock.trySetLeader(LEADER_KEY_PREFIX + serviceName, candidateId, LEADER_TTL);
         } catch (RuntimeException e) {

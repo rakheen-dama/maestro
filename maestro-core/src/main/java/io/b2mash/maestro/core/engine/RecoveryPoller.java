@@ -77,6 +77,10 @@ final class RecoveryPoller implements StoppableLoop {
     private final Duration pollInterval;
     private final CapacitySignal signal;
     private final Duration capacitySpacing;
+    /** Guards {@link #promptRequestedAt}; notified by a prompt request and by a stop. */
+    private final Object promptMonitor = new Object();
+    /** {@link System#nanoTime()} of the pending prompt request (L3), or {@code null} for none. */
+    private @Nullable Long promptRequestedAt;
     private final BackgroundLoopGuard guard;
     private final AtomicBoolean started = new AtomicBoolean(false);
     /** Counted down by {@link #requestStop()}: ends every wait of the loop without an interrupt. */
@@ -208,6 +212,37 @@ final class RecoveryPoller implements StoppableLoop {
     }
 
     /**
+     * Asks for a prompt full pass (L3): a fresh start was persisted without a
+     * run because its instance lock could not be taken, and should not wait a
+     * whole {@code pollInterval}. The pass runs no sooner than
+     * {@code capacitySpacing} (≤ 1 s) after this request — by then the race
+     * that refused the lock (a duplicate start on another node, a pool blip)
+     * is usually over — and earlier full-pass timing is otherwise unchanged.
+     * Requests that arrive while one is pending coalesce into it. Never
+     * blocks; safe from any thread. While the poller is waiting for task-queue
+     * capacity after a deferring pass, the prompt pass runs once that wait ends.
+     */
+    void requestPromptPass() {
+        synchronized (promptMonitor) {
+            if (promptRequestedAt == null) {
+                promptRequestedAt = System.nanoTime();
+            }
+            promptMonitor.notifyAll();
+        }
+        // Also ends a wait for task-queue capacity (PR #72 review): that wait
+        // watches only the capacity signal. A spurious signal costs one
+        // headroom check; the wait then sees the prompt and ends.
+        signal.signal();
+    }
+
+    /** Whether a prompt request is pending (L3). */
+    private boolean promptPending() {
+        synchronized (promptMonitor) {
+            return promptRequestedAt != null;
+        }
+    }
+
+    /**
      * Asks the polling loop to stop and returns at once: no new iteration starts,
      * every wait between passes ends, and the thread is interrupted (Issue 64
      * tracks that interrupt, which can land inside a store call). Never joins.
@@ -217,6 +252,9 @@ final class RecoveryPoller implements StoppableLoop {
     public synchronized void requestStop() {
         running = false;
         stopRequested.countDown();
+        synchronized (promptMonitor) {
+            promptMonitor.notifyAll();
+        }
         signal.signal(); // wakes a wait for capacity without the interrupt
         var thread = pollerThread;
         if (thread != null && interruptOnStop) {
@@ -266,6 +304,19 @@ final class RecoveryPoller implements StoppableLoop {
     }
 
     /**
+     * Whether this poller, while running, can adopt a row of
+     * {@code workflowType}: it holds a registration for it. A deferred start
+     * of a type it does not register would be skipped by every pass (PR #72
+     * review).
+     *
+     * @param workflowType the workflow type
+     * @return {@code true} if running and registered for the type
+     */
+    boolean recovers(String workflowType) {
+        return isRunning() && registrations.containsKey(workflowType);
+    }
+
+    /**
      * The loop's current failure streak (failed passes since the last
      * successful one). Safe to call from any thread.
      *
@@ -289,7 +340,7 @@ final class RecoveryPoller implements StoppableLoop {
         while (running) {
             try {
                 var capacityPass = awaitingCapacity && awaitCapacity(seen, nextFull, lastPassStart, cursors.keySet());
-                if (!capacityPass && !sleepUntil(nextFull)) {
+                if (!capacityPass && !sleepUntilFullPassOrPrompt(nextFull)) {
                     break;
                 }
                 if (!running) {
@@ -402,8 +453,12 @@ final class RecoveryPoller implements StoppableLoop {
      * {@code nextFull}. A wake whose queues have no headroom makes no statement
      * and waits again, checking again no sooner than one spacing later.
      *
+     * A pending prompt request (L3) ends the wait too: the method returns
+     * {@code false} and the full-pass wait that follows runs the prompted pass
+     * when it is due.
+     *
      * @return {@code true} to run a capacity pass now; {@code false} when the
-     *         full pass is due or the poller is stopping
+     *         full pass is due, a prompt is pending, or the poller is stopping
      */
     private boolean awaitCapacity(long seen, long nextFull, long lastPassStart, Set<String> queues)
             throws InterruptedException {
@@ -412,11 +467,16 @@ final class RecoveryPoller implements StoppableLoop {
         // No check before one spacing after the pass, nor within one spacing of a check that found no room.
         var notBefore = lastPassStart + spacingNanos;
         while (running) {
+            // A prompt is checked before every wait. One requested after this
+            // check moves the epoch the wait watches, so the wait returns.
+            if (promptPending()) {
+                return false;
+            }
             var untilFull = nextFull - System.nanoTime();
             if (untilFull <= 0 || !signal.awaitChange(epoch, Duration.ofNanos(untilFull))) {
                 return false;
             }
-            if (!running) {
+            if (!running || promptPending()) {
                 return false;
             }
             var spacingLeft = notBefore - System.nanoTime();
@@ -426,8 +486,15 @@ final class RecoveryPoller implements StoppableLoop {
             if (nextFull - System.nanoTime() <= 0) {
                 return false;
             }
-            // Read before the headroom check: a release after it wakes the next wait.
+            executor.beforeRecoveryHeadroomCheck.run();
+            // Read before the prompt and headroom checks: a release or a
+            // prompt after this read moves the epoch and wakes the next wait
+            // (PR #72 review: a prompt checked before this read could be
+            // absorbed by it and then wait out the full pass).
             epoch = signal.epoch();
+            if (promptPending()) {
+                return false;
+            }
             headroomChecks.incrementAndGet();
             if (executor.recoveryHeadroom(queues) > 0) {
                 return true;
@@ -435,6 +502,40 @@ final class RecoveryPoller implements StoppableLoop {
             notBefore = System.nanoTime() + spacingNanos;
         }
         return false;
+    }
+
+    /**
+     * Waits until {@code deadline} ({@link System#nanoTime()}), a stop, or a
+     * pending prompt request at least {@code capacitySpacing} old (L3), and
+     * clears the prompt it returns for.
+     *
+     * @return {@code false} if the poller is stopping
+     */
+    private boolean sleepUntilFullPassOrPrompt(long deadline) throws InterruptedException {
+        var spacingNanos = capacitySpacing.toNanos();
+        synchronized (promptMonitor) {
+            while (running) {
+                var now = System.nanoTime();
+                var wakeAt = deadline;
+                if (promptRequestedAt != null) {
+                    var promptDue = promptRequestedAt + spacingNanos;
+                    if (promptDue - now <= 0) {
+                        promptRequestedAt = null;
+                        return true;
+                    }
+                    if (promptDue - deadline < 0) {
+                        wakeAt = promptDue;
+                    }
+                }
+                var remaining = wakeAt - now;
+                if (remaining <= 0) {
+                    promptRequestedAt = null; // the full pass due now serves the prompt too
+                    return true;
+                }
+                TimeUnit.NANOSECONDS.timedWait(promptMonitor, remaining);
+            }
+            return false;
+        }
     }
 
     /**

@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.test.InMemoryWorkflowStore;
 import org.junit.jupiter.api.DisplayName;
@@ -22,6 +24,7 @@ class MaestroAutoConfigurationRemovedPropertiesTest {
             .withConfiguration(AutoConfigurations.of(MaestroAutoConfiguration.class))
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+            .withBean(DistributedLock.class, InMemoryDistributedLock::new)
             .withPropertyValues("maestro.service-name=removed-properties-test");
 
     @Test

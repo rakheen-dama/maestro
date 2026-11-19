@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
@@ -32,7 +33,7 @@ class MaestroEngineGaugesTest {
     @Test
     void wakePermitsGaugeIsRegisteredAgainstTheExecutor() {
         var executor = WorkflowExecutor.builder(new InMemoryWorkflowStore(),
-                new PayloadSerializer(JsonMapper.builder().build()), "svc").build();
+                new PayloadSerializer(JsonMapper.builder().build()), "svc").distributedLock(new InMemoryDistributedLock()).build();
         try {
             var registry = new SimpleMeterRegistry();
             new MaestroEngineGauges(registry, executor);
@@ -61,7 +62,7 @@ class MaestroEngineGaugesTest {
                     .build());
         }
         var hold = new CountDownLatch(1);
-        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(JsonMapper.builder().build()), "svc")
+        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(JsonMapper.builder().build()), "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .defaultTaskQueueLimits(new TaskQueueLimits(1, 1))
                 .shutdownTimeout(Duration.ofSeconds(5))

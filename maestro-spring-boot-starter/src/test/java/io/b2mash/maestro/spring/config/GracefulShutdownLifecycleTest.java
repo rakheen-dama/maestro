@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.client.MaestroClient;
 import io.b2mash.maestro.spring.client.WorkflowOptions;
@@ -41,6 +43,7 @@ class GracefulShutdownLifecycleTest {
             .withUserConfiguration(MaestroAutoConfigurationConfigSeamsTest.TestWorkflowConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+            .withBean(DistributedLock.class, InMemoryDistributedLock::new)
             .withPropertyValues("maestro.service-name=graceful-shutdown-test");
 
     @Test
@@ -180,6 +183,11 @@ class GracefulShutdownLifecycleTest {
         WorkflowStore workflowStore(ObjectProvider<RecordingPool> pool) {
             pool.getObject();
             return new InMemoryWorkflowStore();
+        }
+
+        @Bean
+        DistributedLock distributedLock() {
+            return new InMemoryDistributedLock();
         }
     }
 }

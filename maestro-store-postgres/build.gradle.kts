@@ -27,6 +27,9 @@ dependencies {
     runtimeOnly(libs.flyway.postgres)
 
     testImplementation(libs.spring.boot.starter.test)
+    // InMemoryDistributedLock for the engine tests that build a WorkflowExecutor
+    // over this store but do not test the lock (a lock is mandatory, P3).
+    testImplementation(project(":maestro-test"))
     testImplementation(libs.spring.boot.starter.jdbc)
     // The host-Flyway ordering test runs Boot's FlywayAutoConfiguration
     // beside this module's auto-configuration.

@@ -77,7 +77,7 @@ site.
 
 ## Meter catalog
 
-Twenty-four meters: **17 counters and 2 timers**, registered by
+Twenty-five meters: **18 counters and 2 timers**, registered by
 `MicrometerEngineObserver`, plus **5 gauges** — four registered by
 `MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
 bounded task queue and kind) by `MaestroTaskQueueGauges` — all in the
@@ -101,6 +101,7 @@ type is known (the instance exists).
 | Meter | Tags | Tag values | Emitted when |
 |---|---|---|---|
 | `maestro.workflow.started` | `workflow` | workflow type | A workflow run is launched live (not on recovery) |
+| `maestro.workflow.start.deferred` | `workflow`, `reason` | workflow type; `lock_held_elsewhere` \| `lock_unavailable` | A start was persisted but not run, because its instance lock could not be taken (pilot readiness P3). The recovery poller, prompted at once, runs it about a second later if the lock can be taken then, otherwise at its next full pass (`maestro.recovery.poll-interval`); that run counts as a resume, never in `maestro.workflow.started` (no persisted marker could make a later start event exactly-once), so a started total that includes deferred starts is `started + start.deferred`. A steady non-zero rate means the lock is failing: every start on that node waits. Without a running recovery poller the start is refused instead (`LockAcquisitionException`) and nothing is counted. |
 | `maestro.workflow.completed` | `workflow` | workflow type | A run finishes successfully |
 | `maestro.workflow.failed` | `workflow` | workflow type | A run is recorded `FAILED` |
 | `maestro.workflow.compensated` | `workflow` | workflow type | The saga compensation phase starts (callback is `workflowCompensating`) |

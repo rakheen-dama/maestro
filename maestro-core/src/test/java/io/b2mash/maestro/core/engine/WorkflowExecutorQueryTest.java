@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.QueryMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.QueryNotDefinedException;
@@ -54,7 +55,7 @@ class WorkflowExecutorQueryTest {
         store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
         // null = no distributed lock provider needed for single-node tests
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(new NoOpMessaging())
                 .build();
     }

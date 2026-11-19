@@ -39,7 +39,7 @@ public enum StandDownReason {
      * The store fenced one of this run's writes (Issue 11): the instance row's
      * {@code lease_epoch} had moved past the epoch this run adopted at, so
      * another node has adopted the workflow — this node lost or outlived its
-     * instance lock (frozen past the TTL, partitioned, or no lock backend) and
+     * instance lock (frozen past the TTL, or partitioned) and
      * the adopting node's progress is the durable truth. Reported from a
      * {@code FencedWriteException} at any run-scoped write — an event append,
      * a park/wake status write, a timer arm, the transition to

@@ -38,7 +38,6 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -521,39 +520,30 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@inheritDoc}
      *
      * <p>One read: {@code SELECT service_name, count(*)} over the active
-     * statuses, {@code service_name <> ?} and {@code workflow_type IN (...)}
-     * (one bind per type), {@code GROUP BY service_name ORDER BY 2 DESC, 1
-     * FETCH FIRST ? ROWS ONLY}. The status list is the one the partial
-     * active-instance indexes are built on, so its cost follows the active
-     * rows of every service, never the terminal ones. An empty
-     * {@code workflowTypes} returns before a connection is borrowed.
+     * statuses and {@code (service_name < ? OR service_name > ?)}, {@code GROUP
+     * BY service_name ORDER BY 2 DESC, 1 FETCH FIRST ? ROWS ONLY}. The status
+     * list is the one {@code idx_wf_instance_recovery (service_name,
+     * started_at, id)} is partial on, and the two ranges (not {@code <>})
+     * let it skip this service's own rows: the read touches only other
+     * services' active rows — none, on a correctly deployed service — and
+     * never a terminal one.
      */
     @Override
-    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
-            String serviceName, Set<String> workflowTypes, int limit) {
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, int limit) {
         Objects.requireNonNull(serviceName, "serviceName");
-        Objects.requireNonNull(workflowTypes, "workflowTypes");
         if (limit < 1) {
             throw new IllegalArgumentException("limit must be positive, got " + limit);
         }
-        if (workflowTypes.isEmpty()) {
-            return Map.of();
-        }
-        var types = List.copyOf(workflowTypes);
         String sql = "SELECT service_name, count(*) FROM " + tableName("workflow_instance")
                 + " WHERE status IN (" + ACTIVE_STATUS_SQL + ")"
-                + " AND service_name <> ? AND workflow_type IN ("
-                + String.join(", ", Collections.nCopies(types.size(), "?")) + ")"
+                + " AND (service_name < ? OR service_name > ?)"
                 + " GROUP BY service_name ORDER BY 2 DESC, 1 FETCH FIRST ? ROWS ONLY";
 
         var counts = new LinkedHashMap<String, Long>();
         for (var row : queryList(sql, ps -> {
-            int index = 1;
-            ps.setString(index++, serviceName);
-            for (var type : types) {
-                ps.setString(index++, type);
-            }
-            ps.setInt(index, limit);
+            ps.setString(1, serviceName);
+            ps.setString(2, serviceName);
+            ps.setInt(3, limit);
         }, rs -> Map.entry(rs.getString(1), rs.getLong(2)))) {
             counts.put(row.getKey(), row.getValue());
         }

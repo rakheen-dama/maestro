@@ -41,8 +41,32 @@ public interface EngineObserver {
 
     // ── Workflow lifecycle ────────────────────────────────────────────
 
-    /** A new workflow instance was created and its first local run launched. */
+    /**
+     * A new workflow instance was created and its first local run launched.
+     *
+     * <p>Not called for a start that was deferred (see
+     * {@link #workflowStartDeferred}): the run recovery later launches for it
+     * reports {@link #workflowResumed}. A started count that must include
+     * deferred starts adds the two.
+     */
     default void workflowStarted(WorkflowInfo w) {}
+
+    /**
+     * A new workflow instance was persisted, but no local run was launched,
+     * because its instance lock could not be taken (pilot readiness P3) — the
+     * lock was held elsewhere, or the lock backend failed. The recovery poller
+     * is asked for a prompt pass and runs it once the lock can be taken; that
+     * run reports {@link #workflowResumed}, never {@link #workflowStarted}: no
+     * persisted marker tells recovery that a row was never started, so a
+     * start event emitted then could not be made exactly-once. Called on the
+     * starting thread, once per deferred start. (Without a running recovery
+     * poller the start is refused instead, and nothing is called.)
+     *
+     * @param w                 identity of the deferred workflow
+     * @param lockHeldElsewhere {@code true} when the lock was held elsewhere;
+     *                          {@code false} when the lock backend failed
+     */
+    default void workflowStartDeferred(WorkflowInfo w, boolean lockHeldElsewhere) {}
 
     /** A local run was launched in replay mode (recovery, resume, admin retry). */
     default void workflowResumed(WorkflowInfo w) {}

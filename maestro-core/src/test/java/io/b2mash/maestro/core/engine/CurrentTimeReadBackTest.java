@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.EventType;
@@ -126,7 +127,7 @@ class CurrentTimeReadBackTest {
         store = withStore;
         serializer = new PayloadSerializer(mapper);
         observer = new RecordingEngineObserver();
-        executor = WorkflowExecutor.builder(store, serializer, "svc")
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .instantSource(clock)
                 .observer(observer)
                 .build();
@@ -213,7 +214,7 @@ class CurrentTimeReadBackTest {
         // The node stops while the run is parked; a second node adopts it and replays currentTime().
         executor.shutdown();
         var recoveringObserver = new RecordingEngineObserver();
-        recovering = WorkflowExecutor.builder(store, serializer, "svc").instantSource(InstantSource.fixed(NOW))
+        recovering = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).instantSource(InstantSource.fixed(NOW))
                 .observer(recoveringObserver).build();
         recovering.recoverWorkflows(Map.of("ParkedStampWorkflow", new WorkflowRegistration(
                 "ParkedStampWorkflow", "default", ParkedStampWorkflow::new, method)));
@@ -297,7 +298,7 @@ class CurrentTimeReadBackTest {
                 .map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
 
         executor.shutdown();
-        recovering = WorkflowExecutor.builder(store, serializer, "svc").instantSource(InstantSource.fixed(NOW))
+        recovering = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock()).instantSource(InstantSource.fixed(NOW))
                 .observer(new RecordingEngineObserver()).build();
         recovering.recoverWorkflows(Map.of("RecordingParkedStampWorkflow", new WorkflowRegistration(
                 "RecordingParkedStampWorkflow", "default", () -> new RecordingParkedStampWorkflow(seen), method)));

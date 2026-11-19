@@ -154,6 +154,15 @@ final class RecoveryCapacityFixtures {
             return held.size();
         }
 
+        /**
+         * Frees {@code key} behind its holder's back — as a TTL expiry seen by
+         * another node would: the holder's next {@code renewAll} reports its
+         * handle lost, and anyone may acquire the key.
+         */
+        void forceRelease(String key) {
+            held.remove(key);
+        }
+
         boolean isHeld(String key) {
             return held.containsKey(key);
         }
@@ -171,6 +180,19 @@ final class RecoveryCapacityFixtures {
      * replace {@code getInstance} for one workflow.
      */
     static class CountingStore extends VersionedInMemoryStore {
+
+        /** When set, {@code reopenFailedInstance} throws it and writes nothing. */
+        volatile @Nullable RuntimeException reopenFailure;
+
+        @Override
+        public synchronized void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                                      Set<String> deleteTimerIds) {
+            var failure = reopenFailure;
+            if (failure != null) {
+                throw failure;
+            }
+            super.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
+        }
 
         final List<PageRead> pageReads = new CopyOnWriteArrayList<>();
         /** Read at every page read; {@code -1} until a test sets it. */

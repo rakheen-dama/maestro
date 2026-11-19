@@ -30,7 +30,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * fenced at its first write.
  *
  * <h2>How the dual execution is produced</h2>
- * <p>Both harnesses share one store and have <b>no lock backend</b> — the
+ * <p>Both harnesses share one store and <b>no lock</b>: each gets the
+ * harness's private in-memory lock, which excludes nothing across nodes — the
  * lost-lock window (a node frozen past its instance-lock TTL while a peer
  * adopts the workflow) made permanent, so nothing but the store stands between
  * the two runs. Node A starts the workflow (lease epoch 0) and is held inside
@@ -131,7 +132,7 @@ class EnginePostgresDualExecutionIT extends PostgresIntegrationSupport {
 
     /**
      * Builds one node of the {@code dual-node} service over the shared store,
-     * with no lock backend.
+     * with its own private in-memory lock (no lock shared with the other node).
      *
      * @param observer this node's own recorder
      * @return the unregistered harness

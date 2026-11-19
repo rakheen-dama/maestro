@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.Logger;
 import ch.qos.logback.classic.spi.ILoggingEvent;
@@ -48,7 +49,7 @@ class AdminCommandDispatcherRefusalTest {
     @BeforeEach
     void setUp() throws NoSuchMethodException {
         store = new InMemoryWorkflowStore();
-        executor = WorkflowExecutor.builder(store, new PayloadSerializer(mapper), "test-service").build();
+        executor = WorkflowExecutor.builder(store, new PayloadSerializer(mapper), "test-service").distributedLock(new InMemoryDistributedLock()).build();
         var registration = new WorkflowRegistration(WORKFLOW_TYPE, "default", SimpleWorkflow::new,
                 SimpleWorkflow.class.getMethod("run", String.class));
         dispatcher = new AdminCommandDispatcher(executor, store, new WorkflowRegistrar(executor) {

@@ -24,7 +24,7 @@ Maestro is an open-source durable workflow engine delivered as a Spring Boot Sta
 | **Camunda / Zeebe, Flowable** | BPMN engines (Flowable 8 embeds on any JDBC; Zeebe needs its own broker) | BPMN modelling, human tasks and history views; model-first rather than code-first |
 | **Axon Framework** | Event-sourcing and CQRS framework | Event-sourcing model with a steep learning curve; Axon 5.1+ partly commercial |
 | **Dapr Workflow** | Sidecar-based workflow runtime | Polyglot and Kubernetes-native; a sidecar per pod and state outside your database |
-| **Maestro** | **Embedded Spring Boot 4 starter on your Postgres + Kafka** | **Sagas, cross-service signals with trace propagation, versioning, a test kit and a free dashboard — nothing new to deploy. Pre-1.0; see `docs/open-issues.md`.** |
+| **Maestro** | **Embedded Spring Boot 4 starter on your Postgres + Kafka** | **Sagas, cross-service signals with trace propagation, versioning, a test kit and a free dashboard — nothing new to deploy. Pre-1.0; see `docs/support-matrix.md` and `docs/open-issues.md`.** |
 
 ---
 
@@ -279,6 +279,7 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 | **[Testing Guide](docs/testing.md)** | Using `maestro-test` for fast, deterministic tests, including crash-recovery tests that exercise replay |
 | **[Pitfalls](docs/pitfalls.md)** | Thirteen rules whose violations pass every straight-through test and fail in production |
 | **[Observability](docs/observability.md)** | Meter catalog, span topology, and the Kafka trace-propagation contract |
+| **[Support Matrix](docs/support-matrix.md)** | What is supported, not supported and untested: one service per set of tables, a mandatory lock, Postgres only, previous-release rolling upgrades, tested Postgres, pool and Kafka setups |
 | **[Operations](docs/operations.md)** | Multi-instance behaviour, measured; versioning and mixed-version deploy playbook |
 | **[Admin Dashboard](docs/admin.md)** | Setup and feature guide for the monitoring UI |
 | **[Architecture](docs/maestro-architecture.md)** | System design, diagrams, failure modes |
@@ -293,7 +294,7 @@ See the [Samples README](maestro-samples/README.md) for crash recovery simulatio
 | Language | Java 25 (virtual threads, scoped values) |
 | Framework | Spring Boot 4.x / Spring Framework 7 |
 | Build | Gradle Kotlin DSL (Gradle 9) |
-| Database | PostgreSQL 14+ |
+| Database | PostgreSQL 16 tested; 14+ documented ([support matrix](docs/support-matrix.md)) |
 | Messaging | Apache Kafka via Spring Kafka 4.x |
 | Coordination | PostgreSQL tables (locks, leader election) + LISTEN/NOTIFY wake |
 | Serialization | Jackson 3 (`tools.jackson` packages) |

@@ -8,6 +8,8 @@ import io.b2mash.maestro.core.context.WorkflowMDC;
 import io.b2mash.maestro.core.exception.CompensationException;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
+import io.b2mash.maestro.core.exception.LockAcquisitionException;
+import io.b2mash.maestro.core.exception.ForeignServiceRowsException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
@@ -23,6 +25,7 @@ import io.b2mash.maestro.core.exception.WorkflowExecutionException;
 import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
 import io.b2mash.maestro.core.exception.WorkflowNotQueryableException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
+import io.b2mash.maestro.core.exception.WorkflowNotLaunchedException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
@@ -37,6 +40,7 @@ import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.saga.CompensationStack;
 import io.b2mash.maestro.core.saga.SagaManager;
 import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.SignalNotifier;
@@ -102,8 +106,10 @@ import java.util.function.Supplier;
  *
  * <h2>Construction</h2>
  * <p>Build an executor with {@link #builder(WorkflowStore, PayloadSerializer, String)}:
- * the store, serializer and service name are required, and every other
- * setting has a default documented on its {@link Builder} setter.
+ * the store, serializer and service name are required, and so is a
+ * {@link DistributedLock} ({@link Builder#distributedLock(DistributedLock)}):
+ * {@link Builder#build()} fails without one. Every other setting has a
+ * default documented on its {@link Builder} setter.
  * <pre>{@code
  * WorkflowExecutor executor = WorkflowExecutor.builder(store, serializer, "order-service")
  *         .distributedLock(lock)
@@ -145,8 +151,27 @@ public final class WorkflowExecutor {
      */
     private static final int TERMINAL_TRANSITION_ATTEMPTS = 5;
 
+    /**
+     * Set by a recovery pass around each resume it attempts, on the pass's own
+     * thread, so the resume can report that it was skipped because the lock
+     * backend failed (PR #72 review: the one-shot pass must not count as
+     * finished then). Confined to that thread for the call; {@code null}
+     * outside a pass.
+     */
+    private static final ThreadLocal<boolean @Nullable []> LOCK_UNAVAILABLE_IN_PASS = new ThreadLocal<>();
+
+    /**
+     * The message {@link Builder#build()} fails with when no
+     * {@link DistributedLock} was set (pilot readiness P3: the lock is
+     * mandatory). Package-private so the wording is pinned.
+     */
+    static final String MISSING_LOCK_MESSAGE = "A DistributedLock is required: Maestro does not run without one. "
+            + "Set WorkflowExecutor.Builder.distributedLock(...) — PostgresDistributedLock from "
+            + "maestro-store-postgres in production (the Spring Boot starter wires it from the Postgres store's "
+            + "DataSource), maestro-test's InMemoryDistributedLock in tests.";
+
     private final WorkflowStore store;
-    private final @Nullable DistributedLock distributedLock;
+    private final DistributedLock distributedLock;
     private final @Nullable WorkflowMessaging messaging;
     private final @Nullable SignalNotifier signalNotifier;
     private final PayloadSerializer serializer;
@@ -192,6 +217,23 @@ public final class WorkflowExecutor {
      * Package-private; production never assigns it.
      */
     volatile Runnable afterLaunchAdmission = () -> { };
+
+    /**
+     * Test seam: runs on the resuming thread after {@code resumeWorkflow}'s
+     * already-running check and before its launch takes the instance lock. A
+     * test holds it to let a second launch of the same workflow ID pass that
+     * check while a first run is still to register (L1).
+     * Package-private; production never assigns it.
+     */
+    volatile Runnable beforeResumeLaunch = () -> { };
+
+    /**
+     * Test seam: runs on the recovery poller's thread, in its wait for
+     * task-queue capacity, just before it reads the capacity epoch for a
+     * headroom check. A test requests a prompt here to show the prompt is not
+     * lost (PR #72 review). Package-private; production never assigns it.
+     */
+    volatile Runnable beforeRecoveryHeadroomCheck = () -> { };
 
     /**
      * Test seam: runs on the run's own thread before the run body — after
@@ -255,8 +297,8 @@ public final class WorkflowExecutor {
     /**
      * The single build path: {@link Builder#build()} ends here, and it is
      * the only way to obtain an executor. Validates the builder's values — the three
-     * durations first, then the reference options — before building any
-     * component from them.
+     * durations first, then the reference options, then the mandatory
+     * {@link DistributedLock} — before building any component from them.
      *
      * @param builder the settings; read once, here, and never retained
      * @throws IllegalArgumentException if {@code instanceLockTtl}, {@code shutdownTimeout},
@@ -264,7 +306,8 @@ public final class WorkflowExecutor {
      *                                  or negative
      * @throws NullPointerException     if {@code lockKeyPrefix}, {@code observer},
      *                                  {@code taskQueueLimits} or {@code instantSource}
-     *                                  is {@code null}
+     *                                  is {@code null}, or no {@code distributedLock} was set
+     *                                  (message {@link #MISSING_LOCK_MESSAGE})
      */
     private WorkflowExecutor(Builder builder) {
         var store = builder.store;
@@ -298,6 +341,7 @@ public final class WorkflowExecutor {
         Objects.requireNonNull(observer, "observer");
         Objects.requireNonNull(taskQueueLimits, "taskQueueLimits");
         this.instantSource = Objects.requireNonNull(instantSource, "instantSource");
+        Objects.requireNonNull(distributedLock, MISSING_LOCK_MESSAGE);
         // Guarded once, here, before any component below is built from it, so
         // every store call this executor and its components make on a run's
         // behalf — memo lookups, outcome appends, status writes, signal and
@@ -349,9 +393,11 @@ public final class WorkflowExecutor {
         // activity, sleep(), awaitSignal(), terminal write — instead of first
         // attempting a write the store's lease fence rejects anyway. The fence
         // is the guarantee; this only shortens the window.
-        this.instanceLockManager.onLockLost(workflowId -> {
+        // Only the run that acquired the lost handle (L1): a newer run of the
+        // same id, registered under a newer handle, is not stood down.
+        this.instanceLockManager.onLockLost((workflowId, handle) -> {
             var running = runningWorkflows.get(workflowId);
-            if (running != null) {
+            if (running != null && handle.equals(running.lockHandle())) {
                 running.cancellation().requestStale("instance lock lost");
             }
         });
@@ -410,13 +456,19 @@ public final class WorkflowExecutor {
         }
 
         /**
-         * Sets the distributed lock backend. Default: {@code null} — no
-         * distributed lock.
+         * Sets the distributed lock backend: the per-workflow instance lock
+         * and the timer-poller and retention leader elections. <b>Required</b>
+         * — there is no default and no lock-less mode (pilot readiness P3):
+         * {@link #build()} fails with a {@link NullPointerException} carrying
+         * {@link WorkflowExecutor#MISSING_LOCK_MESSAGE} when none is set.
+         * Production uses {@code PostgresDistributedLock} from
+         * {@code maestro-store-postgres}; tests use {@code maestro-test}'s
+         * {@code InMemoryDistributedLock}.
          *
-         * @param distributedLock optional distributed lock backend
+         * @param distributedLock the distributed lock backend
          * @return this builder
          */
-        public Builder distributedLock(@Nullable DistributedLock distributedLock) {
+        public Builder distributedLock(DistributedLock distributedLock) {
             this.distributedLock = distributedLock;
             return this;
         }
@@ -658,13 +710,25 @@ public final class WorkflowExecutor {
      * thread, and invokes the workflow method. The workflow method runs
      * to completion (or parks on sleep/signal await).
      *
+     * <p>The run executes only under its instance lock, taken before the row
+     * is written. When the lock cannot be taken — the lock backend throws, or
+     * the lock is held elsewhere — the row is still persisted, nothing runs
+     * here, and this method returns normally: the instance is left
+     * {@code RUNNING} for the recovery poller, which adopts it on the first
+     * pass that can take the lock (one {@code maestro.recovery.poll-interval}
+     * later at most, once the lock is free). As with a factory failure, no
+     * {@code WORKFLOW_STARTED} event or {@code workflowStarted} callback is
+     * emitted for such a start; the adopting run reports
+     * {@code workflowResumed}.
+     *
      * @param workflowId   the business workflow ID (e.g., {@code "order-abc"})
      * @param workflowType the workflow type name
      * @param taskQueue    the task queue name
      * @param input        the workflow input, or {@code null}
      * @param workflowFactory builds the workflow implementation object for this
      *                     run; called exactly once, on the calling thread, before
-     *                     the run's virtual thread is created
+     *                     the run's virtual thread is created — or not at all
+     *                     when the instance lock could not be taken
      * @param workflowMethod the entry-point method
      * @return the workflow instance UUID
      * @throws IllegalStateException        if the executor is shutting down
@@ -719,8 +783,27 @@ public final class WorkflowExecutor {
         // Acquire the instance lock BEFORE the instance row exists: the
         // recovery poller can only see the workflow after createInstance, and
         // by then this node already owns the lock — closing the race where a
-        // poller cycle steals a just-created workflow before launch.
-        var acquisition = instanceLockManager.tryAcquire(workflowId);
+        // poller cycle steals a just-created workflow before launch (Issue 74).
+        var acquired = instanceLockManager.acquire(workflowId);
+        // The handle this run carries for its whole life (L1): the one this
+        // acquisition took, never re-read by id; null when not acquired.
+        var handle = acquired.handle();
+        var heldElsewhere = acquired.outcome() == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE;
+        if (handle == null && !canDeferStart(workflowType)) {
+            // M1: a deferred start is acceptable only when something will run
+            // it, and on this node only the recovery poller does. Without it,
+            // refuse the start before anything is written: an id returned for
+            // a workflow nothing will ever run is worse than a refused start.
+            if (store.getInstance(workflowId).isPresent()) {
+                throw new WorkflowAlreadyExistsException(workflowId);
+            }
+            var key = instanceLockManager.lockKey(workflowId);
+            throw new LockAcquisitionException(key, "the instance lock "
+                    + (heldElsewhere ? "is held elsewhere" : "could not be taken (lock backend unavailable)")
+                    + " and no recovery poller that registers workflow type '" + workflowType + "' is running on "
+                    + "this node to start it later (maestro.recovery.enabled=false, recovery not started yet, or "
+                    + "the type not registered with it) — nothing was persisted; retry the start");
+        }
         try {
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
             // signals sent before workflow starts are stored with null instanceId)
@@ -730,22 +813,85 @@ public final class WorkflowExecutor {
             // An Error too (control-flow ones included): no run owns this lock yet, so
             // keeping it would leave the handle renewed for ever and the workflow, whose
             // RUNNING row may already be committed, unrecoverable until this node restarts.
-            if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-                try {
-                    instanceLockManager.release(workflowId);
-                } catch (RuntimeException | Error releaseFailure) {
-                    e.addSuppressed(releaseFailure);
-                }
+            try {
+                instanceLockManager.release(workflowId, handle);
+            } catch (RuntimeException | Error releaseFailure) {
+                e.addSuppressed(releaseFailure);
             }
             throw e;
         }
 
+        if (handle == null) {
+            // No run executes without its instance lock (P3). The row is
+            // durable and the recovery poller runs here, so the start is not
+            // lost: it is asked for a prompt pass (L3), which adopts it as soon
+            // as the lock can be taken.
+            deferStart(instance, heldElsewhere);
+            return instanceId;
+        }
+
         // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
         // the run's workflow object has been built)
-        launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, acquisition, null);
+        if (!launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null)) {
+            // The lock was reported lost between the acquire and the run's
+            // registration (a stall of a whole TTL): the row is durable.
+            if (canDeferStart(workflowType)) {
+                deferStart(instance, false); // the recovery poller runs it
+                return instanceId;
+            }
+            // PR #72 review: nothing on this node would run it later. Relaunch
+            // once, with a fresh acquisition, as a resume of the persisted row.
+            if (resumeWorkflow(instance, workflowFactory, workflowMethod)) {
+                logger.info("Workflow '{}' lost its instance lock before its run started; relaunched it",
+                        workflowId);
+                return instanceId;
+            }
+            if (!awaitsLaunch(workflowId)) {
+                // Converged: another node ran it to its end meanwhile.
+                logger.info("Workflow '{}' lost its instance lock before its run started and finished elsewhere",
+                        workflowId);
+                return instanceId;
+            }
+            throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was persisted (RUNNING) but not "
+                    + "launched: its instance lock was lost before its run started and could not be taken again, "
+                    + "and this node runs no recovery poller. It is not lost: it runs when a node of this service "
+                    + "starts with recovery enabled (maestro.recovery.enabled=true), or when this node restarts. "
+                    + "Starting it again would only find it.").formatted(workflowId));
+        }
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
         return instanceId;
+    }
+
+    /**
+     * Whether a fresh start of {@code workflowType} may be deferred: only when
+     * something on this node will run it — a running recovery poller that
+     * registers the type (M1; PR #72 review). Otherwise the start is refused
+     * before anything is written.
+     */
+    private boolean canDeferStart(String workflowType) {
+        var poller = recoveryPoller.get();
+        return poller != null && poller.recovers(workflowType);
+    }
+
+    /**
+     * A fresh start persisted without a local run, because its instance lock
+     * could not be taken (L2, L3): one {@code WARN}, one
+     * {@link EngineObserver#workflowStartDeferred} callback, and a prompt
+     * recovery pass. Called only while the recovery poller runs (or the start
+     * was refused instead, M1).
+     */
+    private void deferStart(WorkflowInstance instance, boolean heldElsewhere) {
+        logger.warn("Workflow '{}' was persisted but not started here: its instance lock {} — the recovery "
+                        + "poller adopts it once the lock can be taken (a prompt pass is requested)",
+                instance.workflowId(), heldElsewhere
+                        ? "is held elsewhere" : "could not be taken (lock backend unavailable)");
+        emit("workflowStartDeferred", instance.workflowId(),
+                () -> observer.workflowStartDeferred(observed(instance), heldElsewhere));
+        var poller = recoveryPoller.get();
+        if (poller != null) {
+            poller.requestPromptPass();
+        }
     }
 
     // ── Resume workflow ────────────────────────────────────────────────
@@ -803,6 +949,7 @@ public final class WorkflowExecutor {
                 logger.debug("Workflow '{}' is already running — skipping resume", instance.workflowId());
                 return false;
             }
+            beforeResumeLaunch.run();
 
             launched = launchWorkflow(instance, workflowFactory, workflowMethod, instance.input(), true, null,
                     reservation);
@@ -866,10 +1013,11 @@ public final class WorkflowExecutor {
      * {@code stop} answers {@code true} — the one-shot startup pass's own stop
      * flag. Like every pass it also ends once the executor is shutting down.
      *
-     * @return the number of workflows recovered
+     * @return the pass: what it adopted, and how many rows it skipped because
+     *         the lock backend failed ({@link RecoveryPass#lockUnavailable()})
      */
-    int recoverWorkflowsUntil(Map<String, WorkflowRegistration> registrations, BooleanSupplier stop) {
-        return fullPass(registrations, RecoveryGate.UNGATED, stop).adopted();
+    RecoveryPass recoverWorkflowsUntil(Map<String, WorkflowRegistration> registrations, BooleanSupplier stop) {
+        return fullPass(registrations, RecoveryGate.UNGATED, stop);
     }
 
     /** A pass that only the executor's shutdown ends. */
@@ -927,7 +1075,7 @@ public final class WorkflowExecutor {
     record RecoveryPass(int scanned, int adopted, Map<String, Integer> skippedByType,
                         Map<String, Integer> deferredByQueue, @Nullable RecoveryCursor resumeAfter,
                         boolean outOfCapacity, Map<String, @Nullable RecoveryCursor> resumeAfterByQueue,
-                        @Nullable RecoveryCursor readTo, boolean reachedEnd) {
+                        @Nullable RecoveryCursor readTo, boolean reachedEnd, int lockUnavailable) {
         /** @return instances skipped because their factory threw, across all types */
         int skipped() {
             return skippedByType.values().stream().mapToInt(Integer::intValue).sum();
@@ -955,11 +1103,13 @@ public final class WorkflowExecutor {
         final Map<String, @Nullable RecoveryCursor> resumeAfterByQueue = new LinkedHashMap<>();
         @Nullable RecoveryCursor readTo;
         boolean reachedEnd;
+        /** Rows skipped because the lock backend failed (not because a lock was held elsewhere). */
+        int lockUnavailable;
 
         RecoveryPass toPass() {
             return new RecoveryPass(scanned, adopted, Collections.unmodifiableMap(skippedByType),
                     Collections.unmodifiableMap(deferredByQueue), resumeAfter, outOfCapacity,
-                    Collections.unmodifiableMap(resumeAfterByQueue), readTo, reachedEnd);
+                    Collections.unmodifiableMap(resumeAfterByQueue), readTo, reachedEnd, lockUnavailable);
         }
     }
 
@@ -1193,10 +1343,14 @@ public final class WorkflowExecutor {
                 }
                 continue;
             }
+            var lockUnavailable = new boolean[1];
+            LOCK_UNAVAILABLE_IN_PASS.set(lockUnavailable);
             try {
                 // Releases the reservation itself whenever the run is not launched.
                 if (resumeWorkflow(instance, reg.workflowFactory(), reg.workflowMethod(), reservation)) {
                     tally.adopted++;
+                } else if (lockUnavailable[0]) {
+                    tally.lockUnavailable++;
                 }
             } catch (WorkflowInstantiationException e) {
                 // R44: only a factory failure is isolated per instance — one
@@ -1219,6 +1373,8 @@ public final class WorkflowExecutor {
                             // print the full stack trace again for every skipped instance.
                             String.valueOf(e.getCause()));
                 }
+            } finally {
+                LOCK_UNAVAILABLE_IN_PASS.remove();
             }
         }
     }
@@ -1580,18 +1736,21 @@ public final class WorkflowExecutor {
         NOT_FOUND,
 
         /**
-         * The compare-and-set to {@code RUNNING} succeeded, but by the time
-         * this call was ready to launch, the workflow was already running on
-         * this node (typically the recovery poller won the race). The instance
-         * is left {@code RUNNING} — recoverable, not lost.
+         * No longer returned (PR #72 review). Retry takes the instance lock
+         * before it reopens the row, so no other run of the workflow can have
+         * launched on this node since; a run still registered is the failed
+         * one, and the relaunch replaces its entry. Kept so that callers
+         * matching on it still compile.
          */
         ALREADY_RUNNING_LOCALLY,
 
         /**
-         * The compare-and-set to {@code RUNNING} succeeded, but the per-instance
-         * distributed lock is held by another node. The instance is left
-         * {@code RUNNING} — the recovery poller (on any node) adopts it within
-         * one poll interval.
+         * The compare-and-set to {@code RUNNING} succeeded, but the instance
+         * lock this call took before it was reported lost before the run
+         * started. The instance is left {@code RUNNING} — the recovery poller
+         * (on any node) adopts it within one poll interval of the lock becoming
+         * takeable. (A lock that cannot be taken at all is reported before any
+         * write, as {@link LockAcquisitionException}.)
          */
         LOCK_HELD_ELSEWHERE,
 
@@ -1697,6 +1856,10 @@ public final class WorkflowExecutor {
      *   <li>Plan the deletes over that log (above). A refused plan returns
      *       {@link RetryOutcome#SIGNAL_CONSUMED_AFTER_FAILURE} without touching
      *       anything.</li>
+     *   <li>Take the instance lock (PR #72 review: before anything is
+     *       written, on every node). If it cannot be taken — held elsewhere,
+     *       or the lock backend failed — throw {@link LockAcquisitionException}
+     *       with the row untouched: transient, so the command is redelivered.</li>
      *   <li>{@link WorkflowStore#reopenFailedInstance}: the plan's event and
      *       timer-row deletes and a single optimistic compare-and-set
      *       ({@code status = RUNNING}, {@code completedAt = null},
@@ -1724,12 +1887,11 @@ public final class WorkflowExecutor {
      *       kept memo replays for free, and the run goes live at the first
      *       deleted slot of each lane it reaches, with a fresh retry-policy
      *       budget.</li>
-     *   <li>If the local {@code runningWorkflows} guard or the instance lock
-     *       refuses the launch ({@link RetryOutcome#ALREADY_RUNNING_LOCALLY} /
-     *       {@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
+     *   <li>If the lock taken in step 4 was reported lost before the run
+     *       started ({@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
      *       {@code RUNNING} — which is recoverable: the recovery poller (on any
      *       node) adopts it within one poll interval, the same as a crash
-     *       between steps 4 and 5 heals.</li>
+     *       between steps 5 and 6 heals.</li>
      * </ol>
      *
      * <h2>Semantics caveat — compensated sagas</h2>
@@ -1764,6 +1926,9 @@ public final class WorkflowExecutor {
      *                                 Transient: the caller should <em>not</em>
      *                                 acknowledge, so the command is
      *                                 redelivered against fresh state.
+     * @throws LockAcquisitionException if the instance lock cannot be taken;
+     *                                 nothing was written. Transient, like
+     *                                 {@code OptimisticLockException}.
      * @throws WorkflowInstantiationException if the registration's factory
      *                                 throws while relaunching. The
      *                                 compare-and-set has already happened, so
@@ -1812,50 +1977,124 @@ public final class WorkflowExecutor {
             return RetryOutcome.SIGNAL_CONSUMED_AFTER_FAILURE;
         }
 
-        var now = Instant.now();
-        var running = latest.toBuilder()
-                .status(WorkflowStatus.RUNNING)
-                .completedAt(null)
-                .updatedAt(now)
-                .version(latest.version() + 1)
-                .build();
-        // The deletes and the single-attempt CAS are one transaction (D-7):
-        // a crash or a lost CAS leaves the history and the row untouched.
-        // OptimisticLockException (a stale version, or a row no longer
-        // FAILED) and every store fault propagate; see the Javadoc above.
+        // PR #72 review: take the instance lock BEFORE the reopen, with or
+        // without a recovery poller (one path). A lock that cannot be taken
+        // then mutates nothing — the row stays FAILED with its memos — and the
+        // command fails transiently, so the transport redelivers it. Before,
+        // the row was reopened first and, on a node without a recovery poller,
+        // left RUNNING with nothing to run it. Holding the lock across the
+        // reopen also keeps every node's recovery from adopting the row before
+        // this launch does.
+        var acquired = instanceLockManager.acquire(workflowId);
+        var handle = acquired.handle();
+        if (handle == null) {
+            throw new LockAcquisitionException(instanceLockManager.lockKey(workflowId), "the instance lock "
+                    + (acquired.outcome() == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE
+                            ? "is held elsewhere" : "could not be taken (lock backend unavailable)")
+                    + " — workflow '" + workflowId + "' was not reopened and is still FAILED; the Retry can be "
+                    + "redelivered");
+        }
+        var handedOver = false;
+        Throwable failure = null;
         try {
-            store.reopenFailedInstance(running, plan.deleteSequences(), plan.deleteTimerIds());
-        } catch (WorkflowNotFoundException e) {
-            logger.warn("Cannot retry workflow '{}' — no such instance in this service (purged?)", workflowId);
-            return RetryOutcome.NOT_FOUND;
-        }
-        logger.info("Workflow '{}' reopened for retry: {} event(s) deleted and {} timer id(s) named for deletion (basis {})",
-                workflowId, plan.deleteSequences().size(), plan.deleteTimerIds().size(), plan.basis());
-        logger.debug("Workflow '{}' retry deleted sequences {} and timer ids {}",
-                workflowId, plan.deleteSequences(), plan.deleteTimerIds());
+            var now = Instant.now();
+            var running = latest.toBuilder()
+                    .status(WorkflowStatus.RUNNING)
+                    .completedAt(null)
+                    .updatedAt(now)
+                    .version(latest.version() + 1)
+                    .build();
+            // The deletes and the single-attempt CAS are one transaction (D-7):
+            // a crash or a lost CAS leaves the history and the row untouched.
+            // OptimisticLockException (a stale version, or a row no longer
+            // FAILED) and every store fault propagate; see the Javadoc above.
+            try {
+                store.reopenFailedInstance(running, plan.deleteSequences(), plan.deleteTimerIds());
+            } catch (WorkflowNotFoundException e) {
+                logger.warn("Cannot retry workflow '{}' — no such instance in this service (purged?)", workflowId);
+                return RetryOutcome.NOT_FOUND;
+            }
+            logger.info("Workflow '{}' reopened for retry: {} event(s) deleted and {} timer id(s) named for deletion (basis {})",
+                    workflowId, plan.deleteSequences().size(), plan.deleteTimerIds().size(), plan.basis());
+            logger.debug("Workflow '{}' retry deleted sequences {} and timer ids {}",
+                    workflowId, plan.deleteSequences(), plan.deleteTimerIds());
 
-        // Recheck the local running-workflow guard right before launching: the
-        // CAS just made the instance RUNNING, and in the gap between that write
-        // and this line, this node's own recovery poller could have observed
-        // the RUNNING row and already launched it (mirrors resumeWorkflow's
-        // own guard). The instance is left RUNNING either way — recoverable.
-        if (runningWorkflows.containsKey(workflowId)) {
-            logger.info("Workflow '{}' is already running locally after the retry CAS — "
-                    + "leaving it to the run already in flight", workflowId);
-            return RetryOutcome.ALREADY_RUNNING_LOCALLY;
-        }
+            // No presence-only "already running here" check (PR #72 review): this
+            // call holds the instance lock, so no other run of the id can have
+            // launched since the reopen. An entry still registered is the failed
+            // run, unwinding after its lock was lost; the launch's handle-aware
+            // registration replaces it, and that run's own-entry cleanup leaves
+            // the new entry alone. (While the failed run still holds its lock,
+            // the acquire above already refused the Retry before the reopen.)
 
-        var launched = launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
-                running.input(), true, null, null);
-        if (!launched) {
-            logger.info("Workflow '{}' CAS'd to RUNNING but its instance lock is held elsewhere — "
-                    + "left for the recovery poller to adopt", workflowId);
-            return RetryOutcome.LOCK_HELD_ELSEWHERE;
-        }
+            // The launch takes the handle over: the run releases it, or the
+            // launch's own failure paths do.
+            handedOver = true;
+            if (!launchWorkflow(running, registration.workflowFactory(), registration.workflowMethod(),
+                    running.input(), true, handle, null)) {
+                if (canDeferStart(running.workflowType())) {
+                    logger.info("Workflow '{}' CAS'd to RUNNING but lost its instance lock before its run "
+                            + "started — left for recovery to adopt (a prompt pass is requested)", workflowId);
+                    var poller = recoveryPoller.get();
+                    if (poller != null) {
+                        poller.requestPromptPass();
+                    }
+                    return RetryOutcome.LOCK_HELD_ELSEWHERE;
+                }
+                // PR #72 review, as on the start path: nothing on this node
+                // would adopt the reopened row. Relaunch once, with a fresh
+                // acquisition; if that cannot run either, say so — an acked
+                // LOCK_HELD_ELSEWHERE would leave it RUNNING with no run, and a
+                // repeated Retry would answer NOT_FAILED.
+                if (resumeWorkflow(running, registration.workflowFactory(), registration.workflowMethod())) {
+                    logger.info("Workflow '{}' lost its instance lock after its retry reopened it; relaunched it",
+                            workflowId);
+                } else if (!awaitsLaunch(workflowId)) {
+                    // Converged: another node ran the reopened row to its end
+                    // (or it is gone) — the ordinary not-launched-here outcome.
+                    logger.info("Workflow '{}' was reopened for retry and finished elsewhere before this node could "
+                            + "relaunch it", workflowId);
+                    return RetryOutcome.LOCK_HELD_ELSEWHERE;
+                } else {
+                    throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was reopened for retry "
+                            + "(RUNNING, its failure memos deleted) but not launched: its instance lock was lost "
+                            + "before its run started and could not be taken again, and this node runs no recovery "
+                            + "poller for its type. It is not lost: it runs when a node of this service starts with "
+                            + "recovery enabled (maestro.recovery.enabled=true), or when this node restarts. "
+                            + "Retrying it again would answer NOT_FAILED.").formatted(workflowId));
+                }
+            }
 
-        publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
-        logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
-        return RetryOutcome.RETRIED;
+            publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
+            logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
+            return RetryOutcome.RETRIED;
+        } catch (RuntimeException | Error e) {
+            failure = e;
+            throw e;
+        } finally {
+            if (!handedOver) {
+                // As in startWorkflow: a cleanup failure never replaces the
+                // call's own failure; it is attached to it (PR #72 review).
+                try {
+                    instanceLockManager.release(workflowId, handle);
+                } catch (RuntimeException | Error releaseFailure) {
+                    if (failure == null) {
+                        throw releaseFailure;
+                    }
+                    failure.addSuppressed(releaseFailure);
+                }
+            }
+        }
+    }
+
+    /**
+     * Whether a workflow's row is still active — persisted and awaiting a run —
+     * rather than finished (or purged) by another node meanwhile. Decides, after
+     * a relaunch that could not run, between convergence and
+     * {@link WorkflowNotLaunchedException} (PR #72 review).
+     */
+    private boolean awaitsLaunch(String workflowId) {
+        return store.getInstance(workflowId).map(i -> i.status().isActive()).orElse(false);
     }
 
     /**
@@ -2148,42 +2387,55 @@ public final class WorkflowExecutor {
     // ── Service-name check ──────────────────────────────────────────────
 
     /**
-     * Starts the once-per-start check for active workflows of this node's
-     * types recorded under another {@code maestro.service-name} (Issue 39),
-     * and returns at once.
+     * Runs the once-per-start shared-table check (pilot readiness P3; Issues
+     * 39, 79): fails, or warns, when this service's Maestro tables hold active
+     * workflow instances recorded under any other {@code maestro.service-name},
+     * of any workflow type.
      *
-     * <p>Recovery adopts only instances recorded under this executor's own
-     * service name. The check asks the store once, through
-     * {@link WorkflowStore#getActiveInstanceCountsUnderOtherServices}, for
-     * every other service name holding active instances of a type in
-     * {@code registrations}, and logs one {@code WARN} per name (at most 20)
-     * with its count and the remedy. It runs on its own virtual thread,
-     * {@code maestro-foreign-service-check}, and ends after that one read.
+     * <p>Services never share Maestro tables ({@code docs/support-matrix.md}),
+     * and recovery adopts only instances recorded under this executor's own
+     * service name, so such rows are either another service in the same tables
+     * or workflows stranded by a rename. The check asks the store once,
+     * through {@link WorkflowStore#getActiveInstanceCountsUnderOtherServices(String, int)},
+     * on its own virtual thread ({@code maestro-foreign-service-check}), and
+     * waits for the answer at most 5 seconds. Then:
+     * <ul>
+     *   <li>rows found: under {@link ForeignServiceCheckMode#FAIL} this method
+     *       throws {@link ForeignServiceRowsException} naming each other service
+     *       name and its count; under {@link ForeignServiceCheckMode#WARN} it logs
+     *       one {@code WARN} per name (at most 20) and returns;</li>
+     *   <li>no rows: one {@code DEBUG} line;</li>
+     *   <li>no answer within the bound, or a failed read: <em>inconclusive</em>
+     *       — one {@code WARN}, and it returns. An unreachable store must not
+     *       turn into a restart loop. A read still running is left to finish on
+     *       its own thread, never interrupted.</li>
+     * </ul>
+     * {@link ForeignServiceCheckMode#OFF} reads nothing. While the executor is
+     * shutting down the method logs at {@code DEBUG} and reads nothing. It
+     * never writes.
      *
-     * <p>Apart from a {@code null} argument (a programming error), it never
-     * throws, and it never writes: a failed read is logged once at
-     * {@code INFO}, and while the executor is shutting down this method logs
-     * at {@code DEBUG} and starts nothing. {@link #shutdown()} does not wait
-     * for it. A store that does not override the read reports nothing, so
-     * nothing is logged above {@code DEBUG}.
+     * <p>The Spring Boot starter calls this at context refresh, before
+     * recovery or any listener starts, with {@code maestro.store.foreign-service-check}
+     * ({@code fail} by default). An embedder without the starter calls it
+     * once before starting recovery.
      *
-     * <p>The Spring Boot starter calls this at startup, right after it has
-     * started recovery. An embedder without the starter calls it once after
-     * starting recovery.
-     *
-     * @param registrations map of workflow type → registration metadata; its
-     *                      keys are the types checked
-     * @throws NullPointerException if {@code registrations} is {@code null}
+     * @param mode what to do with rows found; never {@code null}
+     * @throws ForeignServiceRowsException under {@code FAIL}, when another
+     *                                     service name holds active instances
+     * @throws NullPointerException        if {@code mode} is {@code null}
      */
-    public void startForeignServiceCheck(Map<String, WorkflowRegistration> registrations) {
-        Objects.requireNonNull(registrations, "registrations");
+    public void checkForeignServices(ForeignServiceCheckMode mode) {
+        checkForeignServices(mode, ForeignServiceCheck.PROBE_TIMEOUT);
+    }
+
+    /** {@link #checkForeignServices(ForeignServiceCheckMode)} with the wait bound as a test seam. */
+    void checkForeignServices(ForeignServiceCheckMode mode, Duration timeout) {
+        Objects.requireNonNull(mode, "mode");
         if (shuttingDown.get()) {
-            logger.debug("WorkflowExecutor is shutting down — the service-name check is not started");
+            logger.debug("WorkflowExecutor is shutting down — the shared-table check is not run");
             return;
         }
-        var types = Set.copyOf(registrations.keySet());
-        Thread.ofVirtual().name(ForeignServiceCheck.THREAD_NAME)
-                .start(() -> ForeignServiceCheck.run(store, serviceName, types));
+        ForeignServiceCheck.run(store, serviceName, mode, timeout);
     }
 
     /**
@@ -2407,10 +2659,8 @@ public final class WorkflowExecutor {
                             + "0 still running ({})",
                     deadline.elapsed().toMillis(), deadline.budget().toMillis(), inFlightAtStart, steps);
         } else {
-            var recoveredBy = distributedLock != null
-                    ? "their instance locks expire after " + instanceLockTtl.toMillis()
-                            + " ms (maestro.lock.ttl) and a peer recovers them"
-                    : "a restarted node recovers them";
+            var recoveredBy = "their instance locks expire after " + instanceLockTtl.toMillis()
+                    + " ms (maestro.lock.ttl) and a peer recovers them";
             logger.warn("Maestro shutdown hit its {} ms deadline (maestro.shutdown.timeout): {} of {} run(s) still "
                             + "running {}; shutdown does not interrupt them and records nothing for them; {} ({})",
                     deadline.budget().toMillis(), stillRunning.size(), inFlightAtStart,
@@ -2796,31 +3046,40 @@ public final class WorkflowExecutor {
             Method workflowMethod,
             @Nullable JsonNode inputPayload,
             boolean replaying,
-            WorkflowInstanceLockManager.@Nullable Acquisition preAcquired,
+            @Nullable LockHandle preAcquired,
             TaskQueueGovernor.@Nullable SlotReservation reservation
     ) {
         // The per-instance distributed lock is the admission guard: it stops a
         // second node from starting a redundant run while this one is live.
         // Fresh starts acquire it in startWorkflow (before createInstance) and
-        // pass the result in; resume paths acquire here. Held — renewed — until
-        // executeWorkflow's finally, including parked waits and saga
-        // compensation. What stops a run that LOST the lock from persisting
-        // progress is not the lock but the lease fence below (Issue 11).
-        var acquisition = preAcquired != null
-                ? preAcquired
-                : instanceLockManager.tryAcquire(snapshot.workflowId());
-        if (acquisition == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE) {
-            if (replaying) {
-                logger.info("Workflow '{}' instance lock is held elsewhere — skipping resume",
-                        snapshot.workflowId());
+        // launch only once it is ACQUIRED; resume paths acquire here. Held —
+        // renewed — until executeWorkflow's finally, including parked waits and
+        // saga compensation. No run launches without it (P3): a resume that
+        // cannot take it is skipped, and the next recovery pass tries again.
+        // What stops a run that LOST the lock from persisting progress is not
+        // the lock but the lease fence below (Issue 11).
+        // The handle is the run's own (L1): every release and every lost-lock
+        // stand-down below concerns this handle, never whatever a newer run of
+        // the same id holds.
+        LockHandle handle;
+        if (preAcquired != null) {
+            handle = preAcquired;
+        } else {
+            var acquired = instanceLockManager.acquire(snapshot.workflowId());
+            handle = acquired.handle();
+            if (handle == null) {
+                var heldElsewhere = acquired.outcome() == WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE;
+                var inPass = LOCK_UNAVAILABLE_IN_PASS.get();
+                if (inPass != null && !heldElsewhere) {
+                    inPass[0] = true;
+                }
+                logger.info("Workflow '{}' instance lock {} — skipping resume{}", snapshot.workflowId(),
+                        heldElsewhere ? "is held elsewhere" : "could not be taken (lock backend unavailable)",
+                        heldElsewhere || isRecoveryPollerRunning() ? ""
+                                : "; this node runs no recovery poller (maestro.recovery.enabled=false), so it "
+                                        + "waits until a node starts with recovery");
                 return false;
             }
-            // Fresh start: createInstance just succeeded, so this node is the
-            // legitimate owner — a held lock here is a stale-lock anomaly
-            logger.warn("Could not acquire instance lock for new workflow '{}' — proceeding; "
-                            + "the lease fence and the store's unique index remain the "
-                            + "duplicate-execution guards",
-                    snapshot.workflowId());
         }
 
         // The instance this run executes: the fresh start's own row, or — on a
@@ -2828,8 +3087,7 @@ public final class WorkflowExecutor {
         // epoch this run will write under. Assigned exactly once on each path.
         WorkflowInstance instance;
         if (replaying) {
-            // Both store calls below run while this node may already hold the
-            // lock. A store fault here (a StoreUnavailableException from a DB
+            // Both store calls below run while this node holds the lock. A store fault here (a StoreUnavailableException from a DB
             // blip, or any other store error) must not leak the handle: left
             // in heldLocks it would be renewed forever, every later tryAcquire
             // would answer HELD_ELSEWHERE, and the workflow would be
@@ -2837,34 +3095,40 @@ public final class WorkflowExecutor {
             try {
                 // Close the recovery-query→resume race: the previous owner may
                 // have finished the workflow after the recovery snapshot was
-                // taken. Run the re-check regardless of lock acquisition — with
-                // no lock backend (NO_BACKEND) the snapshot can be just as stale.
+                // taken and released the lock this node just acquired.
                 var current = store.getInstance(snapshot.workflowId());
                 if (current.isEmpty() || !current.get().status().isActive()) {
                     logger.debug("Workflow '{}' turned terminal before resume — skipping",
                             snapshot.workflowId());
-                    releaseIfAcquired(acquisition, snapshot.workflowId());
+                    instanceLockManager.release(snapshot.workflowId(), handle);
                     return false;
                 }
                 // Adoption (Issue 11): bump the row's lease epoch under its
                 // version CAS. From this write on, every run-scoped write by any
                 // EARLIER holder of this instance — a node frozen past its lock
-                // TTL, a partitioned peer, a no-lock-backend twin — is fenced by
-                // the store, whatever its lock renewer did or did not notice.
-                // Losing this CAS means another adopter got here first in the
-                // same instant; this node yields exactly as if the lock had been
-                // held elsewhere. The bump happens on every adoption, NO_BACKEND
-                // included: two lock-less nodes adopting in turn would fence
-                // each other, which is why multi-node without a lock backend is
-                // unsupported (documented).
+                // TTL, a partitioned peer — is fenced by the store, whatever its
+                // lock renewer did or did not notice. Losing this CAS means
+                // another adopter got here first in the same instant; this node
+                // yields exactly as if the lock had been held elsewhere.
+                // Revalidate this run's own handle before moving the fence
+                // (PR #72 review): a handle already reported lost may mean a
+                // peer holds the lock and has adopted — bumping the epoch now
+                // would fence that peer. A loss not yet noticed is left to the
+                // version CAS (a peer that adopted after our read) and the
+                // registration check below.
+                if (!instanceLockManager.holds(snapshot.workflowId(), handle)) {
+                    logger.info("Workflow '{}' lost its instance lock before adoption — skipping resume",
+                            snapshot.workflowId());
+                    return false;
+                }
                 var adopted = adopt(current.get());
                 if (adopted == null) {
-                    releaseIfAcquired(acquisition, snapshot.workflowId());
+                    instanceLockManager.release(snapshot.workflowId(), handle);
                     return false;
                 }
                 instance = adopted;
             } catch (RuntimeException | Error e) {
-                releaseIfAcquired(acquisition, snapshot.workflowId());
+                instanceLockManager.release(snapshot.workflowId(), handle);
                 throw e;
             }
         } else {
@@ -2938,11 +3202,12 @@ public final class WorkflowExecutor {
                                     .run(() -> {
                                         entered[0] = true;
                                         executeWorkflow(ctx, instance, workflowImpl, workflowMethod,
-                                                inputPayload, compensationStack, parallelCompensation, reservation);
+                                                inputPayload, compensationStack, parallelCompensation, reservation,
+                                                handle);
                                     });
                         } catch (Throwable t) {
                             if (!entered[0]) {
-                                runThreadDiedBeforeItsBody(instance.workflowId(), reservation, t);
+                                runThreadDiedBeforeItsBody(instance.workflowId(), reservation, handle, t);
                             }
                             throw t; // control-flow Errors included: cleaned up, then rethrown unchanged
                         } finally {
@@ -2956,11 +3221,31 @@ public final class WorkflowExecutor {
             // Register before starting to prevent the race where a fast workflow
             // finishes and removes itself before the put() below executes
             running = new RunningWorkflow(thread, instance, instance.workflowType(), workflowImpl,
-                    cancellation, new CountDownLatch(1));
+                    cancellation, new CountDownLatch(1), handle);
+            // L1: register only while this launch still holds its own handle.
+            // A run already registered under the id then lost its lock (we hold
+            // it), so replacing it is right; but a launch whose handle was lost
+            // before it registered must not replace a newer run that holds the
+            // lock now — it does not run at all.
+            var self = running;
             // Tracked for the drain before it is registered, and until after its
             // lock release, so it is never in neither map while it holds the lock.
             unreleasedRuns.put(thread, running);
-            runningWorkflows.put(instance.workflowId(), running);
+            var registered = runningWorkflows.compute(instance.workflowId(),
+                    (_, existing) -> instanceLockManager.holds(instance.workflowId(), handle) ? self : existing);
+            if (registered != running) {
+                logger.info("Workflow '{}' lost its instance lock before its run registered — not launching it",
+                        instance.workflowId());
+                unreleasedRuns.remove(thread);
+                running.launched().countDown();
+                return false; // nothing registered; the lock is no longer ours to release
+            }
+            // A loss reported between the check above and the put was matched
+            // against the run registered then, not this one: re-check, and stand
+            // this run down at its first stop point if its handle is gone.
+            if (!instanceLockManager.holds(instance.workflowId(), handle)) {
+                cancellation.requestStale("instance lock lost before the run started");
+            }
             // R22(1): shutdown() requests a shutdown on every run it finds
             // registered. A launch that passed its shuttingDown check before
             // shutdown began but registers only after that loop ran would be
@@ -2989,7 +3274,7 @@ public final class WorkflowExecutor {
                     }
                 }
                 try {
-                    instanceLockManager.release(instance.workflowId());
+                    instanceLockManager.release(instance.workflowId(), handle);
                 } catch (RuntimeException | Error releaseFailure) {
                     e.addSuppressed(releaseFailure);
                 }
@@ -3023,6 +3308,7 @@ public final class WorkflowExecutor {
      */
     private void runThreadDiedBeforeItsBody(String workflowId,
                                             TaskQueueGovernor.@Nullable SlotReservation reservation,
+                                            LockHandle handle,
                                             Throwable cause) {
         // Each step in its own guard, nothing allocated ahead of them: a
         // failure in one step, or in setting it up, never skips the next.
@@ -3045,16 +3331,9 @@ public final class WorkflowExecutor {
             cause.addSuppressed(cleanupFailure);
         }
         try {
-            instanceLockManager.release(workflowId);
+            instanceLockManager.release(workflowId, handle);
         } catch (RuntimeException | Error cleanupFailure) {
             cause.addSuppressed(cleanupFailure);
-        }
-    }
-
-    /** Releases the instance lock this launch acquired, if it did acquire one. */
-    private void releaseIfAcquired(WorkflowInstanceLockManager.Acquisition acquisition, String workflowId) {
-        if (acquisition == WorkflowInstanceLockManager.Acquisition.ACQUIRED) {
-            instanceLockManager.release(workflowId);
         }
     }
 
@@ -3101,7 +3380,8 @@ public final class WorkflowExecutor {
             @Nullable JsonNode inputPayload,
             CompensationStack compensationStack,
             boolean parallelCompensation,
-            TaskQueueGovernor.@Nullable SlotReservation reservation
+            TaskQueueGovernor.@Nullable SlotReservation reservation,
+            LockHandle lockHandle
     ) {
         try {
             // F8: take this run's workflow slot on its task queue — blocking
@@ -3109,6 +3389,10 @@ public final class WorkflowExecutor {
             // no-op for an unbounded queue). Released first in finally below.
             // A recovered run claims the slot or queue place its pass reserved.
             taskQueueGovernor.acquireWorkflowSlot(ctx.taskQueue(), ctx.workflowId(), reservation);
+            // Every queue, bounded or not (PR #72 review): a run whose lock was
+            // reported lost after it registered, before its thread got here, has
+            // executed nothing — it stands down before any workflow code runs.
+            ctx.cancellation().throwIfStale(ctx.workflowId());
             if (taskQueueGovernor.availableWorkflowSlots(ctx.taskQueue()).isPresent()) {
                 // A bounded run may have waited for its slot while this node
                 // began shutting down, or while the workflow was terminated.
@@ -3313,8 +3597,8 @@ public final class WorkflowExecutor {
             // Remove-then-release: a concurrent recovery attempt in the gap
             // still sees the lock held and skips — retried by the next poll.
             // Only this run's own entry (matched by its thread, as
-            // runThreadDiedBeforeItsBody does): without a lock backend another
-            // run of this id may have registered over it, and its entry stays.
+            // runThreadDiedBeforeItsBody does): if this run lost its lock, a
+            // new run of this id may have registered over it, and its entry stays.
             var self = Thread.currentThread();
             runningWorkflows.computeIfPresent(ctx.workflowId(), (_, r) -> r.thread() == self ? null : r);
             // Drop orphaned wake permits (e.g. duplicate signal deliveries
@@ -3325,18 +3609,16 @@ public final class WorkflowExecutor {
             // a permit fails its re-check (the run is gone) and drops it, and
             // no new run can be registered until the release below. That last
             // step relies on the instance lock: a new run of this id is
-            // registered only by a node that acquired the lock. It does not
-            // hold when the new run's launch proceeded unlocked — with no lock
-            // backend, or when the lock backend threw during that launch's
-            // acquire (tryAcquire answers NO_BACKEND and the run launches
-            // anyway). Then a new run of the id (a recovery or a retry) can
-            // register here between the removal and clearPending, and a permit
-            // stored for it can be erased. The cost is latency, never a lost
-            // wake: that run's park finds no permit and wakes at its next
-            // re-check, at most one wake-recheck interval later
-            // (traced, not tested).
+            // registered only by a node that acquired the lock, and no launch
+            // proceeds without it (P3). It does not hold when THIS run lost its
+            // lock before it ended (a renewal reported it lost, or it expired):
+            // then a new run of the id can register here between the removal
+            // and clearPending, and a permit stored for it can be erased. The
+            // cost is latency, never a lost wake: that run's park finds no
+            // permit and wakes at its next re-check, at most one wake-recheck
+            // interval later (traced, not tested).
             parkingLot.clearPending(ctx.workflowId());
-            instanceLockManager.release(ctx.workflowId());
+            instanceLockManager.release(ctx.workflowId(), lockHandle);
             // Drop the sticky terminate poison: this run is over, so a future
             // run of the same workflowId must be able to park again
             parkingLot.clearTerminated(ctx.workflowId());
@@ -4122,5 +4404,6 @@ public final class WorkflowExecutor {
      * shutdown drain never joins a thread that is not started yet.
      */
     record RunningWorkflow(Thread thread, WorkflowInstance instance, String workflowType,
-                           Object workflowImpl, RunCancellation cancellation, CountDownLatch launched) {}
+                           Object workflowImpl, RunCancellation cancellation, CountDownLatch launched,
+                           LockHandle lockHandle) {}
 }

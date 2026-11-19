@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -48,7 +49,7 @@ class WorkflowVersionRecoveryTest {
     void setUp() {
         store = new VersionedInMemoryStore();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
     }
 
     @AfterEach
@@ -74,7 +75,7 @@ class WorkflowVersionRecoveryTest {
         // Node stops mid-park; a replacement running NEW code adopts the instance.
         nodeA.shutdown();
         nodeA = null;
-        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).build();
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).build();
         nodeB.recoverWorkflows(Map.of("VersionedWorkflow",
                 new WorkflowRegistration("VersionedWorkflow", "default",
                         () -> new VersionedWorkflow(3), method)));

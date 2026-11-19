@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -49,7 +50,7 @@ class ParkKeyCollisionTest {
 
     private void newExecutor() {
         store = new VersionedInMemoryStore();
-        executor = WorkflowExecutor.builder(store, serializer, "svc")
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .build();

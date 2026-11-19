@@ -103,6 +103,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void workflowStartDeferred(WorkflowInfo w, boolean lockHeldElsewhere) {
+        fanOut("workflowStartDeferred", d -> d.workflowStartDeferred(w, lockHeldElsewhere));
+    }
+
+    @Override
     public void workflowCompleted(WorkflowInfo w) {
         fanOut("workflowCompleted", d -> d.workflowCompleted(w));
     }

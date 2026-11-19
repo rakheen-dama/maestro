@@ -20,11 +20,18 @@ import java.util.Set;
  * stale lock holders from performing work after their lock has expired
  * and been acquired by another caller.
  *
- * <h2>Fallback Behavior</h2>
- * <p>If the distributed lock backend is unavailable, the engine proceeds
- * unlocked — the store's unique event constraint and optimistic instance
- * versioning remain the correctness backstop. See the architecture
- * documentation for details.
+ * <h2>Mandatory</h2>
+ * <p>A {@code DistributedLock} is required: {@code WorkflowExecutor.Builder.build()}
+ * fails without one, and there is no lock-less mode (pilot readiness P3).
+ * When the backend is unavailable the engine does not run the workflow
+ * unlocked: a start is persisted and left to recovery, and a resume is
+ * skipped until a later recovery pass can take the lock. The lock is the
+ * admission guard; the store's lease fence, unique event constraint and
+ * optimistic instance versioning keep persisted state correct when a lock is
+ * lost. {@code PostgresDistributedLock} ({@code maestro-store-postgres}) is
+ * the only supported implementation; {@code maestro-test}'s
+ * {@code InMemoryDistributedLock} is for tests. See
+ * {@code docs/support-matrix.md}.
  *
  * <h2>Thread Safety</h2>
  * <p>Implementations must be thread-safe. Multiple virtual threads will

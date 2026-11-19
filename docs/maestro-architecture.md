@@ -118,7 +118,7 @@ graph TB
 | `maestro-admin-client` | A plain `AdminEventPublisher` class, not auto-configured; no service needs it. Services publish lifecycle events through `maestro-messaging-kafka`. Its future is [Issue 52](open-issues.md#issue-52). | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
 
-> **One implementation per SPI ships today.** `maestro-store-postgres` provides both the `WorkflowStore` and the `DistributedLock` (same database, same `DataSource`); `maestro-messaging-kafka` is the only `WorkflowMessaging`. The SPIs remain the seam — `maestro-test` provides in-memory implementations of all three — but there is no second production backend to choose between.
+> **One implementation per SPI ships today.** `maestro-store-postgres` provides both the `WorkflowStore` and the `DistributedLock` (same database, same `DataSource`); `maestro-messaging-kafka` is the only `WorkflowMessaging`. The SPIs remain the seam — `maestro-test` provides in-memory implementations of all three — but there is no second production backend to choose between. `WorkflowStore` is internal until 1.0, and a `DistributedLock` is mandatory; see [`docs/support-matrix.md`](support-matrix.md).
 
 ---
 
@@ -615,8 +615,9 @@ flowchart TD
     B --> C["Flyway migrations<br/>(maestro.store.schema.mode)"]
     C --> E["Create activity proxies"]
     E --> D["Register @DurableWorkflow types"]
-    D --> F["Start Kafka consumers"]
-    F --> G["StartupRecoveryRunner starts the loops:<br/>recovery poller, timer poller,<br/>signal janitor, retention sweeper,<br/>service-name check"]
+    D --> S["Shared-table check<br/>(maestro.store.foreign-service-check)"]
+    S --> F["Start Kafka consumers"]
+    F --> G["StartupRecoveryRunner starts the loops:<br/>recovery poller, timer poller,<br/>signal janitor, retention sweeper"]
     G --> L["Ready"]
     G -.-> R["Recovery poller's first pass,<br/>on its own thread: this service's<br/>active workflows, pages of 200"]
     R --> J["Adopt as task-queue capacity allows;<br/>replay + resume each"]

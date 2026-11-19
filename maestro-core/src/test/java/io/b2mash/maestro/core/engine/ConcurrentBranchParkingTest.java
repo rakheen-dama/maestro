@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.exception.WorkflowTerminatedException;
@@ -95,7 +96,7 @@ class ConcurrentBranchParkingTest {
     }
 
     private WorkflowExecutor newExecutor(VersionedInMemoryStore store) {
-        return WorkflowExecutor.builder(store, serializer, "test-service")
+        return WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .wakeRecheckInterval(SHORT_RECHECK)
                 .build();
     }

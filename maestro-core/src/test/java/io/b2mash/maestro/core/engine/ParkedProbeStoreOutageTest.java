@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
@@ -74,7 +75,7 @@ class ParkedProbeStoreOutageTest {
         store = new OutageStore();
         serializer = new PayloadSerializer(new ObjectMapper());
         observer = new RecordingEngineObserver();
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .wakeRecheckInterval(SHORT_RECHECK)
                 .observer(observer)
                 .build();

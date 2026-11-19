@@ -12,7 +12,6 @@ import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 
@@ -58,7 +57,7 @@ class WorkflowStoreHygieneDefaultsTest {
 
     @Test
     void theForeignCountsDefaultIsEmpty() {
-        assertEquals(Map.of(), store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order"), 21));
+        assertEquals(Map.of(), store.getActiveInstanceCountsUnderOtherServices("orders", 21));
     }
 
     private record Purge(WorkflowStatus status, Instant cutoff, int batchSize) {

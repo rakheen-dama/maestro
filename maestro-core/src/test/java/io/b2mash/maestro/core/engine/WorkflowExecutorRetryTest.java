@@ -1,10 +1,12 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.LockAcquisitionException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowInstance;
@@ -73,7 +75,7 @@ class WorkflowExecutorRetryTest {
         store = new VersionedInMemoryStore();
         messaging = new RecordingMessaging();
         serializer = new PayloadSerializer(JsonMapper.builder().build());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service")
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .messaging(messaging)
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .shutdownTimeout(Duration.ofSeconds(5))
@@ -260,7 +262,7 @@ class WorkflowExecutorRetryTest {
                 }
                 try {
                     results.add(executor.retryWorkflow("retry-concurrent", registration));
-                } catch (OptimisticLockException e) {
+                } catch (OptimisticLockException | LockAcquisitionException e) {
                     results.add(e);
                 }
             };
@@ -277,7 +279,9 @@ class WorkflowExecutorRetryTest {
             for (var r : results) {
                 assertTrue(r == WorkflowExecutor.RetryOutcome.RETRIED
                                 || r == WorkflowExecutor.RetryOutcome.NOT_FAILED
-                                || r instanceof OptimisticLockException,
+                                || r instanceof OptimisticLockException
+                                // lock before reopen: the loser can also find the winner's lock
+                                || r instanceof LockAcquisitionException,
                         "the loser must be a clean no-op or a transient conflict, not silent corruption: " + r);
             }
         } finally {
@@ -292,8 +296,12 @@ class WorkflowExecutorRetryTest {
     // ── Cross-node lock contention ──────────────────────────────────────
 
     @Test
-    @DisplayName("retry CASes to RUNNING even when another node holds the instance lock, and leaves it for recovery")
-    void retryWithLockHeldElsewhere_leavesInstanceRunningForRecovery() throws Exception {
+    @DisplayName("retry with the instance lock held elsewhere writes nothing and fails transiently (lock before reopen)")
+    void retryWithLockHeldElsewhere_writesNothingAndFailsTransiently() throws Exception {
+        // PR #72 review reverses this test's former expectation (the CAS landed
+        // and the row was left RUNNING for recovery): Retry now takes the lock
+        // before it reopens the row, so a held lock mutates nothing and the
+        // command is redelivered.
         var lock = new MapLock();
         var lockedExecutor = WorkflowExecutor.builder(store, serializer, "test-service")
                 .distributedLock(lock)
@@ -326,11 +334,13 @@ class WorkflowExecutorRetryTest {
             lock.holdForeign(WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX + "workflow:retry-lock");
 
             var registration = new WorkflowRegistration("ParkedWorkflow", "default", () -> workflow, method);
-            var outcome = lockedExecutor.retryWorkflow("retry-lock", registration);
+            assertThrows(LockAcquisitionException.class,
+                    () -> lockedExecutor.retryWorkflow("retry-lock", registration));
 
-            assertEquals(WorkflowExecutor.RetryOutcome.LOCK_HELD_ELSEWHERE, outcome);
-            assertEquals(WorkflowStatus.RUNNING, store.getInstance("retry-lock").orElseThrow().status(),
-                    "the CAS must still land — the instance is left RUNNING for the recovery poller");
+            var after = store.getInstance("retry-lock").orElseThrow();
+            assertEquals(WorkflowStatus.FAILED, after.status(), "nothing was reopened");
+            assertEquals(0, after.version());
+            assertEquals(1, store.getEvents(instanceId).size(), "no failure memo was deleted");
         } finally {
             lockedExecutor.shutdown();
         }

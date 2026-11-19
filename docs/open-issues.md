@@ -22,6 +22,77 @@ issues 29, 30, 33, 36, 37, 38 and 39 are **resolved** and 64 is partly
 resolved; issues 40–79 were filed along the way (no Issue 71 was filed; 75
 and 76 are held for the load-test package), and 80 onward by its
 housekeeping package.
+**Updated:** 2026-11-18, pilot-readiness P3 — every open issue triaged against
+`docs/support-matrix.md`: five closed (31, 62, 74, 78, 79), the rest
+labelled `blocks-pilot`, `blocks-1.0` or `limitation`; see the ranked index
+below.
+
+## Open issues by severity (pilot-readiness triage, 2026-11-18)
+
+Every open issue carries one label, set against `docs/support-matrix.md`:
+
+- **`blocks-pilot`** — must be closed before the pilot (this milestone's P1, P2 and P4 work).
+- **`blocks-1.0`** — must be fixed or decided before the 1.0 API and behaviour freeze.
+- **`limitation`** — known and documented; acceptable for the pilot.
+
+Within a label the list is ranked, most important first. Five issues were closed by this
+triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Nothing below was deleted or renumbered; each section keeps its text and anchor.
+
+**`blocks-pilot`** (12)
+
+1. [41](#issue-41) — An older node replaying history appended by a newer node is untested
+2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
+3. [80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it
+4. [70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown
+5. [69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`
+6. [64](#issue-64) — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call
+7. [66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query
+8. [67](#issue-67) — Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass
+9. [68](#issue-68) — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass
+10. [65](#issue-65) — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors`
+11. [81](#issue-81) — An `Error` from an observer callback escapes the engine's guard
+12. [75](#issue-75) — On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN`
+
+**`blocks-1.0`** (10)
+
+1. [44](#issue-44) — Workflow input is read with the raw parameter class
+2. [49](#issue-49) — Future-typed activity results are not rejected at startup
+3. [48](#issue-48) — No startup check that the configured mapper reads back what it writes
+4. [43](#issue-43) — Workflow input on Postgres differs between the first run and recovery
+5. [42](#issue-42) — A replayed activity failure keeps only the exception's type and message
+6. [45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload
+7. [83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged
+8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
+9. [52](#issue-52) — `maestro-admin-client` has no wired component
+10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
+
+**`limitation`** (23)
+
+1. [12](#issue-12) — Recovery polling doesn't scale
+2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
+3. [28](#issue-28) — ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth
+4. [73](#issue-73) — No health or readiness detail says the startup recovery pass is still running
+5. [86](#issue-86) — A store fault the guard retries away is logged at `DEBUG` only and counted nowhere
+6. [63](#issue-63) — The dashboard reports "Retry command sent" for a Retry the engine refused
+7. [77](#issue-77) — Terminal workflows recorded under a `service_name` no node runs are never purged
+8. [59](#issue-59) — Retry refuses when the failure's handling consumed a signal
+9. [61](#issue-61) — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry
+10. [60](#issue-60) — Two independently failed `parallel()` branches need two Retries
+11. [51](#issue-51) — Timer deadlines are armed on the scheduling node's clock
+12. [40](#issue-40) — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration
+13. [46](#issue-46) — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay
+14. [47](#issue-47) — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws
+15. [72](#issue-72) — The test kit is unbounded by default and its `recover()` is ungated
+16. [82](#issue-82) — Two `parallel()` branches awaiting the same signal name at once collide on one park key
+17. [84](#issue-84) — The wake listener turns autocommit on for its pooled connection and never restores it
+18. [53](#issue-53) — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails`
+19. [54](#issue-54) — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists
+20. [55](#issue-55) — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis
+21. [56](#issue-56) — An unqualified `byte[]` template point that several templates match is never failed at startup
+22. [57](#issue-57) — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once
+23. [58](#issue-58) — The `byte[]` template check runs before Maestro's consumers only by bean-registration order
+
+---
 
 This document is self-contained. You should not need to read the PR, the commit
 history, or `docs/test-plan.md` to act on anything here — though
@@ -72,16 +143,19 @@ Only active workflows are recoverable.
 
 | SPI | Job | Implementations |
 |---|---|---|
-| `WorkflowStore` | Durable state — instances, events, signals, timers | Postgres (via `maestro-store-jdbc`) |
+| `WorkflowStore` | Durable state — instances, events, signals, timers | Postgres (via `maestro-store-jdbc`); internal until 1.0 |
 | `WorkflowMessaging` | Signal transport, lifecycle events | Kafka (`maestro-messaging-kafka`) |
 | `DistributedLock` | Instance locking, leader election | Postgres row locks (`maestro-store-postgres`) |
 
 `maestro-test` has an in-memory implementation of each, for unit tests.
 
-**Locks are an optimisation, not the correctness backstop.** The SPI explicitly
-says the engine proceeds unlocked if the lock backend is unavailable; the unique
-event index and optimistic versioning are what actually keep state correct. Keep
-this in mind — several issues below are only sensible in that light.
+**Locks are the admission guard, not the correctness backstop.** The lease
+fence, the unique event index and optimistic versioning are what keep state
+correct when a lock is lost. Older sections below were written when the SPI said
+the engine proceeds unlocked if the lock backend is unavailable; since
+pilot readiness P3 (2026-11-18) a `DistributedLock` is mandatory and no run
+executes without its instance lock (`docs/support-matrix.md`). Several issues
+below are only sensible in the earlier light.
 
 ### Module map
 
@@ -354,11 +428,11 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [9](#issue-9) | Activity lock prefix ignores `maestro.lock.key-prefix` | Library defect | Low | **Resolved** |
 | [10](#issue-10) | Four modules have no tests at all | Testing gap | Medium | **Resolved** |
 | [11](#issue-11) | Lost locks don't stop the workflow (no fencing) | Library gap | Medium | **Fixed** — lease epoch fences every run-scoped write (V6) |
-| [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | Open, by design — partly addressed 2026-11-11 (batched renewal, paged service-scoped scan) |
+| [12](#issue-12) | Recovery polling doesn't scale | Library gap — **known limitation** | Low now | `limitation` — Open, by design — partly addressed 2026-11-11 (batched renewal, paged service-scoped scan) |
 | [13](#issue-13) | `CANCELLED` timers can strand a replaying workflow | Library defect | Medium | **Resolved** |
 | [14](#issue-14) | `SagaManager` re-appends `COMPENSATION_STARTED` on replay | Library gap | Low | **Resolved** |
 | [15](#issue-15) | Admin dashboard retry/terminate signals are unconsumed | Library gap | Medium | **Resolved** |
-| [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | Open — ruled, guard is the supported behaviour |
+| [16](#issue-16) | Retrying a compensated saga is guarded off, not supported | Library gap | Medium | `limitation` — Open — ruled, guard is the supported behaviour |
 | [17](#issue-17) | Cross-node timer fires never wake the sleeping workflow | Library defect | High | **Resolved** |
 | [18](#issue-18) | A stale run's duplicate append is recorded as workflow failure | Library defect | High | **Resolved** |
 | [19](#issue-19) | Timed-out awaits replay nondeterministically (late signal consumed at the gap) | Library defect | High | **Resolved** |
@@ -370,10 +444,10 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [25](#issue-25) | `maestro.worker.*` is documented but wholly unimplemented | Library gap — docs + config | Medium | **Resolved** |
 | [26](#issue-26) | Terminal instance write and terminal event append are two non-transactional writes | Library gap — durability contract | Medium | **Resolved** |
 | [27](#issue-27) | A redelivery status-write failure can let a disabled-redelivery row be reclaimed and reprocessed | Library gap — durability contract | Medium | **Resolved** |
-| [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | **Open by design** |
+| [28](#issue-28) | ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth | Structural limitation | Medium | `limitation` — **Open by design** |
 | [29](#issue-29) | Shutdown never interrupts threads blocked waiting for a task-queue slot | Library gap — shutdown latency | Low | **Resolved** (WP5) |
 | [30](#issue-30) | Recovery admission is not gated by task-queue capacity | Library gap — load distribution | Medium | **Resolved** (WP6) |
-| [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | Open |
+| [31](#issue-31) | Services sharing one set of `maestro_*` tables fire each other's timers | Library gap — multi-service wake latency | Low | **Closed** (P3: out of scope) |
 | [32](#issue-32) | A Valkey outage stalls every signal send after the signal is durable, so caller retries persist duplicate signals | Library defect | Medium | **Resolved** |
 | [33](#issue-33) | Admin retry attributes the failure to the highest-sequenced `SIGNAL_TIMEOUT`, which can be a caught gate | Library defect — wrong failure attribution on retry | Medium | **Resolved** |
 | [34](#issue-34) | A store outage during a state write fails a healthy workflow and compensates work that succeeded | Library defect | High | **Resolved** |
@@ -382,54 +456,54 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [37](#issue-37) | `WorkflowExecutor` has ten public constructors | Library gap — API design | Low | **Resolved** |
 | [38](#issue-38) | `PostgresWakeListener.close()` logs a WARN with a stack trace at every shutdown with a pooled `DataSource` | Library defect — log noise | Low | **Resolved** |
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | **Resolved** (WP8) |
-| [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | Open |
-| [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | Open |
-| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | Open |
-| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | Open |
-| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | Open |
-| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | Open |
-| [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | Open |
-| [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | Open |
-| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | Open |
-| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | Open |
-| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | Open |
-| [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | Open |
-| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | Open — maintainer to decide |
-| [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | Open |
-| [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | Open |
-| [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | Open |
-| [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | Open |
-| [57](#issue-57) | The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once | Library gap — startup check side effects | Low | Open |
-| [58](#issue-58) | The `byte[]` template check runs before Maestro's consumers only by bean-registration order | Library gap — startup ordering | Low | Open |
-| [59](#issue-59) | Retry refuses when the failure's handling consumed a signal | Library gap — admin retry | Medium | Open |
-| [60](#issue-60) | Two independently failed `parallel()` branches need two Retries | Library gap — admin retry | Low | Open |
-| [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | Open |
-| [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | Open |
-| [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | Open |
-| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | Partly resolved (WP5: the renewer); the cleaner and the four core pollers open |
-| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | Open |
-| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | Open |
-| [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | Open |
-| [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | Open |
-| [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | Open |
-| [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | Open |
-| [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | Open |
-| [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | Open |
-| [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | Open |
-| [75](#issue-75) | On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN` | Docs gap — health and probes | Low–Medium | Open |
+| [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | `limitation` — Open |
+| [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | `blocks-pilot` — Open |
+| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | `blocks-1.0` — Open |
+| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | `blocks-1.0` — Open |
+| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | `blocks-1.0` — Open |
+| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | `blocks-1.0` — Open |
+| [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | `limitation` — Open |
+| [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
+| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | `blocks-1.0` — Open |
+| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | `blocks-1.0` — Open |
+| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | `blocks-1.0` — Open |
+| [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | `limitation` — Open |
+| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | `blocks-1.0` — Open — maintainer to decide |
+| [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | `limitation` — Open |
+| [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | `limitation` — Open |
+| [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | `limitation` — Open |
+| [56](#issue-56) | An unqualified `byte[]` template point that several templates match is never failed at startup | Library gap — startup check coverage | Low | `limitation` — Open |
+| [57](#issue-57) | The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once | Library gap — startup check side effects | Low | `limitation` — Open |
+| [58](#issue-58) | The `byte[]` template check runs before Maestro's consumers only by bean-registration order | Library gap — startup ordering | Low | `limitation` — Open |
+| [59](#issue-59) | Retry refuses when the failure's handling consumed a signal | Library gap — admin retry | Medium | `limitation` — Open |
+| [60](#issue-60) | Two independently failed `parallel()` branches need two Retries | Library gap — admin retry | Low | `limitation` — Open |
+| [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | `limitation` — Open |
+| [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | **Closed** (P3: out of scope) |
+| [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | `limitation` — Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | `blocks-pilot` — Partly resolved (WP5: the renewer); the cleaner and the four core pollers open |
+| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | `blocks-pilot` — Open |
+| [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | `blocks-pilot` — Open |
+| [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | `blocks-pilot` — Open |
+| [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | `blocks-pilot` — Open |
+| [69](#issue-69) | Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` | Library gap — shutdown | Low | `blocks-pilot` — Open |
+| [70](#issue-70) | A run still executing at the shutdown deadline can record a failure caused by bean teardown | Library gap — shutdown | Low–Medium | `blocks-pilot` — Open |
+| [72](#issue-72) | The test kit is unbounded by default and its `recover()` is ungated | Library gap — test fidelity | Low | `limitation` — Open |
+| [73](#issue-73) | No health or readiness detail says the startup recovery pass is still running | Library gap — operability | Low | `limitation` — Open |
+| [74](#issue-74) | Without a lock backend, a recovery pass can adopt a run this node is starting | Library gap — at-least-once window | Low | **Closed** (P3: fixed) |
+| [75](#issue-75) | On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN` | Docs gap — health and probes | Low–Medium | `blocks-pilot` — Open |
 | [76](#issue-76) | Retention purged other services' rows with this service's cutoffs | Library bug — store hygiene | Medium | **Resolved** |
-| [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | Open |
-| [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | Open |
-| [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | Open |
-| [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | Open |
-| [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | Open |
-| [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | Open |
-| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | Open |
-| [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | Open |
-| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | Open |
-| [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | Open |
+| [77](#issue-77) | Terminal workflows recorded under a `service_name` no node runs are never purged | Library gap — retention | Low | `limitation` — Open (reopened after the P3 review) |
+| [78](#issue-78) | In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps | Library gap — shared-table cost | Low | **Closed** (P3: out of scope) |
+| [79](#issue-79) | The service-name check warns about a live co-tenant service that registers the same workflow type names | Library gap — false positive | Low | **Closed** (P3: fixed) |
+| [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | `blocks-pilot` — Open |
+| [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | `blocks-pilot` — Open |
+| [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | `limitation` — Open |
+| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | `blocks-1.0` — Open |
+| [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | `limitation` — Open |
+| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | `blocks-1.0` — Open |
+| [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | `limitation` — Open |
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
-| [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | Open |
+| [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -1217,6 +1291,8 @@ anyone re-reading the raw console, `evidence/task7/soak-console.log`):
 
 ### Issue 12 — Recovery polling doesn't scale {#issue-12}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Bounded since 2026-11-11; fleets larger than the harness are untested (`docs/support-matrix.md`).
+
 > **Partly addressed (2026-11-11, plan 02 "bounded host load").** Two of the
 > three costs below are now bounded; the text that follows is kept as it was
 > filed, and the benchmark further down predates the change and has not been
@@ -1622,6 +1698,8 @@ end-to-end test, not just a controller-layer smoke test.
 <a id="issue-16"></a>
 
 ### Issue 16 — Retrying a compensated saga is guarded off, not supported {#issue-16}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Ruled: the guard is the supported behaviour.
 
 > **Guarded, not fixed.** Found during the final whole-branch review of
 > Issues 13–15, before merge — see `.superpowers/sdd/issues-13-15-plan/final-review.md`
@@ -2871,6 +2949,8 @@ identical and acceptable on all three, not just two of them.
 
 ### Issue 28 — ×1000 sequence partitioning bounds sequential/nested `parallel()` and compensation depth {#issue-28}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Structural, loud and documented (`docs/pitfalls.md`).
+
 > **Open by design (structural).** Filed by the 2026-10-24 bug-fix cycle
 > while closing C1–C4 (`docs/superpowers/plans/2026-10-24-bugfix-cycle/`).
 > The cycle deliberately chose a loud failure
@@ -3099,6 +3179,8 @@ piece of work recommended for this area.
 <a id="issue-31"></a>
 
 ### Issue 31 — Services sharing one set of `maestro_*` tables fire each other's timers {#issue-31}
+
+> **Closed (pilot-readiness P3, 2026-11-18): out of scope.** Services never share Maestro tables (`docs/support-matrix.md`): startup now fails when the tables hold another service's active instances (`maestro.store.foreign-service-check`). Two services polling one timer table is no longer a supported setup.
 
 > **Open.** Filed by the 2026-10-24 bug-fix cycle (plan 06 Task 3, ruling
 > R53) after an intermittent `TracingParallelBranchIT` wedge was traced to it
@@ -3649,6 +3731,8 @@ no WARN, and the connection returned to the pool has no active `LISTEN`.
 
 ### Issue 39 — Workflows recorded under another `service_name` are stranded silently {#issue-39}
 
+> **Superseded (pilot-readiness P3, 2026-11-18).** The startup WARN described below is now a startup *failure* by default (`maestro.store.foreign-service-check` = fail | warn | off), and it counts active rows of any other service name, not only this node's workflow types (Issue 79). See `docs/operations.md` §11.5.
+
 > **Resolved** in WP8 (PR #63, merged 2026-11-17): one advisory query per node
 > start, off the startup path; one WARN per other service_name holding active
 > instances of this node's workflow types. Pinned by
@@ -3687,6 +3771,8 @@ the name and the count, and a node with no such instance logs nothing.
 <a id="issue-40"></a>
 
 ### Issue 40 — Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration {#issue-40}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** An operator-permissions edge of `validate`; documented.
 
 > **Open.** Filed by the review of WP9's production schema guidance
 > (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
@@ -3733,6 +3819,8 @@ pending-migration messages are unchanged.
 
 ### Issue 41 — An older node replaying history appended by a newer node is untested {#issue-41}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Rolling upgrade from the previous release is supported by decision; the two-build rolling test (P4) is what proves it.
+
 > **Open.** Filed by the final review of WP9
 > (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
 
@@ -3773,6 +3861,8 @@ appended.
 <a id="issue-42"></a>
 
 ### Issue 42 — A replayed activity failure keeps only the exception's type and message {#issue-42}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** What a workflow can catch on replay is API semantics.
 
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
@@ -3818,6 +3908,8 @@ and after `crashAfter(n)` + `recover()`.
 
 ### Issue 43 — Workflow input on Postgres differs between the first run and recovery {#issue-43}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** First run and recovery read different input; replay fidelity.
+
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
 
@@ -3861,6 +3953,8 @@ number class.
 
 ### Issue 44 — Workflow input is read with the raw parameter class {#issue-44}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** A generic workflow input fails with `ClassCastException`; a defect in supported use.
+
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
 
@@ -3897,6 +3991,8 @@ reads `Pair`s, live and after recovery.
 
 ### Issue 45 — `collectSignals` throws `NullPointerException` on a signal with a null payload {#issue-45}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** A null signal payload is a supported value.
+
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
 
@@ -3931,6 +4027,8 @@ recovery.
 <a id="issue-46"></a>
 
 ### Issue 46 — An `Error` thrown by a result deserializer fails a recorded activity, live and on replay {#issue-46}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** A custom deserializer that throws an `Error`; a narrow host bug.
 
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
@@ -3976,6 +4074,8 @@ deserializer that throws `OutOfMemoryError` still ends the run as a node error.
 
 ### Issue 47 — A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws {#issue-47}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** A pathological stored number; narrow.
+
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
 
@@ -4018,6 +4118,8 @@ recovers the run and observes an `unknown_event_payload` stand-down, not
 <a id="issue-48"></a>
 
 ### Issue 48 — No startup check that the configured mapper reads back what it writes {#issue-48}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Configuration safety for the payload mapper, before payload formats freeze.
 
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
@@ -4068,6 +4170,8 @@ starts silently.
 
 ### Issue 49 — Future-typed activity results are not rejected at startup {#issue-49}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** API validation: a shape that cannot work should be refused at startup.
+
 > **Open.** Filed by WP1, replay fidelity
 > (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
 
@@ -4111,6 +4215,8 @@ replaced by that test.
 
 ### Issue 50 — The activity proxy keeps two ignored lock parameters {#issue-50}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Public API cleanup (ignored parameters) before the API freezes.
+
 > **Open.** Filed by WP2, wake permits, timer clock and activity lock
 > (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
 
@@ -4153,6 +4259,8 @@ entry point takes a `DistributedLock` or a lock key prefix, and
 <a id="issue-51"></a>
 
 ### Issue 51 — Timer deadlines are armed on the scheduling node's clock {#issue-51}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Documented; every node WARNs on more than 1 s of skew.
 
 > **Open.** Filed by WP2, wake permits, timer clock and activity lock
 > (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
@@ -4202,6 +4310,8 @@ the database clock, and the kit's `advanceTime` tests pass unchanged.
 <a id="issue-52"></a>
 
 ### Issue 52 — `maestro-admin-client` has no wired component {#issue-52}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Module scope is a product decision before 1.0.
 
 > **Open.** Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not decided: this is
@@ -4263,6 +4373,8 @@ purpose is documented and pinned by a test.
 
 ### Issue 53 — The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` {#issue-53}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** TLS settings come from `spring.kafka.*`, as the support matrix says.
+
 > **Open.** Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
 
@@ -4318,6 +4430,8 @@ in the engine's producer and consumer config, with the engine's serializers,
 
 ### Issue 54 — An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists {#issue-54}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** A misconfiguration that fails at startup, loudly.
+
 > **Open.** Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Pre-existing; recorded, not
 > fixed.
@@ -4361,6 +4475,8 @@ host, and the docs state it beside the down-broker case.
 <a id="issue-55"></a>
 
 ### Issue 55 — A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis {#issue-55}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Fails at startup; listed in the release notes' Breaking list.
 
 > **Open.** Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Introduced on that branch;
@@ -4412,6 +4528,8 @@ out, and the two existing assertions still hold or are replaced by a ruling.
 
 ### Issue 56 — An unqualified `byte[]` template point that several templates match is never failed at startup {#issue-56}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Narrow Kafka coexistence check gap; warned about.
+
 > **Open.** Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed; the
 > narrow behaviour was a WP7 ruling.
@@ -4453,6 +4571,8 @@ the two tests above still start.
 <a id="issue-57"></a>
 
 ### Issue 57 — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once {#issue-57}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Narrow Kafka coexistence check side effect.
 
 > **Open.** Filed by WP7's final fix wave, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
@@ -4500,6 +4620,8 @@ no `configure(…)` call on a host serializer.
 
 ### Issue 58 — The `byte[]` template check runs before Maestro's consumers only by bean-registration order {#issue-58}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Ordering holds today; a guard, not a defect.
+
 > **Open.** Filed by WP7's final fix wave, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not fixed.
 
@@ -4534,6 +4656,8 @@ misinjected point fails startup without starting a consumer.
 <a id="issue-59"></a>
 
 ### Issue 59 — Retry refuses when the failure's handling consumed a signal {#issue-59}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Retry planner; refuses rather than corrupts.
 
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
 > Recorded, not fixed.
@@ -4579,6 +4703,8 @@ the same signal again, and no signal row is deleted.
 
 ### Issue 60 — Two independently failed `parallel()` branches need two Retries {#issue-60}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Retry planner; a second Retry completes it.
+
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
 > Recorded, not fixed.
 
@@ -4615,6 +4741,8 @@ sibling's caught gate timeout is still kept.
 <a id="issue-61"></a>
 
 ### Issue 61 — A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry {#issue-61}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Retry planner; falls back to the documented pre-WP3 Retry.
 
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
 > Recorded, not fixed.
@@ -4659,6 +4787,8 @@ replays.
 
 ### Issue 62 — A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry {#issue-62}
 
+> **Closed (pilot-readiness P3, 2026-11-18): out of scope.** The `WorkflowStore` SPI is internal until 1.0 (`docs/support-matrix.md`, the `WorkflowStore` Javadoc): Postgres is the only supported store, and the shipped JDBC store overrides `reopenFailedInstance`. A third-party store is not supported, so a store that keeps the default is not a supported configuration.
+
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
 > Recorded, not fixed.
 
@@ -4691,6 +4821,8 @@ default (MD-4).
 <a id="issue-63"></a>
 
 ### Issue 63 — The dashboard reports "Retry command sent" for a Retry the engine refused {#issue-63}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** The refusal is logged on the service; the dashboard does not show it.
 
 > **Open.** Filed by WP3, admin Retry (2026-11-17, branch `fix/admin-retry`).
 > Recorded, not fixed.
@@ -4726,6 +4858,8 @@ page.
 <a id="issue-64"></a>
 
 ### Issue 64 — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call {#issue-64}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** The pollers and cleaner still interrupt JDBC; P1.
 
 > **Partly resolved** (WP5, PR #60, merged 2026-11-17; follow-up PR #61): the renewer.
 > `WorkflowInstanceLockManager.close(Duration)` no longer interrupts the
@@ -4825,6 +4959,8 @@ renewal failure.
 
 ### Issue 65 — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` {#issue-65}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Loop supervision, P2. Kept `blocks-pilot` after the P3 review: a dead wake listener leaves an operator blind to a real fault — every cross-node signal then waits the 30 s recheck — though the lock-cleaner half alone would be a `limitation`.
+
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
 > `fix/loop-liveness`). Recorded, not fixed.
 
@@ -4881,6 +5017,8 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 
 ### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** P1's design note decides the health probe's interrupt.
+
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
 > `fix/loop-liveness`). Recorded, not fixed. Traced, not tested: the
 > interrupt itself is tested (`MaestroHealthIndicatorTest.aTimedOutProbeIsInterrupted`),
@@ -4932,6 +5070,8 @@ after the store answers again.
 
 ### Issue 67 — Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass {#issue-67}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Health that tells the truth, P2.
+
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
 > `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
 > Traced, not tested.
@@ -4979,6 +5119,8 @@ reads `DOWN`, with its streak in the details, and one that recovers reads
 <a id="issue-68"></a>
 
 ### Issue 68 — A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass {#issue-68}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Health that tells the truth, P2.
 
 > **Open.** Filed by WP4, loop liveness (2026-11-17, branch
 > `fix/loop-liveness`), from the whole-branch review. Recorded, not fixed.
@@ -5040,6 +5182,8 @@ an observer `Error` on one lost lock does not delay the others.
 <a id="issue-69"></a>
 
 ### Issue 69 — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` {#issue-69}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Shutdown completeness, P1.
 
 > **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
 > Recorded, not fixed. Traced, not tested.
@@ -5105,6 +5249,8 @@ shutdown phase begins, and none consumes after the `DataSource` is closed.
 
 ### Issue 70 — A run still executing at the shutdown deadline can record a failure caused by bean teardown {#issue-70}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Shutdown completeness, P1.
+
 > **Open.** Filed by WP5, shutdown (2026-11-17, branch `fix/shutdown-deadline`).
 > Recorded, not fixed. Traced, not tested.
 
@@ -5152,6 +5298,8 @@ nothing and is recovered by a peer, pinned on the in-memory executor.
 
 ### Issue 72 — The test kit is unbounded by default and its `recover()` is ungated {#issue-72}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Test-kit fidelity; opt-in limits exist.
+
 > **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
 > `fix/recovery-capacity`): coordinator call C3's follow-up. Recorded, not
 > fixed.
@@ -5192,6 +5340,8 @@ pinned by kit tests.
 <a id="issue-73"></a>
 
 ### Issue 73 — No health or readiness detail says the startup recovery pass is still running {#issue-73}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** The log line reports the startup pass; no readiness detail yet.
 
 > **Open.** Filed by WP6, recovery capacity (2026-11-17, branch
 > `fix/recovery-capacity`): maintainer decision MD-6. Recorded, not fixed.
@@ -5242,6 +5392,8 @@ starter test.
 
 ### Issue 74 — Without a lock backend, a recovery pass can adopt a run this node is starting {#issue-74}
 
+> **Closed (pilot-readiness P3, 2026-11-18): fixed.** A `DistributedLock` is mandatory: `WorkflowExecutor.Builder.build()` and the starter fail without one, and no run executes without holding its instance lock — a start whose acquire fails is persisted and left to recovery, a resume is skipped. The race needs a lock-less node, which no longer exists. `NoLockStartRecoveryRaceTest` is removed with the mode; `MandatoryInstanceLockTest` pins the new behaviour.
+
 > **Open.** Filed while fixing a CI failure of `StoreOutageMidStepIT`
 > (2026-11-17, branch `fix/recovery-capacity`). Recorded, not fixed.
 > Pinned by `NoLockStartRecoveryRaceTest`.
@@ -5278,6 +5430,8 @@ the just-started row.
 <a id="issue-75"></a>
 
 ### Issue 75 — On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN` {#issue-75}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Needs the maintainer's decision in P2 on what the root health endpoint does.
 
 > **Open.** Filed by WP12 (2026-11-17, branch `test/k6-finding-scenarios`)
 > from the k6 scenario `s5-pool-health`. Measured, not fixed.
@@ -5346,6 +5500,8 @@ The same before run also deleted all 10,000 unconsumed signals of
 
 ### Issue 77 — Terminal workflows recorded under a `service_name` no node runs are never purged {#issue-77}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18, reopened after review): `limitation`.** A service rename is supported (`docs/support-matrix.md`), and during one the old name's terminal history is still purged by no sweeper, while the startup check does not see terminal-only rows. Workaround: `docs/operations.md` §11.5, "Finishing a rename". (First closed in this triage as a runbook note; the P3 review reopened it: a runbook is a workaround, not a fix.)
+
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
 > `fix/store-hygiene`): the consequence of the maintainer's decision that a
 > retention sweep purges only its own service's workflows, so that each
@@ -5391,6 +5547,8 @@ without hand-written SQL, pinned by a Testcontainers test.
 
 ### Issue 78 — In shared tables, a service-scoped purge reads past a co-tenant's rows that a longer retention keeps {#issue-78}
 
+> **Closed (pilot-readiness P3, 2026-11-18): out of scope.** Its cost exists only in shared tables, which are not supported (`docs/support-matrix.md`). In one service's own tables there is no co-tenant row to read past.
+
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
 > `fix/store-hygiene`). Measured on the planning probe; recorded, not fixed.
 
@@ -5429,6 +5587,8 @@ shared table, pinned by an `EXPLAIN` test.
 <a id="issue-79"></a>
 
 ### Issue 79 — The service-name check warns about a live co-tenant service that registers the same workflow type names {#issue-79}
+
+> **Closed (pilot-readiness P3, 2026-11-18): fixed.** The check no longer filters by workflow type and no longer words its result as conditional: active instances under any other `maestro.service-name` fail startup (or, under `warn`, are reported). A live co-tenant is now exactly what the check exists to report, so the false positive is gone.
 
 > **Open.** Filed by WP8, store hygiene (2026-11-17, branch
 > `fix/store-hygiene`): the maintainer accepted this false positive, with a
@@ -5471,6 +5631,8 @@ starter test.
 <a id="issue-80"></a>
 
 ### Issue 80 — Shutdown's drain can miss a run registered after it began, and not wait for it {#issue-80}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Shutdown completeness, P1.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP5
 > and WP6 reviews (pre-existing; reached more often since WP6's capacity
@@ -5515,6 +5677,8 @@ either joined or reported in the "still running" summary.
 
 ### Issue 81 — An `Error` from an observer callback escapes the engine's guard {#issue-81}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Observer isolation in the engine passes, P2.
+
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP6
 > scoped re-review. Traced, not tested.
 
@@ -5558,6 +5722,8 @@ by a core test.
 
 ### Issue 82 — Two `parallel()` branches awaiting the same signal name at once collide on one park key {#issue-82}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** An unsupported workflow shape today; documented.
+
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP2
 > review ("existing tests cover the supported shapes"). Traced, not tested.
 
@@ -5595,6 +5761,8 @@ documented and the error names it.
 <a id="issue-83"></a>
 
 ### Issue 83 — Orphaned-signal adoption has two owners; an unadopted signal is never purged {#issue-83}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** An SPI contract with two owners, and rows that are never purged.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
 > final review; rewritten after the WP13 review. Traced, not tested.
@@ -5654,6 +5822,8 @@ adoption.
 
 ### Issue 84 — The wake listener turns autocommit on for its pooled connection and never restores it {#issue-84}
 
+> **Label (pilot-readiness P3 triage, 2026-11-18): `limitation`.** Harmless under HikariCP, the supported pool; other pools are untested (`docs/support-matrix.md`).
+
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP10
 > whole-branch review. Traced, not tested.
 
@@ -5685,6 +5855,8 @@ autocommit off sees it off again after the listener releases the connection.
 <a id="issue-85"></a>
 
 ### Issue 85 — The upgrade fixtures have no procedure for a core API change that breaks a frozen package {#issue-85}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** The upgrade fixtures need the procedure before the first breaking core API change.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
 > final review.
@@ -5727,6 +5899,8 @@ git's stderr when parsing its output.
 <a id="issue-86"></a>
 
 ### Issue 86 — A store fault the guard retries away is logged at `DEBUG` only and counted nowhere {#issue-86}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18, revised after review): `limitation`.** A fault the guard retried away was absorbed, so no run was harmed; the fault that is not absorbed is visible (`STORE_UNAVAILABLE` stand-down and abandon, `docs/operations.md` §10.9). An operator is not blind to a real fault, only to its near misses. P2 still plans the counter.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the
 > host-safety cycle's handover (§4.2, "not filed yet").
@@ -5826,6 +6000,8 @@ the retiring node's lock is still held.
 <a id="issue-88"></a>
 
 ### Issue 88 — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened {#issue-88}
+
+> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Same rolling window as Issue 41; P4 pins or documents it.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from an
 > automated review of PR #64 on the WP3 plan's mixed-fleet row. Traced, not

@@ -41,7 +41,7 @@ class RecoveryPollerCursorTest {
             byQueue.put("q", deferralOfQ);
         }
         return new WorkflowExecutor.RecoveryPass(0, 0, Map.of(), deferredQ ? Map.of("q", 1) : Map.of(),
-                deferralOfQ, false, byQueue, readTo, reachedEnd);
+                deferralOfQ, false, byQueue, readTo, reachedEnd, 0);
     }
 
     /** One row per branch of {@code afterCapacityPass}, for queue {@code q}, the pass having started at {@link #START}. */

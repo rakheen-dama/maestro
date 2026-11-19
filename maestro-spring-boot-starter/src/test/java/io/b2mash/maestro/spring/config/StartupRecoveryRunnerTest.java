@@ -1,5 +1,6 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
@@ -56,7 +57,7 @@ class StartupRecoveryRunnerTest {
     void setUp() {
         var store = new InMemoryWorkflowStore();
         var serializer = new PayloadSerializer(new ObjectMapper());
-        executor = WorkflowExecutor.builder(store, serializer, "test-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock()).build();
         properties = new MaestroProperties();
         properties.setServiceName("test-service");
         runner = new StartupRecoveryRunner(executor, new WorkflowRegistrar(executor), properties);
@@ -200,7 +201,7 @@ class StartupRecoveryRunnerTest {
     }
 
     private WorkflowExecutor node(WorkflowStore store, @Nullable TaskQueueLimits defaults) {
-        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), SERVICE)
+        var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), SERVICE).distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .defaultTaskQueueLimits(defaults)
                 .shutdownTimeout(Duration.ofSeconds(5))

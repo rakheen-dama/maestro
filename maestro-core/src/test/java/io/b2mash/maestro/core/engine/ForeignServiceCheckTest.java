@@ -1,7 +1,9 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.exception.ForeignServiceRowsException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -9,25 +11,27 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicReference;
 
-import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The startup service-name check: what it asks the store, the warning it
- * words, that it never fails its caller, and that
- * {@link WorkflowExecutor#startForeignServiceCheck} runs it on its own thread.
+ * The startup shared-table check (pilot readiness P3; Issues 39, 79): one
+ * bounded read for active instances under any other {@code maestro.service-name},
+ * whatever their workflow type. Under {@link ForeignServiceCheckMode#FAIL} (the
+ * default) rows found fail startup; {@code WARN} logs them; {@code OFF} reads
+ * nothing. A read that fails or does not answer within the bound is
+ * inconclusive — logged, never fatal, so an unreachable store cannot become a
+ * restart loop.
  */
 class ForeignServiceCheckTest {
 
@@ -41,96 +45,120 @@ class ForeignServiceCheckTest {
     }
 
     @Test
-    void asksForThisServicesTypesUnderOtherNamesAndReturnsTheCounts() {
+    void asksForEveryOtherServiceNameWhateverTheWorkflowType() {
         store.answer(Map.of("orders-old", 3L));
-        assertEquals(Map.of("orders-old", 3L), ForeignServiceCheck.run(store, "orders", Set.of("order")));
-        assertEquals(new Asked("orders", Set.of("order"), ForeignServiceCheck.MAX_REPORTED + 1), store.asked());
+        var result = ForeignServiceCheck.probe(store, "orders", Duration.ofSeconds(5));
+        assertEquals(Map.of("orders-old", 3L), result.foreign());
+        assertNull(result.inconclusive());
+        assertEquals(new Asked("orders", ForeignServiceCheck.MAX_REPORTED + 1), store.asked());
+        assertEquals(ForeignServiceCheck.THREAD_NAME, store.threadName.get(), "the read runs on its own thread");
+    }
+
+    @Test
+    void underFailRowsOfAnotherServiceFailStartupNamingEveryNameAndTheEscapeHatch() {
+        var counts = new LinkedHashMap<String, Long>();
+        counts.put("billing", 7L);
+        counts.put("orders-old", 3L);
+        store.answer(counts);
+
+        var e = assertThrows(ForeignServiceRowsException.class, () -> node().checkForeignServices(
+                ForeignServiceCheckMode.FAIL));
+
+        assertEquals(counts, e.counts());
+        assertEquals(ForeignServiceCheck.failure("orders", counts), e.getMessage());
+        assertTrue(e.getMessage().contains("'billing' (7)"), e.getMessage());
+        assertTrue(e.getMessage().contains("'orders-old' (3)"), e.getMessage());
+        assertTrue(e.getMessage().contains("maestro.store.foreign-service-check=warn"), e.getMessage());
+    }
+
+    @Test
+    void underWarnRowsOfAnotherServiceAreReportedAndStartupContinues() {
+        store.answer(Map.of("orders-old", 3L));
+        assertDoesNotThrow(() -> node().checkForeignServices(ForeignServiceCheckMode.WARN));
+        assertEquals(new Asked("orders", ForeignServiceCheck.MAX_REPORTED + 1), store.asked());
+    }
+
+    @Test
+    void offReadsNothing() {
+        store.answer(Map.of("orders-old", 3L));
+        assertDoesNotThrow(() -> node().checkForeignServices(ForeignServiceCheckMode.OFF));
+        assertNull(store.asked());
+    }
+
+    @Test
+    void aCleanStorePasses() {
+        assertDoesNotThrow(() -> node().checkForeignServices(ForeignServiceCheckMode.FAIL));
+        assertEquals(new Asked("orders", ForeignServiceCheck.MAX_REPORTED + 1), store.asked());
     }
 
     @Test
     void theWarningNamesBothServiceNamesTheCountAndTheRemedy() {
-        assertEquals("3 active workflow instance(s) of a type this node runs are recorded under maestro.service-name "
-                        + "'orders-old', not 'orders'. Recovery adopts only 'orders' instances, so unless a node runs with "
-                        + "maestro.service-name=orders-old these workflows never resume; if no node runs that name any "
-                        + "more, start one under it or correct the rows (docs/operations.md §11.5).",
-                ForeignServiceCheck.warning("orders", "orders-old", 3));
+        var warning = ForeignServiceCheck.warning("orders", "orders-old", 3);
+        assertTrue(warning.startsWith("3 active workflow instance(s) are recorded under maestro.service-name "
+                + "'orders-old', not 'orders'"), warning);
+        assertTrue(warning.contains("docs/operations.md §11.5"), warning);
     }
 
     @Test
-    void aStoreFailureIsSwallowed() {
+    void aStoreFailureIsInconclusiveAndNeverFatal() {
         store.fail(new StoreUnavailableException("injected: the store is down",
                 new IllegalStateException("connection refused")));
-        assertEquals(Map.of(), assertDoesNotThrow(() -> ForeignServiceCheck.run(store, "orders", Set.of("order"))));
+        var result = ForeignServiceCheck.probe(store, "orders", Duration.ofSeconds(5));
+        assertEquals(Map.of(), result.foreign());
+        assertTrue(result.inconclusive() != null && result.inconclusive().contains("the store is down"),
+                String.valueOf(result.inconclusive()));
+        assertDoesNotThrow(() -> node().checkForeignServices(ForeignServiceCheckMode.FAIL));
     }
 
     @Test
-    void anErrorIsSwallowedButAControlFlowErrorIsNot() {
+    void anErrorIsInconclusiveButAControlFlowErrorIsRethrown() {
         store.fail(new AssertionError("injected"));
-        assertEquals(Map.of(), assertDoesNotThrow(() -> ForeignServiceCheck.run(store, "orders", Set.of("order"))));
+        assertTrue(ForeignServiceCheck.probe(store, "orders", Duration.ofSeconds(5)).inconclusive() != null);
 
         store.fail(new ExecutorShutdownException("injected: the node is stopping"));
-        assertThrows(ExecutorShutdownException.class, () -> ForeignServiceCheck.run(store, "orders", Set.of("order")));
+        assertThrows(ExecutorShutdownException.class,
+                () -> ForeignServiceCheck.probe(store, "orders", Duration.ofSeconds(5)));
     }
 
     @Test
-    void noRegisteredTypesMakesNoStoreCall() {
-        assertEquals(Map.of(), ForeignServiceCheck.run(store, "orders", Set.of()));
-        assertNull(store.asked());
-    }
-
-    @Test
-    void startForeignServiceCheckReturnsAtOnceAndQueriesOnItsOwnThread() throws Exception {
+    void aStoreThatDoesNotAnswerWithinTheBoundIsInconclusiveAndStartupGoesOn() throws Exception {
         store.blockUntilReleased();
         var executor = node();
-        var registrations = registrations();
-        var returned = new CountDownLatch(1);
-        Thread.ofVirtual().start(() -> {
-            executor.startForeignServiceCheck(registrations);
-            returned.countDown();
-        });
-        assertTrue(returned.await(2, SECONDS), "startForeignServiceCheck returned while the read was blocked");
+        var started = System.nanoTime();
+        assertDoesNotThrow(() -> executor.checkForeignServices(ForeignServiceCheckMode.FAIL, Duration.ofMillis(200)));
+        var tookMs = (System.nanoTime() - started) / 1_000_000;
         assertTrue(store.entered.await(5, SECONDS), "the check read the store");
-        store.release.countDown();
-        assertEquals(ForeignServiceCheck.THREAD_NAME, store.threadName.get());
+        assertTrue(tookMs < 2_000, "the check waited " + tookMs + " ms for a read bounded at 200 ms");
+        assertTrue(store.stillBlocked(), "the read was not interrupted: it is left to finish on its own thread");
     }
 
     @Test
-    void startForeignServiceCheckDuringShutdownDoesNothingAndDoesNotThrow() throws Exception {
+    void duringShutdownTheCheckReadsNothing() {
         var executor = node();
         executor.shutdown();
-        assertDoesNotThrow(() -> executor.startForeignServiceCheck(registrations()));
-        // A started check reads at once; give one 500 ms to show itself.
-        assertFalse(store.entered.await(500, MILLISECONDS), "a check read the store after shutdown");
+        store.answer(Map.of("orders-old", 3L));
+        assertDoesNotThrow(() -> executor.checkForeignServices(ForeignServiceCheckMode.FAIL));
         assertNull(store.asked());
     }
 
-    /** A null map is a programming error, reported the same way whether or not the executor is stopping. */
     @Test
-    void aNullRegistrationMapIsRejectedAlsoDuringShutdown() {
-        var running = node();
-        assertThrows(NullPointerException.class, () -> running.startForeignServiceCheck(null));
-        var stopping = node();
-        stopping.shutdown();
-        assertThrows(NullPointerException.class, () -> stopping.startForeignServiceCheck(null));
+    void aNullModeIsRejected() {
+        assertThrows(NullPointerException.class, () -> node().checkForeignServices(null));
     }
 
     // ── helpers ──────────────────────────────────────────────────────
 
-    private record Asked(String serviceName, Set<String> workflowTypes, int limit) {
+    private record Asked(String serviceName, int limit) {
     }
 
     private WorkflowExecutor node() {
         var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "orders")
+                .distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(2))
                 .build();
         executors.add(executor);
         return executor;
-    }
-
-    private static Map<String, WorkflowRegistration> registrations() throws NoSuchMethodException {
-        return Map.of("order", new WorkflowRegistration("order", "default", Object::new,
-                Object.class.getMethod("toString")));
     }
 
     /**
@@ -144,6 +172,7 @@ class ForeignServiceCheckTest {
         private final AtomicReference<@Nullable String> threadName = new AtomicReference<>();
         private final CountDownLatch entered = new CountDownLatch(1);
         private final CountDownLatch release = new CountDownLatch(1);
+        private final CountDownLatch returned = new CountDownLatch(1);
         private volatile Map<String, Long> answer = Map.of();
         private volatile @Nullable Throwable failure;
         private volatile boolean block;
@@ -160,31 +189,38 @@ class ForeignServiceCheckTest {
             this.block = true;
         }
 
+        boolean stillBlocked() {
+            return returned.getCount() == 1;
+        }
+
         @Nullable Asked asked() {
             return asked.get();
         }
 
         @Override
-        public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
-                String serviceName, Set<String> workflowTypes, int limit) {
-            asked.set(new Asked(serviceName, workflowTypes, limit));
+        public Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, int limit) {
+            asked.set(new Asked(serviceName, limit));
             threadName.set(Thread.currentThread().getName());
             entered.countDown();
-            if (block) {
-                try {
-                    release.await(30, SECONDS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
+            try {
+                if (block) {
+                    try {
+                        release.await(30, SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
                 }
+                var thrown = failure;
+                if (thrown instanceof RuntimeException e) {
+                    throw e;
+                }
+                if (thrown instanceof Error e) {
+                    throw e;
+                }
+                return answer;
+            } finally {
+                returned.countDown();
             }
-            var thrown = failure;
-            if (thrown instanceof RuntimeException e) {
-                throw e;
-            }
-            if (thrown instanceof Error e) {
-                throw e;
-            }
-            return answer;
         }
     }
 }

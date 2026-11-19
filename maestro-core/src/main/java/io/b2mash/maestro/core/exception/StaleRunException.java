@@ -11,8 +11,7 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
  *
  * <h2>Where it comes from</h2>
  * <p>Instance locks are the admission guard, not the write guard: a node
- * frozen past its lock TTL, partitioned, or running without a lock backend
- * can still be <em>executing</em> a workflow a peer has also adopted. The
+ * frozen past its lock TTL, or partitioned, can still be <em>executing</em> a workflow a peer has also adopted. The
  * peer's outcome is the durable truth. Since Issue 11 closed, the store's
  * lease fence ({@link FencedWriteException}) rejects the stale node's writes
  * outright; this exception is the sibling signal raised by the engine's

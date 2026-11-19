@@ -98,8 +98,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *       started, or the string {@code "starting"} before then</li>
  *   <li>{@code instanceLockRenewerRunning} — {@code true}/{@code false} once this node's
  *       instance-lock renewer has started, or the string {@code "idle"} before this node takes
- *       its first instance lock (a node without a {@code DistributedLock} stays {@code "idle"});
- *       not a fault</li>
+ *       its first instance lock (a {@code DistributedLock} is mandatory, so only a node that has
+ *       run no workflow yet stays {@code "idle"}); not a fault</li>
  *   <li>{@code instanceLockRenewerConsecutiveFailures} — the renewer's consecutive failed passes
  *       since its last good one; at {@code 2} or more the status is {@code DOWN}, even with the
  *       renewer running, because held locks are not being renewed. A single failed pass reads
@@ -138,8 +138,8 @@ public class MaestroHealthIndicator implements HealthIndicator {
     static final String STARTING = "starting";
 
     /**
-     * Detail value for the instance-lock renewer before this node has acquired its first instance lock: on a node
-     * without a {@code DistributedLock}, or one that has run no workflow yet. Not a fault.
+     * Detail value for the instance-lock renewer before this node has acquired its first instance lock: a node that
+     * has run no workflow yet (a {@code DistributedLock} is mandatory). Not a fault.
      */
     static final String IDLE = "idle";
 

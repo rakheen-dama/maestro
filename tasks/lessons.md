@@ -144,6 +144,10 @@ Two coordinator mistakes in the engine-hardening cycle:
    the PR's review comments (`gh api …/pulls/N/comments --jq length`) AFTER the
    review check has finished, and read every unanswered one; "skipping" and
    "pass" are different states and only the first means "no review ran".
+
+   *Addendum (2026-11-18, PR #70):* never chain `gh pr merge` in the same
+   command as the comment count; read the comments' text first. A count in
+   the same `&&` chain as the merge is checked by nobody before the merge runs.
 2. WP3 soak run 2: a 2 h chaos soak took 3 h 22 m and failed with 20 await
    timeouts, all armed just before ~17-minute gaps — the laptop slept. Rule:
    every run longer than a few minutes on macOS starts under

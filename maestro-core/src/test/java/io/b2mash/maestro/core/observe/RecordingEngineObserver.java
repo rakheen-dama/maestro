@@ -33,6 +33,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     public record WorkflowFailure(WorkflowInfo info, String exceptionType) {}
     public record WorkflowFinish(WorkflowInfo info, WorkflowStatus status, Duration elapsed) {}
     public record LoopErrorCall(String loop, String errorType) {}
+    public record StartDeferral(WorkflowInfo info, boolean lockHeldElsewhere) {}
 
     private final List<Invocation> invocations = new CopyOnWriteArrayList<>();
 
@@ -63,6 +64,7 @@ public final class RecordingEngineObserver implements EngineObserver {
     private final List<RetentionPassCall> retentionPasses = new CopyOnWriteArrayList<>();
     private final List<AbandonCall> abandoned = new CopyOnWriteArrayList<>();
     private final List<LoopErrorCall> loopErrors = new CopyOnWriteArrayList<>();
+    private final List<StartDeferral> startDeferrals = new CopyOnWriteArrayList<>();
 
     // ── EngineObserver callbacks ──────────────────────────────────────
 
@@ -70,6 +72,12 @@ public final class RecordingEngineObserver implements EngineObserver {
     public void workflowStarted(WorkflowInfo w) {
         record("workflowStarted", w);
         started.add(w);
+    }
+
+    @Override
+    public void workflowStartDeferred(WorkflowInfo w, boolean lockHeldElsewhere) {
+        record("workflowStartDeferred", w, lockHeldElsewhere);
+        startDeferrals.add(new StartDeferral(w, lockHeldElsewhere));
     }
 
     @Override
@@ -236,6 +244,7 @@ public final class RecordingEngineObserver implements EngineObserver {
 
     public List<WorkflowInfo> started() { return List.copyOf(started); }
     public List<WorkflowInfo> resumed() { return List.copyOf(resumed); }
+    public List<StartDeferral> startDeferrals() { return List.copyOf(startDeferrals); }
     public List<WorkflowInfo> completed() { return List.copyOf(completed); }
     public List<WorkflowFailure> failed() { return List.copyOf(failed); }
     public List<WorkflowFinish> finished() { return List.copyOf(finished); }

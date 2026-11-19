@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -96,7 +97,7 @@ class ReadBackTypeValveTest {
         serializer = new PayloadSerializer(JsonMapper.builder().build());
         observerA = new RecordingEngineObserver();
         observerB = new RecordingEngineObserver();
-        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).observer(observerA).build();
+        nodeA = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerA).build();
     }
 
     @AfterEach
@@ -165,7 +166,7 @@ class ReadBackTypeValveTest {
         // Node A stops while the run is parked; node B adopts it and replays the call.
         a.shutdown();
         nodeA = null;
-        var b = WorkflowExecutor.builder(store, serializer, SERVICE).observer(observerB).build();
+        var b = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerB).build();
         nodeB = b;
         b.recoverWorkflows(Map.of("ShapeWorkflow", new WorkflowRegistration(
                 "ShapeWorkflow", "default", () -> new ShapeWorkflow(shapes(observerB)), run)));

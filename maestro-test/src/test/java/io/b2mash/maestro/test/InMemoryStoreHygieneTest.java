@@ -213,17 +213,21 @@ class InMemoryStoreHygieneTest {
             }
         }
 
+        /**
+         * P3 (Issue 79): every other service name's active instances, whatever
+         * their type — {@code billing}'s invoices included, terminal rows not.
+         * (Before P3 the read took a type filter and left {@code billing} out.)
+         */
         @Test
-        void countsActiveInstancesOfTheGivenTypesUnderEveryOtherServiceName() {
-            var counts = store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 21);
-            assertEquals(List.of(Map.entry("orders-old", 3L), Map.entry("orders-1", 2L)),
+        void countsActiveInstancesOfAnyTypeUnderEveryOtherServiceName() {
+            var counts = store.getActiveInstanceCountsUnderOtherServices("orders", 21);
+            assertEquals(List.of(Map.entry("billing", 4L), Map.entry("orders-old", 3L), Map.entry("orders-1", 2L)),
                     List.copyOf(counts.entrySet()));
         }
 
         @Test
         void theLimitCapsTheNamesReturned() {
-            assertEquals(Set.of("orders-old"),
-                    store.getActiveInstanceCountsUnderOtherServices("orders", Set.of("order", "payment"), 1).keySet());
+            assertEquals(Set.of("billing"), store.getActiveInstanceCountsUnderOtherServices("orders", 1).keySet());
         }
 
         private void seed(String workflowId, String serviceName, String type, WorkflowStatus status) {

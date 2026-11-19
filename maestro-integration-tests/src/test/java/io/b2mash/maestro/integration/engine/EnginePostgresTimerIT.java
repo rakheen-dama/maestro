@@ -159,7 +159,8 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
     @Test
     @DisplayName("a timer scheduled by one executor is fired and completed by a second executor over the same store")
     void timerSurvivesExecutorRestart_secondExecutorFiresIt() throws Exception {
-        // Modelled without a lock backend: the first harness is abandoned rather
+        // Modelled without a shared lock backend (each harness has a private
+        // in-memory lock): the first harness is abandoned rather
         // than closed (closing it would cancel the parked sleep, which is the
         // known shutdown defect tracked for P5), and an abandoned harness would
         // keep renewing the instance lock forever. A genuinely dead node stops
@@ -198,7 +199,7 @@ class EnginePostgresTimerIT extends PostgresIntegrationSupport {
         // PENDING → FIRED, but the workflow thread died before appending
         // TIMER_FIRED. The log then says "scheduled, never fired" while the row
         // says "fired" — and getDueTimers only returns PENDING rows, so no
-        // poller will ever look at it again. Modelled without a lock backend so
+        // poller will ever look at it again. Modelled without a shared lock backend so
         // node-b can adopt at once (see the restart test above).
         harness = newHarness(false);
         registerSleeper(harness, NAP);

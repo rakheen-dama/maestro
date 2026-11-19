@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.observe;
 
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
@@ -66,6 +68,7 @@ class MaestroObservabilityAutoConfigurationTest {
             .withUserConfiguration(TestWorkflowConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
             .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+            .withBean(DistributedLock.class, InMemoryDistributedLock::new)
             .withPropertyValues("maestro.service-name=observability-test");
 
     /**
@@ -100,7 +103,7 @@ class MaestroObservabilityAutoConfigurationTest {
                         MaestroAutoConfiguration.class, MaestroObservabilityAutoConfiguration.class))
                 .withBean(MeterRegistry.class, SimpleMeterRegistry::new)
                 .withBean(WorkflowExecutor.class, () -> WorkflowExecutor.builder(
-                        new InMemoryWorkflowStore(), new PayloadSerializer(new ObjectMapper()), "hand-built").build())
+                        new InMemoryWorkflowStore(), new PayloadSerializer(new ObjectMapper()), "hand-built").distributedLock(new InMemoryDistributedLock()).build())
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).doesNotHaveBean(MaestroAutoConfiguration.class);
@@ -123,6 +126,7 @@ class MaestroObservabilityAutoConfigurationTest {
                 .withUserConfiguration(TestWorkflowConfiguration.class)
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.service-name=observability-real-chain-test")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -189,6 +193,7 @@ class MaestroObservabilityAutoConfigurationTest {
                 .withUserConfiguration(UnreadableResultConfiguration.class)
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.service-name=observability-unreadable-test")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -235,6 +240,7 @@ class MaestroObservabilityAutoConfigurationTest {
                 .withUserConfiguration(SubtypeResultConfiguration.class)
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.service-name=observability-mismatch-test")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -548,6 +554,7 @@ class MaestroObservabilityAutoConfigurationTest {
                             .withUserConfiguration(TestWorkflowConfiguration.class)
                             .withBean(ObjectMapper.class, ObjectMapper::new)
                             .withBean(WorkflowStore.class, () -> store)
+                            .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                             .withBean(MeterRegistry.class, () -> registryB)
                             .withPropertyValues("maestro.service-name=observability-test")
                             .run(contextB -> {
@@ -608,6 +615,7 @@ class MaestroObservabilityAutoConfigurationTest {
                 .withUserConfiguration(TestWorkflowConfiguration.class)
                 .withBean(ObjectMapper.class, ObjectMapper::new)
                 .withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.service-name=tracing-real-chain-test")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -688,6 +696,7 @@ class MaestroObservabilityAutoConfigurationTest {
                                     .withUserConfiguration(TestWorkflowConfiguration.class)
                                     .withBean(ObjectMapper.class, ObjectMapper::new)
                                     .withBean(WorkflowStore.class, () -> store)
+                                    .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                                     .withBean(Tracer.class, otelB::tracer)
                                     .withBean(Propagator.class, otelB::propagator)
                                     .withPropertyValues("maestro.service-name=observability-test")

@@ -1,5 +1,7 @@
 package io.b2mash.maestro.spring.health;
 
+import io.b2mash.maestro.core.spi.DistributedLock;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.spi.WorkflowStore;
@@ -65,6 +67,7 @@ class MaestroHealthAutoConfigurationTest {
     @DisplayName("indicator bean is present when Actuator's HealthIndicator is on the classpath")
     void indicatorPresentWhenActuatorOnClasspath() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     assertThat(context).hasSingleBean(MaestroHealthIndicator.class);
@@ -75,6 +78,7 @@ class MaestroHealthAutoConfigurationTest {
     @DisplayName("indicator bean is absent when Actuator's HealthIndicator is not on the classpath")
     void indicatorAbsentWithoutActuatorOnClasspath() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withClassLoader(new FilteredClassLoader(HealthIndicator.class))
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -86,6 +90,7 @@ class MaestroHealthAutoConfigurationTest {
     @DisplayName("status is DOWN when the store throws, and poller/running-count details are still reported")
     void downWhenStoreThrows() {
         runner.withBean(WorkflowStore.class, ThrowingWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var indicator = context.getBean(MaestroHealthIndicator.class);
@@ -103,6 +108,7 @@ class MaestroHealthAutoConfigurationTest {
             + "and both pollers are running")
     void upWhenStoreReachableAndPollersRunning() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);
@@ -129,6 +135,7 @@ class MaestroHealthAutoConfigurationTest {
             + "(StartupRecoveryRunner hasn't run yet) — reported as \"starting\"")
     void notDownDuringStartupWindowBeforePollersStart() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var indicator = context.getBean(MaestroHealthIndicator.class);
@@ -148,6 +155,7 @@ class MaestroHealthAutoConfigurationTest {
     @DisplayName("status is DOWN once the timer poller (always enabled) has started and then stopped")
     void downWhenTimerPollerStartedThenStopped() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.recovery.enabled=false") // isolate the assertion to the timer poller
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -170,6 +178,7 @@ class MaestroHealthAutoConfigurationTest {
     @DisplayName("status is DOWN once the (enabled) recovery poller has started and then stopped")
     void downWhenRecoveryPollerStartedThenStopped() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);
@@ -190,6 +199,7 @@ class MaestroHealthAutoConfigurationTest {
             + "reported as \"disabled\" rather than \"starting\" or false")
     void upWhenRecoveryPollerDisabledByConfiguration() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.recovery.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -213,6 +223,7 @@ class MaestroHealthAutoConfigurationTest {
             + "and false (DOWN) once it has started and then stopped")
     void retentionSweeperDetailFollowsTheSweeper() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.recovery.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
@@ -241,6 +252,7 @@ class MaestroHealthAutoConfigurationTest {
     @DisplayName("retentionSweeperRunning is \"disabled\" and status stays UP when maestro.retention.enabled=false")
     void retentionSweeperDisabledByConfiguration() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
                 .withPropertyValues("maestro.retention.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();

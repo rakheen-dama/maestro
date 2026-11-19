@@ -1,5 +1,7 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.core.exception.LockAcquisitionException;
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
@@ -43,6 +45,7 @@ import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -74,7 +77,7 @@ class AdminRetryTest {
         store = new VersionedInMemoryStore();
         observer = new RecordingEngineObserver();
         serializer = new PayloadSerializer(MAPPER);
-        executor = WorkflowExecutor.builder(store, serializer, "svc")
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))
@@ -300,7 +303,7 @@ class AdminRetryTest {
                 throw new WorkflowNotFoundException(reopened.workflowId());
             }
         };
-        var purgingExecutor = WorkflowExecutor.builder(purging, serializer, "svc")
+        var purgingExecutor = WorkflowExecutor.builder(purging, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .observer(observer)
                 .build();
@@ -328,7 +331,12 @@ class AdminRetryTest {
     // ── A Retry while the failed run is still registered here (PR #57 review 4) ──
 
     @Test
-    void aRetryBeforeTheFailedRunLeavesThisNode_reopensTheRowAndRecoveryRelaunchesIt() throws Exception {
+    void aRetryBeforeTheFailedRunLeavesThisNode_writesNothingAndSucceedsWhenRedelivered() throws Exception {
+        // PR #72 review changes this test's expectation (the row used to be
+        // reopened, ALREADY_RUNNING_LOCALLY returned, and recovery relaunched
+        // it): Retry now takes the instance lock before it reopens the row. The
+        // failed run still holds it, so the Retry writes nothing and fails
+        // transiently; redelivered once the run has left, it retries.
         // Holds the failing run after its FAILED write (workflowFailed is
         // emitted after it) and before its finally leaves the local registry.
         var failedWritten = new CountDownLatch(1);
@@ -344,7 +352,7 @@ class AdminRetryTest {
                 }
             }
         };
-        var holding = WorkflowExecutor.builder(store, serializer, "svc")
+        var holding = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .lifecycleEventsEnabled(false)
                 .observer(holdsTheRun)
                 .build();
@@ -357,22 +365,27 @@ class AdminRetryTest {
             assertTrue(holding.isRunning("held"), "the FAILED run has not left this node's registry yet");
 
             impl.outageOver.set(true);
-            assertEquals(RetryOutcome.ALREADY_RUNNING_LOCALLY, holding.retryWorkflow("held", reg));
-            // The reopen committed (the planned deletes and RUNNING), but nothing was launched.
-            assertEquals(WorkflowStatus.RUNNING, store.getInstance("held").orElseThrow().status());
-            assertEquals(List.of(), history("held"), "the failure [1], its alert and WORKFLOW_FAILED are deleted");
+            var historyBefore = history("held");
+            assertThrows(LockAcquisitionException.class, () -> holding.retryWorkflow("held", reg),
+                    "the failed run still holds the instance lock");
+            assertEquals(WorkflowStatus.FAILED, store.getInstance("held").orElseThrow().status(), "nothing reopened");
+            assertEquals(historyBefore, history("held"), "no failure memo deleted");
             assertEquals(1, impl.primaryCalls.get(), "the retry launched nothing");
 
             release.countDown();
             TestTerminalWait.awaitRunEnded(holding, "held", BOUND);
-            assertEquals(WorkflowStatus.RUNNING, store.getInstance("held").orElseThrow().status(),
-                    "left RUNNING with no run anywhere until a recovery pass adopts it");
-            assertEquals(1, impl.primaryCalls.get());
-
-            // What this node's recovery poller does every poll interval.
-            assertEquals(1, holding.recoverWorkflows(Map.of("Body", reg)));
+            // The transport redelivers the command until the failed run has
+            // released its lock (the run leaves the registry before it releases):
+            // each refusal in between writes nothing.
+            assertEquals(RetryOutcome.RETRIED, RecoveryCapacityFixtures.valueWithin(() -> {
+                try {
+                    return holding.retryWorkflow("held", reg);
+                } catch (LockAcquisitionException stillReleasing) {
+                    return null;
+                }
+            }, RetryOutcome.RETRIED, BOUND));
             assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("held", WorkflowStatus.COMPLETED, BOUND));
-            assertEquals(2, impl.primaryCalls.get(), "the recovered run re-ran the deleted primary");
+            assertEquals(2, impl.primaryCalls.get(), "the retried run re-ran the deleted primary");
             assertEquals(1, impl.alertCalls.get(), "and, the primary now succeeding, no alert");
         } finally {
             release.countDown();

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -82,17 +83,20 @@ class RetentionSweeperTest {
         }
 
         @Test
-        @DisplayName("the sweeper rejects a null store, settings or observer and a blank service name")
+        @DisplayName("the sweeper rejects a null store, lock, settings or observer and a blank service name")
         void sweeperRejectsNulls() {
             var store = new RecordingStore();
             assertThrows(NullPointerException.class,
-                    () -> new RetentionSweeper(null, null, SERVICE, settings(1, 1), new RecordingEngineObserver()));
+                    () -> new RetentionSweeper(null, new InMemoryDistributedLock(), SERVICE, settings(1, 1),
+                            new RecordingEngineObserver()));
             assertThrows(NullPointerException.class,
-                    () -> new RetentionSweeper(store, null, SERVICE, null, new RecordingEngineObserver()));
+                    () -> new RetentionSweeper(store, null, SERVICE, settings(1, 1), new RecordingEngineObserver()));
             assertThrows(NullPointerException.class,
-                    () -> new RetentionSweeper(store, null, SERVICE, settings(1, 1), null));
+                    () -> new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, null, new RecordingEngineObserver()));
+            assertThrows(NullPointerException.class,
+                    () -> new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(1, 1), null));
             assertThrows(IllegalArgumentException.class,
-                    () -> new RetentionSweeper(store, null, " ", settings(1, 1), new RecordingEngineObserver()));
+                    () -> new RetentionSweeper(store, new InMemoryDistributedLock(), " ", settings(1, 1), new RecordingEngineObserver()));
         }
     }
 
@@ -106,7 +110,7 @@ class RetentionSweeperTest {
             var store = new RecordingStore();
             store.enqueue(new PurgeResult(2, 10, 1, 0), PurgeResult.EMPTY, new PurgeResult(1, 4, 0, 2));
             var observer = new RecordingEngineObserver();
-            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(500, 100), observer);
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(500, 100), observer);
 
             var before = Instant.now();
             var result = sweeper.sweepOnce();
@@ -133,7 +137,7 @@ class RetentionSweeperTest {
             store.enqueue(full(), full(), new PurgeResult(1, 1, 0, 0),
                     full(), full(), full(), full(),
                     PurgeResult.EMPTY);
-            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(2, 4), new RecordingEngineObserver());
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(2, 4), new RecordingEngineObserver());
 
             var result = sweeper.sweepOnce().orElseThrow();
 
@@ -151,7 +155,7 @@ class RetentionSweeperTest {
             store.enqueue(new PurgeResult(5, 20, 0, 0));
             store.failOnCall(2, new IllegalStateException("db down"));
             var observer = new RecordingEngineObserver();
-            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(500, 100), observer);
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(500, 100), observer);
 
             var result = sweeper.sweepOnce();
 
@@ -164,7 +168,7 @@ class RetentionSweeperTest {
         @DisplayName("an observer that throws does not break the sweep")
         void throwingObserverIsContained() {
             var store = new RecordingStore();
-            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(500, 100),
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(500, 100),
                     new io.b2mash.maestro.core.observe.EngineObserver() {
                         @Override
                         public void retentionPass(PurgeResult purged) {
@@ -262,7 +266,7 @@ class RetentionSweeperTest {
         @DisplayName("start() sweeps at once and then every interval; stop() ends the loop")
         void startSweepsThenStopEnds() {
             var store = new RecordingStore();
-            var sweeper = new RetentionSweeper(store, null, SERVICE,
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE,
                     new WorkflowExecutor.RetentionSettings(Duration.ofMillis(20),
                             Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 500, 100),
                     new RecordingEngineObserver());
@@ -279,7 +283,7 @@ class RetentionSweeperTest {
         void storeFailureIsSwallowedAndTheLoopKeepsRunning() {
             var store = new RecordingStore();
             store.failOnCall(1, new IllegalStateException("db down"));
-            var sweeper = new RetentionSweeper(store, null, SERVICE,
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE,
                     new WorkflowExecutor.RetentionSettings(Duration.ofMillis(20),
                             Duration.ofDays(30), Duration.ofDays(30), Duration.ofDays(90), 500, 100),
                     new RecordingEngineObserver());
@@ -298,7 +302,7 @@ class RetentionSweeperTest {
             var full = new PurgeResult(2, 2, 0, 0);
             store.enqueue(java.util.Collections.nCopies(300, full).toArray(PurgeResult[]::new));
             store.blockFirstCallUntilReleased(full);
-            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(2, 100), new RecordingEngineObserver());
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(2, 100), new RecordingEngineObserver());
             sweeper.start();
             assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
 
@@ -316,7 +320,7 @@ class RetentionSweeperTest {
         void stopWhileTheStoreSwallowsTheInterruptEndsPromptly() throws Exception {
             var store = new RecordingStore();
             store.swallowInterruptOnNextCall();
-            var sweeper = new RetentionSweeper(store, null, SERVICE, settings(500, 100), new RecordingEngineObserver());
+            var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), SERVICE, settings(500, 100), new RecordingEngineObserver());
             sweeper.start();
             assertTrue(store.sweepEntered.await(5, java.util.concurrent.TimeUnit.SECONDS));
 
@@ -338,7 +342,7 @@ class RetentionSweeperTest {
         @DisplayName("startRetentionSweeper starts it, exposes its settings, and shutdown stops it")
         void executorStartsExposesAndStops() {
             var store = new RecordingStore();
-            var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new tools.jackson.databind.ObjectMapper()), SERVICE)
+            var executor = WorkflowExecutor.builder(store, new PayloadSerializer(new tools.jackson.databind.ObjectMapper()), SERVICE).distributedLock(new InMemoryDistributedLock())
                     .build();
             try {
                 assertFalse(executor.hasRetentionSweeperStarted());

@@ -19,11 +19,12 @@ Starting point: `0.3.0-rc.1` is published to GitHub Packages (PR #69, tag at `d7
 
 ### P3 — Scope cuts and support matrix (first: it shrinks the others)
 
-- [ ] `docs/support-matrix.md`: supported and not supported (shared tables, lock-less nodes, store implementations other than Postgres, engine-version skew beyond the previous release, pools, Postgres versions).
-- [ ] **Mandatory lock:** startup fails without a `DistributedLock`; the unlocked code paths and their tests go (closes Issue 74; the "acquire failed, proceeded unlocked" window is re-examined and either removed or documented).
-- [ ] **No shared tables:** the startup check for another service's active rows fails startup instead of warning (escape hatch property for a rename in progress); closes Issues 78, 79; Issue 77 becomes a runbook note.
-- [ ] Triage every open issue against the matrix: close what is out of scope, label the rest by severity. Target: the open list is ranked and visibly shorter.
-- [ ] Decided (maintainer, 2026-11-18): **the `WorkflowStore` SPI is internal until 1.0.** Say so in its Javadoc and the matrix; closes Issue 62; the in-memory test store stays.
+- [x] `docs/support-matrix.md`: supported and not supported (shared tables, lock-less nodes, store implementations other than Postgres, engine-version skew beyond the previous release, pools, Postgres versions). Linked from README and `docs/operations.md`.
+- [x] **Mandatory lock:** startup fails without a `DistributedLock`; the unlocked code paths and their tests go (closes Issue 74; the "acquire failed, proceeded unlocked" window is **removed**: no launch proceeds unless ACQUIRED — a start is persisted and left to recovery, a resume is skipped; `MandatoryInstanceLockTest`).
+- [x] **No shared tables:** the startup check for another service's active rows fails startup instead of warning (`maestro.store.foreign-service-check` = fail | warn | off for a rename in progress); closes Issues 78, 79; Issue 77 gets a runbook (`docs/operations.md` §11.5, "Finishing a rename") and, after the review, stays open as `limitation`.
+- [x] Triage every open issue against the matrix: close what is out of scope, label the rest by severity. Result after the review: 50 open → 45 open (5 closed: 31, 62, 74, 78, 79); 12 `blocks-pilot`, 10 `blocks-1.0`, 23 `limitation`; ranked index at the top of `docs/open-issues.md`.
+- [x] Review fix wave (2026-11-18, `p3-review.md`): M1 a start whose lock cannot be taken is refused when no recovery poller runs; L1 locks released and lost-lock stand-downs by handle, a launch that lost its lock before registering does not run (`LostLockTwinRunTest` restores the two-runs fixture); L2 `workflowStartDeferred` + `maestro.workflow.start.deferred`; L3 a deferral prompts a recovery pass; L4 Javadoc; L5 Issue 77 reopened; I1/I2 documented; Issue 86 → `limitation`, Issue 65 kept.
+- [x] Decided (maintainer, 2026-11-18): **the `WorkflowStore` SPI is internal until 1.0.** Said in its Javadoc and the matrix; closes Issue 62; the in-memory test store stays.
 - Decided (maintainer, 2026-11-18): **no ShedLock.** It fits the timer and retention leaders but not the renewed, fenced instance lock, so it would add a dependency without removing our lock code.
 
 ### P1 — One lifecycle owner (shutdown completeness)
@@ -62,7 +63,7 @@ Problem: only `cbf5a2a` → today is tested; nothing since has a fixture; old an
 - [ ] **Consumer smoke test:** a standalone project resolves the BOM from GitHub Packages and runs one workflow.
 - [ ] **API compatibility check** against the last release's jars, reported on each PR.
 - [ ] **Experimental releases:** naming rule `X.Y.Z-exp.<topic>.<n>`, published from a branch tag, required for any PR that changes events, payloads or migrations; deleted when the branch closes; never run against a database that matters.
-- [ ] **Written compatibility promise** in `docs/operations.md`: build N resumes anything parked by N-1; rolling N-1 → N is supported; what rollback guarantees.
+- [ ] **Written compatibility promise** in `docs/operations.md`: build N resumes anything parked by N-1 when the workflow code is unchanged or changed in a way the versioning playbook calls safe (an unsafe change stands down as documented); rolling N-1 → N is supported; what rollback guarantees.
 
 ## Order and exit
 

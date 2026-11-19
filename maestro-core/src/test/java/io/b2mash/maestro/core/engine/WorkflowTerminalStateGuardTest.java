@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
 import io.b2mash.maestro.core.context.WorkflowContext;
@@ -68,7 +69,7 @@ class WorkflowTerminalStateGuardTest {
     }
 
     private WorkflowExecutor newExecutor(Duration wakeRecheckInterval) {
-        return WorkflowExecutor.builder(store, serializer, "test-service")
+        return WorkflowExecutor.builder(store, serializer, "test-service").distributedLock(new InMemoryDistributedLock())
                 .instanceLockTtl(Duration.ofSeconds(30))
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))

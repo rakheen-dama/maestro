@@ -50,9 +50,8 @@ abstract class DelegatingWorkflowStore implements WorkflowStore {
     }
 
     @Override
-    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(
-            String serviceName, Set<String> workflowTypes, int limit) {
-        return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, workflowTypes, limit);
+    public Map<String, Long> getActiveInstanceCountsUnderOtherServices(String serviceName, int limit) {
+        return delegate.getActiveInstanceCountsUnderOtherServices(serviceName, limit);
     }
 
     @Override

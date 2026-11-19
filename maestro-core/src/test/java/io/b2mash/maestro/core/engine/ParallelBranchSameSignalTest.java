@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -53,7 +54,7 @@ class ParallelBranchSameSignalTest {
     }
 
     private WorkflowExecutor newExecutor(VersionedInMemoryStore store) {
-        return WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service")
+        return WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "test-service").distributedLock(new InMemoryDistributedLock())
                 .wakeRecheckInterval(Duration.ofMillis(200))
                 .build();
     }

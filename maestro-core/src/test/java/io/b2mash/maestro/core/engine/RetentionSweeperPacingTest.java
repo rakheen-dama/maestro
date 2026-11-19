@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowSignal;
@@ -61,7 +62,7 @@ class RetentionSweeperPacingTest {
         store.script(full, ms(40)).script(full, ms(70)).script(one, ms(10))     // COMPLETED: full, full, short
              .script(PurgeResult.EMPTY, ms(3))                                   // TERMINATED: empty
              .script(PurgeResult.EMPTY, ms(2));                                  // FAILED: empty
-        new RetentionSweeper(store, null, "orders", settings(2, 100), EngineObserver.NOOP, pacer).sweepOnce();
+        new RetentionSweeper(store, new InMemoryDistributedLock(), "orders", settings(2, 100), EngineObserver.NOOP, pacer).sweepOnce();
         assertEquals(List.of(ms(40), ms(70), ms(10), ms(3)), pauses,
                 "one pause before every batch but the first, each as long as the batch before it; none after the last");
     }
@@ -69,7 +70,7 @@ class RetentionSweeperPacingTest {
     @Test
     void aSlowBatchPausesFiveSecondsNotItsOwnLength() {
         store.script(full, Duration.ofSeconds(40)).script(one, Duration.ofSeconds(40));   // T and F: unscripted, 0 ms
-        new RetentionSweeper(store, null, "orders", settings(2, 100), EngineObserver.NOOP, pacer).sweepOnce();
+        new RetentionSweeper(store, new InMemoryDistributedLock(), "orders", settings(2, 100), EngineObserver.NOOP, pacer).sweepOnce();
         assertEquals(List.of(Duration.ofSeconds(5), Duration.ofSeconds(5)), pauses,
                 "capped at a third of the leader TTL; T's 0 ms batch costs F no pause");
     }
@@ -88,7 +89,7 @@ class RetentionSweeperPacingTest {
         var entered = new CountDownLatch(1);
         var pacer = new BatchPacer(clock::get, (stop, d) -> { entered.countDown(); return BatchPacer.LATCH.await(stop, d); });
         store.scriptForever(full, Duration.ofHours(1));                  // every pause is the 5 s cap
-        var sweeper = new RetentionSweeper(store, null, "orders", settings(2, 100), EngineObserver.NOOP, pacer);
+        var sweeper = new RetentionSweeper(store, new InMemoryDistributedLock(), "orders", settings(2, 100), EngineObserver.NOOP, pacer);
         var done = new CompletableFuture<Optional<PurgeResult>>();
         var interruptedAfter = new AtomicBoolean(true);
         Thread.ofVirtual().start(() -> {

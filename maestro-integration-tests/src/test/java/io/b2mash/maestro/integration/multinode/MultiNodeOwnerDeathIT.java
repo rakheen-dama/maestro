@@ -44,7 +44,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * free it.
  *
  * <p>This is the distinguishing coverage over {@code EnginePostgresRecoveryIT},
- * which gives its crashed node no lock backend at all and therefore never
+ * which gives its crashed node a private in-memory lock no other node sees and therefore never
  * exercises the expiry handoff.
  *
  * <p>Node A's workflow thread stays wedged inside step two until the

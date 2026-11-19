@@ -39,7 +39,7 @@ class WorkflowInstanceLockManagerObserverTest {
     }
 
     @Test
-    @DisplayName("a winning acquire emits instanceLockAcquired; HELD_ELSEWHERE and NO_BACKEND emit nothing")
+    @DisplayName("a winning acquire emits instanceLockAcquired; HELD_ELSEWHERE and UNAVAILABLE emit nothing")
     void acquireEmitsOnlyWhenAcquired() {
         var observer = new RecordingEngineObserver();
         var lock = new ScriptedLock();
@@ -56,7 +56,7 @@ class WorkflowInstanceLockManagerObserverTest {
                 "a lock held elsewhere must not emit instanceLockAcquired");
 
         lock.throwOnAcquire = true;
-        assertEquals(WorkflowInstanceLockManager.Acquisition.NO_BACKEND, manager.tryAcquire("wf-c"));
+        assertEquals(WorkflowInstanceLockManager.Acquisition.UNAVAILABLE, manager.tryAcquire("wf-c"));
         assertEquals(List.of("wf-a"), observer.lockAcquired(),
                 "an unavailable backend must not emit instanceLockAcquired");
     }
@@ -111,7 +111,7 @@ class WorkflowInstanceLockManagerObserverTest {
         manager = new WorkflowInstanceLockManager(lock, "svc",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 Duration.ofSeconds(30), Duration.ofMillis(50), observer);
-        manager.onLockLost(lostCallbacks::add);
+        manager.onLockLost((workflowId, _) -> lostCallbacks.add(workflowId));
 
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-cb"));
         lock.renewMode.set(RenewMode.LOST);
@@ -133,7 +133,7 @@ class WorkflowInstanceLockManagerObserverTest {
         manager = new WorkflowInstanceLockManager(lock, "svc",
                 WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
                 Duration.ofSeconds(30), Duration.ofMillis(50), observer);
-        manager.onLockLost(_ -> { throw new IllegalStateException("executor callback blew up"); });
+        manager.onLockLost((_, _) -> { throw new IllegalStateException("executor callback blew up"); });
 
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-x"));
         assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-y"));
@@ -148,7 +148,7 @@ class WorkflowInstanceLockManagerObserverTest {
     // ── A throwing observer must never be mistaken for a backend failure ──
 
     @Test
-    @DisplayName("a throwing instanceLockAcquired does not report NO_BACKEND and does not leak the lock")
+    @DisplayName("a throwing instanceLockAcquired does not report UNAVAILABLE and does not leak the lock")
     void throwingObserverOnAcquireIsContained() {
         var observer = new ThrowingObserver();
         var lock = new ScriptedLock();
@@ -158,16 +158,17 @@ class WorkflowInstanceLockManagerObserverTest {
 
         // The lock IS held once tryAcquire put the handle in heldLocks. Were a
         // throwing adapter (e.g. a Micrometer meter-name conflict) reported as
-        // NO_BACKEND, WorkflowExecutor would skip release() for this workflow
+        // UNAVAILABLE, WorkflowExecutor would skip release() for this workflow
         // and the renewer would keep the lock alive forever — the workflowId
         // becomes permanently unacquirable on this node and blocked elsewhere.
-        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, manager.tryAcquire("wf-throw"),
+        var acquired = manager.acquire("wf-throw");
+        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, acquired.outcome(),
                 "a throwing observer must not be reported as a lock-backend failure");
         assertEquals(List.of("wf-throw"), observer.acquired,
                 "the callback must still have been attempted");
         assertTrue(manager.isHeld("wf-throw"), "the acquired lock must still be tracked");
 
-        manager.release("wf-throw");
+        manager.release("wf-throw", acquired.handle());
         assertFalse(manager.isHeld("wf-throw"), "the caller's release must drop the handle");
     }
 

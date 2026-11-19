@@ -1,5 +1,6 @@
 package io.b2mash.maestro.samples.order.controller;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.engine.PayloadSerializer;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.model.WorkflowFailureDetail;
@@ -35,7 +36,7 @@ class OrderControllerTest {
 
     @BeforeEach
     void setUp() {
-        executor = WorkflowExecutor.builder(store, serializer, "order-service").build();
+        executor = WorkflowExecutor.builder(store, serializer, "order-service").distributedLock(new InMemoryDistributedLock()).build();
         controller = new OrderController(
                 new MaestroClient(executor, new WorkflowRegistrar(executor), serializer, store));
     }

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.TestTerminalWait;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
@@ -48,7 +49,7 @@ class TerminateReachesEveryWaiterTest {
     void aTerminateAbandonsEveryParkedBranchOfItsWorkflow_andNoWaiterOfAnother() throws Exception {
         var store = new VersionedInMemoryStore();
         var observer = new RecordingEngineObserver();
-        executor = WorkflowExecutor.builder(store, serializer, "svc")
+        executor = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(new InMemoryDistributedLock())
                 .observer(observer)
                 .lifecycleEventsEnabled(false)
                 .shutdownTimeout(Duration.ofSeconds(5))

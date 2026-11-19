@@ -20,10 +20,10 @@ import org.springframework.core.Ordered;
  * own thread, retried every {@code maestro.recovery.poll-interval} until it
  * completes ({@link WorkflowExecutor#startOneShotRecovery}).
  *
- * <p>It also starts a one-time advisory check, on its own thread, that warns
- * about active workflows of this service's types recorded under another
- * {@code maestro.service-name} (Issue 39;
- * {@link WorkflowExecutor#startForeignServiceCheck}).
+ * <p>The shared-table check (active workflows under another
+ * {@code maestro.service-name}) is not started here: it runs earlier, at
+ * context refresh, in {@link ForeignServiceStartupCheck}, so a misconfigured
+ * node fails before it adopts anything.
  *
  * <p>The runner only starts loops. It adopts nothing itself; keep it that way:
  * anything slow added here delays readiness. So {@code run} returns while the
@@ -71,11 +71,6 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
             logger.info("Maestro recovery poller disabled (maestro.recovery.enabled=false); one startup recovery "
                     + "pass runs on its own thread, retried every {} until it completes", recovery.pollInterval());
         }
-
-        // 1b. Start the service-name check — one advisory read, on its own
-        // thread, that warns about active workflows of this service's types
-        // recorded under another maestro.service-name. It never throws.
-        executor.startForeignServiceCheck(registrations);
 
         // 2. Start the timer poller for durable sleep/timer functionality
         var timer = properties.getTimer();
