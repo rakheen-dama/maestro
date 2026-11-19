@@ -203,6 +203,59 @@ class ShutdownAdmissionTest {
         }
     }
 
+    /**
+     * PR #75 review 4626925552: a registry member whose {@code requestStop()}
+     * throws does not end {@code shutdown()}: the members after it are still
+     * asked, the drain, the renewer stop and the event flush still run, and
+     * the summary line is logged.
+     */
+    @Test
+    void aMemberWhoseStopRequestThrowsDoesNotCutTheShutdownShort() throws Exception {
+        var throwing = new java.util.concurrent.atomic.AtomicReference<LifecycleRegistry.@Nullable Membership>();
+        throwing.set(executor.lifecycle().join(LifecycleRegistry.Kind.TASK, new LifecycleRegistry.Member() {
+            @Override
+            public String name() {
+                return "throwing";
+            }
+
+            @Override
+            public void requestStop() {
+                java.util.Objects.requireNonNull(throwing.get()).leave();
+                throw new IllegalStateException("requestStop fails (test)");
+            }
+        }).orElseThrow());
+        var asked = new CountDownLatch(1);
+        var polite = new java.util.concurrent.atomic.AtomicReference<LifecycleRegistry.@Nullable Membership>();
+        polite.set(executor.lifecycle().join(LifecycleRegistry.Kind.TASK, new LifecycleRegistry.Member() {
+            @Override
+            public String name() {
+                return "polite";
+            }
+
+            @Override
+            public void requestStop() {
+                asked.countDown();
+                java.util.Objects.requireNonNull(polite.get()).leave();
+            }
+        }).orElseThrow());
+        var proxy = work.proxy(executor, store, serializer, "a");
+        executor.startWorkflow("wf-busy", "WorkWorkflow", "default", null, () -> new WorkWorkflow(proxy),
+                workMethod());
+        assertEquals(1, valueWithin(work::entries, 1, Duration.ofSeconds(5)));
+        executor.beforeShutdownDrain = work::releaseAll;
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            executor.shutdown();
+
+            assertEquals(0, asked.getCount(), "the member after the throwing one was still asked to stop");
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Maestro shutdown finished in")
+                            && r.message().contains("1 run(s) in flight at start, 0 still running")),
+                    logs.records().toString());
+        }
+        assertEquals(0, lock.heldCount(), "the drained run released its lock");
+        assertFalse(executor.isInstanceLockRenewerRunning(), "the renewer was stopped");
+    }
+
     private void assertUntouched(io.b2mash.maestro.core.model.WorkflowInstance failed,
                                  java.util.List<io.b2mash.maestro.core.model.WorkflowEvent> eventsBefore) {
         var now = store.getInstance("wf-failed").orElseThrow();

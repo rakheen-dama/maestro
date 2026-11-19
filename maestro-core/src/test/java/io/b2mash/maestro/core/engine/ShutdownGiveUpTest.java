@@ -88,6 +88,16 @@ class ShutdownGiveUpTest {
         assertEquals(history, store.getEvents(instanceId()), "the given-up run recorded nothing after the deadline");
         assertTrue(observerA.failed().isEmpty(), "no workflowFailed for a run given up at shutdown");
         assertAbandonedAsShutdown();
+        // PR #75 review 4626925618: the attempt this node executed and saw
+        // fail still gets its terminal callback (it closes a tracing span),
+        // though nothing about it is persisted.
+        var started = observerA.activityStarted().stream().filter(a -> a.activityName().equals("steps.blocking"))
+                .count();
+        var lateFailures = observerA.activityFailed().stream()
+                .filter(f -> f.info().activityName().equals("steps.blocking") && !f.replayed()).toList();
+        assertEquals(1, started, "A started the blocking activity once");
+        assertEquals(1, lateFailures.size(), "its late failure got a terminal callback: " + lateFailures);
+        assertEquals(IllegalStateException.class.getName(), lateFailures.getFirst().exceptionType());
 
         recoverOnB();
         assertEquals(2, blockingCalls.get(), "the peer ran the step again");

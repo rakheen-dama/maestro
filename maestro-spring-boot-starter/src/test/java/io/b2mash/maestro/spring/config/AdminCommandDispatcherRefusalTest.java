@@ -28,6 +28,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * WP3: a {@code $maestro:retry} that the engine refuses with
@@ -159,6 +160,60 @@ class AdminCommandDispatcherRefusalTest {
         assertEquals(1, warnings.size(), appender.list.toString());
         assertEquals(null, warnings.getFirst().getThrowableProxy(), "no stack trace for a routine refusal");
         assertEquals(WorkflowStatus.FAILED, store.getInstance("wf-draining").orElseThrow().status());
+    }
+
+    /**
+     * PR #75 review 4626925586: only the executor's own admission refusal is
+     * logged as a routine WARN. Any other {@code IllegalStateException} while
+     * the node shuts down — here a store failure inside Terminate, which has
+     * no admission check — keeps its ERROR and its stack trace.
+     */
+    @Test
+    @DisplayName("an IllegalStateException from the store during a Terminate while shutting down stays an ERROR with its stack trace")
+    void aStoreFailureDuringShutdownIsNotReportedAsAShutdownRefusal() throws NoSuchMethodException {
+        var real = new InMemoryWorkflowStore();
+        var failing = new java.util.concurrent.atomic.AtomicBoolean();
+        var faulty = (io.b2mash.maestro.core.spi.WorkflowStore) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{io.b2mash.maestro.core.spi.WorkflowStore.class},
+                (proxy, method, args) -> {
+                    if (failing.get() && method.getName().equals("getInstance")) {
+                        throw new IllegalStateException("the store's pool is closed (test)");
+                    }
+                    try {
+                        return method.invoke(real, args);
+                    } catch (java.lang.reflect.InvocationTargetException e) {
+                        throw e.getCause();
+                    }
+                });
+        var node = WorkflowExecutor.builder(faulty, new PayloadSerializer(mapper), "test-service")
+                .distributedLock(new InMemoryDistributedLock()).build();
+        var registration = new WorkflowRegistration(WORKFLOW_TYPE, "default", SimpleWorkflow::new,
+                SimpleWorkflow.class.getMethod("run", String.class));
+        var terminating = new AdminCommandDispatcher(node, real, new WorkflowRegistrar(node) {
+            @Override
+            public WorkflowRegistration getRegistration(String workflowType) {
+                return registration;
+            }
+        });
+        node.shutdown();
+        failing.set(true);
+
+        var dispatcherLog = (Logger) LoggerFactory.getLogger(AdminCommandDispatcher.class);
+        var appender = new ListAppender<ILoggingEvent>();
+        appender.start();
+        dispatcherLog.addAppender(appender);
+        try {
+            assertThrows(IllegalStateException.class,
+                    () -> terminating.dispatch(new SignalMessage("wf-any", "$maestro:terminate", null)));
+        } finally {
+            dispatcherLog.detachAppender(appender);
+        }
+
+        var errors = appender.list.stream().filter(e -> e.getLevel() == Level.ERROR).toList();
+        assertEquals(1, errors.size(), appender.list.toString());
+        assertTrue(errors.getFirst().getThrowableProxy() != null, "the store failure keeps its stack trace");
+        assertEquals(List.of(), appender.list.stream().filter(e -> e.getLevel() == Level.WARN).toList(),
+                "not reported as a shutdown refusal");
     }
 
     private WorkflowEvent event(UUID instanceId, int seq, EventType type, String step, String json) {
