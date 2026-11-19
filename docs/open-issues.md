@@ -6155,10 +6155,13 @@ version: the next recovery pass completes the run
 proves it). Or Terminate the instance. Admin Retry does **not** apply: the run is
 not `FAILED`.
 
-**A variation, traced by review, not tested.** If the run is a `@Saga` with
-compensations registered before the `version()` call, `SagaManager.compensate`
-reads its anchor slot first, finds the recorded step there and stands the run
-down as `nondeterministic_history` instead, before anything durable happens.
+**A variation.** If the run is a `@Saga` with a compensation registered before
+the `version()` call, `SagaManager.compensate` reads its anchor slot first,
+finds the recorded step there and stands the run down as
+`nondeterministic_history` instead (detail `seq=<n>
+expected=$maestro:compensation stored=<recorded step>`), before anything
+durable happens — after the same ERROR, and on every pass
+(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`).
 
 **The open design question (maintainer).** Either (a) make the code do what
 §10.2 documents — record the failure after the recorded history, end `FAILED`,

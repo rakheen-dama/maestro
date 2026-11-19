@@ -679,10 +679,12 @@ incompatible activity result type, or workflow input shape, as
 `FAILED`, never compensates, keeps its signals, and the old code, redeployed,
 finishes it (`WorkflowCodeChangeIT.Unsafe`). **Exception, not as documented:**
 raising `minSupported` above a parked run's recorded version does not fail the
-run as §10.2 says; it stands down as `stale_run` (detail `append collision at
-sequence <n>`) on each recovery pass until code accepting the recorded version
-is redeployed, which then finishes it
-(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`;
+run as §10.2 says; it stands down on each recovery pass until code accepting
+the recorded version is redeployed, which then finishes it — as `stale_run`
+(detail `append collision at sequence <n>`), or as `nondeterministic_history`
+for a `@Saga` that registered a compensation before the `version()` call
+(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`,
+`raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`;
 `docs/open-issues.md` Issue 89).
 
 **4. Rolling N-1 → N is supported.** While both builds run: a run parked on
@@ -797,9 +799,13 @@ Operationally, what matters:
   those instances with `UnsupportedWorkflowVersionException` — a genuine,
   deterministic workflow failure: it ends `FAILED` and saga compensation runs.
   **Not so for a run that recorded steps after its `version()` call** (every
-  parked run): today it stands down as `stale_run` on every recovery pass
-  instead, writing nothing, until code carrying its branch is redeployed
-  (`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`;
+  parked run): today it stands down on every recovery pass instead, writing
+  nothing, until code carrying its branch is redeployed — as `stale_run`
+  (`append collision at sequence <n>`), or, for a `@Saga` that registered a
+  compensation before the `version()` call, as `nondeterministic_history`
+  (`expected=$maestro:compensation`)
+  (`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`,
+  `raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`;
   `docs/open-issues.md` Issue 89, open); redeploying that code is then the
   whole remedy, and admin Retry does not apply (the run is not `FAILED`).
   Recovery for a run that did fail: restore code carrying the old branch, then use the admin **Retry**
