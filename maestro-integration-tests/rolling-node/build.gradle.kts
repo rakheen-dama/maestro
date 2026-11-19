@@ -80,6 +80,10 @@ dependencies {
     implementation(platform(libs.spring.boot.dependencies))
     implementation(project(":maestro-spring-boot-starter"))
     implementation(project(":maestro-store-postgres"))
+    // The Kafka transport, for the scenarios that send signals through Kafka;
+    // every other scenario launches its nodes with Maestro's Kafka
+    // auto-configuration excluded, so they need no broker.
+    implementation(project(":maestro-messaging-kafka"))
     nodeLibraries.forEach { implementation(it) }
     runtimeOnly(libs.postgresql)
 }
@@ -110,6 +114,7 @@ val previousReleaseNodes = previousReleases.map { release ->
         add(classpath.name, platform("io.b2mash.maestro:maestro-bom:${release.maestroVersion}"))
         add(classpath.name, "io.b2mash.maestro:maestro-spring-boot-starter")
         add(classpath.name, "io.b2mash.maestro:maestro-store-postgres")
+        add(classpath.name, "io.b2mash.maestro:maestro-messaging-kafka")
         nodeLibraries.forEach { add(classpath.name, it) }
         add(classpath.name, "org.postgresql:postgresql")
     }
