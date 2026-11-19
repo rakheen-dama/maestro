@@ -2,7 +2,16 @@ package io.b2mash.maestro.core.exception;
 
 /**
  * Signals that a workflow's <em>local run</em> was abandoned because this node
- * is shutting down. It is <b>not</b> a workflow failure.
+ * is shutting down — or that this node stopped and gave up on the run at its
+ * shutdown deadline. It is <b>not</b> a workflow failure.
+ *
+ * <p>A run still executing when the shutdown deadline passes is given up
+ * (pilot readiness P1, Issue 70): from then on every store call it makes is
+ * refused with this exception, and every stop point raises it, so nothing it
+ * does afterwards — an activity that fails because the host is tearing its
+ * beans down, or one that succeeds late — is recorded. The node that adopts
+ * the workflow re-runs whatever this run had not recorded, exactly as after a
+ * crash at the deadline.
  *
  * <p>When a node shuts down gracefully, workflows parked on
  * {@code awaitSignal()} or {@code sleep()} are unblocked with this exception so

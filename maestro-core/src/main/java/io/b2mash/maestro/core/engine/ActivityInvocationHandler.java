@@ -873,6 +873,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         ctx.cancellation().throwIfTerminated(ctx.workflowId());
         ctx.cancellation().throwIfStale(ctx.workflowId());
         ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+        // And a run shutdown has given up on (P1, Issue 70): it starts no
+        // further activity, whatever its code did with the refusal.
+        ctx.cancellation().throwIfAbandoned(ctx.workflowId());
 
         var info = new ActivityInfo(ctx.workflowId(), ctx.workflowType(), stepName, seq);
 
@@ -892,17 +895,31 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                     ctx.workflowId(),
                     ctx.cancellation()
             );
+        } catch (ExecutorShutdownException givenUp) {
+            // PR #75 review: shutdown gave the run up while an attempt this
+            // node executed was failing (RetryExecutor attaches that failure
+            // as the cause). Nothing is persisted and no ACTIVITY_FAILED is
+            // published, but the observer still gets the attempt's terminal
+            // callback — it measures this node's executions (and a tracing
+            // adapter closes the span). A shutdown in a backoff carries no cause.
+            if (givenUp.getCause() != null) {
+                observer.activityFailed(info, Duration.ofNanos(System.nanoTime() - startNanos),
+                        givenUp.getCause().getClass().getName(), false);
+            }
+            throw givenUp;
         } catch (ActivityExecutionException e) {
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
             // Retries exhausted — persist the failure.
             try {
                 persistFailure(ctx, seq, stepName, argsHash, e);
-            } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException notRecorded) {
+            } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException
+                     | ExecutorShutdownException notRecorded) {
                 // A concurrent runner already recorded an outcome at this
                 // sequence (Review Focus 4), another node adopted the
                 // workflow and the store fenced the append, or the store
                 // could not take the failure memo (the guard has latched
-                // the run). Each propagates INSTEAD of e: this run neither
+                // the run), or shutdown gave the run up and the guard
+                // refused the memo. Each propagates INSTEAD of e: this run neither
                 // publishes ACTIVITY_FAILED nor surfaces a failure that is
                 // not durably recorded — it stands down / is abandoned. The
                 // observer still sees the failure this node genuinely
@@ -929,14 +946,17 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         JsonNode stored;
         try {
             stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_COMPLETED, stepName, payload, argsHash, true);
-        } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException notRecorded) {
+        } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException
+                 | ExecutorShutdownException notRecorded) {
             // The winner is alive and ahead: stand down rather than adopt
             // its value (class Javadoc, "Idempotency"). Or another node
             // adopted the workflow and the store fenced the append: stand
             // down as LEASE_FENCED, nothing written. Or the store could
             // not take the outcome even after the guard's retries (R3): the
             // run is latched and is abandoned, and recovery re-runs this
-            // step. No ACTIVITY_COMPLETED lifecycle event — this run did not
+            // step. Or shutdown gave the run up at its deadline and the guard
+            // refused the outcome (P1, Issue 70): the adopting node re-runs
+            // this step. No ACTIVITY_COMPLETED lifecycle event — this run did not
             // persist one — but the observer sees the attempt this node
             // genuinely executed (and a tracing adapter closes its span).
             observer.activityCompleted(info, elapsed, false);

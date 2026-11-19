@@ -504,8 +504,10 @@ public final class SagaManager {
             } catch (Exception e) {
                 // R2: the action caught the latched store fault and threw
                 // something else — a consequence of the outage, not a failed
-                // reversal. Abandon instead of recording it.
+                // reversal. Abandon instead of recording it. Likewise an
+                // action that caught a given-up run's refusal (P1, Issue 70).
                 ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+                ctx.cancellation().throwIfAbandoned(ctx.workflowId());
                 logger.error("Compensation {} '{}' failed for workflow '{}': {}",
                         i, entry.stepName(), ctx.workflowId(), e.getMessage(), e);
                 recordStepFailure(ctx, stepBaseSeq, entry.stepName(), e);
@@ -753,8 +755,10 @@ public final class SagaManager {
         if (errors.stream().anyMatch(errorRef -> errorRef.get() != null)) {
             // R2: a branch that caught the latched store fault and threw
             // something else failed because of the outage. The branches share
-            // ctx's cancellation, so the latch is visible here.
+            // ctx's cancellation, so the latch is visible here. Likewise a
+            // branch that caught a given-up run's refusal (P1, Issue 70).
             ctx.cancellation().throwIfStoreUnavailable(ctx.workflowId());
+            ctx.cancellation().throwIfAbandoned(ctx.workflowId());
         }
 
         // Collect failures from branches that genuinely ran this call.

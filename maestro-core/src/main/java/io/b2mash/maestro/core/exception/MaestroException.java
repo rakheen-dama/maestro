@@ -51,7 +51,8 @@ public sealed class MaestroException extends RuntimeException
                 StoreUnavailableException,
                 WorkflowInstantiationException,
                 ForeignServiceRowsException,
-                WorkflowNotLaunchedException {
+                WorkflowNotLaunchedException,
+                ExecutorShuttingDownException {
 
     /**
      * Creates a new exception with the given message.

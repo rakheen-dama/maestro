@@ -294,7 +294,7 @@ any other value fails startup. Removed (setting either fails startup):
   they extend the sealed `MaestroControlFlowError extends Error`, not
   `MaestroException`, and the `permits` clause lists exactly three:
   `ExecutorShutdownException` (this node is stopping while the workflow was
-  parked), `WorkflowTerminatedException` (an operator terminated the workflow)
+  parked, or gave the run up at its shutdown deadline), `WorkflowTerminatedException` (an operator terminated the workflow)
   and `UnknownWorkflowHistoryException` (this node cannot interpret the
   workflow's persisted history — a newer node wrote it; see the stand-down
   design). None means the workflow
@@ -322,6 +322,16 @@ any other value fails startup. Removed (setting either fails startup):
   `22`/`23`/`54`, and `StoreFaultGuard` retries outcome appends then latches the run
   `STORE_UNAVAILABLE` — a latched run appends nothing and is abandoned for
   recovery, so any new `catch` that collects failures must rethrow it too.
+  A run still executing at the shutdown deadline is **given up**
+  (`RunCancellation.abandon()`, sticky; P1, Issue 70): `StoreFaultGuard` then
+  refuses every store call under its context with `ExecutorShutdownException`
+  (advisory reads and the activity body's pass-through excepted), and every
+  stop point that calls `throwIfStoreUnavailable` also calls
+  `throwIfAbandoned` — a new stop point, or a new failure-path `catch` that
+  checks the store latch, checks this one too. A launcher thread (start,
+  resume, Retry before the run thread starts) has no context for the guard,
+  so each launcher write checks the launch's `RunCancellation` itself; a new
+  launcher write does too.
   A background loop never ends on an `Error` silently (3.5b): it rethrows a `MaestroControlFlowError` and contains every other `Throwable`. The owner of that rule is `LoopSupervisor` (package `io.b2mash.maestro.core.loop`, public but internal until 1.0): a loop is a `LoopBody` declared through `WorkflowExecutor.supervise(LoopSpec, LoopBody)`, whose supervisor owns the thread, the waits, the streak (`WorkflowExecutor.loops()` → `LoopSnapshot`) and a latch stop that never interrupts; a body throws to report a failure and never swallows one. The signal janitor, the retention sweeper and the one-shot startup recovery run under it; the timer poller, the recovery poller and the instance-lock renewer still wrap each iteration in `BackgroundLoopGuard` (package `engine`), and the two `maestro-store-postgres` loops (`PostgresLockCleanerScheduler`, `PostgresWakeListener`) apply the same rule inline, until they move too (P2 tasks 4 and 6). A new loop is supervised.
   Observers are contained in one place (Issue 81): every engine type that takes an `EngineObserver` wraps it with `CompositeEngineObserver.contain`, which contains every `Throwable` a delegate throws except a `MaestroControlFlowError` and a `VirtualMachineError`, logs it once per callback and delegate, and counts it (`WorkflowExecutor.observerErrorCount()`, `maestro.observer.errors`). Do not add per-call-site `try`/`catch` around an observer call.
 - **Logging:** SLF4J. MDC with `workflowId`, `runId`, `activityName`.
@@ -354,6 +364,7 @@ any other value fails startup. Removed (setting either fails startup):
 - **Never inject a Maestro Kafka bean by type** — `maestroKafkaTemplate`, `maestroKafkaProducerFactory` and `maestroKafkaConsumerFactory` are `@Bean(defaultCandidate = false)`, so Spring Boot's Kafka beans exist beside them; Maestro code injects them only with `@Qualifier(MaestroKafkaBeans.TEMPLATE)` (or `PRODUCER_FACTORY`, `CONSUMER_FACTORY`). An unqualified `KafkaTemplate<String, byte[]>` receives Spring Boot's template (with Boot's `StringSerializer`, which `ByteArrayTemplateInjectionCheck` fails startup over) or, once the host declares a template of its own for another value type, nothing at all (a `NoSuchBeanDefinitionException` that `ByteArrayTemplateMissingFailureAnalyzer` explains).
 - **Never publish a lifecycle event on the workflow thread** — go through `LifecycleEventSink` (`WorkflowExecutor.lifecycleEventSink()`), never `WorkflowMessaging.publishLifecycleEvent` directly; a Kafka producer blocks up to `max.block.ms` on a missing topic.
 - **Never give a shutdown step its own timeout** — every step of `WorkflowExecutor.shutdown()` waits at most what is left of its `ShutdownDeadline` (3.6).
+- **Never launch a run outside the lifecycle registry** — a launch path joins `WorkflowExecutor.lifecycle()` (`LifecycleRegistry.joinRun`) before it takes the instance lock, does nothing if refused, and leaves after the lock's release, on the run thread once it has started (P1, Issue 80). Shutdown waits on the registry, not on `runningWorkflows`.
 - **Never interrupt a thread that may be inside a JDBC call** — stop it with a latch and a bounded join, as `PostgresWakeListener` and `WorkflowInstanceLockManager` do; the four core pollers and the lock cleaner still interrupt (Issue 64), and so does the health probe (Issue 66).
 - **Never use `com.fasterxml.jackson`** — Jackson 3 uses `tools.jackson`. The one exception is the annotations package: Jackson 3 keeps `com.fasterxml.jackson.annotation` (`@JsonTypeInfo`, `@JsonSubTypes`, `@JsonProperty`, …), so those imports are correct and required.
 - **Never use a Jakarta EE `javax.*` namespace** (`javax.servlet`, `javax.persistence`, `javax.annotation`, etc.) — Spring Boot 4 is Jakarta EE 11, so these are `jakarta.*` now. This does **not** cover Java SE's own `javax.*` packages, which never moved and have no `jakarta.*` equivalent — `javax.sql.DataSource`, `javax.crypto.*`, and similar are correct and required as-is.
