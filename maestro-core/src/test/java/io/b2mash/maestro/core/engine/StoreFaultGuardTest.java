@@ -169,6 +169,73 @@ class StoreFaultGuardTest {
         }
     }
 
+    /**
+     * PR #74 review 4624922222: a retry whose clock sample is older than the
+     * last recorded retry must not move the timestamp backwards — that would
+     * open a spurious episode (a second WARN) at the next retry.
+     */
+    @Test
+    @DisplayName("an older clock sample never moves the episode's last retry backwards")
+    void anOlderSampleNeverMovesTheLastRetryBackwards() throws Exception {
+        var aSampled = new java.util.concurrent.CountDownLatch(1);
+        var aMayStore = new java.util.concurrent.CountDownLatch(1);
+        var clock = new java.util.concurrent.ConcurrentHashMap<String, Long>(java.util.Map.of(
+                "retry-a", 0L, "retry-b", Duration.ofSeconds(59).toNanos(), "retry-c", Duration.ofSeconds(60).toNanos()));
+        java.util.function.LongSupplier nanoTime = () -> {
+            var name = Thread.currentThread().getName();
+            var sample = clock.getOrDefault(name, 0L);
+            if (name.equals("retry-a") && aSampled.getCount() > 0) {
+                aSampled.countDown();
+                try {
+                    aMayStore.await();            // A pauses between its sample and recording it
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return sample;
+        };
+        var failedOnce = java.util.concurrent.ConcurrentHashMap.<String>newKeySet();
+        var store = new VersionedInMemoryStore() {
+            @Override
+            public void appendEvent(WorkflowEvent event) {
+                if (failedOnce.add(Thread.currentThread().getName())) {
+                    throw new StoreUnavailableException("blip", new SQLTransientConnectionException("reset"));
+                }
+                super.appendEvent(event);
+            }
+        };
+        var counted = StoreFaultGuard.wrap(store, NO_WAIT, new RecordingEngineObserver(), nanoTime);
+        try (var logs = CapturingSlf4jProvider.watch(StoreFaultGuard.class)) {
+            var a = Thread.ofPlatform().name("retry-a").start(() -> counted.appendEvent(event(1)));
+            assertTrue(aSampled.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            var b = Thread.ofPlatform().name("retry-b").start(() -> counted.appendEvent(event(2)));
+            b.join(5_000);
+            aMayStore.countDown();
+            a.join(5_000);
+            var c = Thread.ofPlatform().name("retry-c").start(() -> counted.appendEvent(event(3)));
+            c.join(5_000);
+
+            assertEquals(1, warns(logs), "C retried 1 s after B: the same episode: " + logs.records());
+        }
+    }
+
+    /**
+     * Audit (PR #74 review 4624922252): a logger that throws on the episode
+     * WARN cannot skip the retry it reports.
+     */
+    @Test
+    @DisplayName("a logger that throws on the episode WARN does not skip the retry")
+    void aThrowingEpisodeWarnDoesNotSkipTheRetry() {
+        delegate.failNext("appendEvent", 1);
+        try (var logs = CapturingSlf4jProvider.watch(StoreFaultGuard.class)
+                .failWhen(m -> m.startsWith("Store unavailable on"))) {
+            inRun(() -> guarded.appendEvent(event(1)));
+        }
+        assertEquals(2, delegate.calls("appendEvent"), "retried once");
+        assertEquals(1, delegate.getEvents(instanceId).size(), "the event is stored");
+        assertNull(ctx.cancellation().cause());
+    }
+
     private static long warns(CapturingSlf4jProvider.Capture logs) {
         return logs.records().stream().filter(r -> r.level() == Level.WARN).count();
     }

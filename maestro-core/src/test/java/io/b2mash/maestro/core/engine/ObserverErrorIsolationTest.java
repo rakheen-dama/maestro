@@ -89,6 +89,28 @@ class ObserverErrorIsolationTest {
         assertEquals(1, executor.observerErrorCount());
     }
 
+    /**
+     * PR #74 review 4624922225: the components the executor builds share its
+     * one contained observer, so their contained failures are counted on
+     * {@code observerErrorCount()} too — here the instance-lock manager's.
+     */
+    @Test
+    void anErrorFromAComponentsCallbackIsCountedOnTheExecutor() throws Exception {
+        var store = new CountingStore();
+        executor = node(store, new EngineObserver() {
+            @Override
+            public void instanceLockAcquired(String workflowId) {
+                throw new IllegalStateException("observer bug");
+            }
+        });
+        work.releaseAll();
+        var proxy = work.proxy(executor, store, serializer, "A");
+
+        executor.startWorkflow("wf-lock", "WorkWorkflow", "orders", null, () -> new WorkWorkflow(proxy), workMethod());
+
+        assertEquals(1, executor.observerErrorCount(), "the lock manager's containment counts on the executor");
+    }
+
     private WorkflowExecutor node(CountingStore store, EngineObserver observer) {
         return WorkflowExecutor.builder(store, serializer, SERVICE)
                 .distributedLock(lock)

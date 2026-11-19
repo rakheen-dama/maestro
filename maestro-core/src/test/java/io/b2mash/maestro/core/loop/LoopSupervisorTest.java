@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.InstantSource;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
@@ -325,6 +326,97 @@ class LoopSupervisorTest {
         assertTrue(loop.awaitStopped(Duration.ofSeconds(2)), "the stop reached the wait returned after it");
         assertEquals(0, timesArmed.get(), "the wait was never entered");
         assertEquals(LoopSnapshot.State.STOPPED, loop.snapshot().state());
+    }
+
+    /** An exception whose {@code toString()} throws, as a buggy or hostile one might. */
+    static final class UnprintableException extends RuntimeException {
+        @Override
+        public String toString() {
+            throw new IllegalStateException("toString() bug");
+        }
+
+        @Override
+        public String getMessage() {
+            throw new IllegalStateException("getMessage() bug");
+        }
+    }
+
+    /**
+     * PR #74 review 4624922235: a stop hook that throws something unprintable
+     * cannot keep the hooks after it from running — the stop flag is already
+     * set, so a skipped hook would never run and a body in a custom wait would
+     * stay blocked.
+     */
+    @Test
+    void aStopHookThatThrowsSomethingUnprintableDoesNotSkipTheHooksAfterIt() {
+        var second = new CountDownLatch(1);
+        var loop = LoopSupervisor.unstarted(fast("hooks").withOnStop(() -> {
+            throw new UnprintableException();
+        }, second::countDown), ctx -> Next.afterPeriod(), observer, System::nanoTime, InstantSource.system());
+
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(loop::requestStop);
+        assertEquals(0, second.getCount(), "the second hook ran");
+    }
+
+    /**
+     * PR #74 review 4624922252: a logger that throws while the failure arm
+     * clears a stray interrupt cannot skip the failure's handling — the loop
+     * counts the failure and retries instead of ending DEAD.
+     */
+    @Test
+    void aThrowingLoggerWhileClearingAStrayInterruptDoesNotKillTheLoop() {
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(LoopSupervisor.class)
+                .failWhen(m -> m.contains("cleared a stray interrupt"))) {
+            var body = new ScriptedBody();
+            var loop = start(fast("stray-log"), body);
+            body.step(() -> {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("fails with the flag set");
+            });
+            body.awaitIterations(2);
+            assertAll(
+                    () -> assertEquals(LoopSnapshot.State.RUNNING, loop.snapshot().state()),
+                    () -> assertEquals(1, loop.snapshot().consecutiveFailures(), "the failure was counted"));
+        }
+    }
+
+    /**
+     * Audit (PR #74 review 4624922252, every log call on a state path): a
+     * logger that throws on the recovery line cannot turn a success into a
+     * counted failure.
+     */
+    @Test
+    void aThrowingLoggerOnTheRecoveryLineDoesNotTurnASuccessIntoAFailure() {
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(LoopSupervisor.class)
+                .failWhen(m -> m.contains("recovered after"))) {
+            var body = new ScriptedBody();
+            var loop = start(fast("recovery-log"), body);
+            body.step(() -> {
+                throw new IllegalStateException("one failure");
+            });
+            body.step(Next::afterPeriod);
+            body.awaitIterations(3);
+            assertAll(
+                    () -> assertEquals(0, loop.snapshot().consecutiveFailures(), "the success ended the streak"),
+                    () -> assertNull(loop.snapshot().lastFailureType()));
+        }
+    }
+
+    /**
+     * PR #74 review 4624922241: an iteration whose custom wait then throws is
+     * not a success — the streak grows across such iterations, so a loop
+     * whose wait always fails reaches {@code failing}.
+     */
+    @Test
+    void aCustomWaitThatAlwaysThrowsBuildsAStreak() {
+        var waits = new AtomicInteger();
+        var loop = start(fast("failing-wait"), ctx -> Next.await(c -> {
+            waits.incrementAndGet();
+            throw new IllegalStateException("the wait fails");
+        }));
+        awaitUntil(() -> waits.get() >= 3);
+        awaitUntil(() -> loop.snapshot().consecutiveFailures() >= 2);
+        assertTrue(loop.snapshot().failing(), "two failures in a row: failing under streak(2)");
     }
 
     @Test

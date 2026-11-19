@@ -305,6 +305,31 @@ class CompositeEngineObserverTest {
         assertThrows(OutOfMemoryError.class, () -> composite.workflowStarted(WF));
     }
 
+    /**
+     * PR #74 review 4624922269: an ordinary callback keeps its
+     * {@code VirtualMachineError} policy while its containment is reported —
+     * an {@code OutOfMemoryError} raised by the WARN propagates;
+     * {@code backgroundLoopError} keeps containing it.
+     */
+    @Test
+    @DisplayName("a VirtualMachineError raised while reporting a contained failure propagates, except from backgroundLoopError")
+    void aVirtualMachineErrorWhileReportingPropagatesForOrdinaryCallbacks() {
+        EngineObserver failing = new EngineObserver() {
+            @Override public void workflowStarted(WorkflowInfo w) {
+                throw new IllegalStateException("observer bug");
+            }
+            @Override public void backgroundLoopError(String loop, String errorType) {
+                throw new IllegalStateException("observer bug");
+            }
+        };
+        var composite = CompositeEngineObserver.contain(failing);
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(CompositeEngineObserver.class)
+                .failWhen(m -> m.startsWith("EngineObserver delegate"), () -> new OutOfMemoryError("while logging"))) {
+            assertThrows(OutOfMemoryError.class, () -> composite.workflowStarted(WF));
+            assertDoesNotThrow(() -> composite.backgroundLoopError("timer-poller", "java.lang.AssertionError"));
+        }
+    }
+
     @Test
     @DisplayName("contain() wraps a bare observer once and returns a composite unchanged")
     void containIsIdempotent() {
