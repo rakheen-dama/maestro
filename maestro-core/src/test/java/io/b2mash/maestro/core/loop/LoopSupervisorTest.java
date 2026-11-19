@@ -448,11 +448,19 @@ class LoopSupervisorTest {
         });
         var torn = new CopyOnWriteArrayList<LoopSnapshot>();
         var readers = new ArrayList<Thread>();
-        var stopAt = System.nanoTime() + Duration.ofMillis(300).toNanos();
+        var readersStarted = new CountDownLatch(4);
+        var observations = new AtomicInteger[4];
+        var done = new AtomicBoolean();
+        // Readiness by synchronisation, not elapsed time (PR #74 review): the
+        // readers run until the loop has flapped enough AND each has read
+        // enough snapshots while it did, within one overall bound.
         for (int r = 0; r < 4; r++) {
+            var seen = observations[r] = new AtomicInteger();
             readers.add(Thread.ofPlatform().start(() -> {
-                while (System.nanoTime() < stopAt) {
+                readersStarted.countDown();
+                while (!done.get()) {
                     var s = loop.snapshot();
+                    seen.incrementAndGet();
                     var streak = s.consecutiveFailures() > 0;
                     if (streak != (s.failingSince() != null) || streak != (s.lastFailureType() != null)
                             || s.consecutiveFailures() > 1) {
@@ -461,10 +469,17 @@ class LoopSupervisorTest {
                 }
             }));
         }
-        for (var reader : readers) {
-            reader.join();
+        try {
+            awaitLatch(readersStarted);
+            var flipsAtStart = flip.get();
+            awaitUntil(() -> flip.get() - flipsAtStart >= 100
+                    && java.util.Arrays.stream(observations).allMatch(o -> o.get() >= 1_000));
+        } finally {
+            done.set(true);
+            for (var reader : readers) {
+                reader.join(BOUND.toMillis());
+            }
         }
-        assertTrue(flip.get() > 10, "the loop flapped: " + flip.get());
         assertEquals(List.of(), torn);
     }
 

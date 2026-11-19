@@ -301,10 +301,10 @@ class RetentionSweeperTest {
             return LoopSupervisor.start(sweeper.spec(), sweeper, EngineObserver.NOOP);
         }
 
-        /** Stops it as shutdown does: request, then a bounded wait. */
+        /** Stops it as shutdown does: request, then a bounded wait that must see it end. */
         private void stop(LoopSupervisor loop) {
             loop.requestStop();
-            loop.awaitStopped(Duration.ofSeconds(5));
+            assertTrue(loop.awaitStopped(Duration.ofSeconds(5)), "the loop ended within 5 s");
         }
 
         @Test
@@ -356,6 +356,7 @@ class RetentionSweeperTest {
             store.release.countDown(); // the blocked batch now returns full
             stopper.join(Duration.ofSeconds(10).toMillis());
             assertFalse(stopper.isAlive(), "stop() must have returned");
+            assertTrue(loop.awaitStopped(Duration.ZERO), "the loop has ended, not only been asked to");
 
             assertEquals(1, store.calls.size(), "no batch may start after stop()");
         }

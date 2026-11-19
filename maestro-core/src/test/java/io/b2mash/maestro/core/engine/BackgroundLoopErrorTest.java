@@ -559,10 +559,10 @@ class BackgroundLoopErrorTest {
 
     // ── Fixtures ──────────────────────────────────────────────────────
 
-    /** Stops a supervised loop as the bodies' old {@code stop()} did: request, then wait at most 5 s. */
+    /** Stops a supervised loop as the bodies' old {@code stop()} did: request, then wait at most 5 s for its end. */
     private static void stop(LoopSupervisor loop) {
         loop.requestStop();
-        loop.awaitStopped(Duration.ofSeconds(5));
+        assertTrue(loop.awaitStopped(Duration.ofSeconds(5)), "the loop ended within 5 s");
     }
 
     /** Saves a {@code PENDING} timer that is already due (fire_at = now - 1 s). */
