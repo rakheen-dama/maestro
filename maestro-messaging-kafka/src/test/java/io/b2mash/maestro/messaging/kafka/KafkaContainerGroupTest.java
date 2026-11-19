@@ -222,6 +222,29 @@ class KafkaContainerGroupTest {
         assertTrue(shutter.join(Duration.ofSeconds(5)));
     }
 
+    /**
+     * PR #78 review 4634444589: a second stop(Runnable) on a container whose
+     * first stop is still in progress calls back at once (Spring Kafka), so the
+     * group must ask each container to stop exactly once — here a failed start
+     * stopped it, then shutdown's requestStop() would have asked again and left
+     * the registry while its consumers were still ending.
+     */
+    @Test
+    void eachContainerIsAskedToStopExactlyOnce() throws Exception {
+        var group = new KafkaContainerGroup("stop-once");
+        assertTrue(group.join(executor.lifecycle()));
+        var broken = new FakeContainer();
+        broken.startThrowsWhileRunning = true;
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class, () -> group.start(broken.proxy()));
+        assertTrue(broken.stopAsked.await(5, TimeUnit.SECONDS));
+
+        var shutter = Thread.ofVirtual().start(executor::shutdown);
+        assertFalse(shutter.join(Duration.ofMillis(300)), "still ending its consumers: the group must not have left");
+        assertEquals(1, broken.calls.stream().filter("stop"::equals).count(), "one stop call: " + broken.calls);
+        broken.finishStop();
+        assertTrue(shutter.join(Duration.ofSeconds(5)));
+    }
+
     /** A stand-in container: start/stop recorded; the stop's callback runs when the test says. */
     static final class FakeContainer {
         final AtomicBoolean started = new AtomicBoolean();
@@ -235,6 +258,7 @@ class KafkaContainerGroupTest {
         private final AtomicReference<Runnable> callback = new AtomicReference<>();
         private final List<String> calls = new CopyOnWriteArrayList<>();
 
+        /** The consumers have ended: runs the stop callback. */
         void finishStop() {
             started.set(false);
             callback.get().run();
@@ -260,6 +284,11 @@ class KafkaContainerGroupTest {
                                 return null;
                             }
                             callback.set(cb);
+                            // As Spring Kafka 4.0.4: the first stop sets running=false at
+                            // once while its consumers still end; a second stop(Runnable)
+                            // on a container no longer running calls back immediately
+                            // (AbstractMessageListenerContainer.stop) — PR #78 review 4634444589.
+                            started.set(false);
                             stopAsked.countDown();
                             if (stopThrowsAfterRegistering) {
                                 throw new IllegalStateException("wakeup failed (test)");
