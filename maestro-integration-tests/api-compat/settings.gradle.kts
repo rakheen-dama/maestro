@@ -2,8 +2,9 @@
 // Maestro build. It compares the published jars of two Maestro versions with
 // japicmp (me.champeau.gradle.japicmp) and writes one Markdown report.
 //
-//   old: -Pmaestro.oldVersion=<last release>, from GitHub Packages
-//        (gpr.user/gpr.token or GITHUB_ACTOR/GITHUB_TOKEN), or from
+//   old: -Pmaestro.oldVersion=<last release>: a pre-release from GitHub
+//        Packages (gpr.user/gpr.token or GITHUB_ACTOR/GITHUB_TOKEN), a final
+//        release from Maven Central, or either from
 //        -Pmaestro.oldRepo=<local Maven repository>
 //   new: -Pmaestro.newVersion=<version> from -Pmaestro.newRepo=<local Maven
 //        repository>, which `publishToMavenLocal -Dmaven.repo.local=<dir>`
@@ -41,7 +42,17 @@ dependencyResolutionManagement {
                 content { includeVersionByRegex("io\\.b2mash\\.maestro", ".*", Regex.escape(newVersion.get())) }
             }
         }
-        if (oldVersion.isPresent) {
+        // Without -Pmaestro.oldRepo, a final old version comes from Maven Central
+        // (where final releases are published) and a pre-release from GitHub Packages.
+        val oldIsFinal = oldVersion.isPresent && !oldVersion.get().contains('-') && !oldRepo.isPresent
+        if (oldIsFinal) {
+            maven {
+                name = "maestroOldCentral"
+                url = uri("https://repo.maven.apache.org/maven2/")
+                content { includeVersionByRegex("io\\.b2mash\\.maestro", ".*", Regex.escape(oldVersion.get())) }
+            }
+        }
+        if (oldVersion.isPresent && !oldIsFinal) {
             maven {
                 name = "maestroOld"
                 if (oldRepo.isPresent) {
