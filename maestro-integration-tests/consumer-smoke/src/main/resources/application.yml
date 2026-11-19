@@ -1,0 +1,8 @@
+spring:
+  application:
+    name: consumer-smoke
+
+maestro:
+  service-name: smoke
+  timer:
+    poll-interval: 200ms

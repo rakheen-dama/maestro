@@ -27,8 +27,9 @@ val previousReleases = listOf(
     PreviousRelease(maestroVersion = "0.3.0-rc.1", springBootVersion = "4.0.5"),
 )
 
-// Where the previous releases come from. Default: this repository's GitHub
-// Packages registry, with the credentials RELEASING.md § "Consuming one" names
+// Where the previous releases come from. Default: a final release from Maven
+// Central, a pre-release from this repository's GitHub Packages registry, with
+// the credentials RELEASING.md § "Consuming one" names
 // (gpr.user / gpr.token, else GITHUB_ACTOR / GITHUB_TOKEN; in GitHub Actions the
 // job's token with `packages: read`). With -Pmaestro.rolling.oldRepo=<dir>, a
 // local Maven repository instead, for a machine without a `read:packages`
@@ -37,36 +38,49 @@ val previousReleases = listOf(
 // Nothing here resolves at configuration time, so `./gradlew build` (which
 // compiles only `main`) never needs the network or a token.
 val oldRepo = providers.gradleProperty("maestro.rolling.oldRepo")
-val oldBuildSource = oldRepo.map { "local Maven repository $it" }.orElse("GitHub Packages")
+val oldBuildSource = oldRepo.map { "local Maven repository $it" }
+    .orElse("GitHub Packages (pre-releases) or Maven Central (final releases)")
+
+// A pre-release (a version with a hyphen suffix, 0.3.0-rc.1) is published only
+// to GitHub Packages, a final release (0.3.0) only to Maven Central
+// (RELEASING.md), so each previous release resolves from the one repository
+// its version was published to; no Maestro version comes from both.
+val preRelease = ".*-.*"
 
 repositories {
-    mavenCentral {
-        content { excludeGroup("io.b2mash.maestro") }
-    }
-    exclusiveContent {
-        forRepository {
-            if (oldRepo.isPresent) {
+    if (oldRepo.isPresent) {
+        mavenCentral {
+            content { excludeGroup("io.b2mash.maestro") }
+        }
+        exclusiveContent {
+            forRepository {
                 maven {
                     name = "maestroPreviousReleasesLocal"
                     url = uri(file(oldRepo.get()))
                 }
-            } else {
-                maven {
-                    name = "maestroGitHubPackages"
-                    // The registry the releases are published to (publish-github-packages.yml),
-                    // also from a fork's checkout; -PgprRepository=<owner>/<repo> overrides it.
-                    val repository = providers.gradleProperty("gprRepository").orElse("rakheen-dama/maestro")
-                    url = uri("https://maven.pkg.github.com/${repository.get()}")
-                    credentials {
-                        username = providers.gradleProperty("gpr.user")
-                            .orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
-                        password = providers.gradleProperty("gpr.token")
-                            .orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
-                    }
-                }
             }
+            filter { includeGroup("io.b2mash.maestro") }
         }
-        filter { includeGroup("io.b2mash.maestro") }
+    } else {
+        mavenCentral {
+            // Final releases of Maestro come from here; pre-releases never do.
+            content { excludeVersionByRegex("io\\.b2mash\\.maestro", ".*", preRelease) }
+        }
+        maven {
+            name = "maestroGitHubPackages"
+            // The registry the pre-releases are published to (publish-github-packages.yml),
+            // also from a fork's checkout; -PgprRepository=<owner>/<repo> overrides it.
+            val repository = providers.gradleProperty("gprRepository").orElse("rakheen-dama/maestro")
+            url = uri("https://maven.pkg.github.com/${repository.get()}")
+            credentials {
+                username = providers.gradleProperty("gpr.user")
+                    .orElse(providers.environmentVariable("GITHUB_ACTOR")).orNull
+                password = providers.gradleProperty("gpr.token")
+                    .orElse(providers.environmentVariable("GITHUB_TOKEN")).orNull
+            }
+            // Only Maestro's pre-releases; nothing else is looked up here.
+            content { includeVersionByRegex("io\\.b2mash\\.maestro", ".*", preRelease) }
+        }
     }
 }
 
@@ -80,6 +94,10 @@ dependencies {
     implementation(platform(libs.spring.boot.dependencies))
     implementation(project(":maestro-spring-boot-starter"))
     implementation(project(":maestro-store-postgres"))
+    // The Kafka transport, for the scenarios that send signals through Kafka;
+    // every other scenario launches its nodes with Maestro's Kafka
+    // auto-configuration excluded, so they need no broker.
+    implementation(project(":maestro-messaging-kafka"))
     nodeLibraries.forEach { implementation(it) }
     runtimeOnly(libs.postgresql)
 }
@@ -110,6 +128,7 @@ val previousReleaseNodes = previousReleases.map { release ->
         add(classpath.name, platform("io.b2mash.maestro:maestro-bom:${release.maestroVersion}"))
         add(classpath.name, "io.b2mash.maestro:maestro-spring-boot-starter")
         add(classpath.name, "io.b2mash.maestro:maestro-store-postgres")
+        add(classpath.name, "io.b2mash.maestro:maestro-messaging-kafka")
         nodeLibraries.forEach { add(classpath.name, it) }
         add(classpath.name, "org.postgresql:postgresql")
     }

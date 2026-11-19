@@ -132,7 +132,7 @@ class SeededHistoryReplayFidelityIT {
             before.put(id, rows(seeded, id));
         }
 
-        try (var node = seeded.node(Seeds.WP1_SERVICE, observer, invocations)) {
+        try (var node = seeded.node(Seeds.WP1_SERVICE, observer, Cbf5a2aFixture.activities(invocations))) {
             assertEquals(3, node.recover(), "recovery adopts exactly the three dormant WP1 runs");
             for (var id : DORMANT) {
                 node.deliverSignal(id, "go", "go");
@@ -190,7 +190,7 @@ class SeededHistoryReplayFidelityIT {
         var invocations = new Invocations();
 
         Row freshFirst;
-        try (var node = seeded.node(Seeds.WP1_SERVICE, observer, invocations)) {
+        try (var node = seeded.node(Seeds.WP1_SERVICE, observer, Cbf5a2aFixture.activities(invocations))) {
             node.start(fresh, SeedTypedResultWorkflow.class, new TypedRequest(kind));
             assertEquals(WAITING_SIGNAL, seeded.awaitStatusOrLast(fresh, WAITING_SIGNAL, BOUND),
                     () -> fresh + "; stand-downs: " + observer.standDowns());

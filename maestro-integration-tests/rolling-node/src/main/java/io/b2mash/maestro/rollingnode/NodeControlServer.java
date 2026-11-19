@@ -3,6 +3,7 @@ package io.b2mash.maestro.rollingnode;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
+import io.b2mash.maestro.rollingnode.workflow.RollingForkWorkflow;
 import io.b2mash.maestro.rollingnode.workflow.RollingSagaWorkflow;
 import io.b2mash.maestro.rollingnode.workflow.RollingSignalWorkflow;
 import io.b2mash.maestro.rollingnode.workflow.RollingTimerWorkflow;
@@ -111,6 +112,7 @@ public class NodeControlServer {
             case RollingSignalWorkflow.TYPE -> client.newWorkflow(RollingSignalWorkflow.class, options).startAsync(input);
             case RollingTimerWorkflow.TYPE -> client.newWorkflow(RollingTimerWorkflow.class, options).startAsync(input);
             case RollingSagaWorkflow.TYPE -> client.newWorkflow(RollingSagaWorkflow.class, options).startAsync(input);
+            case RollingForkWorkflow.TYPE -> client.newWorkflow(RollingForkWorkflow.class, options).startAsync(input);
             default -> throw new IllegalArgumentException("unknown workflow type " + params.get("type"));
         }
     }

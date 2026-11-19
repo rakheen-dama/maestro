@@ -625,24 +625,137 @@ message. An older node reads the new `failedSequences` field of a newer
 (traced, not tested). The details are in `docs/release-notes.md`, "Mixed
 fleets", under the admin Retry entry.*
 
-### 10.1 The deploy rule has not changed: upgrade all nodes together
+### 10.1 The compatibility promise: build N beside build N-1
 
-*Supported skew (`docs/support-matrix.md`): a rolling upgrade from the
-**previous release** only. Old and new nodes running together is not yet
-proven by a test (Issue 41, pilot-readiness P4); skew beyond the previous
-release is not supported.*
+*Supported skew (`docs/support-matrix.md`): the **previous release** only.
+Every sentence below names the test that backs it; what no test backs is
+listed at the end as **not promised**. "N-1" is the newest row of
+`previousReleases` in `maestro-integration-tests/rolling-node/build.gradle.kts`
+(today `0.3.0-rc.1`), run as a real process of that release beside a node of
+this build on one database.*
 
-**Upgrade every node of a service together, or drain the service first.** The
-engine now stands down rather than failing when it meets history it cannot read
-(§10.3), but that is a **safety net for the rolling window**, not a licence to
-run a mixed fleet. A workflow whose next step only an upgraded node can read
-makes no progress on the old nodes; it simply waits, safely, to be adopted by a
-new one. Leave a fleet half-upgraded and those workflows wait indefinitely.
+**1. Build N resumes the runs N-1 parked in the states below, with the
+workflow code unchanged.** These states, and no others, are tested:
 
-New event types are rare, so this is insurance, not a hot path.
+- *Across two live builds* (`RollingUpgradeIT`): a run parked on a signal
+  (`signalParkedOnPreviousIsResumedByCurrent`), parked on a signal inside a
+  `parallel()` branch (`signalParkedInAForkBranchOnPreviousIsResumedByCurrent`),
+  parked in a durable `sleep()` (`timerParkedOnPreviousIsFiredByCurrent`), a
+  saga parked on a signal before its failing step
+  (`sagaParkedOnPreviousIsCompensatedByCurrent`), and a saga whose compensation
+  activity was running when its N-1 node was killed
+  (`compensationInFlightOnPreviousIsFinishedByCurrent`). Each is adopted by N
+  and finishes exactly as on one build: each step once, the steps after the
+  park on N, a saga compensated once per step in LIFO order and `FAILED` by
+  its own failure; the compensation in flight may run twice (the documented
+  at-least-once window). A stand-down on N fails the test.
+- *From a frozen dump of N-1's and an earlier commit's history*
+  (`SeededHistoryUpgradeIT` over the `cbf5a2a` and `v0_3_0_rc_1` fixtures;
+  `SeededParkedSagaIT`): runs parked in a `sleep()`, in an `awaitSignal()`
+  whose deadline has passed, and on a signal; a run crashed during an
+  activity; a saga crashed during its second compensation; a saga parked on
+  a signal with both compensations registered; failed runs awaiting a Retry;
+  orphan signals and a stored signal id. Every seeded park comes after the
+  run's `parallel()` fork, not inside it.
+- *The schema N-1 migrated* (`ShippedMigrationsFrozenTest`;
+  `MaestroSchemaInitializerTest.aDatabaseMigratedByTheFrozenV030Rc1SetValidatesUnderThisBuild`).
 
-**This release changes the `awaitSignal` layout — rollback requires draining
-parked awaits.** An await that parks now records `TIMER_SCHEDULED` at its slot
+**2. … and with the workflow code changed in a way the playbook calls safe.**
+A run parked under the old code is resumed and completed by the edited code,
+replaying every recorded step, when the change is: a step inserted behind a
+`workflow.version()` gate, a step replaced behind one, `maxSupported` raised,
+or an activity interface renamed with its recorded group pinned by
+`@Activity(name = …)` (§10.2, §10.7; `WorkflowCodeChangeIT.Safe`). These run on
+one build: the code changes, the engine does not.
+
+**3. These changes the playbook calls unsafe stand down as documented.** A
+step renamed, reordered, inserted or removed without a gate; an awaited
+signal renamed; a `sleep()` where an activity ran; a `parallel()` arity
+change; an activity argument built differently (`argsHash`); a compensation
+renamed, or `parallelCompensation` flipped, under a compensating saga — each
+stands down as `nondeterministic_history` with the detail §10.7 gives; an
+incompatible activity result type, or workflow input shape, as
+`unknown_event_payload` (§10.4). The run writes nothing, is never marked
+`FAILED`, never compensates, keeps its signals, and the old code, redeployed,
+finishes it (`WorkflowCodeChangeIT.Unsafe`). **Exception, not as documented:**
+raising `minSupported` above a parked run's recorded version does not fail the
+run as §10.2 says; it stands down on each recovery pass until code accepting
+the recorded version is redeployed, which then finishes it — as `stale_run`
+(detail `append collision at sequence <n>`), or as `nondeterministic_history`
+for a `@Saga` that registered a compensation before the `version()` call
+(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`,
+`raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`;
+`docs/open-issues.md` Issue 89).
+
+**4. Rolling N-1 → N is supported.** While both builds run: a run parked on
+either build is woken through the other within NOTIFY latency, without leaving
+its owner (`parkedOnPreviousIsWokenThroughCurrent`,
+`parkedOnCurrentIsWokenThroughPrevious`); one client message id sent through
+both builds is stored once (`aSignalWithOneIdThroughPreviousThenCurrentIsStoredOnce`
+and the reverse); a Kafka record consumed by either build is stored under the
+same `kafka:<topicId>:<partition>:<offset>` id and consumed by a run parked on
+the other (`aKafkaSignalStoredByPreviousIsConsumedByARunOnCurrent` and the
+reverse); one `maestro-message-id` header id read by each build in turn in one
+consumer group is stored once as `hdr:<topic>:<id>`
+(`aHeaderIdSignalRepublishedThroughCurrentAfterPreviousIsStoredOnce` and the
+reverse); and a redelivery of an already-consumed record to the other build
+(the group's offset rewound while the group is empty, as a lost offset commit
+leaves it) is stored once
+(`aKafkaRecordRedeliveredToCurrentAfterALostOffsetCommitIsStoredOnce` and the
+reverse). In each Kafka case nothing reaches the dead-letter topic. A release
+also runs one workflow to completion as a plain consumer of its own BOM
+before it is published (`ConsumerSmokeTest`, `RELEASING.md`, "The release
+gate").
+
+**5. Rollback N → N-1.** A node of N-1 that adopts a run N parked either
+finishes it correctly, or stands down having recorded only a prefix of the
+run's correct history: never `FAILED` or `TERMINATED`, never a compensation in
+a run that does not fail, never a lost signal; a node of N then takes the run
+back and finishes it. A saga whose rollback stand-down came during its
+compensation may stay `COMPENSATING` until a node of N returns. Roll forward to
+finish such runs. (`RollingUpgradeIT`: `signalParkedOnCurrentIsAdoptedByPrevious`,
+`signalParkedInAForkBranchOnCurrentIsAdoptedByPrevious`,
+`timerParkedOnCurrentIsAdoptedByPrevious`, `sagaParkedOnCurrentIsCompensatedByPrevious`,
+`compensationInFlightOnCurrentIsFinishedByPrevious`; the rule is
+`RollingUpgradeIT`'s Javadoc and `RELEASING.md`, "The rolling test against
+previous releases".)
+
+**Not promised** (no test runs it):
+
+- Parked states item 1 does not list: for example a run parked in a
+  `sleep()` inside a `parallel()` branch, several branches parked at once, a
+  nested fork, `collectSignals()`, or `retryUntil()`'s backoff; and no frozen
+  dump holds a run parked inside a fork.
+- Unsafe changes item 3 does not list, though §10.7 names them: a side effect
+  (`currentTime()`, `randomUUID()`) moved, a compensation entry reordered, an
+  `awaitSignal()` where a `sleep()` ran; their stand-downs are untested.
+- Skew beyond the previous release (N-2 beside N, or an upgrade that skips a
+  release).
+- An engine upgrade and a workflow-code change in **one** deploy: item 2 is
+  tested on one build only. Deploy them separately.
+- A fleet left half-upgraded indefinitely: the tests cover the rolling window
+  and its rollback, not a standing mixed fleet.
+- A graceful (SIGTERM) deploy of a node while a compensation activity is
+  running: the tests kill that node (SIGKILL).
+- A timer fired by the timer leader of the other build while the run's owner
+  is alive.
+- The engine's own Kafka signal channel (`SignalMessage` envelopes, `env:`
+  ids), lifecycle events and admin events between builds.
+- An admin Retry or Terminate issued through one build for a run the other
+  build wrote (Issue 88's window needs a build older than N-1).
+- Anything an older build than N-1 wrote, beyond the frozen `cbf5a2a` history.
+
+New event types and payload changes are what break item 5; a release that
+changes events, payloads or migrations is first published as an experimental
+release and run beside N-1 (`RELEASING.md`, "Experimental releases").
+
+#### Older builds (before `0.3.0-rc.1`)
+
+The two paragraphs below are about builds older than the previous release;
+they are kept for databases that still hold history those builds wrote.
+
+**The two-slot `awaitSignal` layout (a build before `0.3.0-rc.1`) — rollback
+past it requires draining parked awaits.** An await that parks records `TIMER_SCHEDULED` at its slot
 and its outcome at the next one (the two-slot layout, `docs/release-notes.md`
 → "`awaitSignal` deadlines are durable timers"). Histories an older build wrote
 replay safely here, but **not the reverse**: an older node that adopts a
@@ -651,8 +764,8 @@ drift guard as `nondeterministic_history` (detail
 `stored=$maestro:awaitSignal:<name> type=TIMER_SCHEDULED`, the same step name
 the code performs), a pre-drift-guard build as `stale_run` when its outcome
 append collides with the occupied slot. Nothing is written, nothing is
-compensated, but the older node makes no progress on that workflow. So upgrade
-every node together, or drain parked awaits first; **after a rollback, roll
+compensated, but the older node makes no progress on that workflow. So never
+roll back past that layout with awaits parked; **after such a rollback, roll
 forward** — redeploying the older build again (§10.7's first remedy) does not
 heal these stand-downs.
 
@@ -679,14 +792,23 @@ for the two-step ship-then-raise-the-floor pattern and the rules.
 
 Operationally, what matters:
 
-- **`VERSION_MARKER` is a new event type in this release.** A node from the
-  previous version that adopts a workflow whose history contains one cannot
-  interpret it, and stands down (§10.3). This is exactly the case §10.1's rule
-  covers.
+- **`VERSION_MARKER` predates `0.3.0-rc.1`.** A node of a build older than
+  `VERSION_MARKER` that adopts a workflow whose history contains one cannot
+  interpret it, and stands down (§10.3).
 - Raising `minSupported` before every pre-change instance has drained fails
   those instances with `UnsupportedWorkflowVersionException` — a genuine,
   deterministic workflow failure: it ends `FAILED` and saga compensation runs.
-  Recovery: restore code carrying the old branch, then use the admin **Retry**
+  **Not so for a run that recorded steps after its `version()` call** (every
+  parked run): today it stands down on every recovery pass instead, writing
+  nothing, until code carrying its branch is redeployed — as `stale_run`
+  (`append collision at sequence <n>`), or, for a `@Saga` that registered a
+  compensation before the `version()` call, as `nondeterministic_history`
+  (`expected=$maestro:compensation`)
+  (`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`,
+  `raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`;
+  `docs/open-issues.md` Issue 89, open); redeploying that code is then the
+  whole remedy, and admin Retry does not apply (the run is not `FAILED`).
+  Recovery for a run that did fail: restore code carrying the old branch, then use the admin **Retry**
   action. Retry never deletes a version marker recorded before the failure, so
   the retried run replays the same recorded version against the restored
   branch (`RetryPlannerTest.aVersionMarkerRecordedBeforeTheFailure_isKept`).
@@ -841,7 +963,7 @@ recovery pass it feeds, still completes
 
 Maestro's migrations always target `maestro_*` tables and are applied by Maestro itself at startup in the connection's current schema, so under the default `maestro.store.schema.mode: flyway` an upgrade between builds that both keep `maestro_schema_history` needs no manual SQL (the one-time move to that history table does — last paragraph below). The former custom-prefix mode (`maestro.store.table-prefix`) is gone; to isolate services sharing a database, give each its own Postgres schema (see `docs/configuration.md` § Store Configuration).
 
-Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. `maestro-store-postgres` ships its SQL under two locations (`classpath:db/maestro/store`: V1–V9 and V101; `classpath:db/maestro/lock`: V100; band 200–299 belonged to the removed Postgres messaging transport and is never reused), and every location on the classpath is applied. **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history.** To a build that does not ship it, a migration above V100 is a "future" migration that Flyway ignores, so a node on an earlier main build from e91bd9d (PR #43) on restarts, and a rollback to such a build starts, against a database a newer build migrated; an older build may not (`docs/configuration.md` § Schema management, "Numbering rule"). The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the deploy rule in §10.1. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. V6–V9 predate that rule and sort below V100. A database that recorded V100 before them gets them out of order: this build applies them, and reports them pending under `validate` (`docs/open-issues.md` Issue 35). They also leave one limit, confined to unreleased builds: a node on a main build from c01d498 (PR #35) up to, but not including, e91bd9d (PR #43) that lacks one of V6–V9 (and, before PR #36, resolves V100 or V200–V202 because the optional lock or Postgres-transport module was on its classpath) **cannot start** in `flyway` or `validate` mode against a database that recorded it (`Detected applied migration not resolved locally: <n>`). Nodes already running carry on, and such a node starts only with `maestro.store.schema.mode: none`. Every build from e91bd9d on, main @ a27a275 included, restarts normally against this release's schema. Under `validate`, record a new migration before rolling the fleet, through the Flyway CLI as the role that owns the tables, or with one `flyway`-mode start if the application's role owns them. A hand-inserted history row fails the checksum check, and a role that does not own the tables cannot run even `CREATE INDEX IF NOT EXISTS`. The per-mode V101 steps are in `docs/configuration.md` § Recovery Configuration. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4`–`V9` and `V101` applied by hand (`V9`, the signal `message_id` column and its unique index, is a hard prerequisite: this build names the column in every signal insert; `V8` and `V101` are index-only — their queries are correct without the indexes, and under `none` nothing reads the history); delete Maestro's rows from `flyway_schema_history`; start the new build. A database that once ran the Postgres messaging transport keeps an orphan `maestro_signal_queue` table (Flyway's default `ignoreMigrationPatterns=*:future` tolerates its history rows); dropping it is optional. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
+Maestro records what it applied in its **own Flyway history table, `maestro_schema_history`** — never your application's `flyway_schema_history`, whose `spring.flyway.*` settings it ignores. `maestro-store-postgres` ships its SQL under two locations (`classpath:db/maestro/store`: V1–V9 and V101; `classpath:db/maestro/lock`: V100; band 200–299 belonged to the removed Postgres messaging transport and is never reused), and every location on the classpath is applied. **Every new Maestro migration, store or lock, takes the next version above the highest shipped, within 101–199; versions 1–9 and 100 are history.** To a build that does not ship it, a migration above V100 is a "future" migration that Flyway ignores, so a node on an earlier main build from e91bd9d (PR #43) on restarts, and a rollback to such a build starts, against a database a newer build migrated; an older build may not (`docs/configuration.md` § Schema management, "Numbering rule"). The first node of the new build applies the new migrations before its engine starts, and Flyway's database lock makes concurrent starts safe. **Do not assume older nodes keep working against the newer schema**: most of Maestro's migrations add a column, index or default, but not all. Before a deploy that ships a migration, read its release-notes entry; a migration that drops or renames anything means stopping every older node first, on top of the rolling window §10.1 describes. `maestro.store.schema.mode: validate` makes a node fail startup instead when migrations are pending; `none` hands the DDL to you entirely. V6–V9 predate that rule and sort below V100. A database that recorded V100 before them gets them out of order: this build applies them, and reports them pending under `validate` (`docs/open-issues.md` Issue 35). They also leave one limit, confined to unreleased builds: a node on a main build from c01d498 (PR #35) up to, but not including, e91bd9d (PR #43) that lacks one of V6–V9 (and, before PR #36, resolves V100 or V200–V202 because the optional lock or Postgres-transport module was on its classpath) **cannot start** in `flyway` or `validate` mode against a database that recorded it (`Detected applied migration not resolved locally: <n>`). Nodes already running carry on, and such a node starts only with `maestro.store.schema.mode: none`. Every build from e91bd9d on, main @ a27a275 included, restarts normally against this release's schema. Under `validate`, record a new migration before rolling the fleet, through the Flyway CLI as the role that owns the tables, or with one `flyway`-mode start if the application's role owns them. A hand-inserted history row fails the checksum check, and a role that does not own the tables cannot run even `CREATE INDEX IF NOT EXISTS`. The per-mode V101 steps are in `docs/configuration.md` § Recovery Configuration. A database migrated by a build from before Maestro owned its history (0.4.0 and earlier) needs a one-time procedure — stop every node; then either drop the `maestro_*` tables, or keep them under `maestro.store.schema.mode: none` with `V4`–`V9` and `V101` applied by hand (`V9`, the signal `message_id` column and its unique index, is a hard prerequisite: this build names the column in every signal insert; `V8` and `V101` are index-only — their queries are correct without the indexes, and under `none` nothing reads the history); delete Maestro's rows from `flyway_schema_history`; start the new build. A database that once ran the Postgres messaging transport keeps an orphan `maestro_signal_queue` table (Flyway's default `ignoreMigrationPatterns=*:future` tolerates its history rows); dropping it is optional. The SQL for each step is in `docs/configuration.md` § Schema management → "Upgrading an existing database".
 
 ### 10.7 Replay drift: `nondeterministic_history`
 
@@ -1292,7 +1414,7 @@ purged anything logs one `INFO` line with its counts; a store failure logs
   for the drain rate and how to tune it. Set `maestro.retention.enabled:
   false` on every node to keep the old keep-forever behaviour, or raise the
   retentions first and lower them later.
-- **Mixed-version deploy** (§10.1 still applies): an older node's engine does
+- **Mixed-version deploy** (§10.1): an older node's engine does
   not know the sweeper and keeps running; it merely sees finished workflows
   disappear, which no active-path read depends on.
 - **Mixed-version deploy of the paced, service-scoped housekeeping:** a node of
