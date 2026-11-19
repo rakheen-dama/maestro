@@ -52,7 +52,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. [65](#issue-65) — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors`
 11. [75](#issue-75) — On an exhausted pool the root `/actuator/health` does not answer, though `maestro` reads `UNKNOWN`
 
-**`blocks-1.0`** (10)
+**`blocks-1.0`** (11)
 
 1. [44](#issue-44) — Workflow input is read with the raw parameter class
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
@@ -64,6 +64,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
 9. [52](#issue-52) — `maestro-admin-client` has no wired component
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
+11. [89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`
 
 **`limitation`** (22)
 
@@ -6099,6 +6100,79 @@ finished. A code change cannot reach the older build.
 
 **Done when.** The next release that crosses this boundary carries the
 deploy note; nothing more is needed once no pre-WP3 node can run.
+
+---
+
+<a id="issue-89"></a>
+
+### Issue 89 — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run` {#issue-89}
+
+> **Label: `blocks-1.0`.** The behaviour is safe (nothing written, nothing
+> compensated) but contradicts operations §10.2 and pitfalls rule 7, and
+> reports itself as split-brain.
+
+> **Open.** Filed by pilot-readiness P4 (2026-11-19, branch
+> `pilot/p4-upgrade-safety-2`), found by `WorkflowCodeChangeIT`. Pinned, not
+> fixed.
+
+**Kind:** Library defect and documentation error — versioning. **Severity:**
+Medium (no side effect, no data loss; but a stuck run whose signals point the
+operator the wrong way).
+
+**What happens.** `docs/operations.md` §10.2 and `docs/pitfalls.md` rule 7 say
+that raising `minSupported` above an in-flight instance's recorded version
+fails that instance with `UnsupportedWorkflowVersionException`: `FAILED`,
+compensation runs, then restore the old branch and Retry. For a run that
+recorded steps after its `version()` call — every parked run — the engine
+instead:
+
+1. replays to the marker; `version()` throws `UnsupportedWorkflowVersionException`
+   (`DefaultWorkflowOperations.guardVersion`);
+2. `handleWorkflowFailure` logs **ERROR** `Workflow '<id>' failed: …` and
+   `transitionToTerminal` takes the terminal slot from the replay cursor
+   (`nextSequence`), not from the end of the recorded history;
+3. a recorded step already holds that slot, so `completeInstance` raises
+   `DuplicateEventException`, which is routed to `handleStaleRunStandDown`:
+   **WARN** `stood down (STALE_RUN): another runner owns its progress (append
+   collision at sequence <n>; …)` and `maestro.standdown{reason="stale_run"}`;
+4. nothing is written or compensated; the instance keeps `WAITING_*`; every
+   recovery pass adopts it again (raising `lease_epoch`) and repeats 1–3.
+
+`FAILED` happens only when the marker is the last recorded event. Any
+deterministic exception that a code change makes the workflow throw inside
+its recorded prefix probably takes the same path (traced, not tested).
+
+**How an operator sees it.** Each recovery pass: one ERROR saying the workflow
+"failed", one WARN blaming a concurrent runner, one `stale_run` stand-down. The
+status stays `WAITING_*` (not `FAILED`). §10.3 says `stale_run` is "normally
+unrelated to versioning", and the §10.7 alert keys on
+`nondeterministic_history`, so the alert that matters for a code change does
+not trip, and the run can sit stuck indefinitely.
+
+**The way out today.** Redeploy code whose `minSupported` covers the recorded
+version: the next recovery pass completes the run
+(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`
+proves it). Or Terminate the instance. Admin Retry does **not** apply: the run is
+not `FAILED`.
+
+**A variation, traced by review, not tested.** If the run is a `@Saga` with
+compensations registered before the `version()` call, `SagaManager.compensate`
+reads its anchor slot first, finds the recorded step there and stands the run
+down as `nondeterministic_history` instead, before anything durable happens.
+
+**The open design question (maintainer).** Either (a) make the code do what
+§10.2 documents — record the failure after the recorded history, end `FAILED`,
+compensate — or (b) keep a stand-down (the behaviour is the safe one, and
+matches §10.7's argument for standing drift down) but classify it correctly:
+`nondeterministic_history` or a dedicated reason, with the exception named in
+the detail, and rewrite §10.2 and rule 7 to stand-down semantics. Under (b),
+delete `raisingTheFloorAboveARecordedVersionFailsTheRunAsDocumented`
+(`@Disabled`) rather than enable it.
+
+**Done when.** The choice is made; the engine reports this case under a
+versioning reason (or fails it as documented); §10.2, pitfalls rule 7 and the
+support matrix say the same; the pinned and disabled tests are replaced by
+one that asserts the chosen outcome, including the `@Saga` variation.
 
 ---
 
