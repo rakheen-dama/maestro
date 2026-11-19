@@ -67,6 +67,31 @@ class TimerPollerTest {
         executor.shutdown();
     }
 
+    /**
+     * P2 task 4 (Issue 64): a stop never interrupts the poller's store call;
+     * the loop ends once the call returns.
+     */
+    @Test
+    @DisplayName("a stop never interrupts a store call")
+    void aStopNeverInterruptsAStoreCall() throws Exception {
+        var stuck = new BackgroundLoopStopTest.StuckStore();
+        var stuckExecutor = WorkflowExecutor.builder(stuck, new PayloadSerializer(new ObjectMapper()), "svc")
+                .distributedLock(new InMemoryDistributedLock()).lifecycleEventsEnabled(false).build();
+        try {
+            var stuckPoller = new TimerPoller(stuck, stuckExecutor, new InMemoryDistributedLock(), "svc",
+                    Duration.ofMillis(20), 10);
+            stuckPoller.start();
+            assertTrue(stuck.entered.await(5, java.util.concurrent.TimeUnit.SECONDS));
+            stuckPoller.requestStop();
+            stuck.release.countDown();
+            assertTrue(stuckPoller.awaitStopped(Duration.ofSeconds(5)));
+            assertFalse(stuck.interrupted.get(), "the store call was never interrupted");
+        } finally {
+            stuck.release.countDown();
+            stuckExecutor.shutdown();
+        }
+    }
+
     // ── Timer firing ─────────────────────────────────────────────────
 
     @Test

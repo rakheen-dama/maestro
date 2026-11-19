@@ -462,6 +462,8 @@ public final class WorkflowExecutor {
         Map<String, TaskQueueLimits> taskQueueLimits = Map.of();
         @Nullable TaskQueueLimits defaultTaskQueueLimits;
         InstantSource instantSource = InstantSource.system();
+        /** Test seam: starts the instance-lock renewer's supervisor. Package-private; production never assigns it. */
+        LoopStarter renewerStarter = LoopStarter.DEFAULT;
 
         private Builder(WorkflowStore store, PayloadSerializer serializer, String serviceName) {
             this.store = Objects.requireNonNull(store, "store");

@@ -53,6 +53,21 @@ class WorkflowExecutorBuilderTest {
         return executor;
     }
 
+    /**
+     * P2 task 4 (Issue 68, part 1): the instance-lock renewer starts while the
+     * executor is built; a renewer that cannot start fails the build — and so
+     * the context — instead of leaving held locks unrenewed.
+     */
+    @Test
+    void aRenewerThatCannotStartFailsTheBuild() {
+        var b = WorkflowExecutor.builder(store, serializer, "svc").distributedLock(lock);
+        b.renewerStarter = (spec, body, observer) -> {
+            throw new IllegalStateException("no thread for the renewer (test)");
+        };
+        var thrown = assertThrows(IllegalStateException.class, () -> keep(b.build()));
+        assertEquals("no thread for the renewer (test)", thrown.getMessage());
+    }
+
     @Test
     void defaultsAreTheValuesTheSixArgumentConstructorSupplied() {
         var b = WorkflowExecutor.builder(store, serializer, "svc");

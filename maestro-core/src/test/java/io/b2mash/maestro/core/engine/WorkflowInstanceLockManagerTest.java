@@ -49,6 +49,18 @@ class WorkflowInstanceLockManagerTest {
         }
     }
 
+    /**
+     * P2 task 4 (Issue 68, part 1): the renewer starts with the manager — the
+     * executor's build — not with the first acquisition, so there is no
+     * "never started" state for held locks to fall into.
+     */
+    @Test
+    @DisplayName("the renewer runs before the first acquisition")
+    void theRenewerRunsBeforeTheFirstAcquisition() {
+        manager = new WorkflowInstanceLockManager(new RecordingLock(), "svc", SHORT_TTL, SHORT_RENEW);
+        assertTrue(manager.isRenewerRunning(), "started with the manager, before any acquisition");
+    }
+
     @Test
     @DisplayName("non-positive ttl or renew interval is rejected")
     void nonPositiveTtlOrRenewIntervalRejected() {

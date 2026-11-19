@@ -126,6 +126,24 @@ class BackgroundLoopStopTest {
     }
 
     /**
+     * P2 task 4 (Issue 64): no loop is stopped by an interrupt any more — a
+     * store call in progress (JDBC, in production, where an interrupt closes
+     * the connection) is left to finish.
+     */
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(Loop.class)
+    void aStopNeverInterruptsTheStoreCall(Loop kind) throws Exception {
+        var loop = kind.start(store, executor);
+        this.loop = loop;
+        assertTrue(store.entered.await(5, SECONDS), "the loop is inside its store call");
+        loop.requestStop();
+        assertFalse(loop.awaitStopped(Duration.ofMillis(200)), "the store call is still in progress");
+        store.release.countDown();
+        assertTrue(loop.awaitStopped(Duration.ofSeconds(5)), "the loop ended once its store call returned");
+        assertFalse(store.interrupted.get(), "the store call was never interrupted");
+    }
+
+    /**
      * Blocks each loop's store call on {@link #release}, swallowing interrupts
      * the way a driver that ignores them does, and counts down
      * {@link #entered} on the way in.
@@ -133,6 +151,8 @@ class BackgroundLoopStopTest {
     static final class StuckStore extends VersionedInMemoryStore {
         final CountDownLatch entered = new CountDownLatch(1);
         final CountDownLatch release = new CountDownLatch(1);
+        /** Set when a store call saw an interrupt (and swallowed it). */
+        final java.util.concurrent.atomic.AtomicBoolean interrupted = new java.util.concurrent.atomic.AtomicBoolean();
 
         @Override
         public List<WorkflowTimer> getDueTimers(int batchSize) {
@@ -167,6 +187,7 @@ class BackgroundLoopStopTest {
                     return;
                 } catch (InterruptedException swallowed) {
                     // a driver that swallows the interrupt (flag cleared) and keeps waiting
+                    interrupted.set(true);
                 }
             }
         }
