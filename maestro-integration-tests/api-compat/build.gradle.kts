@@ -110,18 +110,22 @@ tasks.register("apiCompatReport") {
         text.append(internalPackages.filterNot { it.endsWith("*") }.joinToString { "`$it`" }).append(".\n\n")
         for (scope in listOf("public", "internal")) {
             text.append("## ").append(if (scope == "public") "Public API" else "Internal packages").append("\n\n")
-            text.append("| Module | Changed classes | Classes with an incompatible change |\n|---|---|---|\n")
+            text.append("| Module | Changed classes | Binary-incompatible | Source-incompatible only |\n")
+            text.append("|---|---|---|---|\n")
             for (module in modules) {
                 // japicmp's text report: one unindented line per changed class,
-                // "***" modified, "+++" new, "---" removed; "!" after the marker
-                // flags a binary-incompatible change.
+                // "***" modified, "+++" new, "---" removed, then a fourth
+                // character: "!" for a binary-incompatible change, "*" for a
+                // change that is binary-compatible but source-incompatible
+                // (e.g. "**** MODIFIED ANNOTATION" for an element added without
+                // a default), " " for a compatible one.
                 val classes = dir.resolve("$module-$scope.txt").readLines()
                     .filter { it.startsWith("***") || it.startsWith("+++") || it.startsWith("---") }
-                val incompatible = classes.filter { it.startsWith("***!") || it.startsWith("---!") }
+                fun named(marker: Char) = classes.filter { it.length > 3 && it[3] == marker }
                     .map { line -> "`" + (Regex("""io\.b2mash\.\S+""").find(line)?.value ?: line) + "`" }
-                text.append("| `$module` | ${classes.size} | ")
-                    .append(if (incompatible.isEmpty()) "none" else "**${incompatible.size}**: " + incompatible.joinToString())
-                    .append(" |\n")
+                fun cell(names: List<String>) =
+                    if (names.isEmpty()) "none" else "**${names.size}**: " + names.joinToString()
+                text.append("| `$module` | ${classes.size} | ${cell(named('!'))} | ${cell(named('*'))} |\n")
             }
             text.append('\n')
         }
