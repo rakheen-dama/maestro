@@ -392,11 +392,11 @@ public final class WorkflowExecutor {
         this.lifecycleEventSink = buildLifecycleEventSink(this.messaging, lifecycleEventsEnabled);
         this.signalManager = new SignalManager(
                 this.store, this.lifecycleEventSink, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
-                observer, taskQueueGovernor, instantSource);
-        this.sagaManager = new SagaManager(this.store, serializer, serviceName, observer, this.lifecycleEventSink);
+                this.observer, taskQueueGovernor, instantSource);
+        this.sagaManager = new SagaManager(this.store, serializer, serviceName, this.observer, this.lifecycleEventSink);
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
-                instanceLockTtl.dividedBy(3), observer);
+                instanceLockTtl.dividedBy(3), this.observer);
         this.queryRegistry = new QueryRegistry();
         this.shutdownTimeout = shutdownTimeout;
         this.instanceLockTtl = instanceLockTtl;

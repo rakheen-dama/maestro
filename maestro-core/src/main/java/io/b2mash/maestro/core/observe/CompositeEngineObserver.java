@@ -143,7 +143,7 @@ public final class CompositeEngineObserver implements EngineObserver {
                 succeeded(callback, i, null);
             } catch (Throwable t) {
                 rethrowIfNotTheObserversFault(t, false);
-                contained(callback, i, null, delegate, t);
+                contained(callback, i, null, delegate, t, false);
             }
         }
     }
@@ -170,7 +170,7 @@ public final class CompositeEngineObserver implements EngineObserver {
 
     /** Counts and logs one containment: WARN with the stack trace for the first of a streak, DEBUG after. */
     private void contained(String callback, int delegateIndex, @Nullable String loop, EngineObserver delegate,
-                           Throwable t) {
+                           Throwable t, boolean containVirtualMachineErrors) {
         containedErrors.incrementAndGet();
         try {
             var forLoop = loop == null ? "" : " for loop '" + loop + "'";
@@ -183,7 +183,10 @@ public final class CompositeEngineObserver implements EngineObserver {
                         delegate.getClass().getName(), callback, forLoop, t.toString());
             }
         } catch (Throwable logFailure) {
-            rethrowIfNotTheObserversFault(logFailure, true);
+            // The callback's own policy (PR #74 review): an ordinary callback
+            // propagates a VirtualMachineError raised while reporting, as it
+            // would one from the delegate; backgroundLoopError contains it.
+            rethrowIfNotTheObserversFault(logFailure, containVirtualMachineErrors);
             // A failure that cannot be logged is still contained and counted.
         }
     }
@@ -267,7 +270,7 @@ public final class CompositeEngineObserver implements EngineObserver {
                 succeeded("wrapActivityAttempt", i, null);
             } catch (Throwable t) {
                 rethrowIfNotTheObserversFault(t, false);
-                contained("wrapActivityAttempt", i, null, delegate, t);
+                contained("wrapActivityAttempt", i, null, delegate, t, false);
             }
         }
         return wrapped;
@@ -358,7 +361,7 @@ public final class CompositeEngineObserver implements EngineObserver {
                 succeeded("backgroundLoopError", i, loop);
             } catch (Throwable t) {
                 rethrowIfNotTheObserversFault(t, true);
-                contained("backgroundLoopError", i, loop, delegate, t);
+                contained("backgroundLoopError", i, loop, delegate, t, true);
             }
         }
     }

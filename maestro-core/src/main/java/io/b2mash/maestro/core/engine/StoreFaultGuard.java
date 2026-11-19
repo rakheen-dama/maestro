@@ -289,9 +289,22 @@ final class StoreFaultGuard {
         /** Records one retry; {@code true} when it opens an episode. */
         boolean retried(Method method) {
             observer.storeRetried(operation(method));
-            var now = nanoTime.getAsLong();
-            var previous = lastRetryNanos.getAndSet(now);
-            return previous == NONE || now - previous >= EPISODE_QUIET.toNanos();
+            // A CAS that never moves the timestamp backwards (PR #74 review): a
+            // retry whose sample is older than the last recorded one — it paused
+            // between sampling and recording — is inside that retry's episode,
+            // and must not replace it, or the next retry would see a spurious
+            // 60 s gap and WARN again.
+            while (true) {
+                var now = nanoTime.getAsLong();
+                var previous = lastRetryNanos.get();
+                if (previous != NONE && now - previous <= 0) {
+                    return false;
+                }
+                if (lastRetryNanos.compareAndSet(previous, now)) {
+                    return previous == NONE || now - previous >= EPISODE_QUIET.toNanos();
+                }
+                // Another retry recorded first: sample again against it.
+            }
         }
 
         /** The bounded, snake_case tag value of a retried operation. */
@@ -302,6 +315,18 @@ final class StoreFaultGuard {
                 case "getEventBySequence" -> "get_event_by_sequence";
                 default -> method.getName();
             };
+        }
+    }
+
+    /** Runs one logging call, containing anything but a control-flow {@code Error} it throws. */
+    private static void quietly(Runnable call) {
+        try {
+            call.run();
+        } catch (Throwable t) {
+            if (t instanceof io.b2mash.maestro.core.exception.MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            // Nothing to report with; the call it described goes on.
         }
     }
 
@@ -355,14 +380,16 @@ final class StoreFaultGuard {
         /** @return {@code true} to retry; {@code false} if interrupted (flag restored) */
         private boolean waitBeforeRetry(Method method, int attempt, StoreUnavailableException e) {
             var wait = backoff.get(attempt - 1);
+            // Logged quietly (PR #74 review audit): a logger that throws, or a
+            // fault whose rendering throws, must not skip the retry it reports.
             if (episodes.retried(method)) {
-                logger.warn("Store unavailable on {} — retrying in place (attempt {}/{}): {}; further in-place "
-                                + "retries are counted on maestro.store.retries and logged at DEBUG until {} s pass "
-                                + "without one",
-                        method.getName(), attempt, MAX_ATTEMPTS, diagnosis(e), EPISODE_QUIET.toSeconds());
+                quietly(() -> logger.warn("Store unavailable on {} — retrying in place (attempt {}/{}): {}; further "
+                                + "in-place retries are counted on maestro.store.retries and logged at DEBUG until {} s "
+                                + "pass without one",
+                        method.getName(), attempt, MAX_ATTEMPTS, diagnosis(e), EPISODE_QUIET.toSeconds()));
             } else {
-                logger.debug("Store unavailable on {} (attempt {}/{}), retrying in {}: {}",
-                        method.getName(), attempt, MAX_ATTEMPTS, wait, e.toString());
+                quietly(() -> logger.debug("Store unavailable on {} (attempt {}/{}), retrying in {}: {}",
+                        method.getName(), attempt, MAX_ATTEMPTS, wait, e.toString()));
             }
             try {
                 Thread.sleep(wait);
@@ -393,10 +420,12 @@ final class StoreFaultGuard {
             var ctx = bound.get();
             var fault = e + " — " + diagnosis(e);
             if (ctx.cancellation().requestStoreUnavailable(method.getName() + ": " + fault)) {
-                logger.warn("Store unavailable on {} — workflow '{}' stands down until the store "
-                        + "recovers: {}", method.getName(), ctx.workflowId(), fault);
+                // Quietly: a logger that throws must not replace the store fault
+                // the caller is about to receive (PR #74 review audit).
+                quietly(() -> logger.warn("Store unavailable on {} — workflow '{}' stands down until the store "
+                        + "recovers: {}", method.getName(), ctx.workflowId(), fault));
             }
-            logger.debug("Store fault on {} for workflow '{}'", method.getName(), ctx.workflowId(), e);
+            quietly(() -> logger.debug("Store fault on {} for workflow '{}'", method.getName(), ctx.workflowId(), e));
         }
 
         private @Nullable Object objectMethod(Object proxy, Method method, @Nullable Object @Nullable [] args) {

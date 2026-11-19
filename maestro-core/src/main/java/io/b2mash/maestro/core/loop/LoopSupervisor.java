@@ -227,7 +227,11 @@ public final class LoopSupervisor {
                 if (t instanceof MaestroControlFlowError controlFlow) {
                     throw controlFlow;
                 }
-                logger.warn("A stop hook of background loop '{}' threw — ignoring: {}", spec.name(), t.toString());
+                // Contained like every log line here (PR #74 review): a hook
+                // that throws something unprintable, or a logger that throws,
+                // must not skip the hooks after this one.
+                log(t, () -> logger.warn("A stop hook of background loop '{}' threw — ignoring: {}", spec.name(),
+                        describe(t)));
             }
         }
     }
@@ -287,7 +291,14 @@ public final class LoopSupervisor {
                 try {
                     next = body.iterate(context);
                     clearStrayInterrupt();
-                    succeeded();
+                    if (next instanceof Next.Await) {
+                        // Not a success yet: the iteration includes its custom
+                        // wait, which may still fail (PR #74 review). awaitCustom
+                        // commits the outcome.
+                        status.set(status.get().inIteration(NOT_IN_ITERATION));
+                    } else {
+                        succeeded();
+                    }
                 } catch (Throwable t) {
                     clearStrayInterrupt();
                     status.set(status.get().inIteration(NOT_IN_ITERATION));
@@ -350,16 +361,30 @@ public final class LoopSupervisor {
             case Next.Done _ -> false;
             // Checked before the wait is armed: a stop that landed during the
             // iteration ran the stop hooks before anyone waited (review F4).
-            case Next.Await await -> !stopRequested.get() && awaitCustom(await.loopWait());
+            // The iteration succeeds once its wait has not thrown.
+            case Next.Await await -> {
+                if (stopRequested.get()) {
+                    succeeded();
+                    yield false;
+                }
+                yield awaitCustom(await.loopWait());
+            }
         };
     }
 
-    /** Runs a body's own wait; a throwable from it counts as a failed iteration. */
+    /**
+     * Runs a body's own wait and commits the iteration's outcome: a wait that
+     * returns (or is interrupted) completes a successful iteration; one that
+     * throws fails it, so the streak grows across such iterations.
+     */
     private boolean awaitCustom(LoopWait wait) {
         try {
-            return wait.await(context) && !stopRequested.get();
+            var goOn = wait.await(context);
+            succeeded();
+            return goOn && !stopRequested.get();
         } catch (InterruptedException e) {
             clearStrayInterrupt();
+            succeeded();
             return !stopRequested.get();
         } catch (Throwable t) {
             clearStrayInterrupt();
@@ -373,7 +398,10 @@ public final class LoopSupervisor {
     /** Nothing in Maestro interrupts a supervised thread: a stray interrupt is cleared, never read as a stop. */
     private void clearStrayInterrupt() {
         if (Thread.interrupted() && !stopRequested.get()) {
-            logger.debug("Background loop '{}' cleared a stray interrupt of its thread", spec.name());
+            // On the failure arm's path: a logger that throws must not skip
+            // the failure's handling (PR #74 review).
+            quietly(() -> logger.debug("Background loop '{}' cleared a stray interrupt of its thread",
+                    spec.name()));
         }
     }
 
@@ -448,7 +476,10 @@ public final class LoopSupervisor {
         if (n == 0) {
             return false;
         }
-        logger.info("Background loop '{}' recovered after {} consecutive failure(s)", spec.name(), n);
+        // Contained: a logger that throws must not turn this success into a
+        // counted failure (PR #74 review audit).
+        quietly(() -> logger.info("Background loop '{}' recovered after {} consecutive failure(s)", spec.name(),
+                n));
         return true;
     }
 
