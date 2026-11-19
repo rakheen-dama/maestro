@@ -10,9 +10,13 @@ import java.util.List;
 import java.util.concurrent.Callable;
 
 /**
- * {@link RollingSignalWorkflow}'s steps inside one {@code parallel()} branch:
- * one step, a park on signal {@value RollingSignalWorkflow#SIGNAL} in the
- * branch's own sequence block, one more step. The parent waits on the fork.
+ * {@link RollingSignalWorkflow}'s steps inside branch 0 of a two-branch
+ * {@code parallel()}: one step, a park on signal
+ * {@value RollingSignalWorkflow#SIGNAL}, one more step, all in the branch's own
+ * sequence block (the fork is the run's first step, sequence 1, so branch 0
+ * allocates from 2000). Branch 1 returns at once and records nothing. Two
+ * branches, because {@code parallel()} runs a single task inline, with no fork
+ * and no branch block.
  */
 @DurableWorkflow(name = RollingForkWorkflow.TYPE)
 public class RollingForkWorkflow {
@@ -35,7 +39,7 @@ public class RollingForkWorkflow {
             String payload = workflow.awaitSignal(RollingSignalWorkflow.SIGNAL, String.class, Duration.ofHours(1));
             activities.step(key, "after");
             return payload;
-        });
+        }, () -> "idle");
         return "signalled:" + workflow.parallel(branches).getFirst();
     }
 }

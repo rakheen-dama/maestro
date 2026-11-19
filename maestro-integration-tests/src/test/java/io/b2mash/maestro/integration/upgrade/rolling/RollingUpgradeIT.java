@@ -242,6 +242,9 @@ class RollingUpgradeIT {
         var first = launch(parkedOn, "a");
         first.start(type, wf, wf);
         awaitStatus(wf, "WAITING_SIGNAL", PARK_TIMEOUT, first);
+        if (type.equals(FORK_TYPE)) {
+            assertParkedInForkBranch(wf);
+        }
         var epoch = db.leaseEpoch(wf);
         first.stopGracefully();
 
@@ -259,6 +262,21 @@ class RollingUpgradeIT {
         observed((type.equals(FORK_TYPE) ? "signal parked in a fork branch on " : "signal parked on ")
                 + parkedOn.label() + ", adopted and signalled on " + adoptedBy.label()
                 + ": " + finishedBy(finish, "COMPLETED"));
+    }
+
+    /**
+     * The run really parked inside branch 0 of a fork, not in a single-task
+     * {@code parallel()} (which runs inline): the fork is sequence 1, so branch
+     * 0's block starts at 2000 ({@code p*1000 + (i+1)*1000}): the fork's
+     * marker at 1, branch 0's first step at 2001 and its await's timer at
+     * 2002, and nothing else.
+     */
+    private void assertParkedInForkBranch(String wf) {
+        var events = db.events(wf).stream().map(e -> e.sequence() + " " + e.type() + " " + e.step()).toList();
+        assertThat(events).as("history of a run parked in fork branch 0\n" + diagnostics(wf)).containsExactly(
+                "1 SIDE_EFFECT $maestro:parallel",
+                "2001 ACTIVITY_COMPLETED rolling.step",
+                "2002 TIMER_SCHEDULED $maestro:awaitSignal:go");
     }
 
     // ── 2. Parked on a timer: upgrade, and rollback (scenario 3) ───────────
@@ -415,8 +433,16 @@ class RollingUpgradeIT {
         awaitStatus(wf, "WAITING_SIGNAL", PARK_TIMEOUT, owner, consumer);
         var epoch = db.leaseEpoch(wf);
 
+        // The wake limit counts from before the publish: the consumer stores
+        // the signal and NOTIFY wakes the owner; the owner's 30 s recheck alone
+        // could not meet it.
+        var sent = System.nanoTime();
         var offset = kafka.publish(wf, "via-kafka", null);
-        awaitStatus(wf, "COMPLETED", FINISH_TIMEOUT, owner, consumer);
+        var left = WAKE_TIMEOUT.minusNanos(System.nanoTime() - sent);
+        assertThat(left).as("time left of the wake limit after the publish returned").isPositive();
+        awaitStatus(wf, "COMPLETED", left, owner, consumer);
+        var wakeMillis = Duration.ofNanos(System.nanoTime() - sent).toMillis();
+        assertThat(wakeMillis).as("record published to run completed, ms").isLessThanOrEqualTo(WAKE_TIMEOUT.toMillis());
 
         assertCompletedCleanly(wf, "\"signalled:via-kafka\"", List.of(
                 Expected.on("before", "done", List.of(owner)),
@@ -430,7 +456,7 @@ class RollingUpgradeIT {
         assertNothingDeadLettered(kafka, deadLettersBefore);
         consumer.stopGracefully();
         observed("Kafka record consumed on " + consumerBuild.label() + " (stored as kafka:<topicId>:0:" + offset
-                + "), run parked on " + ownerBuild.label() + " woken and COMPLETED there");
+                + "), run parked on " + ownerBuild.label() + " woken and COMPLETED there in " + wakeMillis + " ms");
     }
 
     @Test
