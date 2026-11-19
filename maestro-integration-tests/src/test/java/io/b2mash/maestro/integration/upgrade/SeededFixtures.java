@@ -14,6 +14,6 @@ public final class SeededFixtures {
 
     /** @return every fixture, oldest first */
     public static List<SeededFixture> all() {
-        return List.of(Cbf5a2aFixture.INSTANCE);
+        return List.of(Cbf5a2aFixture.INSTANCE, V030Rc1Fixture.INSTANCE);
     }
 }
