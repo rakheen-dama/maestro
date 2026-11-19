@@ -1,9 +1,8 @@
 package io.b2mash.maestro.integration.kafka;
 
-import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.listener.MaestroSignalListenerBeanPostProcessor;
 import io.b2mash.maestro.spring.annotation.MaestroSignalListener;
 import io.b2mash.maestro.spring.annotation.SignalRouting;
-import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
@@ -13,13 +12,17 @@ import org.springframework.boot.builder.SpringApplicationBuilder;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.ConfigurableApplicationContext;
 import org.springframework.context.annotation.Bean;
+import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.IntStream;
 
@@ -36,7 +39,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <p>One partition, a backlog of {@link #BACKLOG} events — all in the first
  * node's first poll ({@code max.poll.records} 500). The first node's listener
- * holds the {@link #HOLD_AT}th event until its engine is shutting down, so the
+ * holds the {@link #HOLD_AT}th event until its container has been asked to stop
+ * (synchronised on the container's own running state, not on a sleep), so the
  * stop lands while that record is in hand and the rest of the batch is still
  * to come.
  */
@@ -54,7 +58,9 @@ class MaestroListenerStopsAfterTheRecordInHandIT extends KafkaSpringIntegrationS
     static final Map<String, List<String>> HANDLED = new ConcurrentHashMap<>();
     static final List<String> FIRST_NODE = new CopyOnWriteArrayList<>();
     static final AtomicInteger FIRST_NODE_CALLS = new AtomicInteger();
-    static volatile @Nullable WorkflowExecutor firstNode;
+    static volatile List<ConcurrentMessageListenerContainer<?, ?>> firstNodeContainers = List.of();
+    /** Lets a held record go if the test fails before the stop arrives. */
+    static final CountDownLatch RELEASE = new CountDownLatch(1);
     static volatile String node = "first";
 
     @BeforeAll
@@ -71,10 +77,14 @@ class MaestroListenerStopsAfterTheRecordInHandIT extends KafkaSpringIntegrationS
         IntStream.range(0, BACKLOG).forEach(i ->
                 publish(EVENT_TOPIC, "k", new ApprovalEvent("wf-stop-" + i, "APPROVED")));
         var first = start();
-        firstNode = first.getBean(WorkflowExecutor.class);
-        await().atMost(Duration.ofSeconds(60)).until(() -> FIRST_NODE_CALLS.get() >= HOLD_AT);
-
-        first.close(); // shutdown begins while the HOLD_AT-th record is in hand
+        try {
+            firstNodeContainers = containersOf(first);
+            await().atMost(Duration.ofSeconds(60)).until(() -> FIRST_NODE_CALLS.get() >= HOLD_AT);
+            first.close(); // shutdown begins while the HOLD_AT-th record is in hand
+        } finally {
+            RELEASE.countDown(); // a failure above must not leave the listener held
+            first.close();
+        }
 
         assertEquals(HOLD_AT, FIRST_NODE_CALLS.get(),
                 "the stopping container invoked the listener for nothing after the record in hand: " + FIRST_NODE);
@@ -91,6 +101,20 @@ class MaestroListenerStopsAfterTheRecordInHandIT extends KafkaSpringIntegrationS
         } finally {
             second.close();
         }
+    }
+
+    /** The node's {@code @MaestroSignalListener} containers (test-only accessor, package-private). */
+    @SuppressWarnings("unchecked")
+    private static List<ConcurrentMessageListenerContainer<?, ?>> containersOf(ConfigurableApplicationContext ctx) {
+        return (List<ConcurrentMessageListenerContainer<?, ?>>) ReflectionTestUtils.invokeMethod(
+                ctx.getBean(MaestroSignalListenerBeanPostProcessor.class), "containersForTesting");
+    }
+
+    /** Whether the first node's containers have been asked to stop: every consumer child no longer running. */
+    private static boolean firstNodeStopRequested() {
+        var containers = firstNodeContainers;
+        return !containers.isEmpty() && containers.stream()
+                .allMatch(c -> !c.isRunning() && c.getContainers().stream().noneMatch(child -> child.isRunning()));
     }
 
     private static ConfigurableApplicationContext start() {
@@ -122,7 +146,12 @@ class MaestroListenerStopsAfterTheRecordInHandIT extends KafkaSpringIntegrationS
         }
     }
 
-    /** Records which node handled each event; on the first node, holds the HOLD_AT-th until shutdown. */
+    /**
+     * Records which node handled each event; on the first node, holds the
+     * HOLD_AT-th until its container has actually been asked to stop (every
+     * consumer child no longer running — what {@code stopImmediate} checks),
+     * at most 30 s, or until the test's cleanup release.
+     */
     public static class HoldingRouter {
 
         /**
@@ -136,12 +165,11 @@ class MaestroListenerStopsAfterTheRecordInHandIT extends KafkaSpringIntegrationS
             if (who.equals("first")) {
                 FIRST_NODE.add(event.workflowId());
                 if (FIRST_NODE_CALLS.incrementAndGet() == HOLD_AT) {
-                    var engine = firstNode;
-                    while (engine == null || !engine.isShuttingDown()) {
-                        Thread.sleep(20);
-                        engine = firstNode;
+                    var until = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+                    while (!firstNodeStopRequested() && System.nanoTime() < until
+                            && !RELEASE.await(20, TimeUnit.MILLISECONDS)) {
+                        // held: the record is in hand when the stop arrives
                     }
-                    Thread.sleep(500); // past the engine's stop request to this container
                 }
             }
             return SignalRouting.builder().workflowId(event.workflowId()).payload(event.decision()).build();

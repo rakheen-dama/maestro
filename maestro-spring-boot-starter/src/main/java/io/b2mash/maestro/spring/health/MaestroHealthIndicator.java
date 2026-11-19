@@ -65,8 +65,10 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code UNKNOWN} once the store answers again. A probe is superseded at most
  * once while it is stuck, so at most two probes — two connections — exist at
  * a time; the price is that if the fresh probe is stuck for good too, the
- * status stays {@code UNKNOWN} until one of the two returns (a driver socket
- * timeout makes sure one does). If the
+ * status stays {@code UNKNOWN} until the fresh (in-flight) probe returns — or,
+ * if the superseded one returns first, until the fresh one has in turn been
+ * stuck for {@link #SUPERSEDE_AFTER} and is superseded (a driver socket
+ * timeout makes sure a stuck call does return). If the
  * probe thread cannot be started, the call reports {@code DOWN} with that
  * failure.
  *

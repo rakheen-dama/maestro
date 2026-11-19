@@ -5055,7 +5055,7 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 
 ### Issue 66 — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query {#issue-66}
 
-> **Closed (pilot-readiness P1, 2026-11-19, PR #TBD-P1): fixed (design note
+> **Closed (pilot-readiness P1, 2026-11-19, PR #78): fixed (design note
 > Question 4, option (c)).** `Probe.abandon()` no longer interrupts: a
 > timed-out probe's store call finishes and its result is ignored. A probe
 > stuck for `SUPERSEDE_AFTER` (10 s, 5 × the 2 s bound) is superseded by one
@@ -5070,7 +5070,9 @@ dead loop reads `DOWN` on a `maestro-store-postgres` health contributor.
 > (the inverted `aTimedOutProbeIsInterrupted`).
 > The second condition holds for one stuck probe: if the superseding probe is
 > stuck for good too, no third starts (the two-connection bound) and health
-> reads `UNKNOWN` until one returns — set pgjdbc's `socketTimeout` (P1 review
+> reads `UNKNOWN` until the in-flight one returns, or the superseded one
+> returns and the in-flight one has in turn been stuck 10 s (Operations §14) —
+> set pgjdbc's `socketTimeout` (P1 review
 > L5).
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** P1's design note decides the health probe's interrupt.
@@ -5265,7 +5267,7 @@ an observer `Error` on one lost lock does not delay the others.
 
 ### Issue 69 — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource` {#issue-69}
 
-> **Closed (pilot-readiness P1, 2026-11-19, PR #TBD-P1): fixed, inside the
+> **Closed (pilot-readiness P1, 2026-11-19, PR #78): fixed, inside the
 > engine's shutdown rather than in an earlier phase (design note Question 1).**
 > The engine's signal container and the `@MaestroSignalListener` containers are
 > now members of the executor's `LifecycleRegistry` (`KafkaContainerGroup`,
@@ -5277,13 +5279,16 @@ an observer `Error` on one lost lock does not delay the others.
 > request-only backstops (a container with no engine keeps the old bounded
 > wait). Each container stops after the record in hand (`stopImmediate`;
 > before the P1 review it finished its whole last poll): the rest of the poll
-> stays uncommitted for the partition's next owner. So no Maestro consumer
-> remains in its group while the drain waits, and a container that stopped by
-> the deadline handles no record after the `DataSource` closes; one whose
+> stays uncommitted for the partition's next owner. Shutdown requests the
+> stop before it drains; a consumer leaves its group — and its partitions
+> move — once its record in hand has returned (at once when idle; a blocking
+> listener call keeps it in the group until the call returns or the deadline).
+> A container that stopped by the deadline handles no record after the
+> `DataSource` closes; one whose
 > record in hand is still in its listener call at the deadline is named in a
 > `WARN`, and that one call can meet the closing `DataSource` and be
 > redelivered (Operations §15.5). Pinned by `MaestroContainersStopInTheDrainIT`
-> (broker-backed: every Maestro consumer has left its group while a registry
+> (broker-backed, idle consumers: every Maestro consumer has left its group while a registry
 > member still holds the drain open), `MaestroListenerStopsAfterTheRecordInHandIT`
 > (a one-poll backlog: nothing invoked after the record in hand, the rest
 > handled exactly once by the next node) and `KafkaContainerGroupTest`. The grace arithmetic loses its per-container term
