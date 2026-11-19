@@ -257,6 +257,57 @@ class ShutdownAdmissionTest {
         assertFalse(executor.isInstanceLockRenewerRunning(), "the renewer was stopped");
     }
 
+    /**
+     * PR #75 review follow-up 4627638956: two members throwing the same
+     * {@code VirtualMachineError} instance (a JVM may reuse a preallocated
+     * one) must not cut shutdown short through a self-suppression
+     * {@code IllegalArgumentException}: the rest of shutdown runs and that
+     * error is what {@code shutdown()} rethrows.
+     */
+    @Test
+    void twoMembersThrowingTheSameVirtualMachineErrorStillLetTheShutdownRun() throws Exception {
+        var shared = new InternalError("one preallocated error instance (test)");
+        for (var name : java.util.List.of("first", "second")) {
+            var self = new java.util.concurrent.atomic.AtomicReference<LifecycleRegistry.@Nullable Membership>();
+            self.set(executor.lifecycle().join(LifecycleRegistry.Kind.TASK, new LifecycleRegistry.Member() {
+                @Override
+                public String name() {
+                    return name;
+                }
+
+                @Override
+                public void requestStop() {
+                    java.util.Objects.requireNonNull(self.get()).leave();
+                    throw shared;
+                }
+            }).orElseThrow());
+        }
+        var asked = new CountDownLatch(1);
+        var polite = new java.util.concurrent.atomic.AtomicReference<LifecycleRegistry.@Nullable Membership>();
+        polite.set(executor.lifecycle().join(LifecycleRegistry.Kind.TASK, new LifecycleRegistry.Member() {
+            @Override
+            public String name() {
+                return "polite";
+            }
+
+            @Override
+            public void requestStop() {
+                asked.countDown();
+                java.util.Objects.requireNonNull(polite.get()).leave();
+            }
+        }).orElseThrow());
+
+        try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            var thrown = assertThrows(Throwable.class, executor::shutdown);
+
+            assertEquals(shared, thrown, "the VirtualMachineError itself, not an IllegalArgumentException");
+            assertEquals(0, asked.getCount(), "the member after them was still asked to stop");
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Maestro shutdown finished in")),
+                    logs.records().toString());
+        }
+        assertFalse(executor.isInstanceLockRenewerRunning(), "the renewer was stopped");
+    }
+
     private void assertUntouched(io.b2mash.maestro.core.model.WorkflowInstance failed,
                                  java.util.List<io.b2mash.maestro.core.model.WorkflowEvent> eventsBefore) {
         var now = store.getInstance("wf-failed").orElseThrow();
