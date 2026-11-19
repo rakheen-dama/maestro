@@ -413,8 +413,15 @@ class MaestroHealthIndicatorTest {
         } finally {
             store.release.countDown();
         }
-        await().atMost(Duration.ofSeconds(10)).until(() -> store.inside.get() == 0);
-        var health = indicator.health();
+        // Polled, not after inside == 0: getInstance has returned then, but
+        // Probe.finish() may not have cleared the in-flight slot yet (PR #78 review
+        // 4634059493). A poll that still joins the old probe starts none.
+        var last = new java.util.concurrent.atomic.AtomicReference<org.springframework.boot.health.contributor.Health>();
+        await().atMost(Duration.ofSeconds(10)).until(() -> {
+            last.set(indicator.health());
+            return "reachable".equals(last.get().getDetails().get("store"));
+        });
+        var health = last.get();
         assertThat(health.getStatus()).isEqualTo(Status.UP);
         assertThat(health.getDetails()).containsEntry("store", "reachable");
         assertThat(store.entered.get()).as("a fresh probe once the stuck one returned").isEqualTo(2);
@@ -506,8 +513,10 @@ class MaestroHealthIndicatorTest {
         } finally {
             store.release.countDown();
         }
-        await().atMost(Duration.ofSeconds(10)).until(() -> store.inside.get() == 0);
-        assertThat(indicator.health().getDetails()).containsEntry("store", "reachable");
+        // Not inside == 0: getInstance has returned then, but Probe.finish() may not
+        // have cleared the in-flight slot yet (PR #78 review 4634059493).
+        await().atMost(Duration.ofSeconds(10))
+                .until(() -> "reachable".equals(indicator.health().getDetails().get("store")));
     }
 
     /**
@@ -653,6 +662,43 @@ class MaestroHealthIndicatorTest {
             } finally {
                 inside.decrementAndGet();
             }
+        }
+    }
+
+    /**
+     * PR #78 review 4634059487: a replacement probe whose thread cannot be
+     * created is a failed probe (DOWN, as one whose thread cannot start), not
+     * an exception out of {@code health()}, and it does not leave the stuck
+     * probe holding both slots: once threads can be created again, the next
+     * call probes afresh.
+     */
+    @Test
+    void aReplacementWhoseThreadCannotBeCreatedDoesNotLeaveTheIndicatorStuck() {
+        var clock = new AtomicLong();
+        var store = new FirstCallStuckStore();
+        var refuse = new java.util.concurrent.atomic.AtomicBoolean();
+        ThreadFactory threads = task -> {
+            if (refuse.get()) {
+                // Not an OutOfMemoryError: one escaping the test would kill Gradle's test JVM.
+                throw new IllegalStateException("unable to create a thread (injected)");
+            }
+            return Thread.ofVirtual().name(MaestroHealthIndicator.PROBE_THREAD_NAME).unstarted(task);
+        };
+        var indicator = new MaestroHealthIndicator(store, executor, false, false, threads, clock::get);
+        try {
+            assertThat(indicator.health().getDetails()).containsEntry("store", "timed out");
+            clock.addAndGet(MaestroHealthIndicator.SUPERSEDE_AFTER.toNanos());
+            refuse.set(true);
+            var failed = indicator.health();
+            assertThat(failed.getStatus()).isEqualTo(Status.DOWN);
+            assertThat(failed.getDetails()).containsEntry("store", "unreachable");
+
+            refuse.set(false);
+            var health = indicator.health();
+            assertThat(health.getDetails()).as("a fresh probe once threads can be created").containsEntry("store", "reachable");
+            assertThat(store.entered.get()).isEqualTo(2);
+        } finally {
+            store.release.countDown();
         }
     }
 

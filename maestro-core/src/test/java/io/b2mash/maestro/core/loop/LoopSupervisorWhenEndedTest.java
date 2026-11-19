@@ -45,6 +45,25 @@ class LoopSupervisorWhenEndedTest {
         assertEquals(List.of("onExit", "hook saw STOPPED", "late"), List.copyOf(seen), "a late hook runs at once");
     }
 
+    /**
+     * PR #78 review 4634059382: a hook that throws a control-flow error does
+     * not keep the later hooks — such as the registry leave — from running.
+     */
+    @Test
+    void aControlFlowErrorFromOneHookDoesNotSkipTheOthers() {
+        var ran = new CopyOnWriteArrayList<String>();
+        var supervisor = LoopSupervisor.start(LoopSpec.of("hooked-cf", "maestro-hooked-cf", LoopRole.HOUSEKEEPING,
+                Duration.ofMillis(10)), ctx -> Next.afterPeriod(), EngineObserver.NOOP);
+        supervisor.whenEnded(() -> {
+            throw new io.b2mash.maestro.core.exception.ExecutorShutdownException("control flow from a hook (test)");
+        });
+        supervisor.whenEnded(() -> ran.add("leave"));
+
+        supervisor.requestStop();
+        assertTrue(supervisor.awaitStopped(Duration.ofSeconds(5)));
+        assertTrue(waitFor(() -> ran.size() == 1), "the second hook ran: " + ran);
+    }
+
     private static boolean waitFor(java.util.function.BooleanSupplier condition) {
         var until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
         while (!condition.getAsBoolean() && System.nanoTime() < until) {

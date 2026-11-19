@@ -151,12 +151,87 @@ class KafkaContainerGroupTest {
         assertTrue(starter.join(Duration.ofSeconds(5)) && shutter.join(Duration.ofSeconds(5)));
     }
 
+    // ── PR #78 review ──────────────────────────────────────────────────
+
+    /**
+     * 4634059410: two concurrent joins reach the registry once; a second
+     * membership would overwrite the first, which then never leaves.
+     */
+    @Test
+    void concurrentJoinsAdmitTheGroupOnce() throws Exception {
+        var group = new KafkaContainerGroup("double-join");
+        var inJoin = new CountDownLatch(1);
+        var release = new CountDownLatch(1);
+        var joins = new java.util.concurrent.atomic.AtomicInteger();
+        var registry = org.mockito.Mockito.mock(io.b2mash.maestro.core.engine.LifecycleRegistry.class);
+        var membership = org.mockito.Mockito.mock(io.b2mash.maestro.core.engine.LifecycleRegistry.Membership.class);
+        org.mockito.Mockito.when(registry.join(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(call -> {
+                    joins.incrementAndGet();
+                    inJoin.countDown();
+                    release.await(10, TimeUnit.SECONDS);
+                    return java.util.Optional.of(membership);
+                });
+        var first = Thread.ofVirtual().start(() -> group.join(registry));
+        assertTrue(inJoin.await(5, TimeUnit.SECONDS));
+        var second = Thread.ofVirtual().start(() -> group.join(registry));
+        second.join(Duration.ofMillis(300)); // give a racing second admission time to happen
+        release.countDown();
+        assertTrue(first.join(Duration.ofSeconds(5)) && second.join(Duration.ofSeconds(5)));
+        assertEquals(1, joins.get(), "admitted once");
+    }
+
+    /**
+     * 4634059419: a container whose start() throws after some of its
+     * consumers are up stays tracked and is stopped; the exception still
+     * propagates, and the group leaves only once that stop has completed.
+     */
+    @Test
+    void aContainerWhoseStartThrowsIsStoppedAndWaitedFor() throws Exception {
+        var group = new KafkaContainerGroup("failed-start");
+        assertTrue(group.join(executor.lifecycle()));
+        var broken = new FakeContainer();
+        broken.startThrowsWhileRunning = true;
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> group.start(broken.proxy()));
+        assertTrue(thrown.getMessage().contains("later child"));
+        assertTrue(broken.stopAsked.await(5, TimeUnit.SECONDS), "the half-started container was asked to stop");
+
+        var shutter = Thread.ofVirtual().start(executor::shutdown);
+        assertFalse(shutter.join(Duration.ofMillis(300)), "shutdown waits for its consumers to end");
+        broken.finishStop();
+        assertTrue(shutter.join(Duration.ofSeconds(5)));
+    }
+
+    /**
+     * 4634059425: a stop(Runnable) that throws after registering its callback
+     * does not count the container stopped; the callback does.
+     */
+    @Test
+    void aStopThatThrowsIsNotTakenForAStoppedContainer() throws Exception {
+        var group = new KafkaContainerGroup("throwing-stop");
+        assertTrue(group.join(executor.lifecycle()));
+        var container = new FakeContainer();
+        container.stopThrowsAfterRegistering = true;
+        assertTrue(group.start(container.proxy()));
+
+        var shutter = Thread.ofVirtual().start(executor::shutdown);
+        assertTrue(container.stopAsked.await(5, TimeUnit.SECONDS));
+        assertFalse(shutter.join(Duration.ofMillis(300)), "still running its record: not stopped yet");
+        container.finishStop();
+        assertTrue(shutter.join(Duration.ofSeconds(5)));
+    }
+
     /** A stand-in container: start/stop recorded; the stop's callback runs when the test says. */
     static final class FakeContainer {
         final AtomicBoolean started = new AtomicBoolean();
         final CountDownLatch inStart = new CountDownLatch(1);
         final CountDownLatch stopAsked = new CountDownLatch(1);
         volatile CountDownLatch startGate = new CountDownLatch(0);
+        /** start() leaves it running (some child consumers up), then throws. */
+        volatile boolean startThrowsWhileRunning;
+        /** stop(Runnable) registers the callback, then throws. */
+        volatile boolean stopThrowsAfterRegistering;
         private final AtomicReference<Runnable> callback = new AtomicReference<>();
         private final List<String> calls = new CopyOnWriteArrayList<>();
 
@@ -173,6 +248,9 @@ class KafkaContainerGroupTest {
                         inStart.countDown();
                         startGate.await(10, TimeUnit.SECONDS);
                         started.set(true);
+                        if (startThrowsWhileRunning) {
+                            throw new IllegalStateException("a later child failed to start (test)");
+                        }
                         return null;
                     }
                     case "stop" -> {
@@ -183,6 +261,9 @@ class KafkaContainerGroupTest {
                             }
                             callback.set(cb);
                             stopAsked.countDown();
+                            if (stopThrowsAfterRegistering) {
+                                throw new IllegalStateException("wakeup failed (test)");
+                            }
                         }
                         return null;
                     }
