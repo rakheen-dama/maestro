@@ -47,6 +47,16 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
     private final String name;
     /** Containers started and not yet reported stopped, in start order. */
     private final Set<MessageListenerContainer> live = new LinkedHashSet<>();
+    /**
+     * Containers already asked to stop. Spring Kafka 4.0.4's first
+     * {@code stop(Runnable)} sets the container's running state to false at
+     * once, while its consumers are still ending, and a second
+     * {@code stop(Runnable)} on a container no longer running calls back
+     * immediately ({@code AbstractMessageListenerContainer.stop}): so each
+     * container is asked to stop exactly once for the group's lifetime, or its
+     * second callback would let the group leave early (PR #78 review 4634444589).
+     */
+    private final Set<MessageListenerContainer> stopAsked = new LinkedHashSet<>();
     /** Containers admitted and still inside their {@code start()}. */
     private final Set<MessageListenerContainer> starting = new LinkedHashSet<>();
     private LifecycleRegistry.@Nullable Membership membership;
@@ -208,6 +218,11 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
     }
 
     private void stop(MessageListenerContainer container) {
+        synchronized (this) {
+            if (!stopAsked.add(container)) {
+                return; // asked once already; its first callback is the one that counts
+            }
+        }
         try {
             container.stop(() -> stopped(container));
         } catch (RuntimeException e) {
