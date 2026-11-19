@@ -297,7 +297,19 @@ public interface EngineObserver {
      */
     default void backgroundLoopError(String loop, String errorType) {}
 
-    /** Stub: documented with the fix. */
+    /**
+     * A supervised background loop's iteration failed and the failure was
+     * counted in its streak — an {@code Exception} (a store or lock-backend
+     * fault) as well as an {@code Error}; never a failure while the loop is
+     * stopping, never a {@code MaestroControlFlowError}. Fires on the loop's
+     * own thread, before {@link #backgroundLoopError} for an {@code Error}.
+     * The starter counts it on {@code maestro.loop.failures{loop}}.
+     *
+     * @param loop        the loop's fixed name (bounded: the engine's six and
+     *                    {@code lock-cleaner}, {@code wake-listener})
+     * @param failureType fully-qualified class name of the failure; never use
+     *                    it as a metric tag
+     */
     default void backgroundLoopFailed(String loop, String failureType) {}
 
     // ── Store faults ──────────────────────────────────────────────────

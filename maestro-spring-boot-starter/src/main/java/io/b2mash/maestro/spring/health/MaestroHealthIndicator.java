@@ -2,6 +2,7 @@ package io.b2mash.maestro.spring.health;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.loop.LoopRole;
 import io.b2mash.maestro.core.loop.LoopSnapshot;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -11,8 +12,12 @@ import org.springframework.boot.health.contributor.Status;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ThreadFactory;
@@ -22,93 +27,78 @@ import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Reports Maestro's health for Spring Boot Actuator's {@code /actuator/health}
- * endpoint.
+ * endpoint, from a bounded store probe and one snapshot of every supervised
+ * loop ({@code WorkflowExecutor.loops()}; pilot readiness P2, design note §3).
  *
- * <p>The status is one of three:
- * <ul>
- *   <li>{@code DOWN} when the configured {@link WorkflowStore} refused the
- *       probe — a cheap {@link WorkflowStore#getInstance(String)} lookup for a
- *       sentinel workflow ID that is never expected to exist threw, a
- *       control-flow {@code Error} included ({@code store: "unreachable"}) —
- *       or when a loop that is <em>enabled by
- *       configuration</em> has been started at least once but is not
- *       currently running: a real fault, such as a dead loop thread — or when
- *       the instance-lock renewer, though running, has failed two passes in a
- *       row. A loop fault is {@code DOWN} even when the probe also timed
- *       out;</li>
- *   <li>{@code UNKNOWN} when, with no such fault, the probe did not finish
- *       within {@link #STORE_PROBE_TIMEOUT} ({@code store: "timed out"}).
- *       Since 3.5a a probe that does not finish within the bound reports
- *       {@code UNKNOWN}: a busy pool is not a broken store. The probe runs on
- *       a separate virtual thread and is abandoned (best-effort interrupted)
- *       on timeout, so a store that is merely slow cannot hang this method or,
- *       by extension, the {@code /actuator/health} endpoint. At most one probe
- *       is in flight per indicator: a call that finds one still running joins
- *       it, so a store call that ignores the interrupt holds one thread, not
- *       one per health call. A call that finds the probe already timed out by
- *       an earlier call answers {@code "timed out"} at once rather than
- *       waiting the bound again. If the probe thread cannot be started, the
- *       call reports {@code DOWN} with that failure and the next call probes
- *       afresh;</li>
- *   <li>{@code UP} otherwise.</li>
- * </ul>
- * A loop that has never been started yet is <b>not</b> treated as a fault:
- * the timer and recovery pollers are only started by the Spring Boot
- * starter's {@code StartupRecoveryRunner}, an {@code ApplicationRunner}
- * that runs after the web server (and therefore the actuator endpoint) is
- * already accepting requests. Folding "hasn't started yet" into
- * {@code DOWN} would report every normal boot — and every rolling
- * deploy — as unhealthy during that window, indistinguishable from an
- * actual crash. Instead such a poller is reported as {@code "starting"}
- * and does not affect status.
+ * <h2>Status, in precedence order</h2>
+ * <ol>
+ *   <li>{@code DOWN} when the store refused the probe
+ *       ({@code store: "unreachable"}); when any loop is {@code DEAD} (started,
+ *       then ended while not stopping) or, enabled and started, is no longer
+ *       running (a stopped loop; a finished one-shot pass is not a fault); when
+ *       the instance-lock renewer fails two passes in a row, or holds locks and
+ *       has not renewed for a whole lock TTL; or when a <em>critical</em> loop
+ *       (timer poller, recovery pollers, renewer) is failing — its failure
+ *       streak has reached its rule, at least two failures spanning at least a
+ *       minute or two periods — while the probe answered;</li>
+ *   <li>{@code UNKNOWN} when the probe did not finish within
+ *       {@link #STORE_PROBE_TIMEOUT} ({@code store: "timed out"}) and nothing
+ *       above holds. A critical loop failing while the probe also times out
+ *       reads {@code UNKNOWN}, not {@code DOWN}: both most likely share one
+ *       cause, a busy pool (3.5a). A dead loop still reads {@code DOWN};</li>
+ *   <li>{@code UP} otherwise — a failing <em>housekeeping</em> or
+ *       <em>optimisation</em> loop (signal janitor, retention sweeper, lock
+ *       cleaner, wake listener) does not take the pod out of readiness; it is
+ *       named in {@code degraded}, and {@code maestro.loop.failing{loop}} reads
+ *       {@code 1}.</li>
+ * </ol>
+ * The probe runs on a separate virtual thread and is abandoned (best-effort
+ * interrupted, Issue 66) on timeout, so a store that is merely slow cannot
+ * hang this method or the endpoint. At most one probe is in flight per
+ * indicator: a call that finds one still running joins it; a call that finds
+ * it already timed out answers {@code "timed out"} at once. If the probe
+ * thread cannot be started, the call reports {@code DOWN} with that failure.
  *
- * <h2>Readiness, never liveness</h2>
- * <p>This indicator is a readiness signal at most (Operations §14):
- * <ul>
- *   <li>never add {@code maestro} to the {@code liveness} group, and never
- *       point a liveness probe at the aggregate {@code /actuator/health} —
- *       restarting a busy node abandons its in-flight runs to the lock TTL;</li>
- *   <li>add it to {@code readiness} only if the pod's HTTP traffic needs
- *       Maestro's store
- *       ({@code management.endpoint.health.group.readiness.include=readinessState,maestro});</li>
- *   <li>a dead loop reads {@code DOWN} and its thread's end is logged at
- *       {@code ERROR}; the remedy is restarting the node, which readiness does
- *       not do;</li>
- *   <li>{@link #health()} can take up to {@link #STORE_PROBE_TIMEOUT} (2 s) to
- *       answer, longer than a kubelet probe's default {@code timeoutSeconds}
- *       of 1: give a readiness probe that includes {@code maestro}
- *       {@code timeoutSeconds: 3} or more, or a slow store fails the HTTP
- *       probe itself and the {@code UNKNOWN} (HTTP 200) answer never reaches
- *       the kubelet.</li>
- * </ul>
- * Spring Boot's default status order is {@code DOWN, OUT_OF_SERVICE, UP,
- * UNKNOWN}, so an {@code UNKNOWN} {@code maestro} leaves an aggregate that has
- * an {@code UP} member {@code UP}, and {@code UNKNOWN} answers HTTP 200.
+ * <p>A loop that has never been started yet is <b>not</b> a fault: the timer
+ * and recovery pollers are started by the starter's {@code StartupRecoveryRunner},
+ * after the web server accepts requests, so such a loop reads
+ * {@code "starting"} and does not affect status.
  *
- * <p>In every case the details map reports:
+ * <h2>Readiness; liveness is {@code maestroLiveness}</h2>
+ * <p>This indicator is a readiness signal at most (Operations §14): add it to
+ * {@code readiness} only if the pod's HTTP traffic needs Maestro's store
+ * ({@code readinessState,maestro}), give that probe {@code timeoutSeconds: 3}
+ * or more, and never put it in {@code liveness} — a broken database is not
+ * fixed by a restart. {@link MaestroLivenessHealthIndicator}
+ * ({@code maestroLiveness}) is the liveness contributor: no I/O, {@code DOWN}
+ * only for a dead loop. Spring Boot's default status order is
+ * {@code DOWN, OUT_OF_SERVICE, UP, UNKNOWN}, so an {@code UNKNOWN}
+ * {@code maestro} next to an {@code UP} member leaves the aggregate
+ * {@code UP}, and {@code UNKNOWN} answers HTTP 200.
+ *
+ * <h2>Details</h2>
  * <ul>
- *   <li>{@code store} — {@code "reachable"}, {@code "unreachable"}, or {@code "timed out"}</li>
- *   <li>{@code timerPollerRunning} — {@code true}/{@code false} once the timer poller has
- *       started at least once, or the string {@code "starting"} before then</li>
- *   <li>{@code recoveryPollerRunning} — {@code true}/{@code false} once the recovery poller
- *       (when enabled) has started at least once, the string {@code "starting"} before
- *       then, or the string {@code "disabled"} when {@code maestro.recovery.enabled=false}
- *       — so operators can tell "off on purpose", "still starting", and "dead" apart</li>
- *   <li>{@code retentionSweeperRunning} — the same three-way value for the retention
- *       sweeper, {@code "disabled"} when {@code maestro.retention.enabled=false}. Note
- *       that "running" means the sweep loop is alive on this node, not that this node
- *       is the elected leader that actually purges</li>
- *   <li>{@code signalJanitorRunning} — {@code true}/{@code false} once the signal janitor has
- *       started, or the string {@code "starting"} before then</li>
- *   <li>{@code instanceLockRenewerRunning} — {@code true}/{@code false} once this node's
- *       instance-lock renewer has started, or the string {@code "idle"} before this node takes
- *       its first instance lock (a {@code DistributedLock} is mandatory, so only a node that has
- *       run no workflow yet stays {@code "idle"}); not a fault</li>
- *   <li>{@code instanceLockRenewerConsecutiveFailures} — the renewer's consecutive failed passes
- *       since its last good one; at {@code 2} or more the status is {@code DOWN}, even with the
- *       renewer running, because held locks are not being renewed. A single failed pass reads
- *       {@code UP} with the streak shown: the TTL (three renew intervals) tolerates it</li>
- *   <li>{@code runningWorkflowCount} — workflows currently executing on this node</li>
+ *   <li>{@code store} — {@code "reachable"}, {@code "unreachable"} or {@code "timed out"}</li>
+ *   <li>{@code timerPollerRunning}, {@code recoveryPollerRunning},
+ *       {@code retentionSweeperRunning}, {@code signalJanitorRunning} —
+ *       {@code true}/{@code false} once started, {@code "starting"} before,
+ *       {@code "disabled"} when turned off by configuration (recovery poller,
+ *       retention sweeper)</li>
+ *   <li>{@code instanceLockRenewerRunning} — {@code true}/{@code false} (the
+ *       renewer starts with the executor; the former {@code "idle"} is gone)
+ *       and {@code instanceLockRenewerConsecutiveFailures}</li>
+ *   <li>{@code lockCleanerRunning}, {@code wakeListenerRunning} and
+ *       {@code wakeListenerConnected} — when {@code maestro-store-postgres}
+ *       supervises those loops</li>
+ *   <li>{@code instanceLocksHeld}, {@code runningWorkflowCount}</li>
+ *   <li>{@code startupRecovery} — {@code "running"} until the recovery poller's
+ *       first pass, or the one-shot startup pass, has completed, then
+ *       {@code "complete"} (Issue 73; information only)</li>
+ *   <li>{@code degraded} — the failing non-critical loops</li>
+ *   <li>{@code loops} — one entry per loop: {@code state}, {@code failing},
+ *       {@code consecutiveFailures}, and when known {@code lastSuccess},
+ *       {@code failingSince}, {@code lastFailureType}, {@code inIterationForMs}
+ *       and the loop's notes (such as {@code leader})</li>
  * </ul>
  *
  * <p><b>Thread safety:</b> safe for concurrent use. The only state is the
@@ -140,12 +130,6 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * {@code StartupRecoveryRunner} has run.
      */
     static final String STARTING = "starting";
-
-    /**
-     * Detail value for the instance-lock renewer before this node has acquired its first instance lock: a node that
-     * has run no workflow yet (a {@code DistributedLock} is mandatory). Not a fault.
-     */
-    static final String IDLE = "idle";
 
     /** {@code store} detail: the probe returned within the bound. */
     static final String REACHABLE = "reachable";
@@ -254,7 +238,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
 
     /** The status and details for {@code in}; see the class Javadoc. */
     Health assess(Inputs in) {
-        var byName = new HashMap<String, LoopSnapshot>();
+        var byName = new TreeMap<String, LoopSnapshot>();
         in.loops().forEach(loop -> byName.put(loop.name(), loop));
         var timer = pollerState(byName.get(TIMER_POLLER), false);
         var recovery = pollerState(byName.get(RECOVERY_POLLER), !recoveryPollerEnabled);
@@ -262,10 +246,28 @@ public class MaestroHealthIndicator implements HealthIndicator {
         var janitor = pollerState(byName.get(SIGNAL_JANITOR), false);
         var renewerSnapshot = byName.get(RENEWER);
         var renewerFailures = renewerSnapshot == null ? 0 : renewerSnapshot.consecutiveFailures();
-        var renewer = renewerState(renewerSnapshot);
+        var renewer = renewerState(renewerSnapshot, in);
 
-        var loopFault = timer.fault() || recovery.fault() || retention.fault() || janitor.fault() || renewer.fault();
-        var status = (loopFault || in.storeStatus().equals(UNREACHABLE)) ? Status.DOWN
+        // Step 1 of the precedence (design note §3): DOWN regardless of the probe.
+        var down = in.storeStatus().equals(UNREACHABLE) || renewer.fault();
+        var criticalFailing = false;
+        var degraded = new ArrayList<String>();
+        for (var loop : byName.values()) {
+            if (loop.state() == LoopSnapshot.State.DEAD) {
+                down = true;                          // ended while not stopping
+            } else if (!loop.running() && loop.state() != LoopSnapshot.State.DONE) {
+                down = true;                          // started, and no longer running (as before)
+            }
+            if (loop.failing()) {
+                if (loop.role() == LoopRole.CRITICAL) {
+                    criticalFailing = true;
+                } else {
+                    degraded.add(loop.name());
+                }
+            }
+        }
+        var probeReachable = in.storeStatus().equals(REACHABLE);
+        var status = down || (criticalFailing && probeReachable) ? Status.DOWN
                 : in.storeStatus().equals(TIMED_OUT) ? Status.UNKNOWN
                 : Status.UP;
 
@@ -276,8 +278,23 @@ public class MaestroHealthIndicator implements HealthIndicator {
                 .withDetail("retentionSweeperRunning", retention.detail())
                 .withDetail("signalJanitorRunning", janitor.detail())
                 .withDetail("instanceLockRenewerRunning", renewer.detail())
-                .withDetail("instanceLockRenewerConsecutiveFailures", renewerFailures)
-                .withDetail("runningWorkflowCount", in.runningCount());
+                .withDetail("instanceLockRenewerConsecutiveFailures", renewerFailures);
+        var cleaner = byName.get(LOCK_CLEANER);
+        if (cleaner != null) {
+            builder.withDetail("lockCleanerRunning", cleaner.running());
+        }
+        var wake = byName.get(WAKE_LISTENER);
+        if (wake != null) {
+            builder.withDetail("wakeListenerRunning", wake.running())
+                    // Deliberately not "…Running": a disconnected listener is
+                    // degraded, not a dead loop (perf/k6/health-probe.js#loopFault).
+                    .withDetail("wakeListenerConnected", Boolean.TRUE.equals(wake.notes().get(CONNECTED)));
+        }
+        builder.withDetail("instanceLocksHeld", in.locksHeld())
+                .withDetail("runningWorkflowCount", in.runningCount())
+                .withDetail("startupRecovery", startupRecovery(byName))
+                .withDetail("degraded", List.copyOf(degraded))
+                .withDetail("loops", loopDetails(byName));
 
         if (in.storeException() != null) {
             builder.withException(in.storeException());
@@ -286,12 +303,60 @@ public class MaestroHealthIndicator implements HealthIndicator {
         return builder.build();
     }
 
+    /** {@code "complete"} once the recovery poller's first pass or the one-shot pass completed (Issue 73). */
+    private static String startupRecovery(Map<String, LoopSnapshot> byName) {
+        var oneShot = byName.get(STARTUP_RECOVERY);
+        if (oneShot != null && oneShot.state() == LoopSnapshot.State.DONE) {
+            return COMPLETE;
+        }
+        var poller = byName.get(RECOVERY_POLLER);
+        if (poller != null && Boolean.TRUE.equals(poller.notes().get(FIRST_PASS_COMPLETE))) {
+            return COMPLETE;
+        }
+        return RUNNING;
+    }
+
+    /** One small map per loop, in name order. */
+    private static Map<String, Map<String, Object>> loopDetails(Map<String, LoopSnapshot> byName) {
+        var loops = new LinkedHashMap<String, Map<String, Object>>();
+        for (var loop : byName.values()) {
+            var detail = new LinkedHashMap<String, Object>();
+            detail.put("state", loop.state().name().toLowerCase(Locale.ROOT));
+            detail.put("failing", loop.failing());
+            detail.put("consecutiveFailures", loop.consecutiveFailures());
+            if (loop.lastSuccess() != null) {
+                detail.put("lastSuccess", loop.lastSuccess().toString());
+            }
+            if (loop.failingSince() != null) {
+                detail.put("failingSince", loop.failingSince().toString());
+            }
+            if (loop.lastFailureType() != null) {
+                detail.put("lastFailureType", loop.lastFailureType());
+            }
+            if (loop.inIterationFor() != null) {
+                detail.put("inIterationForMs", loop.inIterationFor().toMillis());
+            }
+            detail.putAll(loop.notes());
+            loops.put(loop.name(), detail);
+        }
+        return loops;
+    }
+
     static final String TIMER_POLLER = "timer-poller";
     static final String RECOVERY_POLLER = "recovery-poller";
     static final String STARTUP_RECOVERY = "startup-recovery";
     static final String SIGNAL_JANITOR = "signal-janitor";
     static final String RETENTION_SWEEPER = "retention-sweeper";
     static final String RENEWER = "instance-lock-renewer";
+    static final String LOCK_CLEANER = "lock-cleaner";
+    static final String WAKE_LISTENER = "wake-listener";
+    /** The recovery poller's note once its first pass completed. */
+    static final String FIRST_PASS_COMPLETE = "firstPassComplete";
+    /** The wake listener's note: whether its LISTEN session is open. */
+    static final String CONNECTED = "connected";
+    /** {@code startupRecovery} detail values. */
+    static final String RUNNING = "running";
+    static final String COMPLETE = "complete";
 
     /**
      * Computes the reported detail value and fault status for one poller.
@@ -311,22 +376,43 @@ public class MaestroHealthIndicator implements HealthIndicator {
     }
 
     /**
-     * The instance-lock renewer's detail and fault. A renewer that is running
-     * but whose last {@link #RENEWER_FAULT_STREAK} passes in a row failed is a
-     * fault too (review d7, fix wave e3): its thread is alive, but the locks
-     * it holds are not being renewed. One failed pass is not (see
-     * {@link #RENEWER_FAULT_STREAK}): a single refused {@code renewAll} must
-     * not take a node out of readiness.
+     * The instance-lock renewer's detail and fault (design note §3). A fault,
+     * {@code DOWN} whatever the probe said, when:
+     * <ul>
+     *   <li>its last {@link #RENEWER_FAULT_STREAK} passes in a row failed
+     *       (review d7, fix wave e3): it runs, but held locks are not renewed.
+     *       One failed pass is not: the TTL tolerates it;</li>
+     *   <li>locks are held and no pass has succeeded for a whole TTL — a
+     *       renewer stuck in {@code renewAll} builds no streak, but by then every
+     *       held lock has expired;</li>
+     *   <li>it is not running (it starts with the executor, so this is a
+     *       renewer that ended, or a node shutting down).</li>
+     * </ul>
      */
-    private static PollerState renewerState(@Nullable LoopSnapshot renewer) {
+    private static PollerState renewerState(@Nullable LoopSnapshot renewer, Inputs in) {
         if (renewer == null) {
-            return new PollerState(IDLE, false);
+            return new PollerState(false, true);
         }
         var running = renewer.running();
-        return new PollerState(running, !running || renewer.consecutiveFailures() >= RENEWER_FAULT_STREAK);
+        var stale = in.locksHeld() > 0 && noRenewalFor(renewer, in.now()).compareTo(in.lockTtl()) >= 0;
+        return new PollerState(running,
+                !running || renewer.consecutiveFailures() >= RENEWER_FAULT_STREAK || stale);
     }
 
-    /** {@code detail} is a {@link Boolean}, or one of {@link #STARTING}/{@link #DISABLED}/{@link #IDLE}. */
+    /**
+     * How long the renewer has gone without a successful pass: since its last
+     * success, or — before its first — for as long as its first pass has run.
+     */
+    private static Duration noRenewalFor(LoopSnapshot renewer, Instant now) {
+        var lastSuccess = renewer.lastSuccess();
+        if (lastSuccess != null) {
+            return Duration.between(lastSuccess, now);
+        }
+        var inIteration = renewer.inIterationFor();
+        return inIteration != null ? inIteration : Duration.ZERO;
+    }
+
+    /** {@code detail} is a {@link Boolean}, or one of {@link #STARTING}/{@link #DISABLED}. */
     private record PollerState(Object detail, boolean fault) {
     }
 

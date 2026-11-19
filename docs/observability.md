@@ -94,13 +94,13 @@ observer is contained by its own composite, which that counter does not read.
 
 ## Meter catalog
 
-Twenty-seven meters: **19 counters and 2 timers**, registered by
-`MicrometerEngineObserver`, plus **5 gauges** — four registered by
-`MaestroEngineGauges`, one (`maestro.taskqueue.slots.used`, one series per
-bounded task queue and kind) by `MaestroTaskQueueGauges` — and **one function
-counter**, `maestro.observer.errors`, registered by `MaestroEngineGauges` — all
-in the `io.b2mash.maestro.spring.observe` package of
-`maestro-spring-boot-starter`.
+Twenty-nine meters: **20 counters and 2 timers**, registered by
+`MicrometerEngineObserver`, plus **6 gauges** — five registered by
+`MaestroEngineGauges` (one of them, `maestro.loop.failing`, one series per
+loop), one (`maestro.taskqueue.slots.used`, one series per bounded task queue
+and kind) by `MaestroTaskQueueGauges` — and **one function counter**,
+`maestro.observer.errors`, registered by `MaestroEngineGauges` — all in the
+`io.b2mash.maestro.spring.observe` package of `maestro-spring-boot-starter`.
 
 **Cardinality rule:** no meter is ever tagged with `workflowId`, `runId`, or a
 timer ID. `workflowFailed`'s exception type is deliberately *not* a tag either
@@ -135,6 +135,7 @@ type is known (the instance exists).
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
 | `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
+| `maestro.loop.failures` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer`, `lock-cleaner`, `wake-listener` | A supervised loop's iteration failed and was counted in its streak — any failure, a store or lock-backend fault included, never one while the loop stops (`backgroundLoopFailed`; P2 task 5, Issue 67). The eight series are registered at zero. A store fault that an engine loop hits is counted here, not on `maestro.store.retries` (loop store calls are not retried in place) |
 | `maestro.store.retries` | `operation` | `append_event`, `append_event_returning_payload`, `get_event_by_sequence` | The store guard retried a run's store call in place after the store reported itself unavailable (`StoreUnavailableException`; Issue 86). Activity memo reads and outcome appends count here too: the starter's activity proxies use the executor's guarded store (`WorkflowExecutor.guardedStore()`), so one node has one episode. A retry that absorbed the fault leaves no other trace: alert on a sustained rate — a database that drops connections often but briefly. The first retry after 60 s without one logs one `WARN` (`Store unavailable on <op> — retrying in place (attempt 1/3): <diagnosis>; …`), the rest of that episode `DEBUG`. Advisory reads and background-loop store calls are never retried, so never counted. A fault that outlasts the retries is the `STORE_UNAVAILABLE` stand-down (`maestro.run.abandoned{reason="store_unavailable"}`) |
 | `maestro.observer.errors` | *(none)* | — | An observer callback threw and was contained (Issue 81) — a function counter over `WorkflowExecutor.observerErrorCount()`, counted by the executor rather than through an observer, since the observer that failed may be the Micrometer one. The `WARN` log names the callback and the delegate class. Any increase is an observer bug |
 | `maestro.standdown` | `reason` | `unknown_event_type`, `unknown_event_payload`, `nondeterministic_history`, `stale_run`, `lease_fenced` | A local run stood down without recording a workflow outcome |
@@ -220,13 +221,14 @@ recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
 | `maestro.wake.permits` | *(none)* | `WorkflowExecutor.wakePermitCount()` |
 | `maestro.recovery.deferred` | *(none)* | `WorkflowExecutor.recoveryDeferredCount()` |
+| `maestro.loop.failing` | `loop` (the eight names of `maestro.loop.failures`) | `1` while that loop's snapshot in `WorkflowExecutor.loops()` reads `failing` — its failure streak has reached its rule — else `0` (also before it starts, or for a loop this node does not run). What health's `degraded` list and the critical-loop `DOWN` read; alert on it |
 | `maestro.taskqueue.slots.used` | `queue`, `kind` | `TaskQueueGovernor.workflowSlotsInUse(queue)` (`kind=workflow`) / `activitySlotsInUse(queue)` (`kind=activity`) |
 
 `queue` is the `taskQueue` of a registered `@DurableWorkflow` that is bounded
 on this node; `kind` is `workflow` or `activity`. Prometheus exposes it as
 `maestro_taskqueue_slots_used`.
 
-All five are registered with `.strongReference(true)` — the first four by
+All six are registered with `.strongReference(true)` — the first five by
 `MaestroEngineGauges`, `maestro.taskqueue.slots.used` by
 `MaestroTaskQueueGauges` — because Micrometer's `Gauge.Builder` holds its state
 object behind a `WeakReference` by default, which would report `NaN` once the
@@ -305,7 +307,7 @@ correct: no JVM is holding it.
 
 ### Which callbacks the meter adapter implements
 
-`MicrometerEngineObserver` implements 20 of the 29 `EngineObserver` callbacks.
+`MicrometerEngineObserver` implements 21 of the 30 `EngineObserver` callbacks.
 It deliberately does **not** implement:
 
 - `workflowResumed`, `workflowParked`, `workflowUnparked`, `activityStarted`,

@@ -74,6 +74,20 @@ class MaestroHealthAutoConfigurationTest {
                 });
     }
 
+    /** P2 task 5: the liveness contributor is registered beside maestro, named maestroLiveness. */
+    @Test
+    @DisplayName("the maestroLiveness contributor is registered with the maestro indicator")
+    void theLivenessContributorIsRegistered() {
+        runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
+                .withBean(DistributedLock.class, InMemoryDistributedLock::new)
+                .run(context -> {
+                    assertThat(context).hasNotFailed();
+                    assertThat(context).hasSingleBean(MaestroLivenessHealthIndicator.class);
+                    // Boot names a contributor after its bean, less "HealthIndicator".
+                    assertThat(context).hasBean("maestroLivenessHealthIndicator");
+                });
+    }
+
     @Test
     @DisplayName("indicator bean is absent when Actuator's HealthIndicator is not on the classpath")
     void indicatorAbsentWithoutActuatorOnClasspath() {

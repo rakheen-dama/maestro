@@ -367,6 +367,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void backgroundLoopFailed(String loop, String failureType) {
+        fanOut("backgroundLoopFailed", d -> d.backgroundLoopFailed(loop, failureType));
+    }
+
+    @Override
     public void storeRetried(String operation) {
         fanOut("storeRetried", d -> d.storeRetried(operation));
     }

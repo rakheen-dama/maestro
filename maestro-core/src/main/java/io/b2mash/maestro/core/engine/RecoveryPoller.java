@@ -85,6 +85,12 @@ final class RecoveryPoller implements LoopBody {
     /** The loop's fixed name: its meter tag and log name. */
     static final String LOOP_NAME = "recovery-poller";
 
+    /**
+     * The note the poller sets, {@code true}, once its first pass — this
+     * node's startup recovery — has completed (Issue 73).
+     */
+    static final String FIRST_PASS_COMPLETE = "firstPassComplete";
+
     private final WorkflowExecutor executor;
     private final Map<String, WorkflowRegistration> registrations;
     private final String serviceName;
@@ -272,6 +278,10 @@ final class RecoveryPoller implements LoopBody {
                 cursors = new HashMap<>(pass.resumeAfterByQueue());
             }
             log(pass, capacityPass, first);
+            if (first) {
+                // Read by health's startupRecovery detail (Issue 73).
+                ctx.note(FIRST_PASS_COMPLETE, true);
+            }
             first = false;
             awaitingCapacity = !cursors.isEmpty();
         } catch (RuntimeException | Error e) {

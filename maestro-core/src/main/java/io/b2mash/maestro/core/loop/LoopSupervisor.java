@@ -455,9 +455,10 @@ public final class LoopSupervisor {
             log(failure, () -> logger.debug("Background loop '{}' failed again ({} in a row)", spec.name(), n,
                     failure));
         }
+        // Contained by the composite (Issue 81): a throwing observer cannot
+        // end the loop; a control-flow Error from it is still rethrown.
+        observer.backgroundLoopFailed(spec.name(), failure.getClass().getName());
         if (failure instanceof Error) {
-            // Contained by the composite (Issue 81): a throwing observer cannot
-            // end the loop; a control-flow Error from it is still rethrown.
             observer.backgroundLoopError(spec.name(), failure.getClass().getName());
         }
         return logged;

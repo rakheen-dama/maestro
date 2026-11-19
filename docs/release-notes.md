@@ -10,6 +10,14 @@
 - **Logs.** The three loops' failure lines are the supervisor's (text unchanged, logger `io.b2mash.maestro.core.loop.LoopSupervisor`, was `…engine.BackgroundLoopGuard`, which is deleted). `Timer poller stopped` / `Recovery poller stopped` become `Background loop '<name>' stopped`; the start lines keep their text, logged by `…engine.WorkflowExecutor`.
 - **Behaviour change.** A prompt recovery pass requested while a *failed* pass waits out its back-off (`pollInterval`) is served by the pass after the back-off, no earlier.
 
+### Changed — health tells the truth about every loop; new `maestroLiveness` (P2 task 5; Issues 67, 68, 73, 75)
+
+- **`maestro` status.** `DOWN` also for a **critical** loop (timer poller, recovery poller, startup recovery, renewer) whose failure streak has reached its rule — two failures in a row spanning at least `max(60 s, 2 × period)` for the timer poller, `max(120 s, 2 × period)` for the recovery poller — while the store probe answered; `UNKNOWN` if the probe itself timed out. `DOWN` for a renewer that holds locks and has not renewed them for a whole lock TTL (stuck in `renewAll`). A failing **housekeeping** loop (janitor, sweeper, lock cleaner) or a long-disconnected wake listener reads `UP` and is named in the new `degraded` detail. Before, a loop that failed every pass but kept running read `UP` (Issue 67).
+- **New details**: `instanceLocksHeld`, `startupRecovery` (`running` → `complete`, Issue 73), `degraded`, `loops` (per-loop state, streak, last success, failing since, last failure type, notes), and with `maestro-store-postgres` `lockCleanerRunning`, `wakeListenerRunning`, `wakeListenerConnected`. Every existing key keeps its name; `instanceLockRenewerRunning` loses its `"idle"` value (the renewer starts with the executor).
+- **New contributor `maestroLiveness`** (`MaestroLivenessHealthIndicator`): `DOWN` only for a dead loop; no I/O. Recommended liveness group: `livenessState,maestroLiveness`. This replaces Operations §14's "never liveness" for this one contributor.
+- **Issue 75, by decision (documentation).** Probe the groups, never the root `/actuator/health`, on a pool Maestro shares with the host: the support matrix lists it as not supported. No code change.
+- **New meters**: `maestro.loop.failures{loop}` (every counted failure, a store fault included; eight series at zero) through the new `EngineObserver.backgroundLoopFailed(loop, failureType)` (default no-op), and the gauge `maestro.loop.failing{loop}`.
+
 ## Unreleased — pilot readiness P2 (tasks 1–3): observer isolation, absorbed store faults, the loop supervisor
 
 ### Fixed — an observer's `Error` no longer changes what the engine does (Issues 81, 68 part 2)
