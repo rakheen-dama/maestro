@@ -60,6 +60,9 @@ final class ScriptedPgDataSource implements DataSource {
     private final BlockingQueue<PGNotification[]> batches = new LinkedBlockingQueue<>();
     private final AtomicReference<@Nullable Supplier<? extends Exception>> nextPollFailure = new AtomicReference<>();
     private final Object pollGate = new Object();
+    private final Object connectGate = new Object();
+    private boolean blockConnections;
+    private boolean inBlockedConnect;
 
     private volatile int networkTimeoutMillis;
     private volatile boolean refuseConnections;
@@ -75,6 +78,28 @@ final class ScriptedPgDataSource implements DataSource {
     /** @return a listener on {@link #CHANNEL} over this data source, joining its poll thread for 300 ms on close */
     PostgresWakeListener newListener() {
         return new PostgresWakeListener(this, CHANNEL, Duration.ofMillis(300));
+    }
+
+    /** From now on {@link #getConnection()} blocks until {@link #releaseConnections()} — an exhausted pool. */
+    void blockConnections() {
+        synchronized (connectGate) {
+            blockConnections = true;
+        }
+    }
+
+    /** Lets a blocked {@link #getConnection()} go; later borrows do not block. */
+    void releaseConnections() {
+        synchronized (connectGate) {
+            blockConnections = false;
+            connectGate.notifyAll();
+        }
+    }
+
+    /** @return whether a {@link #getConnection()} is blocked by {@link #blockConnections()} right now */
+    boolean inBlockedConnect() {
+        synchronized (connectGate) {
+            return inBlockedConnect;
+        }
     }
 
     /** While {@code refuse}, {@link #getConnection()} throws {@code SQLException("refused (scripted)")}. */
@@ -166,6 +191,19 @@ final class ScriptedPgDataSource implements DataSource {
 
     @Override
     public Connection getConnection() throws SQLException {
+        synchronized (connectGate) {
+            while (blockConnections) {
+                inBlockedConnect = true;
+                try {
+                    connectGate.wait();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new SQLException("interrupted while borrowing (scripted)");
+                } finally {
+                    inBlockedConnect = false;
+                }
+            }
+        }
         if (refuseConnections) {
             refusedConnections.incrementAndGet();
             throw new SQLException("refused (scripted)");

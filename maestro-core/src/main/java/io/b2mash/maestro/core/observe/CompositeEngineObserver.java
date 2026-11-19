@@ -366,6 +366,17 @@ public final class CompositeEngineObserver implements EngineObserver {
         }
     }
 
+    /**
+     * Fanned out like any callback: a delegate's {@code VirtualMachineError}
+     * is rethrown here. The supervisor, its only caller, contains it on its
+     * failure-reporting path, so a loop never dies because an observer threw
+     * (PR #76 review).
+     */
+    @Override
+    public void backgroundLoopFailed(String loop, String failureType) {
+        fanOut("backgroundLoopFailed", d -> d.backgroundLoopFailed(loop, failureType));
+    }
+
     @Override
     public void storeRetried(String operation) {
         fanOut("storeRetried", d -> d.storeRetried(operation));

@@ -1,5 +1,6 @@
 package io.b2mash.maestro.store.postgres.config;
 
+import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.spring.config.MaestroAutoConfiguration;
 import io.b2mash.maestro.spring.config.MaestroProperties;
@@ -39,8 +40,10 @@ import java.time.Duration;
  *   <li>{@link PostgresDistributedLock} — the {@link DistributedLock} SPI implementation</li>
  *   <li>{@link PostgresLockCleaner} — expired lock row cleanup</li>
  *   <li>{@link PostgresLockCleanerScheduler} — runs the cleaner every
- *       {@code maestro.lock.cleanup-interval} (default 10 minutes); stopped
- *       when the context closes</li>
+ *       {@code maestro.lock.cleanup-interval} (default 10 minutes), under the
+ *       engine's loop supervisor when the engine is active (the loop
+ *       {@code lock-cleaner}: health, meters, the engine's shutdown);
+ *       stopped when the context closes</li>
  * </ul>
  *
  * <p>Ordered after {@link MaestroAutoConfiguration} so that
@@ -92,13 +95,18 @@ public class PostgresLockAutoConfiguration {
      * when a host wires the lock without the engine. The value accepts Boot's
      * duration syntax ({@code 10m}, {@code PT10M}, {@code 600000}).
      *
-     * @param cleaner the cleaner to run
-     * @param env     the environment {@code maestro.lock.cleanup-interval} is read from
+     * <p>When the engine is active the cleaner runs under its loop
+     * supervisor; otherwise under a supervisor of its own, outside health.
+     *
+     * @param cleaner  the cleaner to run
+     * @param env      the environment {@code maestro.lock.cleanup-interval} is read from
+     * @param executor the engine, if it is active
      * @return the started scheduler; closed with the context
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnMissingBean(PostgresLockCleanerScheduler.class)
-    public PostgresLockCleanerScheduler postgresLockCleanerScheduler(PostgresLockCleaner cleaner, Environment env) {
+    public PostgresLockCleanerScheduler postgresLockCleanerScheduler(PostgresLockCleaner cleaner, Environment env,
+            ObjectProvider<WorkflowExecutor> executor) {
         var raw = env.getProperty(CLEANUP_INTERVAL_PROPERTY, DEFAULT_CLEANUP_INTERVAL);
         Duration interval;
         try {
@@ -107,7 +115,12 @@ public class PostgresLockAutoConfiguration {
             throw new IllegalStateException(CLEANUP_INTERVAL_PROPERTY + " '" + raw + "' is not a duration", e);
         }
         var scheduler = new PostgresLockCleanerScheduler(cleaner, interval);
-        scheduler.start();
+        var engine = executor.getIfAvailable();
+        if (engine != null) {
+            scheduler.start(engine);
+        } else {
+            scheduler.start();
+        }
         return scheduler;
     }
 }

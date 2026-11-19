@@ -42,12 +42,12 @@ Problem: runs, loops, Kafka containers and the pool are stopped by separate hand
 
 Problem: seven background loops report health and errors seven ways; two sit outside the guard. Issues 67, 68, 65, 81, 86.
 
-- [ ] Design note: every loop runs under one supervisor that owns its thread, its failure streak, its last-success time and its stop; health and meters read the supervisor, not each loop.
-- [ ] Health is `DOWN` (or a documented degraded status) for a loop failing every pass, and for a renewer that failed to start while locks are held (Issues 67, 68).
-- [ ] The lock cleaner and wake listener are supervised, in health, and counted (Issue 65).
+- [x] Design note: every loop runs under one supervisor that owns its thread, its failure streak, its last-success time and its stop; health and meters read the supervisor, not each loop. — design note approved 2026-11-18; all eight loops supervised by P2 T6.
+- [x] Health is `DOWN` (or a documented degraded status) for a loop failing every pass, and for a renewer that failed to start while locks are held (Issues 67, 68) — P2 T4–T5, `pilot/p2-loop-supervisor-2`.
+- [x] The lock cleaner and wake listener are supervised, in health, and counted (Issue 65) — P2 T6.
 - [x] An observer `Error` cannot end an engine pass (Issue 81) — P2 T1, `pilot/p2-loop-supervisor`; also Issue 68 part 2.
 - [x] A store fault that retries absorb is counted and logged at `WARN` once per episode (Issue 86) — P2 T2, `maestro.store.retries{operation}`.
-- [ ] Decide with the maintainer: what the root health endpoint should do on an exhausted pool (Issue 75).
+- [x] Decide with the maintainer: what the root health endpoint should do on an exhausted pool (Issue 75) — option A, approved 2026-11-18: probe the groups, never the root (docs, P2 T5).
 - [ ] Gate: uncached build, load scenario S5 (pool exhaustion) still passes, chaos PR-gate ×3.
 
 ### P4 — Upgrade safety (a parked run survives a deploy)

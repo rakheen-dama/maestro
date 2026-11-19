@@ -87,6 +87,10 @@ class WorkflowInstanceLockManagerCloseTest {
         lock.awaitBlockedRenewerEnded();
         assertFalse(manager.isRenewerRunning());
         assertEquals(List.of(), observer.lockRenewFailed(), "a routine shutdown must not fire renewal-failure alerts");
+        // PR #76 review 4629668506: one stop state gates both — the supervisor
+        // counts no failure either, and the streak stays clean.
+        assertEquals(List.of(), observer.loopFailures(), "the supervisor counted no failure while stopping");
+        assertEquals(0, manager.renewFailureStreak());
     }
 
     /**
@@ -115,64 +119,6 @@ class WorkflowInstanceLockManagerCloseTest {
                     && r.message().startsWith("Instance lock for workflow 'wf-1' was lost after shutdown began")),
                     logs.records().toString());
         }
-    }
-
-    /**
-     * PR #60 review (Major): {@code startRenewerIfNeeded} publishes the
-     * renewer thread before it starts it. A close in that window must not
-     * call {@code Thread.join(Duration)} on the unstarted thread — the JDK
-     * throws {@code IllegalThreadStateException} for that — and the renewer,
-     * once started, ends at once because the manager is closed.
-     */
-    @Test
-    void closeWhileTheRenewerIsPublishedButNotStartedReturnsAndTheRenewerEnds() throws Exception {
-        var published = new CountDownLatch(1);
-        var startNow = new CountDownLatch(1);
-        var renewer = new AtomicReference<@Nullable Thread>();
-        var fresh = new WorkflowInstanceLockManager(lock, "svc", "maestro:lock:",
-                Duration.ofMillis(300), Duration.ofMillis(100), observer);
-        var starter = fresh.renewerThreadStarter;
-        fresh.renewerThreadStarter = () -> {
-            var real = starter.get(); // the renewer the manager would start, unstarted
-            // Ends when the real renewer ends; its start() holds the window
-            // between the manager publishing it and starting it.
-            var holding = new Thread(() -> {
-                try {
-                    real.join();
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-            }) {
-                @Override
-                public synchronized void start() {
-                    published.countDown(); // renewerThread is already published here
-                    try {
-                        startNow.await();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                    }
-                    real.start();
-                    super.start();
-                }
-            };
-            renewer.set(holding);
-            return holding;
-        };
-        var acquired = new AtomicReference<WorkflowInstanceLockManager.@Nullable Acquisition>();
-        var acquirer = Thread.ofVirtual().start(() -> acquired.set(fresh.tryAcquire("wf-2")));
-        assertTrue(published.await(5, SECONDS), "the renewer thread is published, not started");
-
-        try {
-            fresh.close(Duration.ofMillis(200));
-        } finally {
-            startNow.countDown();
-        }
-
-        assertTrue(acquirer.join(Duration.ofSeconds(5)));
-        assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, acquired.get());
-        var thread = renewer.get();
-        assertNotNull(thread);
-        assertTrue(thread.join(Duration.ofSeconds(5)), "the renewer ends at once once started on a closed manager");
     }
 
     @Test

@@ -365,7 +365,8 @@ class MicrometerEngineObserverTest {
         var series = fresh.find("maestro.loop.errors").counters().stream()
                 .collect(java.util.stream.Collectors.toMap(c -> c.getId().getTag("loop"), Counter::count));
         assertEquals(java.util.Map.of("timer-poller", 0.0, "recovery-poller", 0.0, "startup-recovery", 0.0,
-                "signal-janitor", 0.0, "retention-sweeper", 0.0, "instance-lock-renewer", 0.0), series);
+                "signal-janitor", 0.0, "retention-sweeper", 0.0, "instance-lock-renewer", 0.0,
+                "lock-cleaner", 0.0, "wake-listener", 0.0), series);
     }
 
     /** Issue 86: every in-place store retry is counted by operation, a bounded snake_case tag. */
@@ -378,5 +379,20 @@ class MicrometerEngineObserverTest {
         assertEquals(2.0, registry.get("maestro.store.retries").tag("operation", "append_event").counter().count());
         assertEquals(1.0, registry.get("maestro.store.retries").tag("operation", "get_event_by_sequence")
                 .counter().count());
+    }
+
+    /** P2 task 5: maestro.loop.failures counts every failed iteration by loop; its eight series start at zero. */
+    @Test
+    void loopFailureSeriesExistAtZero() {
+        var fresh = new SimpleMeterRegistry();
+        var micrometer = new MicrometerEngineObserver(fresh);
+        var series = fresh.find("maestro.loop.failures").counters().stream()
+                .collect(java.util.stream.Collectors.toMap(c -> c.getId().getTag("loop"), Counter::count));
+        assertEquals(java.util.Map.of("timer-poller", 0.0, "recovery-poller", 0.0, "startup-recovery", 0.0,
+                "signal-janitor", 0.0, "retention-sweeper", 0.0, "instance-lock-renewer", 0.0, "lock-cleaner", 0.0,
+                "wake-listener", 0.0), series);
+
+        micrometer.backgroundLoopFailed("signal-janitor", "java.lang.IllegalStateException");
+        assertEquals(1.0, fresh.get("maestro.loop.failures").tag("loop", "signal-janitor").counter().count());
     }
 }

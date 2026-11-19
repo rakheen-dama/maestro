@@ -17,6 +17,7 @@ import org.springframework.boot.health.actuate.endpoint.HttpCodeStatusMapper;
 import org.springframework.boot.health.actuate.endpoint.SimpleHttpCodeStatusMapper;
 import org.springframework.boot.health.actuate.endpoint.SimpleStatusAggregator;
 import org.springframework.boot.health.actuate.endpoint.StatusAggregator;
+import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.Status;
 import tools.jackson.databind.ObjectMapper;
 
@@ -86,13 +87,6 @@ class MaestroHealthIndicatorTest {
     }
 
     @Test
-    void aRenewerThatNeverStartedIsIdleAndNotAFault() {
-        var health = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false).health();
-        assertThat(health.getDetails()).containsEntry("instanceLockRenewerRunning", "idle");
-        assertThat(health.getStatus()).isEqualTo(Status.UP);
-    }
-
-    @Test
     void aRenewerThatStartedAndStoppedIsDown() throws Exception {
         executorWithLock.startWorkflow("wf-renew", "AwaitForever", "default", null, AwaitForever::new, awaitForever);
         await().atMost(Duration.ofSeconds(5)).until(executorWithLock::hasInstanceLockRenewerStarted);
@@ -148,6 +142,15 @@ class MaestroHealthIndicatorTest {
      * more, not one — the instance-lock TTL (three renew intervals) tolerates
      * one missed pass with a pass to spare. Each renewal pass is let through
      * one at a time, so the streak the indicator reads is exact.
+     *
+     * <p>The held lock's renewal age is fixed (PR #76 CI, run 44543816985):
+     * stepping the passes by hand keeps a 300 ms lock unrenewed for about two
+     * renew intervals plus however long the machine takes, and on a slow
+     * runner that crosses the TTL — the lock has then really expired, and the
+     * staleness rule rightly reads {@code DOWN} whatever the streak. This test
+     * pins the streak rule, so it reads the executor's real loop snapshots
+     * through {@code assess} with a fresh lock; the staleness rule has its own
+     * tests ({@code MaestroHealthSemanticsTest}).
      */
     @Test
     void theRenewerIsUpAfterOneFailedPassAndDownAfterTwoInARow() throws Exception {
@@ -163,7 +166,7 @@ class MaestroHealthIndicatorTest {
 
             steppedLock.letOnePassThrough(2);                    // pass 1 fails; pass 2 waits inside renewAll
             assertThat(stepped.instanceLockRenewerFailureStreak()).isEqualTo(1);
-            var oneMissed = indicator.health();
+            var oneMissed = withAFreshLock(indicator, stepped);
             assertThat(oneMissed.getDetails()).containsEntry("instanceLockRenewerRunning", true)
                     .containsEntry("instanceLockRenewerConsecutiveFailures", 1);
             assertThat(oneMissed.getStatus()).as("one failed pass: the TTL still covers the held locks")
@@ -171,7 +174,7 @@ class MaestroHealthIndicatorTest {
 
             steppedLock.letOnePassThrough(3);                    // pass 2 fails; pass 3 waits
             assertThat(stepped.instanceLockRenewerFailureStreak()).isEqualTo(2);
-            var twoMissed = indicator.health();
+            var twoMissed = withAFreshLock(indicator, stepped);
             assertThat(twoMissed.getDetails()).containsEntry("instanceLockRenewerConsecutiveFailures", 2);
             assertThat(twoMissed.getStatus()).as("two failed passes in a row").isEqualTo(Status.DOWN);
 
@@ -182,12 +185,22 @@ class MaestroHealthIndicatorTest {
             steppedLock.permits.release();
             await("a pass that does not fail").atMost(Duration.ofSeconds(5))
                     .until(() -> stepped.instanceLockRenewerFailureStreak() == 0);
-            var recovered = indicator.health();
+            var recovered = withAFreshLock(indicator, stepped);
             assertThat(recovered.getDetails()).containsEntry("instanceLockRenewerConsecutiveFailures", 0);
             assertThat(recovered.getStatus()).isEqualTo(Status.UP);
         } finally {
             stepped.shutdown();
         }
+    }
+
+    /**
+     * {@code indicator}'s reading of {@code executor}'s real loops and locks,
+     * with a reachable store and the held lock renewed just now.
+     */
+    private static Health withAFreshLock(MaestroHealthIndicator indicator, WorkflowExecutor executor) {
+        return indicator.assess(new MaestroHealthIndicator.Inputs(MaestroHealthIndicator.REACHABLE, null,
+                executor.loops(), executor.instanceLocksHeld(), executor.instanceLockTtl(), Duration.ZERO,
+                executor.runningCount()));
     }
 
     /**

@@ -38,11 +38,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * WP4 3.5b on the wake listener's poll loop, on a {@link ScriptedPgDataSource}
  * (no database): a {@code RuntimeException} or an {@code Error} from one poll
- * or one consumer no longer ends the loop or spins it — the loop waits one
- * second and polls again — while a {@code MaestroControlFlowError} still ends
- * it, and the end is logged through SLF4J. The connection is always released
- * with the thread's interrupt flag clear (Issue 38's mechanism), and the flag
- * is re-asserted afterwards.
+ * or one consumer no longer ends the loop or spins it — since P2 task 6 the
+ * loop runs under {@code LoopSupervisor}, which backs off (one second,
+ * doubling to 30 s) and polls again — while a {@code MaestroControlFlowError}
+ * still ends it, and the end is logged through SLF4J. The connection is always
+ * released with the thread's interrupt flag clear (Issue 38's mechanism).
  *
  * <h2>Thread Safety</h2>
  * <p>Per-test fixtures, confined to the test thread; {@link ScriptedPgDataSource}
@@ -54,6 +54,7 @@ class PostgresWakeListenerLoopErrorTest {
     private final ScriptedPgDataSource scripted = new ScriptedPgDataSource();
     private final List<PostgresWakeListener> listeners = new ArrayList<>();
     private Logger listenerLogger;
+    private Logger supervisorLogger;
     private ListAppender<ILoggingEvent> listenerLog;
 
     @BeforeEach
@@ -62,6 +63,10 @@ class PostgresWakeListenerLoopErrorTest {
         listenerLog = new ListAppender<>();
         listenerLog.start();
         listenerLogger.addAppender(listenerLog);
+        // The supervisor logs a failing poll and the loop's end (P2 task 6):
+        // one appender sees both loggers, in order.
+        supervisorLogger = (Logger) LoggerFactory.getLogger("io.b2mash.maestro.core.loop.LoopSupervisor");
+        supervisorLogger.addAppender(listenerLog);
     }
 
     @AfterEach
@@ -69,6 +74,7 @@ class PostgresWakeListenerLoopErrorTest {
         scripted.releasePolls();
         listeners.forEach(PostgresWakeListener::close);
         listenerLogger.detachAppender(listenerLog);
+        supervisorLogger.detachAppender(listenerLog);
         listenerLog.stop();
     }
 
@@ -170,8 +176,13 @@ class PostgresWakeListenerLoopErrorTest {
                 "the consumer's Error is logged at ERROR: " + errors());
     }
 
+    /**
+     * Rewritten in P2 task 6: the one-second wait after a driver
+     * {@code Error} is now the supervisor's back-off (one second after the
+     * first failure of a streak); the session is still kept.
+     */
     @Test
-    @DisplayName("an Error from the driver is logged at ERROR, the loop waits a second, then polls and dispatches again")
+    @DisplayName("an Error from the driver is logged at WARN, the loop backs off, then polls and dispatches again")
     void anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain() throws Exception {
         var listener = track(scripted.newListener());
         var woken = new CountDownLatch(1);
@@ -186,10 +197,44 @@ class PostgresWakeListenerLoopErrorTest {
         assertTrue(woken.await(5, TimeUnit.SECONDS), "the poll loop died on the driver's Error");
         var starts = scripted.pollStartNanos();
         var gap = Duration.ofNanos(starts.get(1) - starts.get(0));
-        assertTrue(gap.compareTo(Duration.ofMillis(900)) >= 0, "gap between polls after an Error: " + gap);
-        assertTrue(errors().stream().anyMatch(m -> m.contains("java.lang.NoClassDefFoundError")),
-                "the contained Error is logged at ERROR: " + errors());
+        assertTrue(gap.compareTo(Duration.ofMillis(900)) >= 0, "the back-off after an Error: " + gap);
+        assertTrue(warnings().stream().anyMatch(m -> m.contains("Background loop 'wake-listener' failed")
+                        && m.contains("java.lang.NoClassDefFoundError")),
+                "the contained Error is logged at WARN (an optimisation loop, P2b review m6): " + warnings());
         assertTrue(listener.isConnected());
+    }
+
+    /**
+     * Issue 65 (P2 task 6): a driver {@code Error} that repeats on every poll
+     * takes the supervisor's back-off — one second, doubling to 30 s — and its
+     * rate-limited log: one {@code WARN} when the streak starts (an
+     * optimisation loop, P2b review m6), {@code DEBUG} for the repeats, a
+     * reminder at most every five minutes. Before, every poll paused one
+     * second and logged at {@code ERROR} with the stack trace, about 3,600
+     * lines an hour. The session is kept: an {@code Error} says nothing about
+     * the connection.
+     */
+    @Test
+    @DisplayName("a driver Error on every poll takes a growing back-off and is logged at WARN once")
+    void aDriverErrorOnEveryPollBacksOffAndIsRateLimited() {
+        scripted.failPollsWith(() -> {
+            throw new NoClassDefFoundError("org/postgresql/Missing");
+        });
+        var listener = track(scripted.newListener());
+        listener.start();
+        await("three polls").atMost(Duration.ofSeconds(10)).until(() -> scripted.pollStartNanos().size() >= 3);
+
+        var starts = scripted.pollStartNanos();
+        var secondGap = Duration.ofNanos(starts.get(2) - starts.get(1));
+        assertTrue(secondGap.compareTo(Duration.ofMillis(1900)) >= 0,
+                "the back-off grows while the Error repeats: " + secondGap);
+        var loud = warnings().stream().filter(m -> m.contains("java.lang.NoClassDefFoundError")).toList();
+        assertEquals(1, loud.size(), "one WARN for the streak, not one per poll: " + loud);
+        assertEquals(List.of(), errors().stream().filter(m -> m.contains("NoClassDefFoundError")).toList(),
+                "an optimisation loop's failure never logs at ERROR");
+        assertTrue(listener.isConnected(), "a driver Error keeps the session");
+        assertEquals(1, scripted.events().stream().filter(e -> e.startsWith("LISTEN")).count(),
+                "no reconnect after an Error");
     }
 
     @Test
@@ -281,10 +326,12 @@ class PostgresWakeListenerLoopErrorTest {
     /**
      * Fix wave e5: the release after a {@code RuntimeException} never runs
      * with the interrupt flag set (Issue 38: an interrupted virtual thread
-     * entering a socket read closes the socket under the pool).
+     * entering a socket read closes the socket under the pool). Since P2
+     * task 6 a stray interrupt no longer ends the loop either: the supervisor
+     * clears it, and the next session listens with the flag clear.
      */
     @Test
-    @DisplayName("the release after a RuntimeException runs with the interrupt flag clear")
+    @DisplayName("the release after a RuntimeException runs with the interrupt flag clear, and the loop goes on")
     void theReleaseAfterARuntimeExceptionRunsWithTheInterruptFlagClear() throws Exception {
         var spy = new InterruptSpyDataSource(scripted);
         var pollThread = new AtomicReference<Thread>();
@@ -295,13 +342,16 @@ class PostgresWakeListenerLoopErrorTest {
         });
         var listener = track(new PostgresWakeListener(spy, ScriptedPgDataSource.CHANNEL, Duration.ofMillis(300)));
         listener.start();
-        await("the failed poll").atMost(Duration.ofSeconds(5)).until(() -> pollThread.get() != null);
+        await("a poll on the next session").atMost(Duration.ofSeconds(5))
+                .until(() -> scripted.pollStartNanos().size() >= 2);
 
-        assertTrue(pollThread.get().join(Duration.ofSeconds(4)), "the interrupt ends the loop after the release");
+        assertTrue(pollThread.get().isAlive(), "a stray interrupt does not end the loop");
         assertEquals(List.of(), spy.interruptedCalls(), "connection calls made with the interrupt flag set");
         var events = scripted.events();
-        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close"),
-                events.subList(events.lastIndexOf("poll") + 1, events.size()));
+        var firstPoll = events.indexOf("poll");
+        var secondPoll = events.subList(firstPoll + 1, events.size()).indexOf("poll") + firstPoll + 1;
+        assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close",
+                        "LISTEN " + ScriptedPgDataSource.CHANNEL), events.subList(firstPoll + 1, secondPoll));
     }
 
     @Test
@@ -331,9 +381,11 @@ class PostgresWakeListenerLoopErrorTest {
      * WP10 hand-off: an interrupt that reaches the poll thread must not be set
      * while the connection is released — an interrupted virtual thread
      * entering a socket read closes the socket under the pool (Issue 38).
+     * Since P2 task 6 the supervisor clears a stray interrupt after every
+     * iteration, before the release, so it is no longer re-asserted.
      */
     @Test
-    @DisplayName("an interrupt on the poll thread is cleared while the connection is released, then re-asserted")
+    @DisplayName("an interrupt on the poll thread is clear while the connection is released")
     void anInterruptOnThePollThreadIsClearedWhileTheConnectionIsReleased() throws Exception {
         var spy = new InterruptSpyDataSource(scripted);
         var listener = track(new PostgresWakeListener(spy, ScriptedPgDataSource.CHANNEL, Duration.ofMillis(300)));
@@ -359,7 +411,6 @@ class PostgresWakeListenerLoopErrorTest {
         assertEquals(List.of("setNetworkTimeout 1000", "UNLISTEN *", "setNetworkTimeout 0", "close"),
                 events.subList(events.lastIndexOf("poll") + 1, events.size()));
         assertFalse(events.contains("poll-interrupted"));
-        assertTrue(pollThread.get().isInterrupted(), "the interrupt is re-asserted after the release");
     }
 
     // ── Fixtures ────────────────────────────────────────────────────────
@@ -386,6 +437,16 @@ class PostgresWakeListenerLoopErrorTest {
         synchronized (listenerLog) {
             return listenerLog.list.stream()
                     .filter(e -> e.getLevel() == Level.INFO)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+        }
+    }
+
+    /** @return the formatted messages the listener and its supervisor logged at {@code WARN} */
+    private List<String> warnings() {
+        synchronized (listenerLog) {
+            return listenerLog.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN)
                     .map(ILoggingEvent::getFormattedMessage)
                     .toList();
         }
