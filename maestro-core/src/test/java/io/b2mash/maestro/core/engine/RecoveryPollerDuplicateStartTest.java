@@ -11,6 +11,8 @@ import tools.jackson.databind.json.JsonMapper;
 import java.time.Duration;
 import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -56,6 +58,49 @@ class RecoveryPollerDuplicateStartTest {
         @WorkflowMethod
         public String run() {
             return "b";
+        }
+    }
+
+    /**
+     * PR #76 review follow-up 4630155427: a start that fails after the name was
+     * claimed — its loop's thread cannot start — publishes no body. Before, the
+     * body published at the claim stayed published, and {@code canDeferStart}
+     * (one read of the body, a second of the supervisor) could pair it with a
+     * later start's running supervisor: a deferral for a type nothing running
+     * registers. A start that succeeds afterwards is the one consulted.
+     */
+    @Test
+    void aStartWhoseLoopCannotStartPublishesNoBody() throws Exception {
+        var refuseFirst = new java.util.concurrent.atomic.AtomicBoolean(true);
+        var refusing = WorkflowExecutor.builder(store, new PayloadSerializer(JsonMapper.builder().build()), "svc2")
+                .distributedLock(lock)
+                .lifecycleEventsEnabled(false);
+        refusing.loopStarter = (spec, body, observer) -> {
+            if (spec.name().equals(RecoveryPoller.LOOP_NAME) && refuseFirst.getAndSet(false)) {
+                throw new IllegalStateException("the loop's thread could not start (scripted)");
+            }
+            return LoopStarter.DEFAULT.start(spec, body, observer);
+        };
+        var node = refusing.build();
+        try {
+            var a = new WorkflowRegistration("A", "default", TypeA::new, TypeA.class.getMethod("run"));
+            var b = new WorkflowRegistration("B", "default", TypeB::new, TypeB.class.getMethod("run"));
+            assertThrows(IllegalStateException.class, () -> node.startRecoveryPoller(Map.of("A", a), Duration.ofHours(1)));
+            assertNull(node.publishedRecoveryPoller(), "a failed start publishes nothing");
+
+            node.startRecoveryPoller(Map.of("B", b), Duration.ofHours(1));
+            var published = node.publishedRecoveryPoller();
+            assertTrue(published != null && published.registers("B") && !published.registers("A"),
+                    "the running start's body is the one consulted");
+
+            // A's start, its lock held elsewhere, is refused: nothing running registers A.
+            assertTrue(lock.tryAcquire("maestro:lock:workflow:wf-a2", Duration.ofMinutes(1)).isPresent());
+            assertThrows(LockAcquisitionException.class, () -> node.startWorkflow("wf-a2", "A", "default", null,
+                    TypeA::new, TypeA.class.getMethod("run")));
+            assertTrue(store.getInstance("wf-a2").isEmpty());
+            assertSame(published, node.publishedRecoveryPoller());
+        } finally {
+            node.shutdown();
         }
     }
 

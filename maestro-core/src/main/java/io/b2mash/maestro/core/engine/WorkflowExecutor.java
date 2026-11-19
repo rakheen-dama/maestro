@@ -278,6 +278,8 @@ public final class WorkflowExecutor {
      * registrations. Its loop is the supervisor in {@link #supervised}.
      */
     private volatile @Nullable RecoveryPoller recoveryPoller;
+    /** Starts every loop {@link #supervise} starts (the builder's test seam). */
+    private final LoopStarter loopStarter;
     private volatile @Nullable SignalJanitorSettings signalJanitorSettings;
     /**
      * Every loop this executor supervises ({@link #supervise}), by loop name.
@@ -392,6 +394,7 @@ public final class WorkflowExecutor {
                 this.store, this.lifecycleEventSink, signalNotifier, serializer, parkingLot, wakeRecheckInterval,
                 this.observer, taskQueueGovernor, instantSource);
         this.sagaManager = new SagaManager(this.store, serializer, serviceName, this.observer, this.lifecycleEventSink);
+        this.loopStarter = builder.loopStarter;
         this.instanceLockManager = new WorkflowInstanceLockManager(
                 distributedLock, serviceName, lockKeyPrefix, instanceLockTtl,
                 instanceLockTtl.dividedBy(3), this.observer, builder.renewerStarter);
@@ -462,6 +465,8 @@ public final class WorkflowExecutor {
         InstantSource instantSource = InstantSource.system();
         /** Test seam: starts the instance-lock renewer's supervisor. Package-private; production never assigns it. */
         LoopStarter renewerStarter = LoopStarter.DEFAULT;
+        /** Test seam: starts every loop {@link #supervise} starts. Package-private; production never assigns it. */
+        LoopStarter loopStarter = LoopStarter.DEFAULT;
 
         private Builder(WorkflowStore store, PayloadSerializer serializer, String serviceName) {
             this.store = Objects.requireNonNull(store, "store");
@@ -2685,7 +2690,7 @@ public final class WorkflowExecutor {
         var holder = new LoopSupervisor[1];
         var claimed = supervised.computeIfAbsent(spec.name(), name -> {
             onClaim.run();
-            holder[0] = LoopSupervisor.start(spec, body, observer);
+            holder[0] = loopStarter.start(spec, body, observer);
             return holder[0];
         });
         if (holder[0] == null || claimed != holder[0]) {
@@ -3356,6 +3361,11 @@ public final class WorkflowExecutor {
      * Test seam: the recovery poller is waiting for its next full pass, with
      * no pass in progress and no prompt pending. Package-private.
      */
+    /** Test seam: the recovery poller body {@code canDeferStart} consults, or {@code null}. Package-private. */
+    @Nullable RecoveryPoller publishedRecoveryPoller() {
+        return recoveryPoller;
+    }
+
     boolean isRecoveryPollerIdle() {
         var poller = recoveryPoller;
         return poller != null && loopRunning(RecoveryPoller.LOOP_NAME) && poller.idleUntilNextFullPass();
