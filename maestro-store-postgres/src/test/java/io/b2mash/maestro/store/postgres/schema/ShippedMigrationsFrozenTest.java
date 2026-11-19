@@ -7,7 +7,11 @@ import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Stream;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -46,6 +50,29 @@ class ShippedMigrationsFrozenTest {
      * is not one: it holds the retired V200–V202 band, which nothing ships.
      */
     static final List<String> SHIPPING_FIXTURES = List.of("cbf5a2a", "v0_3_0_rc_1");
+
+    /** Frozen sets that are not a shipping fixture, each with the reason. */
+    static final Map<String, String> NOT_SHIPPING = Map.of(
+            "c01d498", "the retired V200-V202 band, which nothing ships any more");
+
+    /**
+     * Every frozen set on disk is registered: a new fixture directory that is
+     * in neither {@link #SHIPPING_FIXTURES} nor {@link #NOT_SHIPPING} would
+     * otherwise be captured and never compared with what this build ships.
+     */
+    @Test
+    @DisplayName("every frozen migration set on disk is registered, as shipping or with the reason it is not")
+    void everyFrozenSetIsRegistered() throws Exception {
+        var root = Path.of(Objects.requireNonNull(getClass().getClassLoader().getResource("upgrade"),
+                "upgrade/ on the test classpath").toURI());
+        List<String> onDisk;
+        try (var dirs = Files.list(root)) {
+            onDisk = dirs.filter(Files::isDirectory).map(d -> d.getFileName().toString()).sorted().toList();
+        }
+        assertThat(onDisk).as("frozen sets under upgrade/; register a new one in SHIPPING_FIXTURES")
+                .containsExactlyInAnyOrderElementsOf(Stream.concat(SHIPPING_FIXTURES.stream(),
+                        NOT_SHIPPING.keySet().stream()).toList());
+    }
 
     @Test
     @DisplayName("the frozen set is exactly what cbf5a2a shipped, and each copy matches its recorded hash")

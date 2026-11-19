@@ -386,8 +386,9 @@ public final class SeededHistory {
             }
         }
         var inContainer = "/tmp/seeded-history-" + fixture.name() + ".sql";
-        if (COPIED.add(fixture.name())) {
+        if (!COPIED.contains(fixture.name())) {
             container.copyFileToContainer(MountableFile.forClasspathResource(fixture.dumpResource()), inContainer);
+            COPIED.add(fixture.name());   // only once the copy succeeded
         }
         return inContainer;
     }
