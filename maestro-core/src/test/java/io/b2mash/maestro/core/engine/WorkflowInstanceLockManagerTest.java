@@ -456,7 +456,8 @@ class WorkflowInstanceLockManagerTest {
                 stoodDownWhenObserved.compareAndSet(null, stoodDown.get());
             }
         };
-        manager = new WorkflowInstanceLockManager(lock, "svc", DEFAULT_PREFIX, BATCH_TTL, BATCH_RENEW, observer);
+        manager = new WorkflowInstanceLockManager(lock, "svc", WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                BATCH_TTL, BATCH_RENEW, observer);
         manager.onLockLost((workflowId, _) -> stoodDown.set(true));
         assertEquals(Acquisition.ACQUIRED, manager.tryAcquire("wf-1"));
 

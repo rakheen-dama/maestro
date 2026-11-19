@@ -16,6 +16,8 @@ import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -26,6 +28,8 @@ import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.seedRecover
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -102,16 +106,14 @@ class HandleScopedLockRaceTest {
             loseTheLock();
             var b = Thread.ofVirtual().start(() -> second.set(manager.tryAcquire(ID)));
             join(b);
-            // A VirtualMachineError: since Issue 81 the observer's containment
-            // absorbs every other Error, and this one still reaches the cleanup.
-            throw new InternalError("observer failed after the lock changed hands (test)");
+            // A VirtualMachineError: it propagates here and also once observer
+            // Errors are contained (Issue 81), so the cleanup path stays reached.
+            throw OBSERVER_FAILURE;
         };
         try {
-            try {
-                manager.tryAcquire(ID);
-            } catch (InternalError expected) {
-                // the observer's Error reaches the caller, after cleanup
-            }
+            var thrown = assertThrows(InternalError.class, () -> manager.tryAcquire(ID),
+                    "the observer's Error reaches the caller, after cleanup");
+            assertSame(OBSERVER_FAILURE, thrown);
             assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, second.get());
             assertTrue(manager.isHeld(ID), "the newer acquisition is still held by the manager");
             assertTrue(lock.isHeld(KEY), "the newer acquisition's lock row was not deleted");
@@ -137,7 +139,93 @@ class HandleScopedLockRaceTest {
         assertFalse(invoked.get(), "a run that lost its lock before it began must not run user code");
     }
 
+    /**
+     * PR #72 review 4623896777: an acquisition whose backend grant arrives late
+     * (granted, then paused until it expired and a newer acquisition took the
+     * key and published its handle) must not overwrite the newer handle; it is
+     * rejected and gives back only its own backend token.
+     */
+    @Test
+    void aLateAcquisitionDoesNotOverwriteANewerPublishedHandle() throws Exception {
+        var granted = new CountDownLatch(1);
+        var resume = new CountDownLatch(1);
+        var pausingLock = new PausingLock(lock, granted, resume);
+        var manager = new WorkflowInstanceLockManager(pausingLock, SERVICE,
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, Duration.ofSeconds(30), Duration.ofSeconds(10),
+                EngineObserver.NOOP);
+        try {
+            var late = new AtomicReference<WorkflowInstanceLockManager.@Nullable Acquired>();
+            var a = Thread.ofVirtual().start(() -> late.set(manager.acquire(ID)));
+            assertTrue(granted.await(5, TimeUnit.SECONDS), "A's backend grant arrived");
+            lock.forceRelease(KEY); // A's grant expires while A is paused
+            var newer = manager.acquire(ID);
+            assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, newer.outcome(), "B acquired");
+
+            resume.countDown();
+            join(a);
+
+            assertEquals(WorkflowInstanceLockManager.Acquisition.HELD_ELSEWHERE, late.get().outcome(),
+                    "the late acquisition is rejected");
+            assertTrue(manager.holds(ID, newer.handle()), "B's handle is still the published one");
+            assertTrue(lock.isHeld(KEY), "B's backend lock was not released by A's cleanup");
+        } finally {
+            manager.close();
+        }
+    }
+
     // ── helpers ──────────────────────────────────────────────────────
+
+    private static final InternalError OBSERVER_FAILURE =
+            new InternalError("observer failed after the lock changed hands (test)");
+
+    /** Delegates; its first {@code tryAcquire} pauses after the backend grant until {@code resume}. */
+    private static final class PausingLock implements io.b2mash.maestro.core.spi.DistributedLock {
+        private final SharedLock delegate;
+        private final CountDownLatch granted;
+        private final CountDownLatch resume;
+        private final AtomicBoolean first = new AtomicBoolean(true);
+
+        PausingLock(SharedLock delegate, CountDownLatch granted, CountDownLatch resume) {
+            this.delegate = delegate;
+            this.granted = granted;
+            this.resume = resume;
+        }
+
+        @Override
+        public java.util.Optional<io.b2mash.maestro.core.spi.LockHandle> tryAcquire(String key, Duration ttl) {
+            var handle = delegate.tryAcquire(key, ttl);
+            if (first.compareAndSet(true, false)) {
+                granted.countDown();
+                try {
+                    resume.await(10, TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+            return handle;
+        }
+
+        @Override
+        public void release(io.b2mash.maestro.core.spi.LockHandle handle) {
+            delegate.release(handle);
+        }
+
+        @Override
+        public boolean renew(io.b2mash.maestro.core.spi.LockHandle handle, Duration ttl) {
+            return delegate.renew(handle, ttl);
+        }
+
+        @Override
+        public java.util.Set<io.b2mash.maestro.core.spi.LockHandle> renewAll(
+                java.util.Collection<io.b2mash.maestro.core.spi.LockHandle> handles, Duration ttl) {
+            return delegate.renewAll(handles, ttl);
+        }
+
+        @Override
+        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
+            return true;
+        }
+    }
 
     /** Frees the key behind the holder's back and waits until its renewer reports it lost. */
     private void loseTheLock() {

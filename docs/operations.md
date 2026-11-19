@@ -287,10 +287,28 @@ The same holds when the lock backend fails: nothing is written and the
 command stays retryable, which matters most on a node without a recovery
 poller, where a reopened row would otherwise have had nothing to run it
 (`RecoveryDisabledLockFailureTest`). Before, the row was reopened first and
-left `RUNNING` for a recovery pass. `ALREADY_RUNNING_LOCALLY` and
-`LOCK_HELD_ELSEWHERE` now mean only a launch refused after the reopen (a
-stale local entry, a lock reported lost before the run started, a lost
-adoption compare-and-set); the row is then `RUNNING` for recovery.
+left `RUNNING` for a recovery pass. `LOCK_HELD_ELSEWHERE` now means only a
+launch refused after the reopen (a lock reported lost before the run
+started, a lost adoption compare-and-set, or the row finished elsewhere
+meanwhile); the row is then `RUNNING` for recovery (unless finished), and a
+recovery poller that registers the type is prompted at once.
+`ALREADY_RUNNING_LOCALLY` is no longer returned: a failed run still
+registered after losing its lock is replaced by the relaunch. On a node
+without one, a lock lost after the reopen is met with one relaunch, and if
+that fails too with `WorkflowNotLaunchedException` (the row was reopened and
+not launched; a node with recovery, or a restart, runs it). Redelivery of a
+thrown Retry depends on the transport: with
+`maestro.messaging.redelivery.enabled=false` the command is not redelivered.
+What the operator does then depends on what was thrown:
+
+- `LockAcquisitionException` — the lock could not be taken before the
+  reopen, so nothing was written and the row is still `FAILED`: retry it by
+  hand once the lock is free.
+- `WorkflowNotLaunchedException` — the row *was* reopened (`RUNNING`, its
+  failure memos deleted) but not launched: another Retry answers
+  `NOT_FAILED`. It needs a recovery attempt instead — a node of the service
+  with recovery enabled and the workflow type registered, or a restart of
+  this node — once the lock can be taken.
 
 **Retrying an await-timeout failure.** The E2E's retry target fails on an
 uncaught `awaitSignal` timeout and the harness sends the missing signal only

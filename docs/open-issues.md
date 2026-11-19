@@ -4859,7 +4859,7 @@ page.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** The pollers and cleaner still interrupt JDBC; P1.
 
-> **Partly resolved further** (pilot readiness P2, PR #TBD): the signal janitor
+> **Partly resolved further** (pilot readiness P2, PR #TBD-P2): the signal janitor
 > and the retention sweeper run under `LoopSupervisor` and are stopped by a
 > latch and their batch pacer's stop, never by an interrupt; a sweep's store
 > call in progress finishes. Open: the timer and recovery pollers (P2 task 4)
@@ -5126,7 +5126,7 @@ reads `DOWN`, with its streak in the details, and one that recovers reads
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Health that tells the truth, P2.
 
-> **Part 2 resolved** (pilot readiness P2, PR #TBD). The lock manager's
+> **Part 2 resolved** (pilot readiness P2, PR #TBD-P2). The lock manager's
 > observer is contained (`CompositeEngineObserver.contain`): an observer
 > `Error` from `instanceLockLost` — anything but a `MaestroControlFlowError`
 > or a `VirtualMachineError` — is logged, counted on `maestro.observer.errors`
@@ -5693,7 +5693,7 @@ either joined or reported in the "still running" summary.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Observer isolation in the engine passes, P2.
 
-> **Resolved** (pilot readiness P2, PR #TBD). One rule in one place:
+> **Resolved** (pilot readiness P2, PR #TBD-P2). One rule in one place:
 > `CompositeEngineObserver` contains every `Throwable` a delegate throws, per
 > callback and per delegate, except a `MaestroControlFlowError` and a
 > `VirtualMachineError`, which propagate; the first containment per
@@ -5930,7 +5930,7 @@ git's stderr when parsing its output.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18, revised after review): `limitation`.** A fault the guard retried away was absorbed, so no run was harmed; the fault that is not absorbed is visible (`STORE_UNAVAILABLE` stand-down and abandon, `docs/operations.md` §10.9). An operator is not blind to a real fault, only to its near misses. P2 still plans the counter.
 
-> **Resolved** (pilot readiness P2, PR #TBD). Every in-place retry calls the
+> **Resolved** (pilot readiness P2, PR #TBD-P2). Every in-place retry calls the
 > new `EngineObserver.storeRetried(operation)` and moves
 > `maestro.store.retries{operation}` (`append_event`,
 > `append_event_returning_payload`, `get_event_by_sequence`). As the approved

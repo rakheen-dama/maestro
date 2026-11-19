@@ -181,6 +181,19 @@ final class RecoveryCapacityFixtures {
      */
     static class CountingStore extends VersionedInMemoryStore {
 
+        /** When set, {@code reopenFailedInstance} throws it and writes nothing. */
+        volatile @Nullable RuntimeException reopenFailure;
+
+        @Override
+        public synchronized void reopenFailedInstance(WorkflowInstance reopened, Set<Integer> deleteEventSequences,
+                                                      Set<String> deleteTimerIds) {
+            var failure = reopenFailure;
+            if (failure != null) {
+                throw failure;
+            }
+            super.reopenFailedInstance(reopened, deleteEventSequences, deleteTimerIds);
+        }
+
         final List<PageRead> pageReads = new CopyOnWriteArrayList<>();
         /** Read at every page read; {@code -1} until a test sets it. */
         volatile IntSupplier headroom = () -> -1;
