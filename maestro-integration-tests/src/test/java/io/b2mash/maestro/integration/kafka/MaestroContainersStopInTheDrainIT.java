@@ -78,8 +78,12 @@ class MaestroContainersStopInTheDrainIT extends KafkaSpringIntegrationSupport {
     @DisplayName("every Maestro container has left its consumer group while the drain is still waiting")
     void everyMaestroContainerHasStoppedWhileTheDrainIsStillWaiting() throws Exception {
         try (var admin = AdminClient.create(Map.of(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, bootstrapServers()))) {
-            // The engine's signal container and the listener's container have joined.
-            await().atMost(Duration.ofSeconds(60)).until(() -> groupsWithMembers(admin).size() >= 2);
+            // The engine's signal container and the listener's container have
+            // joined (both may share one group id: count members, not groups).
+            await().atMost(Duration.ofSeconds(60)).until(() -> {
+                var g = groupsWithMembers(admin);
+                return !g.isEmpty() && membersOf(admin, g) >= 2;
+            });
             var groups = groupsWithMembers(admin);
 
             var hold = executor.lifecycle().join(LifecycleRegistry.Kind.TASK, new LifecycleRegistry.Member() {
