@@ -13,9 +13,9 @@
 #
 # With --check-release <version> it also verifies the release gate for a tag
 # about to be published (RELEASING.md, "The release gate") and exits non-zero
-# naming what is missing: the release before <version>, taken from the tags,
-# must be the newest previousReleases row, and that release must have its
-# upgrade fixtures. Needs the repository's tags (fetch-depth: 0 in CI).
+# naming what is missing: the release before <version>, taken from the
+# published GitHub releases, must be the newest previousReleases row, and that
+# release must have its upgrade fixtures. Needs `gh` with a token (GH_TOKEN).
 set -euo pipefail
 
 ROWS_FILE="maestro-integration-tests/rolling-node/build.gradle.kts"
@@ -34,14 +34,28 @@ last="$(tail -n 1 <<<"$rows")"
 maestro_version="${BASH_REMATCH[1]}"
 spring_boot_version="${BASH_REMATCH[2]}"
 
-# The release before <version>, from the repository's tags: the highest v* tag
-# below it under semantic-version precedence (a pre-release sorts before its
-# release: 0.3.0-rc.1 < 0.3.0-rc.2 < 0.3.0). Experimental tags (-exp.) are never
-# a previous release. MAESTRO_RELEASE_TAGS (whitespace-separated tags) replaces
-# `git tag -l 'v*'`, for checking the gate without creating tags.
+# The release before <version>: the highest released tag below it under
+# semantic-version precedence (a pre-release sorts before its release:
+# 0.3.0-rc.1 < 0.3.0-rc.2 < 0.3.0). A tag counts as released only when it has a
+# published GitHub release, which both release workflows create as their last
+# step, after every module uploaded: a tag whose publication failed part-way
+# (RELEASING.md, "Publishing one") has none and is skipped, so the next suffix
+# is checked against the last release that did publish. Experimental tags
+# (-exp.) are never a previous release. Listing the releases needs `gh` and a
+# token (GH_TOKEN; in CI the job's own, contents: read); if it fails, the gate
+# fails. MAESTRO_RELEASE_TAGS (whitespace-separated tags) replaces the listing,
+# for checking the gate without creating tags or releases.
+released_tags() {
+    if [[ -n "${MAESTRO_RELEASE_TAGS+set}" ]]; then
+        echo "$MAESTRO_RELEASE_TAGS"
+        return
+    fi
+    gh release list --limit 1000 --exclude-drafts --json tagName --jq '.[].tagName'
+}
+
 previous_tag_release() {
     local release="$1" tags
-    tags="${MAESTRO_RELEASE_TAGS:-$(git tag -l 'v*')}"
+    tags="$(released_tags)" || die "release gate: cannot list the published GitHub releases (gh release list); set GH_TOKEN"
     python3 -I - "$release" $tags <<'PY'
 import re, sys
 SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$")
@@ -81,7 +95,7 @@ if [[ "${1:-}" == "--check-release" ]]; then
         # with. Only an explicit MAESTRO_FIRST_RELEASE=true lets it through
         # (RELEASING.md, "The release gate"); a checkout without tags fails here.
         [[ "${MAESTRO_FIRST_RELEASE:-}" == "true" ]] \
-            || die "release gate: no release tag below v$release (a checkout without tags? fetch them); for the first release only, set MAESTRO_FIRST_RELEASE=true"
+            || die "release gate: no published release below v$release; for the first release only, set MAESTRO_FIRST_RELEASE=true"
         echo "previous-release.sh: release gate for $release: first release (MAESTRO_FIRST_RELEASE=true), nothing to check" >&2
     else
         [[ "$previous" == "$maestro_version" ]] \
@@ -97,7 +111,7 @@ if [[ "${1:-}" == "--check-release" ]]; then
         # Its SeededFixture implementation names it (name() returns "<name>").
         grep -qF "return \"$name\";" maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/*.java \
             || die "release gate: no SeededFixture implementation named $name (RELEASING.md, Upgrade fixtures)"
-        echo "previous-release.sh: release gate for $release: previous release $previous (tag) is the newest previousReleases row and has its fixtures ($name)" >&2
+        echo "previous-release.sh: release gate for $release: previous release $previous (published) is the newest previousReleases row and has its fixtures ($name)" >&2
     fi
 fi
 

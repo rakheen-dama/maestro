@@ -9,7 +9,7 @@ name: Pre-release to GitHub Packages
 #
 # The release gate (RELEASING.md, "The release gate") is a job of its own,
 # with a read-only token, that the publishing job needs: the release before
-# this one (from the tags) must be the newest previousReleases row and have its
+# this one (the highest published GitHub release below it) must be the newest previousReleases row and have its
 # upgrade fixtures; the rolling test against it must pass; and this build's own
 # artifacts, published to a local repository, must run the consumer smoke
 # test. An experimental release (X.Y.Z-exp.<topic>.<n>, RELEASING.md,
@@ -40,9 +40,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          # Every tag: the gate finds the release before this one among them.
-          fetch-depth: 0
 
       - name: Set up Java 25
         uses: actions/setup-java@v6
@@ -71,6 +68,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
           # Set only for the very first release (RELEASING.md, "The release gate").
           MAESTRO_FIRST_RELEASE: ${{ vars.MAESTRO_FIRST_RELEASE }}
+          # Lists the published GitHub releases: a tag counts as released only
+          # once its release exists (the publishing job's last step).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/previous-release.sh --check-release "$VERSION"
 
       - name: "Release gate: the rolling test against the previous release"

@@ -28,9 +28,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          # Every tag: the gate finds the release before this one among them.
-          fetch-depth: 0
 
       - name: Set up Java 25
         uses: actions/setup-java@v6
@@ -50,6 +47,9 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
           # Set only for the very first release (RELEASING.md, "The release gate").
           MAESTRO_FIRST_RELEASE: ${{ vars.MAESTRO_FIRST_RELEASE }}
+          # Lists the published GitHub releases: a tag counts as released only
+          # once its release exists (the publishing job's last step).
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: scripts/previous-release.sh --check-release "$VERSION"
 
       - name: "Release gate: the rolling test against the previous release"
