@@ -551,6 +551,42 @@ class WorkflowCodeChangeIT extends PostgresIntegrationSupport {
         }
     }
 
+    /** A saga: {@code reserve} (compensated), {@code version("path", DEFAULT, 1)}, {@code charge} (compensated), park on {@code go}. */
+    @DurableWorkflow(name = TYPE)
+    public static class VersionedSagaV1 {
+        @ActivityStub(retryPolicy = @RetryPolicy(maxAttempts = 1))
+        SagaSteps saga;
+
+        @Saga
+        @WorkflowMethod
+        public String run(String key) {
+            var ctx = WorkflowContext.current();
+            saga.reserve(key);
+            int v = ctx.version("path", WorkflowContext.DEFAULT_VERSION, 1);
+            saga.charge(key);
+            var go = ctx.awaitSignal(SIGNAL, String.class, Duration.ofHours(1));
+            return "saga|" + go + "|v" + v;
+        }
+    }
+
+    /** {@link VersionedSagaV1} with the floor raised to 2 while a run recorded 1 (Issue 89, the saga variation). */
+    @DurableWorkflow(name = TYPE)
+    public static class VersionedSagaRaisedFloor {
+        @ActivityStub(retryPolicy = @RetryPolicy(maxAttempts = 1))
+        SagaSteps saga;
+
+        @Saga
+        @WorkflowMethod
+        public String run(String key) {
+            var ctx = WorkflowContext.current();
+            saga.reserve(key);
+            int v = ctx.version("path", 2, 2);
+            saga.charge(key);
+            var go = ctx.awaitSignal(SIGNAL, String.class, Duration.ofHours(1));
+            return "saga|" + go + "|v" + v;
+        }
+    }
+
     /** {@link SagaV1} with {@code charge}'s compensation renamed to {@code refundPayment}. */
     @DurableWorkflow(name = TYPE)
     public static class SagaRenamedCompensation {
@@ -762,6 +798,23 @@ class WorkflowCodeChangeIT extends PostgresIntegrationSupport {
             standsDownOn(parked, RaisedFloor.class, StandDownReason.STALE_RUN,
                     exact("append collision at sequence 3"), 2);
             rollBackTo(parked, VersionedV1.class, "a:m1|b:m1|ok|c:m1|v1");
+        }
+
+        /**
+         * Issue 89's saga variation: the same raised floor under a {@code @Saga}
+         * whose compensation ({@code reserve}'s) was registered before the
+         * {@code version()} call. The failure starts the compensation, whose
+         * anchor slot holds the recorded {@code charge}, and the run stands
+         * down as {@code nondeterministic_history} there instead — on every
+         * pass, writing nothing, compensating nothing.
+         */
+        @Test
+        @DisplayName("minSupported raised above a parked saga's recorded version, a compensation registered before version(): nondeterministic_history on every pass (Issue 89)")
+        void raisingTheFloorUnderASagaStandsDownAsNondeterministicToday() throws Exception {
+            var parked = parkOn(VersionedSagaV1.class, "m3");
+            standsDownOn(parked, VersionedSagaRaisedFloor.class, StandDownReason.NONDETERMINISTIC_HISTORY,
+                    exact("seq=3 expected=$maestro:compensation stored=change-saga.charge type=ACTIVITY_COMPLETED"), 2);
+            rollBackTo(parked, VersionedSagaV1.class, "saga|ok|v1");
         }
 
         @Disabled("Issue 89 (docs/open-issues.md): the run stands down as STALE_RUN instead of failing as operations"
