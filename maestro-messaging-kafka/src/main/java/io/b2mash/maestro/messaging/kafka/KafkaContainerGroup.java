@@ -9,6 +9,7 @@ import org.springframework.kafka.listener.MessageListenerContainer;
 import java.time.Duration;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -36,7 +37,8 @@ import java.util.concurrent.TimeUnit;
  * once when nothing was started.
  *
  * <p>Thread-safe: the state is guarded by this object's monitor; no container
- * call is made while holding it.
+ * call is made while holding it. {@link #join} holds it across the registry's
+ * admission, which never calls back into a member under the registry's lock.
  */
 public final class KafkaContainerGroup implements LifecycleRegistry.Member {
 
@@ -74,27 +76,32 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
      * @return {@code false} if the registry refused the group
      */
     public boolean join(LifecycleRegistry registry) {
+        Optional<LifecycleRegistry.Membership> joined;
+        boolean alreadyLeft = false;
         synchronized (this) {
             if (membership != null || stopRequested) {
                 return membership != null;
             }
+            // The check and the admission are one step under this monitor, so two
+            // concurrent joins cannot both be admitted (PR #78 review 4634059410).
+            // Safe to hold it across the registry call: the registry runs no
+            // member code under its own lock (LifecycleRegistry's thread-safety
+            // contract), so it never calls back into this group while holding it.
+            joined = registry.join(LifecycleRegistry.Kind.CONSUMER, this);
+            if (joined.isPresent()) {
+                membership = joined.get();
+                // A stop that reached this member before this assignment (only a
+                // registry calling back on this thread can, under this monitor)
+                // has already left without a membership to leave.
+                alreadyLeft = left;
+            }
         }
-        var joined = registry.join(LifecycleRegistry.Kind.CONSUMER, this);
         if (joined.isEmpty()) {
             // Refused (shutdown began): a stop. It stops what was already
             // started, and — nothing left to wait for — counts the group as
             // stopped, so a bean's destroy() does not wait its bound (review L1).
             requestStop();
             return false;
-        }
-        boolean alreadyLeft;
-        synchronized (this) {
-            membership = joined.get();
-            // A stop that reached this member (S2) before this assignment, with
-            // nothing started, has already left — without a membership to
-            // leave. leave() and this block read each other's field under this
-            // monitor, so exactly one of them sees both and leaves.
-            alreadyLeft = left;
         }
         if (alreadyLeft) {
             joined.get().leave();
@@ -120,14 +127,15 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
         try {
             container.start();
         } catch (RuntimeException | Error e) {
-            boolean leaveNow;
+            // A container whose start threw may have started some of its
+            // consumers (a later child failed): it stays tracked and is stopped,
+            // and the group leaves only once its stop callback has run; one that
+            // never started calls back at once (PR #78 review 4634059419).
             synchronized (this) {
                 starting.remove(container);
-                leaveNow = shouldLeave();
+                live.add(container);
             }
-            if (leaveNow) {
-                leave();
-            }
+            stop(container);
             throw e;
         }
         boolean stopNow;
@@ -203,8 +211,13 @@ public final class KafkaContainerGroup implements LifecycleRegistry.Member {
         try {
             container.stop(() -> stopped(container));
         } catch (RuntimeException e) {
-            logger.warn("Error stopping a Maestro Kafka listener container ({}): {}", name, e.toString());
-            stopped(container);
+            // Not counted as stopped: its consumer may still be handling its record,
+            // and Spring Kafka may already have registered the callback, which then
+            // runs when the consumer ends. Only the callback counts it stopped; if
+            // it never runs, shutdown waits for this group to its deadline and names
+            // it (PR #78 review 4634059425).
+            logger.warn("Error stopping a Maestro Kafka listener container ({}) — waiting for its stop callback: {}",
+                    name, e.toString());
         }
     }
 

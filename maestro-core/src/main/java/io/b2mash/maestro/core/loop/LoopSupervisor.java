@@ -310,8 +310,26 @@ public final class LoopSupervisor {
             hooks = endHooks;
             endHooks = null;
         }
-        if (hooks != null) {
-            hooks.forEach(this::runEndHook);
+        if (hooks == null) {
+            return;
+        }
+        // Every hook runs even if one throws a control-flow error — a later hook
+        // may be the loop's registry leave (PR #78 review 4634059382); the first
+        // such error is rethrown once all have run.
+        MaestroControlFlowError first = null;
+        for (var hook : hooks) {
+            try {
+                runEndHook(hook);
+            } catch (MaestroControlFlowError e) {
+                if (first == null) {
+                    first = e;
+                } else if (first != e) {
+                    first.addSuppressed(e);
+                }
+            }
+        }
+        if (first != null) {
+            throw first;
         }
     }
 

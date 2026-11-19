@@ -24,7 +24,8 @@ public final class MockEngines {
     public static WorkflowExecutor executor() {
         var executor = mock(WorkflowExecutor.class);
         var registry = mock(LifecycleRegistry.class);
-        when(registry.join(any(), any())).thenReturn(Optional.of(mock(LifecycleRegistry.Membership.class)));
+        var membership = mock(LifecycleRegistry.Membership.class);
+        when(registry.join(any(), any())).thenReturn(Optional.of(membership));
         when(executor.lifecycle()).thenReturn(registry);
         return executor;
     }

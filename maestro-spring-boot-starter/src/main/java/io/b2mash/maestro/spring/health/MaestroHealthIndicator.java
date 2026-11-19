@@ -482,7 +482,12 @@ public class MaestroHealthIndicator implements HealthIndicator {
             var fresh = new Probe();
             if (inFlight.compareAndSet(current, fresh)) {
                 try {
-                    fresh.thread.start();
+                    // The thread is created here, inside the handler, not with the
+                    // probe: a factory that throws is a probe that never ran, like a
+                    // thread that cannot start (PR #78 review 4634059487). A probe this
+                    // one superseded stays in the superseded slot — it is still stuck
+                    // and still counts against the two-probe bound.
+                    probeThreads.newThread(fresh::run).start();
                 } catch (Throwable t) {
                     // A probe that never ran must not stay in flight: every later call
                     // would join it and read "timed out" for ever. A call that joined it
@@ -531,7 +536,6 @@ public class MaestroHealthIndicator implements HealthIndicator {
     private final class Probe {
 
         final CompletableFuture<@Nullable Void> result = new CompletableFuture<>();
-        final Thread thread = probeThreads.newThread(this::run);
         volatile boolean abandoned;
         /** {@link #nanoClock} when first abandoned; read only once {@link #abandoned} is set. */
         volatile long abandonedAtNanos;
