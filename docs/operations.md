@@ -2103,7 +2103,13 @@ once (`MaestroContainersStopInTheDrainIT` measured this for idle consumers),
 one whose listener call blocks stays in its group for as long as it blocks.
 The deadline ends Maestro's wait, it does not make that consumer leave: it
 leaves when the call returns, at JVM exit, or after the broker's session
-timeout, so its partitions can be reassigned after the deadline. A container
+timeout, so its partitions can be reassigned after the deadline. A blocked
+call does not keep the partitions either: once it has blocked longer than
+`max.poll.interval.ms` (default 5 min) the broker removes that consumer and
+reassigns its partitions while the call is still running (a static member,
+`group.instance.id`, after its session timeout), so the record in hand can be
+handled again elsewhere before the first call returns — signals dedupe by
+message id, and listener code must be idempotent as for any redelivery. A container
 that has stopped by the deadline handles no record after
 the `DataSource` closes: it has stopped before `shutdown()` returns, and the
 `DataSource` is destroyed only after that (§15.1). One whose record in hand is
