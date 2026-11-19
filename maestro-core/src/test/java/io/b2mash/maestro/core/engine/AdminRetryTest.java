@@ -374,8 +374,16 @@ class AdminRetryTest {
 
             release.countDown();
             TestTerminalWait.awaitRunEnded(holding, "held", BOUND);
-            // The transport redelivers the command.
-            assertEquals(RetryOutcome.RETRIED, holding.retryWorkflow("held", reg));
+            // The transport redelivers the command until the failed run has
+            // released its lock (the run leaves the registry before it releases):
+            // each refusal in between writes nothing.
+            assertEquals(RetryOutcome.RETRIED, RecoveryCapacityFixtures.valueWithin(() -> {
+                try {
+                    return holding.retryWorkflow("held", reg);
+                } catch (LockAcquisitionException stillReleasing) {
+                    return null;
+                }
+            }, RetryOutcome.RETRIED, BOUND));
             assertEquals(WorkflowStatus.COMPLETED, lastStatusWithin("held", WorkflowStatus.COMPLETED, BOUND));
             assertEquals(2, impl.primaryCalls.get(), "the retried run re-ran the deleted primary");
             assertEquals(1, impl.alertCalls.get(), "and, the primary now succeeding, no alert");

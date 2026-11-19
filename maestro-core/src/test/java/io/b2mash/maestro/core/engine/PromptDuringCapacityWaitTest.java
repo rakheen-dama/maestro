@@ -32,8 +32,11 @@ class PromptDuringCapacityWaitTest {
     private final PayloadSerializer serializer = new PayloadSerializer(JsonMapper.builder().build());
     private final SharedLock lock = new SharedLock();
     private final BlockingWork work = new BlockingWork();
+    private final io.b2mash.maestro.core.observe.RecordingEngineObserver observer =
+            new io.b2mash.maestro.core.observe.RecordingEngineObserver();
     private final WorkflowExecutor node = WorkflowExecutor.builder(store, serializer, SERVICE)
             .distributedLock(lock)
+            .observer(observer)
             .lifecycleEventsEnabled(false)
             .taskQueueLimits(Map.of("full", new TaskQueueLimits(1, 1)))
             .shutdownTimeout(Duration.ofSeconds(2))
@@ -63,6 +66,7 @@ class PromptDuringCapacityWaitTest {
         // A start on another (unbounded) queue, deferred because its lock is held elsewhere.
         var elsewhere = lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow();
         node.startWorkflow("wf-other", "WorkWorkflow", "other", null, () -> new WorkWorkflow(proxy), workMethod());
+        assertEquals(1, observer.startDeferrals().size(), "the start was deferred while the lock was held");
         lock.release(elsewhere);
 
         assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance("wf-other").orElseThrow().status(),
@@ -93,15 +97,27 @@ class PromptDuringCapacityWaitTest {
         var elsewhere = lock.tryAcquire(KEY, Duration.ofSeconds(30)).orElseThrow();
         var first = new java.util.concurrent.atomic.AtomicBoolean(true);
         var hookRan = new java.util.concurrent.CountDownLatch(1);
+        var starterFinished = new java.util.concurrent.atomic.AtomicBoolean();
+        var deferredWhileHeld = new java.util.concurrent.atomic.AtomicBoolean();
+        var starterFailure = new java.util.concurrent.atomic.AtomicReference<Throwable>();
         node.beforeRecoveryHeadroomCheck = () -> {
             if (first.compareAndSet(true, false)) {
-                var starter = Thread.ofVirtual().start(() -> node.startWorkflow("wf-other", "WorkWorkflow", "other",
-                        null, () -> new WorkWorkflow(proxy), workMethod()));
+                var starter = Thread.ofVirtual().start(() -> {
+                    try {
+                        node.startWorkflow("wf-other", "WorkWorkflow", "other",
+                                null, () -> new WorkWorkflow(proxy), workMethod());
+                    } catch (Throwable t) {
+                        starterFailure.set(t);
+                    }
+                });
                 try {
-                    starter.join(Duration.ofSeconds(5));
+                    starterFinished.set(starter.join(Duration.ofSeconds(5)));
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                 }
+                // The start must have been deferred while the competing lock was
+                // still held; only then is the lock let go.
+                deferredWhileHeld.set(observer.startDeferrals().size() == 1);
                 lock.release(elsewhere);
                 hookRan.countDown();
             }
@@ -109,6 +125,9 @@ class PromptDuringCapacityWaitTest {
         // A capacity signal with no headroom brings the wait to its headroom check.
         node.taskQueueGovernor().capacitySignal().signal();
         assertTrue(hookRan.await(5, java.util.concurrent.TimeUnit.SECONDS), "the wait reached its headroom check");
+        assertTrue(starterFinished.get(), "the deferring start returned inside the gap");
+        assertEquals(null, starterFailure.get(), "the deferring start did not fail");
+        assertTrue(deferredWhileHeld.get(), "the start was deferred while the competing lock was held");
 
         assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance("wf-other")
                         .map(i -> i.status()).orElse(WorkflowStatus.RUNNING), WorkflowStatus.COMPLETED,

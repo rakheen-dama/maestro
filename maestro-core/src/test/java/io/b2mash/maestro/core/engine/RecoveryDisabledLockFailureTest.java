@@ -35,6 +35,7 @@ import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.valueWithin
 import static io.b2mash.maestro.core.engine.RecoveryCapacityFixtures.workMethod;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -113,17 +114,16 @@ class RecoveryDisabledLockFailureTest {
     @Test
     void aRetryWhoseLockBackendFailsMutatesNothingAndStaysRetryable() throws Exception {
         var fail = new AtomicBoolean(true);
-        var registration = new WorkflowRegistration("BoomWorkflow", "default",
-                () -> new BoomWorkflow(boomProxy(fail)), boomMethod());
-        node.startWorkflow(ID, "BoomWorkflow", "default", null, registration.workflowFactory(), boomMethod());
-        assertEquals(WorkflowStatus.FAILED, valueWithin(() -> store.getInstance(ID).orElseThrow().status(),
-                WorkflowStatus.FAILED, Duration.ofSeconds(5)));
+        var registration = failedBoom(fail);
         var failed = store.getInstance(ID).orElseThrow();
         var eventsBefore = store.getEvents(failed.id()).size();
 
         lock.failAcquire = true;
+        var askedBefore = lock.failedAcquires.get();
         assertThrows(LockAcquisitionException.class, () -> node.retryWorkflow(ID, registration),
                 "a lock failure is transient: thrown, so the transport redelivers the command");
+        assertEquals(askedBefore + 1, lock.failedAcquires.get(),
+                "the refusal came from the failing backend, not from a lock still held here");
 
         var after = store.getInstance(ID).orElseThrow();
         assertEquals(WorkflowStatus.FAILED, after.status(), "the row was not reopened");
@@ -166,6 +166,97 @@ class RecoveryDisabledLockFailureTest {
                 "the reopen committed; the row waits for a node with recovery");
     }
 
+    // ── PR #72 review, round 3 ───────────────────────────────────────
+
+    @Test
+    void aRetryLaunchesTheReopenedRowEvenWhileTheFailedRunThatLostItsLockIsStillRegistered() throws Exception {
+        // 4623896769: the failed run is held in workflowFailed (still
+        // registered) and its lock is lost; Retry takes a new lock and reopens.
+        var fail = new AtomicBoolean(true);
+        var registration = new WorkflowRegistration("BoomWorkflow", "default",
+                () -> new BoomWorkflow(boomProxy(fail)), boomMethod());
+        var failedReported = new java.util.concurrent.CountDownLatch(1);
+        var releaseFailedRun = new java.util.concurrent.CountDownLatch(1);
+        observer.onWorkflowFailed = () -> {
+            failedReported.countDown();
+            try {
+                releaseFailedRun.await(10, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        };
+        try {
+            node.startWorkflow(ID, "BoomWorkflow", "default", null, registration.workflowFactory(), boomMethod());
+            assertTrue(failedReported.await(5, java.util.concurrent.TimeUnit.SECONDS), "the run failed");
+            assertTrue(node.isRunning(ID), "the failed run is still registered");
+            lock.forceRelease(KEY);
+            assertTrue(valueWithin(() -> observer.lost.contains(ID), true, Duration.ofSeconds(5)),
+                    "the failed run's lock was reported lost");
+            fail.set(false);
+
+            assertEquals(WorkflowExecutor.RetryOutcome.RETRIED, node.retryWorkflow(ID, registration),
+                    "the stale registration of the failed run must not stop the launch");
+        } finally {
+            releaseFailedRun.countDown();
+        }
+        assertEquals(WorkflowStatus.COMPLETED, valueWithin(() -> store.getInstance(ID).orElseThrow().status(),
+                WorkflowStatus.COMPLETED, Duration.ofSeconds(5)), "the retried run ran");
+    }
+
+    @Test
+    void aStartWhoseRelaunchFindsThePeerAlreadyFinishedItConvergesInsteadOfThrowing() {
+        // 4623896766: the lock is lost before registration, and by the time of
+        // the relaunch another node has run the row to its end.
+        var first = new AtomicBoolean(true);
+        node.afterLaunchAdmission = () -> {
+            if (first.compareAndSet(true, false)) {
+                lock.forceRelease(KEY);
+                assertTrue(valueWithin(() -> observer.lost.contains(ID), true, Duration.ofSeconds(5)));
+                finishElsewhere();
+            }
+        };
+
+        var id = node.startWorkflow(ID, "WorkWorkflow", "orders", null, workflow(), workMethod());
+
+        assertEquals(store.getInstance(ID).orElseThrow().id(), id, "the start returns normally");
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance(ID).orElseThrow().status());
+        assertEquals(0, work.entries(), "nothing ran here");
+    }
+
+    @Test
+    void aRetryWhoseRelaunchFindsThePeerAlreadyFinishedItConvergesInsteadOfThrowing() throws Exception {
+        var fail = new AtomicBoolean(true);
+        var registration = failedBoom(fail);
+        var first = new AtomicBoolean(true);
+        node.afterLaunchAdmission = () -> {
+            if (first.compareAndSet(true, false)) {
+                lock.forceRelease(KEY);
+                assertTrue(valueWithin(() -> observer.lost.contains(ID), true, Duration.ofSeconds(5)));
+                finishElsewhere();
+            }
+        };
+
+        assertEquals(WorkflowExecutor.RetryOutcome.LOCK_HELD_ELSEWHERE, node.retryWorkflow(ID, registration),
+                "a peer ran the reopened row: the ordinary not-launched-here outcome, not an error");
+    }
+
+    @Test
+    void aRetryReopenConflictSurvivesAFailingLockRelease() throws Exception {
+        // 4623896773: the release in Retry's cleanup must not replace the
+        // reopen's own failure.
+        var fail = new AtomicBoolean(true);
+        var registration = failedBoom(fail);
+        var conflict = new io.b2mash.maestro.core.exception.OptimisticLockException(ID, 0, 1);
+        store.reopenFailure = conflict;
+        lock.releaseFailure = new InternalError("release failed (test)");
+
+        var thrown = assertThrows(io.b2mash.maestro.core.exception.OptimisticLockException.class,
+                () -> node.retryWorkflow(ID, registration));
+        assertSame(conflict, thrown, "the reopen's conflict reaches the caller");
+        assertEquals(1, thrown.getSuppressed().length, "the release failure is attached");
+        assertSame(lock.releaseFailure, thrown.getSuppressed()[0]);
+    }
+
     // ── 4622153294 ───────────────────────────────────────────────────
 
     @Test
@@ -200,6 +291,13 @@ class RecoveryDisabledLockFailureTest {
 
     // ── helpers ──────────────────────────────────────────────────────
 
+    /** Writes the row COMPLETED as another node that ran it to its end would. */
+    private void finishElsewhere() {
+        var current = store.getInstance(ID).orElseThrow();
+        store.updateInstance(current.toBuilder().status(WorkflowStatus.COMPLETED)
+                .completedAt(java.time.Instant.now()).version(current.version() + 1).build());
+    }
+
     /** Runs a BoomWorkflow to FAILED and returns its registration; {@code fail} decides later attempts. */
     private WorkflowRegistration failedBoom(AtomicBoolean fail) {
         var registration = new WorkflowRegistration("BoomWorkflow", "default",
@@ -207,6 +305,10 @@ class RecoveryDisabledLockFailureTest {
         node.startWorkflow(ID, "BoomWorkflow", "default", null, registration.workflowFactory(), boomMethod());
         assertEquals(WorkflowStatus.FAILED, valueWithin(() -> store.getInstance(ID).orElseThrow().status(),
                 WorkflowStatus.FAILED, Duration.ofSeconds(5)));
+        // FAILED is visible before the run releases its lock: wait for the
+        // backend release, so a Retry meets the backend, not a lock held here.
+        assertFalse(valueWithin(() -> lock.isHeld(KEY), false, Duration.ofSeconds(5)),
+                "the failed run released its instance lock");
         return registration;
     }
 
@@ -278,6 +380,12 @@ class RecoveryDisabledLockFailureTest {
     /** Records lost locks. */
     private static final class LostLockObserver implements EngineObserver {
         final List<String> lost = new CopyOnWriteArrayList<>();
+        volatile Runnable onWorkflowFailed = () -> { };
+
+        @Override
+        public void workflowFailed(io.b2mash.maestro.core.observe.WorkflowInfo w, String exceptionType) {
+            onWorkflowFailed.run();
+        }
 
         @Override
         public void instanceLockLost(String workflowId) {
@@ -301,9 +409,19 @@ class RecoveryDisabledLockFailureTest {
             return delegate.tryAcquire(key, ttl);
         }
 
+        volatile @org.jspecify.annotations.Nullable Error releaseFailure;
+
         @Override
         public void release(LockHandle handle) {
+            var failure = releaseFailure;
+            if (failure != null) {
+                throw failure;
+            }
             delegate.release(handle);
+        }
+
+        boolean isHeld(String key) {
+            return delegate.isHeld(key);
         }
 
         @Override

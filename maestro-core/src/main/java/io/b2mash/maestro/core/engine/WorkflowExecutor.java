@@ -846,6 +846,12 @@ public final class WorkflowExecutor {
                         workflowId);
                 return instanceId;
             }
+            if (!awaitsLaunch(workflowId)) {
+                // Converged: another node ran it to its end meanwhile.
+                logger.info("Workflow '{}' lost its instance lock before its run started and finished elsewhere",
+                        workflowId);
+                return instanceId;
+            }
             throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was persisted (RUNNING) but not "
                     + "launched: its instance lock was lost before its run started and could not be taken again, "
                     + "and this node runs no recovery poller. It is not lost: it runs when a node of this service "
@@ -1730,10 +1736,11 @@ public final class WorkflowExecutor {
         NOT_FOUND,
 
         /**
-         * The compare-and-set to {@code RUNNING} succeeded, but by the time
-         * this call was ready to launch, the workflow was already running on
-         * this node (typically the recovery poller won the race). The instance
-         * is left {@code RUNNING} — recoverable, not lost.
+         * No longer returned (PR #72 review). Retry takes the instance lock
+         * before it reopens the row, so no other run of the workflow can have
+         * launched on this node since; a run still registered is the failed
+         * one, and the relaunch replaces its entry. Kept so that callers
+         * matching on it still compile.
          */
         ALREADY_RUNNING_LOCALLY,
 
@@ -1880,10 +1887,8 @@ public final class WorkflowExecutor {
      *       kept memo replays for free, and the run goes live at the first
      *       deleted slot of each lane it reaches, with a fresh retry-policy
      *       budget.</li>
-     *   <li>If the local {@code runningWorkflows} guard refuses the launch, or
-     *       the lock taken in step 4 was reported lost before the run started
-     *       ({@link RetryOutcome#ALREADY_RUNNING_LOCALLY} /
-     *       {@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
+     *   <li>If the lock taken in step 4 was reported lost before the run
+     *       started ({@link RetryOutcome#LOCK_HELD_ELSEWHERE}), the instance is already
      *       {@code RUNNING} — which is recoverable: the recovery poller (on any
      *       node) adopts it within one poll interval, the same as a crash
      *       between steps 5 and 6 heals.</li>
@@ -1990,6 +1995,7 @@ public final class WorkflowExecutor {
                     + "redelivered");
         }
         var handedOver = false;
+        Throwable failure = null;
         try {
             var now = Instant.now();
             var running = latest.toBuilder()
@@ -2013,16 +2019,13 @@ public final class WorkflowExecutor {
             logger.debug("Workflow '{}' retry deleted sequences {} and timer ids {}",
                     workflowId, plan.deleteSequences(), plan.deleteTimerIds());
 
-            // Recheck the local running-workflow guard right before launching: the
-            // CAS just made the instance RUNNING, and in the gap between that write
-            // and this line, this node's own recovery poller could have observed
-            // the RUNNING row and already launched it (mirrors resumeWorkflow's
-            // own guard). The instance is left RUNNING either way — recoverable.
-            if (runningWorkflows.containsKey(workflowId)) {
-                logger.info("Workflow '{}' is already running locally after the retry CAS — "
-                        + "leaving it to the run already in flight", workflowId);
-                return RetryOutcome.ALREADY_RUNNING_LOCALLY;
-            }
+            // No presence-only "already running here" check (PR #72 review): this
+            // call holds the instance lock, so no other run of the id can have
+            // launched since the reopen. An entry still registered is the failed
+            // run, unwinding after its lock was lost; the launch's handle-aware
+            // registration replaces it, and that run's own-entry cleanup leaves
+            // the new entry alone. (While the failed run still holds its lock,
+            // the acquire above already refused the Retry before the reopen.)
 
             // The launch takes the handle over: the run releases it, or the
             // launch's own failure paths do.
@@ -2046,6 +2049,12 @@ public final class WorkflowExecutor {
                 if (resumeWorkflow(running, registration.workflowFactory(), registration.workflowMethod())) {
                     logger.info("Workflow '{}' lost its instance lock after its retry reopened it; relaunched it",
                             workflowId);
+                } else if (!awaitsLaunch(workflowId)) {
+                    // Converged: another node ran the reopened row to its end
+                    // (or it is gone) — the ordinary not-launched-here outcome.
+                    logger.info("Workflow '{}' was reopened for retry and finished elsewhere before this node could "
+                            + "relaunch it", workflowId);
+                    return RetryOutcome.LOCK_HELD_ELSEWHERE;
                 } else {
                     throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was reopened for retry "
                             + "(RUNNING, its failure memos deleted) but not launched: its instance lock was lost "
@@ -2059,11 +2068,33 @@ public final class WorkflowExecutor {
             publishLifecycleEvent(running, LifecycleEventType.WORKFLOW_RETRIED, null);
             logger.info("Retried workflow '{}' (type={})", workflowId, running.workflowType());
             return RetryOutcome.RETRIED;
+        } catch (RuntimeException | Error e) {
+            failure = e;
+            throw e;
         } finally {
             if (!handedOver) {
-                instanceLockManager.release(workflowId, handle);
+                // As in startWorkflow: a cleanup failure never replaces the
+                // call's own failure; it is attached to it (PR #72 review).
+                try {
+                    instanceLockManager.release(workflowId, handle);
+                } catch (RuntimeException | Error releaseFailure) {
+                    if (failure == null) {
+                        throw releaseFailure;
+                    }
+                    failure.addSuppressed(releaseFailure);
+                }
             }
         }
+    }
+
+    /**
+     * Whether a workflow's row is still active — persisted and awaiting a run —
+     * rather than finished (or purged) by another node meanwhile. Decides, after
+     * a relaunch that could not run, between convergence and
+     * {@link WorkflowNotLaunchedException} (PR #72 review).
+     */
+    private boolean awaitsLaunch(String workflowId) {
+        return store.getInstance(workflowId).map(i -> i.status().isActive()).orElse(false);
     }
 
     /**

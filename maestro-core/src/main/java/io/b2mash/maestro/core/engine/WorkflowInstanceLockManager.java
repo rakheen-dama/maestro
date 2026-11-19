@@ -248,14 +248,22 @@ final class WorkflowInstanceLockManager {
                 return Acquired.HELD_ELSEWHERE;
             }
             handle = acquired.get();
-            heldLocks.put(workflowId, handle);
+            // Conditional (PR #72 review): a grant that arrived late — this
+            // attempt paused after the backend granted it, its grant expired,
+            // and a newer acquisition published its own handle meanwhile — must
+            // not overwrite the newer handle. It is rejected below, and gives
+            // back only its own backend token.
+            if (heldLocks.putIfAbsent(workflowId, handle) != null) {
+                releaseLateGrant(workflowId, handle);
+                return Acquired.HELD_ELSEWHERE;
+            }
         } catch (Exception e) {
             logger.warn("Instance lock backend unavailable for workflow '{}' — not running it now; recovery "
                     + "retries it once the lock can be taken: {}", workflowId, e.getMessage());
             return Acquired.UNAVAILABLE;
         }
         // Deliberately outside the backend try: the lock IS held from the
-        // heldLocks.put() above, so neither a renewer-start failure nor a
+        // heldLocks.putIfAbsent() above, so neither a renewer-start failure nor a
         // throwing observer may be reported as UNAVAILABLE — the caller would
         // then skip release() and this node would renew a lock nobody
         // releases, making the workflowId permanently unacquirable here and
@@ -294,6 +302,20 @@ final class WorkflowInstanceLockManager {
             throw e;
         }
         return new Acquired(Acquisition.ACQUIRED, handle);
+    }
+
+    /**
+     * Gives back a backend grant that lost the race to publish (see
+     * {@link #acquire}): only its own token, which the backend releases only
+     * if it still holds the key — never the newer, published handle.
+     */
+    private void releaseLateGrant(String workflowId, LockHandle handle) {
+        try {
+            distributedLock.release(handle);
+        } catch (Exception e) {
+            logger.warn("Failed to give back a late instance-lock grant for workflow '{}' — TTL will expire it: {}",
+                    workflowId, e.getMessage());
+        }
     }
 
     /**
