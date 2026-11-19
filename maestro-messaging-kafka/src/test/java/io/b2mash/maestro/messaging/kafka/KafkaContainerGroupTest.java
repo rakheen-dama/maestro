@@ -79,6 +79,41 @@ class KafkaContainerGroupTest {
         assertFalse(container.started.get());
     }
 
+    /**
+     * Review L1: a group the registry refused started nothing, so a bean's
+     * {@code destroy()} — {@code requestStop()} then {@code awaitStopped} — must
+     * not wait its 10 s bound for it.
+     */
+    @Test
+    void aRefusedGroupIsAlreadyStoppedSoDestroyDoesNotWait() {
+        executor.shutdown();
+        var group = new KafkaContainerGroup("refused-containers");
+        assertFalse(group.join(executor.lifecycle()));
+        group.requestStop();
+        var start = System.nanoTime();
+        assertTrue(group.awaitStopped(Duration.ofSeconds(10)));
+        assertTrue(Duration.ofNanos(System.nanoTime() - start).compareTo(Duration.ofMillis(500)) < 0,
+                "no wait for a group that never started a container");
+    }
+
+    /**
+     * A container started before the group joined (an embedder subscribing
+     * first) is stopped when the registry refuses the join, and the group is
+     * stopped once its callback has run.
+     */
+    @Test
+    void aRefusedJoinStopsWhatTheGroupAlreadyStarted() {
+        var group = new KafkaContainerGroup("early-containers");
+        var early = new FakeContainer();
+        assertTrue(group.start(early.proxy()));
+        executor.shutdown();
+        assertFalse(group.join(executor.lifecycle()));
+        assertEquals(0, early.stopAsked.getCount(), "the refused join asked the running container to stop");
+        assertFalse(group.awaitStopped(Duration.ofMillis(100)), "not stopped before its callback");
+        early.finishStop();
+        assertTrue(group.awaitStopped(Duration.ofSeconds(1)));
+    }
+
     @Test
     void aContainerStillStartingWhenTheStopArrivesIsStoppedOnceStarted() throws Exception {
         var group = new KafkaContainerGroup("racing-containers");
