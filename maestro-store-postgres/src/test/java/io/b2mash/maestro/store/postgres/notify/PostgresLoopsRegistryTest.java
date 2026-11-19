@@ -70,6 +70,46 @@ class PostgresLoopsRegistryTest {
         }
     }
 
+    /**
+     * Review L3: under an executor the wake listener's {@code close()} does not
+     * wait again for a poll still stuck past shutdown's deadline — the
+     * executor's shutdown already waited for it on its one deadline (and named
+     * it in a WARN); a second, private bound would be a shutdown step with a
+     * timeout of its own. The poll keeps its connection until it returns.
+     */
+    @Test
+    @DisplayName("under an executor, close() does not wait a second time for a poll stuck past the deadline")
+    void underAnExecutorCloseDoesNotWaitAgainForAStuckPoll() {
+        var executor = WorkflowExecutor.builder(new InMemoryWorkflowStore(),
+                        new PayloadSerializer(new ObjectMapper()), "svc")
+                .distributedLock(new InMemoryDistributedLock())
+                .lifecycleEventsEnabled(false)
+                .wakeRecheckInterval(Duration.ofMillis(500))
+                .shutdownTimeout(Duration.ofMillis(300))
+                .build();
+        var scripted = new ScriptedPgDataSource();
+        var listener = new PostgresWakeListener(scripted, ScriptedPgDataSource.CHANNEL, Duration.ofSeconds(5));
+        try {
+            listener.start(executor);
+            await().atMost(Duration.ofSeconds(5)).until(() -> scripted.pollCalls() >= 1);
+            scripted.blockPolls();
+            await().atMost(Duration.ofSeconds(5)).until(scripted::inBlockedPoll);
+            executor.shutdown(); // hits its 300 ms deadline with the poll stuck
+
+            var started = System.nanoTime();
+            listener.close();
+            assertTrue(Duration.ofNanos(System.nanoTime() - started).compareTo(Duration.ofSeconds(1)) < 0,
+                    "close() returned without its own 5 s wait");
+            assertTrue(scripted.events().stream().noneMatch(e -> e.startsWith("UNLISTEN") || e.equals("close")),
+                    "the stuck poll keeps its connection");
+        } finally {
+            scripted.releasePolls();
+            listener.close();
+            executor.shutdown();
+        }
+        await().atMost(Duration.ofSeconds(5)).until(() -> scripted.events().contains("close"));
+    }
+
     /** A data source whose {@code getConnection} fails: the cleaner's runs fail, its loop keeps running. */
     private static DataSource refusing() {
         return (DataSource) Proxy.newProxyInstance(DataSource.class.getClassLoader(), new Class<?>[]{DataSource.class},
