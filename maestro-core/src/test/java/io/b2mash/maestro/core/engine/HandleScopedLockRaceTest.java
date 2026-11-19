@@ -102,12 +102,14 @@ class HandleScopedLockRaceTest {
             loseTheLock();
             var b = Thread.ofVirtual().start(() -> second.set(manager.tryAcquire(ID)));
             join(b);
-            throw new AssertionError("observer failed after the lock changed hands (test)");
+            // A VirtualMachineError: since Issue 81 the observer's containment
+            // absorbs every other Error, and this one still reaches the cleanup.
+            throw new InternalError("observer failed after the lock changed hands (test)");
         };
         try {
             try {
                 manager.tryAcquire(ID);
-            } catch (AssertionError expected) {
+            } catch (InternalError expected) {
                 // the observer's Error reaches the caller, after cleanup
             }
             assertEquals(WorkflowInstanceLockManager.Acquisition.ACQUIRED, second.get());

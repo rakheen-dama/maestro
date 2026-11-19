@@ -610,21 +610,17 @@ final class WorkflowInstanceLockManager {
                             + "store's lease fence rejects any write it still attempts",
                     workflowId);
         }
-        // Emitted outside the backend call so a throwing observer is not
-        // reported as a transient renew failure. The observer is contained
+        // Proactive stand-down first: tell the executor now, so the run stops
+        // at its next stop point rather than after a write the store fences —
+        // and before anyone observing the loss can act on it (a run that has
+        // not entered the workflow method yet never runs user code).
+        notifyLockLost(workflowId, handle);
+        // Then the report, outside the backend call so a throwing observer is
+        // not reported as a transient renew failure. The observer is contained
         // (Issue 81), so an observer's Error no longer leaves renewPass's loop
         // over the lost handles: each one is handled in the same pass (68.2).
-        try {
-            if (!afterClose) {
-                observer.instanceLockLost(workflowId);
-            }
-        } finally {
-            // Proactive stand-down: tell the executor now, so the run stops at
-            // its next stop point rather than after a write the store fences.
-            // In a finally: the handle is already dropped, so no later pass
-            // reports this loss again — a VirtualMachineError or control-flow
-            // Error from the observer must not skip the stand-down.
-            notifyLockLost(workflowId, handle);
+        if (!afterClose) {
+            observer.instanceLockLost(workflowId);
         }
     }
 
