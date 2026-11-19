@@ -3,6 +3,7 @@ package io.b2mash.maestro.core.engine;
 import io.b2mash.maestro.test.InMemoryDistributedLock;
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
 import io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
 import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
@@ -232,7 +233,7 @@ class BackgroundLoopErrorTest {
                 observer.loopErrors().getFirst());
     }
 
-    /** Shutdown during a failing streak: stop() lands in the janitor's wait and ends the loop at once. */
+    /** Shutdown during a failing streak: the stop lands in the janitor's wait and ends the loop at once. */
     @Test
     void signalJanitor_stopDuringAFailingStreak_endsTheLoopPromptly() {
         var failing = new PollFaultStore() {
@@ -241,28 +242,30 @@ class BackgroundLoopErrorTest {
                 throw new AssertionError("every sweep fails");
             }
         };
-        var janitor = new SignalJanitor(failing, "svc", Duration.ofMinutes(10), Duration.ofDays(1), observer);
-        janitor.start();
+        var janitorBody = new SignalJanitor(failing, "svc", Duration.ofMinutes(10), Duration.ofDays(1));
+        var janitor = LoopSupervisor.start(janitorBody.spec(), janitorBody, observer);
         await("the first failed sweep").atMost(Duration.ofSeconds(5))
-                .until(() -> janitor.consecutiveFailures() >= 1);
+                .until(() -> janitor.snapshot().consecutiveFailures() >= 1);
 
         var started = System.nanoTime();
-        janitor.stop();
+        stop(janitor);
         var elapsed = Duration.ofNanos(System.nanoTime() - started);
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
                 "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
-        assertFalse(janitor.isRunning());
+        assertFalse(janitor.snapshot().running());
     }
 
     /**
-     * A sweep whose store fault {@code sweepOnce} swallowed is not a success:
-     * it does not end an {@code Error} streak (so no "recovered" line is
-     * logged for it). The next real success does.
+     * A sweep that hit a store fault is not a success: it does not end an
+     * {@code Error} streak (so no "recovered" line is logged for it). The next
+     * real success does. Since P2 the sweep no longer swallows the fault: it
+     * fails the iteration and extends the streak (the name is kept from when
+     * the sweep swallowed it).
      */
     @Test
     void signalJanitor_aSweepThatSwallowedAStoreFaultDoesNotEndTheStreak() throws Exception {
-        var janitorRef = new AtomicReference<SignalJanitor>();
+        var janitorRef = new AtomicReference<LoopSupervisor>();
         var calls = new AtomicInteger();
         var streakSeenByThirdSweep = new AtomicInteger(-1);
         var thirdSweep = new CountDownLatch(1);
@@ -271,9 +274,9 @@ class BackgroundLoopErrorTest {
             public int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff) {
                 switch (calls.incrementAndGet()) {
                     case 1 -> throw new AssertionError("an Error: the streak starts");
-                    case 2 -> throw new IllegalStateException("a store fault sweepOnce swallows");
+                    case 2 -> throw new IllegalStateException("a store fault: since P2 it fails the sweep too");
                     case 3 -> {
-                        streakSeenByThirdSweep.set(janitorRef.get().consecutiveFailures());
+                        streakSeenByThirdSweep.set(janitorRef.get().snapshot().consecutiveFailures());
                         thirdSweep.countDown();
                     }
                     default -> { }
@@ -281,26 +284,26 @@ class BackgroundLoopErrorTest {
                 return 0;
             }
         };
-        var janitor = new SignalJanitor(flaky, "svc", Duration.ofMillis(50), Duration.ofDays(1), observer);
+        var janitorBody = new SignalJanitor(flaky, "svc", Duration.ofMillis(50), Duration.ofDays(1));
+        var janitor = LoopSupervisor.start(janitorBody.spec(), janitorBody, observer);
         janitorRef.set(janitor);
-        janitor.start();
         try {
             assertTrue(thirdSweep.await(5, TimeUnit.SECONDS), "the janitor made no third sweep");
-            assertEquals(1, streakSeenByThirdSweep.get(),
-                    "the sweep that swallowed a store fault did not end the streak");
+            assertEquals(2, streakSeenByThirdSweep.get(),
+                    "the store fault did not end the streak; since P2 it extends it");
             await("the third, successful sweep to end the streak").atMost(Duration.ofSeconds(5))
-                    .until(() -> janitor.consecutiveFailures() == 0);
+                    .until(() -> janitor.snapshot().consecutiveFailures() == 0);
         } finally {
-            janitor.stop();
+            stop(janitor);
         }
     }
 
     // ── Retention sweeper ─────────────────────────────────────────────
 
-    /** As for the janitor: a sweep that swallowed a store fault does not end the streak. */
+    /** As for the janitor: a sweep that hit a store fault does not end the streak; since P2 it extends it. */
     @Test
     void retentionSweeper_aSweepThatSwallowedAStoreFaultDoesNotEndTheStreak() throws Exception {
-        var sweeperRef = new AtomicReference<RetentionSweeper>();
+        var sweeperRef = new AtomicReference<LoopSupervisor>();
         var calls = new AtomicInteger();
         var streakSeenByThirdSweep = new AtomicInteger(-1);
         var thirdSweep = new CountDownLatch(1);
@@ -309,9 +312,9 @@ class BackgroundLoopErrorTest {
             public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
                 switch (calls.incrementAndGet()) {
                     case 1 -> throw new AssertionError("an Error: the streak starts");
-                    case 2 -> throw new IllegalStateException("a store fault sweepOnce swallows");
+                    case 2 -> throw new IllegalStateException("a store fault: since P2 it fails the sweep too");
                     case 3 -> {
-                        streakSeenByThirdSweep.set(sweeperRef.get().consecutiveFailures());
+                        streakSeenByThirdSweep.set(sweeperRef.get().snapshot().consecutiveFailures());
                         thirdSweep.countDown();
                     }
                     default -> { }
@@ -319,18 +322,18 @@ class BackgroundLoopErrorTest {
                 return PurgeResult.EMPTY;
             }
         };
-        var sweeper = new RetentionSweeper(flaky, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
+        var sweeperBody = new RetentionSweeper(flaky, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
                 Duration.ofMillis(50), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1), observer);
+        var sweeper = LoopSupervisor.start(sweeperBody.spec(), sweeperBody, observer);
         sweeperRef.set(sweeper);
-        sweeper.start();
         try {
             assertTrue(thirdSweep.await(5, TimeUnit.SECONDS), "the sweeper made no third sweep");
-            assertEquals(1, streakSeenByThirdSweep.get(),
-                    "the sweep that swallowed a store fault did not end the streak");
+            assertEquals(2, streakSeenByThirdSweep.get(),
+                    "the store fault did not end the streak; since P2 it extends it");
             await("the third, successful sweep to end the streak").atMost(Duration.ofSeconds(5))
-                    .until(() -> sweeper.consecutiveFailures() == 0);
+                    .until(() -> sweeper.snapshot().consecutiveFailures() == 0);
         } finally {
-            sweeper.stop();
+            stop(sweeper);
         }
     }
 
@@ -353,19 +356,19 @@ class BackgroundLoopErrorTest {
                 throw new AssertionError("every sweep fails");
             }
         };
-        var sweeper = new RetentionSweeper(failing, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
+        var sweeperBody = new RetentionSweeper(failing, new InMemoryDistributedLock(), "svc", new WorkflowExecutor.RetentionSettings(
                 Duration.ofMinutes(10), Duration.ofDays(1), Duration.ofDays(1), Duration.ofDays(1), 10, 1), observer);
-        sweeper.start();
+        var sweeper = LoopSupervisor.start(sweeperBody.spec(), sweeperBody, observer);
         await("the first failed sweep").atMost(Duration.ofSeconds(5))
-                .until(() -> sweeper.consecutiveFailures() >= 1);
+                .until(() -> sweeper.snapshot().consecutiveFailures() >= 1);
 
         var started = System.nanoTime();
-        sweeper.stop();
+        stop(sweeper);
         var elapsed = Duration.ofNanos(System.nanoTime() - started);
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
                 "stop() must not wait out its 5 s join (the loop ended): took " + elapsed);
-        assertFalse(sweeper.isRunning());
+        assertFalse(sweeper.snapshot().running());
     }
 
     // ── Instance-lock renewer ─────────────────────────────────────────
@@ -555,6 +558,12 @@ class BackgroundLoopErrorTest {
     }
 
     // ── Fixtures ──────────────────────────────────────────────────────
+
+    /** Stops a supervised loop as the bodies' old {@code stop()} did: request, then wait at most 5 s for its end. */
+    private static void stop(LoopSupervisor loop) {
+        loop.requestStop();
+        assertTrue(loop.awaitStopped(Duration.ofSeconds(5)), "the loop ended within 5 s");
+    }
 
     /** Saves a {@code PENDING} timer that is already due (fire_at = now - 1 s). */
     private static WorkflowTimer dueTimer(VersionedInMemoryStore store, String workflowId, String timerId) {

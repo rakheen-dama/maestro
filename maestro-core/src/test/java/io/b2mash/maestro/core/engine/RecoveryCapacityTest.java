@@ -185,7 +185,12 @@ class RecoveryCapacityTest {
                 t.lock.refuse.add("maestro:lock:workflow:wf-1");
             }
         },
-        /** W4: the instanceLockAcquired callback throws after the handle was recorded. */
+        /**
+         * W4: the instanceLockAcquired callback throws after the handle was
+         * recorded. A VirtualMachineError, because since Issue 81 the
+         * observer's containment absorbs every other Error; this one still
+         * propagates, so the window stays reachable.
+         */
         LOCK_CALLBACK_ERROR {
             @Override
             WorkflowExecutor node(RecoveryCapacityTest t) {
@@ -194,7 +199,7 @@ class RecoveryCapacityTest {
                     @Override
                     public void instanceLockAcquired(String workflowId) {
                         if (thrown.compareAndSet(false, true)) {
-                            throw new AssertionError("injected in instanceLockAcquired");
+                            throw new InternalError("injected in instanceLockAcquired");
                         }
                     }
                 });

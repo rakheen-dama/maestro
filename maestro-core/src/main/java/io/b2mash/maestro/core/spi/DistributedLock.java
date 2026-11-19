@@ -183,13 +183,23 @@ public interface DistributedLock {
      * current leader's TTL has expired), the candidate becomes the new
      * leader. Returns {@code true} if the candidate is now the leader.
      *
-     * <p>Used for timer poller leader election — only one instance per
-     * service should poll for due timers.
+     * <p>Used for the timer poller's and the retention sweeper's leader
+     * elections — only one instance per service polls for due timers or
+     * purges history.
+     *
+     * <p><b>A backend failure throws; it never answers {@code false}.</b>
+     * {@code false} means "another candidate holds the claim"; a throw means
+     * "unknown". The calling loop counts a throw as a failed iteration (so a
+     * broken election table builds a failure streak health can see) and does
+     * nothing that iteration, exactly as for a non-leader.
      *
      * @param electionKey the election key (e.g., {@code "maestro:leader:timer-poller:order-service"})
      * @param candidateId unique identifier for this candidate
      * @param ttl         how long the leadership claim lasts
-     * @return {@code true} if this candidate is now the leader
+     * @return {@code true} if this candidate is now the leader, {@code false}
+     *         if another candidate holds the claim
+     * @throws RuntimeException when the backend fails (the Postgres lock
+     *         throws {@link io.b2mash.maestro.core.exception.LockBackendException})
      */
     boolean trySetLeader(String electionKey, String candidateId, Duration ttl);
 }

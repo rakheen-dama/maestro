@@ -20,6 +20,7 @@ import io.b2mash.maestro.core.model.TimerStatus;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.ParkKind;
 import io.b2mash.maestro.core.observe.TimerInfo;
@@ -327,7 +328,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         this.compensationStack = compensationStack;
         this.signalManager = signalManager;
         this.wakeRecheckInterval = wakeRecheckInterval;
-        this.observer = observer;
+        this.observer = CompositeEngineObserver.contain(observer);
         this.governor = governor;
         this.instantSource = signalManager.instantSource();
     }

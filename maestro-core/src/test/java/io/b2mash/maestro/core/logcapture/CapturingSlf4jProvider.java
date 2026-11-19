@@ -41,6 +41,10 @@ public final class CapturingSlf4jProvider implements SLF4JServiceProvider {
     public static final class Capture implements AutoCloseable {
         private final String loggerName;
         private final List<CapturedLog> records = new CopyOnWriteArrayList<>();
+        private volatile java.util.function.Predicate<String> failWhen = _ -> false;
+        private volatile java.util.function.Supplier<? extends RuntimeException> runtimeFailure =
+                () -> new IllegalStateException("appender failure (test)");
+        private volatile java.util.function.@Nullable Supplier<? extends Error> errorFailure;
 
         private Capture(String loggerName) {
             this.loggerName = loggerName;
@@ -49,6 +53,35 @@ public final class CapturingSlf4jProvider implements SLF4JServiceProvider {
         /** Every call captured so far, in arrival order. */
         public List<CapturedLog> records() {
             return List.copyOf(records);
+        }
+
+        /**
+         * Makes every later call whose formatted message matches throw an
+         * {@link IllegalStateException} after it is recorded, as a failing
+         * appender would.
+         *
+         * @param messageMatches which messages fail
+         * @return this capture
+         */
+        public Capture failWhen(java.util.function.Predicate<String> messageMatches) {
+            this.failWhen = messageMatches;
+            return this;
+        }
+
+        /**
+         * As {@link #failWhen(java.util.function.Predicate)}, throwing what
+         * {@code error} supplies — an {@code OutOfMemoryError} while logging,
+         * say.
+         *
+         * @param messageMatches which messages fail
+         * @param error          what such a call throws
+         * @return this capture
+         */
+        public Capture failWhen(java.util.function.Predicate<String> messageMatches,
+                                java.util.function.Supplier<? extends Error> error) {
+            this.errorFailure = error;
+            this.failWhen = messageMatches;
+            return this;
         }
 
         @Override
@@ -139,6 +172,13 @@ public final class CapturingSlf4jProvider implements SLF4JServiceProvider {
             }
             var message = MessageFormatter.basicArrayFormat(messagePattern, arguments);
             capture.records.add(new CapturedLog(level, message, throwable));
+            if (capture.failWhen.test(message)) {
+                var error = capture.errorFailure;
+                if (error != null) {
+                    throw error.get();
+                }
+                throw capture.runtimeFailure.get();
+            }
         }
     }
 }

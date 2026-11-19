@@ -965,7 +965,7 @@ public final class TestWorkflowEnvironment {
             var proxy = proxyFactory.createProxy(
                     (Class) activityInterface,
                     activityImpl,
-                    node.view.store(),
+                    node.executor.guardedStore(),   // the node's one store guard and retry episode
                     lock,
                     messaging,
                     retryPolicy,
@@ -973,7 +973,7 @@ public final class TestWorkflowEnvironment {
                     serializer,
                     retryExecutor,
                     LOCK_KEY_PREFIX,
-                    observer,
+                    node.executor.observer(),       // the node's contained observer
                     node.executor.taskQueueGovernor()   // the node's activity limits (Builder)
             );
 

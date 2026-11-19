@@ -24,15 +24,18 @@ import java.util.concurrent.Callable;
  * threads, Kafka listener threads and the instance-lock renewer thread.
  * Implementations MUST be thread-safe, MUST return quickly (no I/O, no
  * blocking), and MUST NOT throw. {@link CompositeEngineObserver} contains a
- * misbehaving observer by catching {@code RuntimeException} per callback;
- * {@code Error}s (including the engine's control-flow signals) always
- * propagate — except from {@link #backgroundLoopError}, where every
- * {@code Error} but a
- * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError} is
- * contained too, by the composite per delegate and by the loop's guard.
- * {@link CompositeEngineObserver#of} wraps <em>any</em> non-empty
- * delegate list — including a single observer — so that containment holds for
- * every registration, not only for multi-observer ones (coordinator Ruling 4).
+ * misbehaving observer per callback and per delegate: every {@code Throwable}
+ * is contained — logged, counted on {@code WorkflowExecutor.observerErrorCount()}
+ * and otherwise ignored — except a
+ * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError} (the
+ * engine's control-flow signals, which observers must never throw) and a
+ * {@link VirtualMachineError}, which propagate (Issue 81); from
+ * {@link #backgroundLoopError} a {@code VirtualMachineError} is contained too.
+ * Every engine type that takes an observer wraps it with
+ * {@link CompositeEngineObserver#contain}, so containment holds for every
+ * emission site and every observer, including one wired by hand;
+ * {@link CompositeEngineObserver#of} wraps the starter's list, a single
+ * observer included (coordinator Ruling 4).
  */
 public interface EngineObserver {
 
@@ -279,17 +282,36 @@ public interface EngineObserver {
 
     /**
      * A background loop (one of {@code timer-poller}, {@code recovery-poller},
-     * {@code signal-janitor}, {@code retention-sweeper},
-     * {@code instance-lock-renewer}) contained an {@code Error} that is not a
+     * {@code startup-recovery}, {@code signal-janitor},
+     * {@code retention-sweeper}, {@code instance-lock-renewer}) contained an
+     * {@code Error} that is not a
      * {@link io.b2mash.maestro.core.exception.MaestroControlFlowError}, and
      * keeps running. Fires on the loop's own thread, never on a workflow
      * thread. {@code errorType} is the {@code Error}'s class name. Any
-     * occurrence means a bug or resource exhaustion on this node.
+     * occurrence means a bug or resource exhaustion on this node. (The
+     * one-shot startup recovery reported under {@code recovery-poller} before
+     * pilot readiness P2.)
      *
-     * @param loop      the loop's fixed name (bounded: the five names above)
+     * @param loop      the loop's fixed name (bounded: the six names above)
      * @param errorType fully-qualified class name of the contained {@code Error}
      */
     default void backgroundLoopError(String loop, String errorType) {}
+
+    // ── Store faults ──────────────────────────────────────────────────
+
+    /**
+     * The engine's store guard retried one store call in place after the store
+     * reported itself unavailable ({@code StoreUnavailableException}) — a fault
+     * the retries may still absorb (Issue 86). Fires on the calling thread,
+     * usually a workflow thread, once per retry, before the retry's wait.
+     * Only the idempotent run operations are retried; advisory reads and
+     * background-loop store calls never fire it.
+     *
+     * @param operation the retried operation, bounded: {@code append_event},
+     *                  {@code append_event_returning_payload} or
+     *                  {@code get_event_by_sequence}
+     */
+    default void storeRetried(String operation) {}
 
     // ── Stand-down ────────────────────────────────────────────────────
 

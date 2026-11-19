@@ -65,6 +65,7 @@ public class RecordingEngineObserver implements EngineObserver {
     private final List<AbandonCall> abandoned = new CopyOnWriteArrayList<>();
     private final List<LoopErrorCall> loopErrors = new CopyOnWriteArrayList<>();
     private final List<StartDeferral> startDeferrals = new CopyOnWriteArrayList<>();
+    private final List<String> storeRetries = new CopyOnWriteArrayList<>();
 
     // ── EngineObserver callbacks ──────────────────────────────────────
 
@@ -232,6 +233,12 @@ public class RecordingEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void storeRetried(String operation) {
+        record("storeRetried", operation);
+        storeRetries.add(operation);
+    }
+
+    @Override
     public void runAbandoned(WorkflowInfo w, AbandonReason reason) {
         record("runAbandoned", w, reason);
         abandoned.add(new AbandonCall(w, reason));
@@ -269,6 +276,7 @@ public class RecordingEngineObserver implements EngineObserver {
     public List<StandDownCall> standDowns() { return List.copyOf(standDowns); }
     public List<RetentionPassCall> retentionPasses() { return List.copyOf(retentionPasses); }
     public List<LoopErrorCall> loopErrors() { return List.copyOf(loopErrors); }
+    public List<String> storeRetries() { return List.copyOf(storeRetries); }
 
     /** The reasons {@code workflowId} stood down for, in arrival order. */
     public List<StandDownReason> standDownReasons(String workflowId) {

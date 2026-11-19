@@ -495,8 +495,13 @@ class LaunchOutcomeRegistryTest {
         }
     }
 
-    /** Thrown by {@link ThrowingObserver}: an {@code Error}, which the executor's emit does not contain. */
-    static final class ObserverError extends Error {
+    /**
+     * Thrown by {@link ThrowingObserver}: a {@code VirtualMachineError}, which
+     * observer containment (P2, Issue 81) lets through, as
+     * {@code HandleScopedLockRaceTest} does — an {@code AssertionError} would
+     * now be contained and never reach the launcher.
+     */
+    static final class ObserverError extends InternalError {
         ObserverError() {
             super("observer fails (test)");
         }

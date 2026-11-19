@@ -204,9 +204,15 @@ class ShutdownGiveUpTest {
                 return "quick";
             }
         };
-        return new ActivityProxyFactory().createProxy(Steps.class, impl, store, null, null,
+        // As the starter and the test kit build them since P2: over the
+        // executor's own guarded store and contained observer, so the give-up
+        // refusal on the activity path is that one guard's (wrap is
+        // idempotent: no second guard, no second check, no bypass).
+        var guarded = node.guardedStore();
+        assertTrue(StoreFaultGuard.wrap(guarded) == guarded, "the executor's guard is used as is");
+        return new ActivityProxyFactory().createProxy(Steps.class, impl, guarded, null, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, EngineObserver.NOOP, node.taskQueueGovernor());
+                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, node.observer(), node.taskQueueGovernor());
     }
 
     private long count(EventType type) {

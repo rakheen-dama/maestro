@@ -1,75 +1,67 @@
 package io.b2mash.maestro.core.engine;
 
-import io.b2mash.maestro.core.observe.EngineObserver;
-import org.jspecify.annotations.Nullable;
+import io.b2mash.maestro.core.loop.FailingRule;
+import io.b2mash.maestro.core.loop.LoopBody;
+import io.b2mash.maestro.core.loop.LoopContext;
+import io.b2mash.maestro.core.loop.LoopRole;
+import io.b2mash.maestro.core.loop.LoopSpec;
+import io.b2mash.maestro.core.loop.Next;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.util.Map;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * The startup recovery pass of a node whose recovery poller is disabled: one
- * <b>ungated</b> pass ({@link WorkflowExecutor#recoverWorkflows(Map)}) on its
- * own virtual thread, {@code maestro-startup-recovery-<service>}, so that the
- * caller — the Spring Boot starter's {@code ApplicationRunner} — never waits
- * for it.
+ * <b>ungated</b> pass ({@link WorkflowExecutor#recoverWorkflows(Map)}), run
+ * under the executor's {@link io.b2mash.maestro.core.loop.LoopSupervisor} as
+ * loop {@value #LOOP_NAME} on its own virtual thread,
+ * {@code maestro-startup-recovery-<service>}, so that the caller — the Spring
+ * Boot starter's {@code ApplicationRunner} — never waits for it.
  *
  * <p>The pass adopts every instance it can lock, whatever this node's
  * task-queue capacity; runs beyond a queue's bound wait for their slots on
  * their own threads. With no poller behind it, a failed pass would strand
- * every orphan until the next restart, so a pass that throws is contained by
- * a {@link BackgroundLoopGuard} (named {@value BackgroundLoopGuard#RECOVERY_POLLER}:
- * logged like the poller's failures, and an {@link Error} counted on
- * {@code maestro.loop.errors} under that name; a store fault is logged, not
- * counted) and retried after {@code retryInterval}, with no limit, until one
- * pass completes. A pass that skipped a row because the lock backend failed
- * (not one whose lock another node holds) has not completed: it is retried
- * the same way (PR #72 review). Then the thread ends. A {@code MaestroControlFlowError}
- * ends it at once.
+ * every orphan until the next restart, so a pass that throws is a failed
+ * iteration — logged at the supervisor's cadence, counted in the loop's
+ * streak, an {@link Error} also counted on
+ * {@code maestro.loop.errors{loop=startup-recovery}} — and retried after
+ * {@code retryInterval}, with no limit, until one pass completes. A pass that
+ * skipped a row because the lock backend failed (not one whose lock another
+ * node holds) has not completed either: nothing else on this node would ever
+ * adopt that row, so it is retried after {@code retryInterval} too (PR #72
+ * review), without counting as a failure. Then the loop ends {@code DONE}. A
+ * {@code MaestroControlFlowError} ends it at once.
  *
- * <p>{@link #requestStop()} never interrupts the thread: it ends the retry
- * wait at once, and a pass in progress ends at its next instance on this
- * loop's own stop flag (or once the executor is shutting down), so a store
- * call in progress is never interrupted.
+ * <p>A stop never interrupts the thread: it ends the retry wait at once, and a
+ * pass in progress ends at its next instance on the loop's stop flag (or once
+ * the executor is shutting down), so a store call in progress is never
+ * interrupted. A pass a stop cut short is not a completed one: the loop ends
+ * {@code STOPPED}, not {@code DONE}.
  *
- * <p><b>Thread safety:</b> {@link #start()}, {@link #stop()},
- * {@link #requestStop()}, {@link #awaitStopped(Duration)} and
- * {@link #isRunning()} are thread-safe; the pass runs on the dedicated thread.
+ * <p><b>Thread safety:</b> the supervisor runs {@link #iterate} on the loop's
+ * thread only.
  */
-final class OneShotRecovery implements StoppableLoop {
+final class OneShotRecovery implements LoopBody {
 
     private static final Logger logger = LoggerFactory.getLogger(OneShotRecovery.class);
 
-    /** This loop's name in shutdown's log ({@link #loopName()}). */
+    /** The loop's fixed name: its meter tag, log name and name in shutdown's log. */
     static final String LOOP_NAME = "startup-recovery";
-
-    /** How long {@link #stop()} waits for the thread to end. */
-    static final Duration STOP_JOIN = Duration.ofSeconds(5);
 
     private final WorkflowExecutor executor;
     private final Map<String, WorkflowRegistration> registrations;
     private final String serviceName;
     private final Duration retryInterval;
-    private final BackgroundLoopGuard guard;
-    private final AtomicBoolean started = new AtomicBoolean(false);
-    /** Counted down by {@link #requestStop()}: ends the retry wait without an interrupt. */
-    private final CountDownLatch stopRequested = new CountDownLatch(1);
-    private volatile boolean running;
-    private volatile @Nullable Thread thread;
 
     /**
-     * Creates the one-shot pass; {@link #start()} runs it.
+     * Creates the one-shot pass; the executor supervises it.
      *
      * @param executor      the executor whose ungated pass this runs
      * @param registrations workflow type → registration, as for {@link WorkflowExecutor#recoverWorkflows(Map)}
      * @param serviceName   the owning service name (thread name)
      * @param retryInterval the wait after a failed pass before the next; must be positive
-     * @param observer      receives {@link EngineObserver#backgroundLoopError}
-     *                      for every {@code Error} a pass throws
      * @throws IllegalArgumentException if {@code retryInterval} is {@code null},
      *                                  zero or negative
      */
@@ -77,8 +69,7 @@ final class OneShotRecovery implements StoppableLoop {
             WorkflowExecutor executor,
             Map<String, WorkflowRegistration> registrations,
             String serviceName,
-            Duration retryInterval,
-            EngineObserver observer
+            Duration retryInterval
     ) {
         if (retryInterval == null || retryInterval.isNegative() || retryInterval.isZero()) {
             throw new IllegalArgumentException("retryInterval must be positive, got " + retryInterval);
@@ -87,120 +78,38 @@ final class OneShotRecovery implements StoppableLoop {
         this.registrations = Map.copyOf(registrations);
         this.serviceName = serviceName;
         this.retryInterval = retryInterval;
-        this.guard = new BackgroundLoopGuard(BackgroundLoopGuard.RECOVERY_POLLER, retryInterval, () -> !running,
-                observer);
     }
 
     /**
-     * Starts the pass on a virtual thread.
+     * How the pass is supervised: critical; the first pass at once, a retry
+     * every {@code retryInterval} after a failure; failing after two failed
+     * passes in a row spanning at least two retry intervals.
      *
-     * @throws IllegalStateException if already started
+     * @return the pass's loop spec
      */
-    synchronized void start() {
-        if (!started.compareAndSet(false, true)) {
-            throw new IllegalStateException("One-shot startup recovery already started");
-        }
-        running = true;
-        thread = Thread.ofVirtual()
-                .name("maestro-startup-recovery-" + serviceName)
-                .uncaughtExceptionHandler(guard.uncaughtExceptionHandler())
-                .start(this::runUntilOnePassCompletes);
+    LoopSpec spec() {
+        return LoopSpec.of(LOOP_NAME, "maestro-startup-recovery-" + serviceName, LoopRole.CRITICAL, retryInterval)
+                .withFailing(FailingRule.streakFor(2, retryInterval.multipliedBy(2)));
     }
 
-    /**
-     * {@link #requestStop()}, then {@link #awaitStopped(Duration) awaitStopped(STOP_JOIN)}.
-     */
-    void stop() {
-        requestStop();
-        awaitStopped(STOP_JOIN);
-    }
-
-    /**
-     * {@value #LOOP_NAME}, the name shutdown's log uses for this loop. Its
-     * guard keeps the name {@value BackgroundLoopGuard#RECOVERY_POLLER}, so its
-     * failures are logged under that name, and an {@link Error} is counted
-     * under that fixed {@code maestro.loop.errors} tag value.
-     */
     @Override
-    public String loopName() {
-        return LOOP_NAME;
-    }
-
-    /**
-     * Asks the pass to stop and returns at once: no retry starts, the retry
-     * wait ends, and a pass in progress ends at its next instance. Never
-     * interrupts the thread and never joins. Idempotent.
-     */
-    @Override
-    public void requestStop() {
-        running = false;
-        stopRequested.countDown();
-    }
-
-    /**
-     * Waits at most {@code bound} for the thread to end.
-     *
-     * @param bound the longest to wait; zero or negative only checks
-     * @return {@code true} if the thread has ended or was never started
-     */
-    @Override
-    public boolean awaitStopped(Duration bound) {
-        var t = thread;
-        if (t == null) {
-            return true;
+    public Next iterate(LoopContext ctx) {
+        var pass = executor.recoverWorkflowsUntil(registrations, ctx::stopRequested);
+        if (ctx.stopRequested()) {
+            logger.debug("One-shot startup recovery stopped before a pass completed");
+            return Next.afterPeriod();       // the loop ends STOPPED: the pass did not complete
         }
-        try {
-            t.join(bound);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
+        if (pass.lockUnavailable() > 0) {
+            // PR #72 review: a pass that skipped rows because the lock backend
+            // failed is not finished — nothing else on this node would ever
+            // adopt them. Retry after the interval; not a failed iteration.
+            logger.warn("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) but skipped "
+                    + "{} because the lock backend failed; retrying in {}", pass.adopted(),
+                    pass.lockUnavailable(), retryInterval);
+            return Next.after(retryInterval);
         }
-        return !t.isAlive();
-    }
-
-    /**
-     * Whether the pass is still in progress or waiting to retry.
-     *
-     * @return {@code true} while the thread is alive
-     */
-    boolean isRunning() {
-        var t = thread;
-        return t != null && t.isAlive();
-    }
-
-    private void runUntilOnePassCompletes() {
-        while (running) {
-            try {
-                var pass = executor.recoverWorkflowsUntil(registrations, () -> !running);
-                guard.succeeded();
-                if (pass.lockUnavailable() == 0) {
-                    if (running) {
-                        logger.info("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) "
-                                + "without a capacity check; runs beyond a task queue's bound wait for their slots",
-                                pass.adopted());
-                    }
-                    return;
-                }
-                // PR #72 review: a pass that skipped rows because the lock
-                // backend failed is not finished — nothing else on this node
-                // would ever adopt them. Retry after the interval.
-                logger.warn("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) but skipped "
-                        + "{} because the lock backend failed; retrying in {}", pass.adopted(),
-                        pass.lockUnavailable(), retryInterval);
-            } catch (Throwable t) {
-                // Rethrows a MaestroControlFlowError (ending the thread through
-                // its uncaught handler); contains and logs everything else.
-                guard.failed(t);
-            }
-            try {
-                if (stopRequested.await(retryInterval.toNanos(), TimeUnit.NANOSECONDS)) {
-                    break;
-                }
-            } catch (InterruptedException e) {
-                // Not from requestStop(), which never interrupts; end as asked.
-                Thread.currentThread().interrupt();
-                break;
-            }
-        }
-        logger.debug("One-shot startup recovery stopped before a pass completed");
+        logger.info("Maestro startup recovery (recovery poller disabled) adopted {} workflow(s) without "
+                + "a capacity check; runs beyond a task queue's bound wait for their slots", pass.adopted());
+        return Next.done();
     }
 }

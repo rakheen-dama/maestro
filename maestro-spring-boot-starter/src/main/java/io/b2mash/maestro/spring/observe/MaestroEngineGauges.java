@@ -1,13 +1,18 @@
 package io.b2mash.maestro.spring.observe;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
 /**
  * Registers the four node-local gauges: {@code maestro.workflows.running}
  * and {@code maestro.workflows.parked} from the observability design doc
- * §2.2 / §2.3, {@code maestro.wake.permits} and {@code maestro.recovery.deferred}.
+ * §2.2 / §2.3, {@code maestro.wake.permits} and {@code maestro.recovery.deferred};
+ * and the function counter {@code maestro.observer.errors} (Issue 81), which
+ * reads {@link WorkflowExecutor#observerErrorCount()} — counted by the
+ * executor, not through an observer, because the observer that failed may be
+ * the Micrometer one.
  *
  * <p>Kept as a separate holder bean from {@link MicrometerEngineObserver}
  * because gauges need the {@code WorkflowExecutor} bean, while the counters
@@ -52,13 +57,15 @@ public final class MaestroEngineGauges {
     /**
      * Registers the four gauges {@code maestro.workflows.running}, {@code
      * maestro.workflows.parked}, {@code maestro.wake.permits} and {@code
-     * maestro.recovery.deferred} against {@code executor}.
+     * maestro.recovery.deferred}, and the function counter {@code
+     * maestro.observer.errors}, against {@code executor}.
      *
      * @param registry the Micrometer registry the gauges are registered against
      * @param executor the executor whose {@link WorkflowExecutor#runningCount()},
      *                 {@link WorkflowExecutor#parkedCount()},
-     *                 {@link WorkflowExecutor#wakePermitCount()} and
-     *                 {@link WorkflowExecutor#recoveryDeferredCount()} back the gauges
+     *                 {@link WorkflowExecutor#wakePermitCount()},
+     *                 {@link WorkflowExecutor#recoveryDeferredCount()} and
+     *                 {@link WorkflowExecutor#observerErrorCount()} back the meters
      */
     public MaestroEngineGauges(MeterRegistry registry, WorkflowExecutor executor) {
         this.executor = executor;
@@ -76,6 +83,11 @@ public final class MaestroEngineGauges {
                 .description("Recoverable workflows this node's latest full recovery pass left unadopted "
                         + "for lack of task-queue capacity")
                 .strongReference(true)
+                .register(registry);
+        // No tags: the log names the callback and the delegate.
+        FunctionCounter.builder("maestro.observer.errors", this.executor, WorkflowExecutor::observerErrorCount)
+                .description("Observer callbacks that threw and were contained (logged WARN once per callback "
+                        + "and delegate)")
                 .register(registry);
     }
 }

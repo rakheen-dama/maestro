@@ -17,6 +17,7 @@ import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.model.WorkflowEvent;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
+import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
@@ -170,7 +171,7 @@ public final class SagaManager {
         this.lifecycleEventSink = lifecycleEventSink;
         this.serializer = serializer;
         this.serviceName = serviceName;
-        this.observer = observer;
+        this.observer = CompositeEngineObserver.contain(observer);
     }
 
     /**
@@ -272,12 +273,12 @@ public final class SagaManager {
             // Emitted BEFORE the append: unlike the executor's appendEvent,
             // this one rethrows DuplicateEventException so the run stands
             // down, and emitting after it would report a compensation phase
-            // that started as a STALE_RUN stand-down instead. Contained, so a
-            // throwing observer cannot abort a compensation phase that must
-            // run (it would escape compensate(), skip the FAILED transition,
-            // and leave the instance stuck in COMPENSATING).
-            emit("workflowCompensating", ctx.workflowId(), () -> observer.workflowCompensating(
-                    new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName)));
+            // that started as a STALE_RUN stand-down instead. The observer is
+            // contained (Issue 81), so a throwing observer cannot abort a
+            // compensation phase that must run (it would escape compensate(),
+            // skip the FAILED transition, and leave the instance stuck in
+            // COMPENSATING).
+            observer.workflowCompensating(new WorkflowInfo(ctx.workflowId(), ctx.workflowType(), serviceName));
 
             appendEvent(ctx, startedSeq, EventType.COMPENSATION_STARTED, "$maestro:compensation", null);
             publishLifecycleEvent(ctx, "$maestro:compensation", LifecycleEventType.COMPENSATION_STARTED);
@@ -987,28 +988,6 @@ public final class SagaManager {
         } catch (Exception e) {
             logger.warn("Failed to record compensation step failure for '{}' in workflow '{}'",
                     stepName, ctx.workflowId(), e);
-        }
-    }
-
-    /**
-     * Invokes one observer callback, containing a misbehaving observer.
-     *
-     * <p>Since coordinator Ruling 4, containment is structural at the seam:
-     * {@link io.b2mash.maestro.core.observe.CompositeEngineObserver#of} always
-     * wraps. This guard stays as depth — the constructors accept <em>any</em>
-     * {@code EngineObserver}, so nothing forces an embedder or a test wiring
-     * the engine by hand through {@code of(...)}, and an escape here would
-     * abort a compensation phase and strand the instance in
-     * {@code COMPENSATING}. {@code RuntimeException} only: {@code Error}s (the
-     * engine's control-flow signals) always propagate, so a shutdown or
-     * terminate landing mid-compensation still unwinds this thread.
-     */
-    private void emit(String callback, String workflowId, Runnable emission) {
-        try {
-            emission.run();
-        } catch (RuntimeException e) {
-            logger.warn("EngineObserver.{} threw for workflow '{}' — ignoring: {}",
-                    callback, workflowId, e.toString());
         }
     }
 
