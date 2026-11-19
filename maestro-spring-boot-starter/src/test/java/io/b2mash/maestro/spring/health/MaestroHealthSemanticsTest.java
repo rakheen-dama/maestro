@@ -87,7 +87,7 @@ class MaestroHealthSemanticsTest {
     }
 
     private static MaestroHealthIndicator.Inputs inputs(String store, List<LoopSnapshot> loops) {
-        return new MaestroHealthIndicator.Inputs(store, null, loops, 0, Duration.ofSeconds(30), NOW, 0);
+        return new MaestroHealthIndicator.Inputs(store, null, loops, 0, Duration.ofSeconds(30), 0);
     }
 
     /**
@@ -206,7 +206,7 @@ class MaestroHealthSemanticsTest {
         var renewer = new LoopSnapshot("instance-lock-renewer", LoopRole.CRITICAL, LoopSnapshot.State.RUNNING, 0,
                 null, NOW.minusSeconds(40), Duration.ofSeconds(5), null, null, false, Map.of());
         var in = new MaestroHealthIndicator.Inputs("reachable", null, healthyLoopsBut(renewer), 1,
-                Duration.ofSeconds(30), NOW, 1);
+                Duration.ofSeconds(30), 1);
         assertThat(indicator().assess(in).getStatus()).isEqualTo(Status.UP);
     }
 

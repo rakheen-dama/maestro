@@ -182,7 +182,7 @@ class PostgresWakeListenerLoopErrorTest {
      * first failure of a streak); the session is still kept.
      */
     @Test
-    @DisplayName("an Error from the driver is logged at ERROR, the loop backs off, then polls and dispatches again")
+    @DisplayName("an Error from the driver is logged at WARN, the loop backs off, then polls and dispatches again")
     void anErrorFromTheDriverIsContainedAndTheLoopWaitsBeforeItPollsAgain() throws Exception {
         var listener = track(scripted.newListener());
         var woken = new CountDownLatch(1);
@@ -198,23 +198,24 @@ class PostgresWakeListenerLoopErrorTest {
         var starts = scripted.pollStartNanos();
         var gap = Duration.ofNanos(starts.get(1) - starts.get(0));
         assertTrue(gap.compareTo(Duration.ofMillis(900)) >= 0, "the back-off after an Error: " + gap);
-        assertTrue(errors().stream().anyMatch(m -> m.contains("Background loop 'wake-listener' failed")
+        assertTrue(warnings().stream().anyMatch(m -> m.contains("Background loop 'wake-listener' failed")
                         && m.contains("java.lang.NoClassDefFoundError")),
-                "the contained Error is logged at ERROR: " + errors());
+                "the contained Error is logged at WARN (an optimisation loop, P2b review m6): " + warnings());
         assertTrue(listener.isConnected());
     }
 
     /**
      * Issue 65 (P2 task 6): a driver {@code Error} that repeats on every poll
      * takes the supervisor's back-off — one second, doubling to 30 s — and its
-     * rate-limited log: one {@code ERROR} when the streak starts, {@code DEBUG}
-     * for the repeats, a reminder at most every five minutes. Before, every
-     * poll paused one second and logged at {@code ERROR} with the stack trace,
-     * about 3,600 lines an hour. The session is kept: an {@code Error} says
-     * nothing about the connection.
+     * rate-limited log: one {@code WARN} when the streak starts (an
+     * optimisation loop, P2b review m6), {@code DEBUG} for the repeats, a
+     * reminder at most every five minutes. Before, every poll paused one
+     * second and logged at {@code ERROR} with the stack trace, about 3,600
+     * lines an hour. The session is kept: an {@code Error} says nothing about
+     * the connection.
      */
     @Test
-    @DisplayName("a driver Error on every poll takes a growing back-off and is logged at ERROR once")
+    @DisplayName("a driver Error on every poll takes a growing back-off and is logged at WARN once")
     void aDriverErrorOnEveryPollBacksOffAndIsRateLimited() {
         scripted.failPollsWith(() -> {
             throw new NoClassDefFoundError("org/postgresql/Missing");
@@ -227,8 +228,10 @@ class PostgresWakeListenerLoopErrorTest {
         var secondGap = Duration.ofNanos(starts.get(2) - starts.get(1));
         assertTrue(secondGap.compareTo(Duration.ofMillis(1900)) >= 0,
                 "the back-off grows while the Error repeats: " + secondGap);
-        var loud = errors().stream().filter(m -> m.contains("java.lang.NoClassDefFoundError")).toList();
-        assertEquals(1, loud.size(), "one ERROR for the streak, not one per poll: " + loud);
+        var loud = warnings().stream().filter(m -> m.contains("java.lang.NoClassDefFoundError")).toList();
+        assertEquals(1, loud.size(), "one WARN for the streak, not one per poll: " + loud);
+        assertEquals(List.of(), errors().stream().filter(m -> m.contains("NoClassDefFoundError")).toList(),
+                "an optimisation loop's failure never logs at ERROR");
         assertTrue(listener.isConnected(), "a driver Error keeps the session");
         assertEquals(1, scripted.events().stream().filter(e -> e.startsWith("LISTEN")).count(),
                 "no reconnect after an Error");
@@ -434,6 +437,16 @@ class PostgresWakeListenerLoopErrorTest {
         synchronized (listenerLog) {
             return listenerLog.list.stream()
                     .filter(e -> e.getLevel() == Level.INFO)
+                    .map(ILoggingEvent::getFormattedMessage)
+                    .toList();
+        }
+    }
+
+    /** @return the formatted messages the listener and its supervisor logged at {@code WARN} */
+    private List<String> warnings() {
+        synchronized (listenerLog) {
+            return listenerLog.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN)
                     .map(ILoggingEvent::getFormattedMessage)
                     .toList();
         }

@@ -29,14 +29,18 @@ import java.util.function.LongSupplier;
  * <pre>
  * sleep(initialDelay)                         — on the stop latch
  * while not stopping:
- *     next = body.iterate(ctx)                — a success ends a failure streak
+ *     next = body.iterate(ctx)                — a success ends a failure streak,
+ *                                               also before a Next.await wait
  *     on a throwable:
  *         MaestroControlFlowError  → rethrown: the loop ends DEAD (STOPPED if stopping)
  *         anything, while stopping → DEBUG, uncounted; the loop ends
  *         anything else            → streak + 1, logged by the cadence below,
  *                                    an Error reported to backgroundLoopError;
- *                                    next = the spec's back-off
+ *                                    the spec's back-off, waited through its
+ *                                    BackoffWait; then the next iteration
  *     Next.done() → the loop ends DONE; otherwise wait as next says
+ *                   (a Next.await wait that throws takes the success back:
+ *                   the streak continues, previous streak + 1)
  * finally: body.onExit(), then the end is published
  * </pre>
  *
@@ -59,7 +63,10 @@ import java.util.function.LongSupplier;
  * counted in the streak and logged, not reported to the observer.
  *
  * <h2>Log cadence</h2>
- * <p>One {@code ERROR} with the stack trace when a streak starts,
+ * <p>For an {@link LoopRole#OPTIMISATION} loop (the wake listener) the two
+ * loud lines below are {@code WARN}, and the first has no stack trace: its
+ * failure costs latency, not correctness, and a routine database failover must
+ * not page. Otherwise: one {@code ERROR} with the stack trace when a streak starts,
  * {@code DEBUG} for repeats, one {@code ERROR} reminder at most every
  * {@link #REMINDER_INTERVAL} while it continues, and one {@code INFO} when the
  * loop recovers. A loop whose back-off is at least {@code REMINDER_INTERVAL}
@@ -111,24 +118,30 @@ public final class LoopSupervisor {
      * loop's thread (the single writer).
      */
     private record Status(LoopSnapshot.State state, int streak, long streakStartNanos,
-                          @Nullable Instant failingSince, @Nullable Instant lastSuccess,
+                          @Nullable Instant failingSince, @Nullable Instant lastSuccess, long lastSuccessNanos,
                           @Nullable String lastFailureType, long iterationStartNanos, Map<String, Object> notes) {
 
         Status withState(LoopSnapshot.State next) {
-            return new Status(next, streak, streakStartNanos, failingSince, lastSuccess, lastFailureType,
-                    NOT_IN_ITERATION, notes);
+            return new Status(next, streak, streakStartNanos, failingSince, lastSuccess, lastSuccessNanos,
+                    lastFailureType, NOT_IN_ITERATION, notes);
         }
 
         Status inIteration(long nanos) {
-            return new Status(state, streak, streakStartNanos, failingSince, lastSuccess, lastFailureType, nanos,
-                    notes);
+            return new Status(state, streak, streakStartNanos, failingSince, lastSuccess, lastSuccessNanos,
+                    lastFailureType, nanos, notes);
         }
 
         Status withNote(String key, Object value) {
             var copy = new HashMap<>(notes);
             copy.put(key, value);
-            return new Status(state, streak, streakStartNanos, failingSince, lastSuccess, lastFailureType,
-                    iterationStartNanos, Map.copyOf(copy));
+            return new Status(state, streak, streakStartNanos, failingSince, lastSuccess, lastSuccessNanos,
+                    lastFailureType, iterationStartNanos, Map.copyOf(copy));
+        }
+
+        /** This status with {@code earlier}'s streak and last success: an iteration taken back. */
+        Status withStreakOf(Status earlier) {
+            return new Status(state, earlier.streak, earlier.streakStartNanos, earlier.failingSince,
+                    earlier.lastSuccess, earlier.lastSuccessNanos, earlier.lastFailureType, NOT_IN_ITERATION, notes);
         }
     }
 
@@ -145,6 +158,12 @@ public final class LoopSupervisor {
     private final CountDownLatch exited = new CountDownLatch(1);
     private final AtomicReference<Status> status;
     private volatile boolean started;
+    /**
+     * The status before an iteration that returned {@code Next.await} published
+     * its success: restored, plus one failure, if its wait throws. The loop's
+     * thread only.
+     */
+    private @Nullable Status beforeAwait;
     /** When the last loud ({@code ERROR}) failure line was logged; the loop's thread only. */
     private long lastLoudNanos;
 
@@ -155,7 +174,7 @@ public final class LoopSupervisor {
         this.observer = CompositeEngineObserver.contain(observer);
         this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
         this.wallClock = Objects.requireNonNull(wallClock, "wallClock");
-        this.status = new AtomicReference<>(new Status(LoopSnapshot.State.STARTING, 0, 0, null, null, null,
+        this.status = new AtomicReference<>(new Status(LoopSnapshot.State.STARTING, 0, 0, null, null, 0, null,
                 NOT_IN_ITERATION, Map.of()));
     }
 
@@ -272,8 +291,9 @@ public final class LoopSupervisor {
         var streakAge = s.streak() > 0 ? Duration.ofNanos(now - s.streakStartNanos()) : null;
         var inIterationFor = s.iterationStartNanos() == NOT_IN_ITERATION
                 ? null : Duration.ofNanos(now - s.iterationStartNanos());
+        var sinceLastSuccess = s.lastSuccess() == null ? null : Duration.ofNanos(now - s.lastSuccessNanos());
         return new LoopSnapshot(spec.name(), spec.role(), state, s.streak(), s.failingSince(), s.lastSuccess(),
-                null,
+                sinceLastSuccess,
                 s.lastFailureType(), inIterationFor, spec.failing().isFailing(s.streak(), streakAge), s.notes());
     }
 
@@ -293,10 +313,13 @@ public final class LoopSupervisor {
                     next = body.iterate(context);
                     clearStrayInterrupt();
                     if (next instanceof Next.Await) {
-                        // Not a success yet: the iteration includes its custom
-                        // wait, which may still fail (PR #74 review). awaitCustom
-                        // commits the outcome.
-                        status.set(status.get().inIteration(NOT_IN_ITERATION));
+                        // Published before the wait (P2b review M1): the recovery
+                        // poller's wait lasts a whole poll interval, and a loop that
+                        // has recovered must not read failing through it. The wait
+                        // may still fail (PR #74 review): awaitCustom then takes
+                        // this success back, so the streak continues.
+                        beforeAwait = status.get();
+                        recordSuccess();
                     } else {
                         succeeded();
                     }
@@ -306,7 +329,10 @@ public final class LoopSupervisor {
                     if (failed(t) == Logged.STOPPING) {
                         break;
                     }
-                    next = Next.after(spec.backoff().after(status.get().streak()));
+                    if (!backOff()) {
+                        break;
+                    }
+                    continue;
                 }
                 if (next instanceof Next.Done) {
                     done = true;
@@ -362,10 +388,9 @@ public final class LoopSupervisor {
             case Next.Done _ -> false;
             // Checked before the wait is armed: a stop that landed during the
             // iteration ran the stop hooks before anyone waited (review F4).
-            // The iteration succeeds once its wait has not thrown.
             case Next.Await await -> {
                 if (stopRequested.get()) {
-                    succeeded();
+                    beforeAwait = null;
                     yield false;
                 }
                 yield awaitCustom(await.loopWait());
@@ -374,29 +399,60 @@ public final class LoopSupervisor {
     }
 
     /**
-     * Runs a body's own wait and commits the iteration's outcome: a wait that
-     * returns (or is interrupted) completes a successful iteration; one that
-     * throws fails it, so the streak grows across such iterations.
+     * Runs a body's own wait. The iteration's success was published before it
+     * (P2b review M1); a wait that returns (or is interrupted) keeps it and
+     * logs the recovery, if there was a streak. A wait that throws takes the
+     * success back and fails the iteration, so the streak continues across
+     * such iterations — previous streak plus one (PR #74 review).
      */
     private boolean awaitCustom(LoopWait wait) {
+        var before = beforeAwait;
+        beforeAwait = null;
         try {
             var goOn = wait.await(context);
-            succeeded();
+            logRecovery(before == null ? 0 : before.streak());
             return goOn && !stopRequested.get();
         } catch (InterruptedException e) {
             clearStrayInterrupt();
-            succeeded();
+            logRecovery(before == null ? 0 : before.streak());
             return !stopRequested.get();
         } catch (Throwable t) {
             clearStrayInterrupt();
+            if (before != null) {
+                status.set(status.get().withStreakOf(before));
+            }
             if (failed(t) == Logged.STOPPING) {
                 return false;
             }
-            return context.sleep(spec.backoff().after(status.get().streak()));
+            return backOff();
         }
     }
 
-    /** Nothing in Maestro interrupts a supervised thread: a stray interrupt is cleared, never read as a stop. */
+    /**
+     * Waits out the back-off after a failure, through the spec's
+     * {@link BackoffWait}.
+     *
+     * @return {@code false} when the loop should stop
+     */
+    private boolean backOff() {
+        var backoff = spec.backoff().after(status.get().streak());
+        try {
+            return spec.backoffWait().await(context, backoff) && !stopRequested.get();
+        } catch (InterruptedException e) {
+            clearStrayInterrupt();
+            return !stopRequested.get();
+        } catch (Throwable t) {
+            if (t instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            // A body's back-off wait that throws: sleep the back-off instead, so a
+            // failing loop can neither spin nor end on it.
+            log(t, () -> logger.warn("Background loop '{}': its back-off wait threw {}; sleeping the back-off",
+                    spec.name(), describe(t)));
+            return context.sleep(backoff);
+        }
+    }
+
     private void clearStrayInterrupt() {
         if (Thread.interrupted() && !stopRequested.get()) {
             // On the failure arm's path: a logger that throws must not skip
@@ -434,23 +490,35 @@ public final class LoopSupervisor {
         var n = s.streak() + 1;
         var streakStart = n == 1 ? now : s.streakStartNanos();
         var failingSince = n == 1 ? wallClock.instant() : s.failingSince();
-        status.set(new Status(s.state(), n, streakStart, failingSince, s.lastSuccess(),
+        status.set(new Status(s.state(), n, streakStart, failingSince, s.lastSuccess(), s.lastSuccessNanos(),
                 failure.getClass().getName(), NOT_IN_ITERATION, s.notes()));
         Logged logged;
         if (n == 1) {
             lastLoudNanos = now;
             logged = Logged.FIRST;
             var retry = spec.backoff().after(1);
-            log(failure, () -> logger.error("Background loop '{}' failed ({}); it keeps running and retries every "
-                            + "{} — {}",
-                    spec.name(), describe(failure), plain(retry), whatFollows(retry), failure));
+            if (quiet()) {
+                // An optimisation loop (the wake listener): its failure costs
+                // latency, not correctness, so a routine failover must not page —
+                // WARN, without the stack trace (design note §7).
+                log(failure, () -> logger.warn("Background loop '{}' failed ({}); it keeps running and retries "
+                                + "after {} — {}",
+                        spec.name(), describe(failure), plain(retry), whatFollows(retry)));
+            } else {
+                log(failure, () -> logger.error("Background loop '{}' failed ({}); it keeps running and retries "
+                                + "every {} — {}",
+                        spec.name(), describe(failure), plain(retry), whatFollows(retry), failure));
+            }
         } else if (now - lastLoudNanos >= REMINDER_INTERVAL.toNanos()) {
             lastLoudNanos = now;
             logged = Logged.REMINDER;
             var minutes = TimeUnit.NANOSECONDS.toMinutes(now - streakStart);
-            log(failure, () -> logger.error(
-                    "Background loop '{}' is still failing: {} consecutive failure(s) over {} min; latest: {}",
-                    spec.name(), n, minutes, describe(failure)));
+            var line = "Background loop '{}' is still failing: {} consecutive failure(s) over {} min; latest: {}";
+            if (quiet()) {
+                log(failure, () -> logger.warn(line, spec.name(), n, minutes, describe(failure)));
+            } else {
+                log(failure, () -> logger.error(line, spec.name(), n, minutes, describe(failure)));
+            }
         } else {
             logged = Logged.REPEAT;
             log(failure, () -> logger.debug("Background loop '{}' failed again ({} in a row)", spec.name(), n,
@@ -472,17 +540,33 @@ public final class LoopSupervisor {
      * @return {@code true} when a streak ended and the recovery line was logged
      */
     boolean succeeded() {
+        var n = recordSuccess();
+        logRecovery(n);
+        return n > 0;
+    }
+
+    /**
+     * Publishes a success — the streak ends, the last success is now — without
+     * logging it.
+     *
+     * @return the streak it ended
+     */
+    private int recordSuccess() {
         var s = status.get();
-        var n = s.streak();
-        status.set(new Status(s.state(), 0, 0, null, wallClock.instant(), null, NOT_IN_ITERATION, s.notes()));
+        status.set(new Status(s.state(), 0, 0, null, wallClock.instant(), nanoTime.getAsLong(), null,
+                NOT_IN_ITERATION, s.notes()));
+        return s.streak();
+    }
+
+    /** Logs the recovery from a streak of {@code n}; nothing for none. */
+    private void logRecovery(int n) {
         if (n == 0) {
-            return false;
+            return;
         }
         // Contained: a logger that throws must not turn this success into a
         // counted failure (PR #74 review audit).
         quietly(() -> logger.info("Background loop '{}' recovered after {} consecutive failure(s)", spec.name(),
                 n));
-        return true;
     }
 
     /**
@@ -547,11 +631,17 @@ public final class LoopSupervisor {
      * whose back-off is at least {@link #REMINDER_INTERVAL} never fails twice
      * within it, so each of its further failures is a reminder.
      */
-    private static String whatFollows(Duration retry) {
+    /** Whether failures are logged at {@code WARN} rather than {@code ERROR}: an optimisation loop. */
+    private boolean quiet() {
+        return spec.role() == LoopRole.OPTIMISATION;
+    }
+
+    private String whatFollows(Duration retry) {
+        var level = quiet() ? "WARN" : "ERROR";
         return retry.compareTo(REMINDER_INTERVAL) < 0
-                ? "further failures are logged at DEBUG, with an ERROR reminder at most every 5 minutes while they "
-                        + "continue"
-                : "each further failure is logged at ERROR, without the stack trace, until it recovers";
+                ? "further failures are logged at DEBUG, with " + (quiet() ? "a WARN" : "an ERROR")
+                        + " reminder at most every 5 minutes while they continue"
+                : "each further failure is logged at " + level + ", without the stack trace, until it recovers";
     }
 
     /** {@code d} in one plain unit: {@code 50 ms}, {@code 5 s}, {@code 10 min}, {@code 1 h}. */

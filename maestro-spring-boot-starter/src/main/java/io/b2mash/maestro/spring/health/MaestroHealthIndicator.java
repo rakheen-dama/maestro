@@ -11,7 +11,6 @@ import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.boot.health.contributor.Status;
 
 import java.time.Duration;
-import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -216,7 +215,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
     public Health health() {
         var storeProbe = probeStore();
         return assess(new Inputs(storeProbe.status(), storeProbe.exception(), executor.loops(),
-                executor.instanceLocksHeld(), executor.instanceLockTtl(), Instant.now(), executor.runningCount()));
+                executor.instanceLocksHeld(), executor.instanceLockTtl(), executor.runningCount()));
     }
 
     /**
@@ -229,11 +228,10 @@ public class MaestroHealthIndicator implements HealthIndicator {
      * @param loops          {@code WorkflowExecutor.loops()}
      * @param locksHeld      instance locks this node holds
      * @param lockTtl        the instance lock TTL
-     * @param now            the wall clock, for the age of a last success
      * @param runningCount   workflows running here
      */
     record Inputs(String storeStatus, @Nullable Throwable storeException, List<LoopSnapshot> loops, int locksHeld,
-                  Duration lockTtl, Instant now, int runningCount) {
+                  Duration lockTtl, int runningCount) {
     }
 
     /** The status and details for {@code in}; see the class Javadoc. */
@@ -394,19 +392,21 @@ public class MaestroHealthIndicator implements HealthIndicator {
             return new PollerState(false, true);
         }
         var running = renewer.running();
-        var stale = in.locksHeld() > 0 && noRenewalFor(renewer, in.now()).compareTo(in.lockTtl()) >= 0;
+        var stale = in.locksHeld() > 0 && noRenewalFor(renewer).compareTo(in.lockTtl()) >= 0;
         return new PollerState(running,
                 !running || renewer.consecutiveFailures() >= RENEWER_FAULT_STREAK || stale);
     }
 
     /**
-     * How long the renewer has gone without a successful pass: since its last
-     * success, or — before its first — for as long as its first pass has run.
+     * How long the renewer has gone without a successful pass, on the
+     * monotonic clock (design note §2; P2b review m4 — a wall-clock step must
+     * neither fake nor hide it): since its last success, or — before its
+     * first — for as long as its first pass has run.
      */
-    private static Duration noRenewalFor(LoopSnapshot renewer, Instant now) {
-        var lastSuccess = renewer.lastSuccess();
-        if (lastSuccess != null) {
-            return Duration.between(lastSuccess, now);
+    private static Duration noRenewalFor(LoopSnapshot renewer) {
+        var sinceLastSuccess = renewer.sinceLastSuccess();
+        if (sinceLastSuccess != null) {
+            return sinceLastSuccess;
         }
         var inIteration = renewer.inIterationFor();
         return inIteration != null ? inIteration : Duration.ZERO;

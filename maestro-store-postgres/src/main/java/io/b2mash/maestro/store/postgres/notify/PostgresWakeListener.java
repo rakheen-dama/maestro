@@ -86,8 +86,9 @@ import java.util.function.Function;
  * the batch is delivered at once. Anything a poll throws is contained by the
  * supervisor, counted in the loop's failure streak and followed by its
  * back-off, so a fault that repeats on every poll can neither spin the thread
- * nor flood the log: the supervisor logs a streak once at {@code ERROR}, then
- * at most every five minutes. An {@code SQLException} drops the session
+ * nor flood the log: the supervisor logs a streak once at {@code WARN} (an
+ * optimisation loop: a routine failover must not page), then a {@code WARN}
+ * reminder at most every five minutes. An {@code SQLException} drops the session
  * (closed); a {@code RuntimeException} drops it too, released as at close (the
  * one-second network timeout, {@code UNLISTEN *} — whose failure is ignored —
  * the previous timeout restored, then closed, with the interrupt flag clear),

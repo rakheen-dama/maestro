@@ -164,10 +164,10 @@ final class RecoveryPoller implements LoopBody {
 
     /**
      * How the poller is supervised: critical; the first pass at once; the
-     * waits between passes are the body's own (a failed pass waits
-     * {@code pollInterval}); failing after two failed passes in a row
-     * spanning at least {@code max(120 s, 2 × pollInterval)}; a stop wakes
-     * both waits.
+     * waits between passes are the body's own; a failed pass waits
+     * {@code pollInterval}, or less for a prompt ({@link #backOff}); failing
+     * after two failed passes in a row spanning at least
+     * {@code max(120 s, 2 × pollInterval)}; a stop wakes every wait.
      *
      * @return the poller's loop spec
      */
@@ -176,7 +176,22 @@ final class RecoveryPoller implements LoopBody {
         var twoMinutes = Duration.ofSeconds(120);
         return LoopSpec.of(LOOP_NAME, "maestro-recovery-poller-" + serviceName, LoopRole.CRITICAL, pollInterval)
                 .withFailing(FailingRule.streakFor(2, twoPeriods.compareTo(twoMinutes) > 0 ? twoPeriods : twoMinutes))
+                .withBackoffWait(this::backOff)
                 .withOnStop(this::wakeForStop);
+    }
+
+    /**
+     * The back-off after a failed pass (P2b review m2): {@code backoff} (one
+     * {@code pollInterval}), ended early by a prompt request at least
+     * {@code capacitySpacing} old — the same wait, and the same bound, as
+     * between successful passes: a deferred start is served about a second
+     * after it was deferred even while passes fail, and a storm of prompts
+     * runs at most one pass per {@code capacitySpacing} (≤ 1 s). The prompt is
+     * cleared when the wait returns, so a pending one causes one pass, not two.
+     * A stop ends it. The failure streak and its logging are the supervisor's.
+     */
+    private boolean backOff(LoopContext ctx, Duration backoff) throws InterruptedException {
+        return sleepUntilFullPassOrPrompt(ctx, System.nanoTime() + backoff.toNanos());
     }
 
     /** The default spacing of capacity passes, {@code min(1 s, pollInterval)}: at most one per second. */
@@ -198,8 +213,8 @@ final class RecoveryPoller implements LoopBody {
      * Requests that arrive while one is pending coalesce into it. Never
      * blocks; safe from any thread. While the poller is waiting for task-queue
      * capacity after a deferring pass, the prompt pass runs once that wait ends.
-     * A prompt that arrives while a failed pass waits out its back-off is
-     * served by the pass that follows the back-off.
+     * A prompt that arrives while a failed pass waits out its back-off ends the
+     * back-off the same way (P2b review m2).
      */
     void requestPromptPass() {
         synchronized (promptMonitor) {
@@ -286,8 +301,9 @@ final class RecoveryPoller implements LoopBody {
             awaitingCapacity = !cursors.isEmpty();
         } catch (RuntimeException | Error e) {
             // The cursor is discarded and the next attempt is a full pass,
-            // one pollInterval on (the supervisor's back-off).
-            first = false;
+            // one pollInterval on (the supervisor's back-off), or sooner for a
+            // prompt (backOff). `first` stays set: the first pass that succeeds
+            // is the startup pass health reports (P2b review m1).
             awaitingCapacity = false;
             cursors = new HashMap<>();
             nextFull = System.nanoTime() + pollNanos;

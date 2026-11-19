@@ -223,7 +223,7 @@ recorded for a terminate, a stand-down, an abandoned run or a converged loser.
 | `maestro.workflows.parked` | *(none)* | `WorkflowExecutor.parkedCount()` |
 | `maestro.wake.permits` | *(none)* | `WorkflowExecutor.wakePermitCount()` |
 | `maestro.recovery.deferred` | *(none)* | `WorkflowExecutor.recoveryDeferredCount()` |
-| `maestro.loop.failing` | `loop` (the eight names of `maestro.loop.failures`) | `1` while that loop's snapshot in `WorkflowExecutor.loops()` reads `failing` — its failure streak has reached its rule — else `0` (also before it starts, or for a loop this node does not run). What health's `degraded` list and the critical-loop `DOWN` read; alert on it |
+| `maestro.loop.failing` | `loop` (the eight names of `maestro.loop.failures`) | `1` while that loop's snapshot in `WorkflowExecutor.loops()` reads `failing` — its failure streak has reached its rule — else `0` (also before it starts, or for a loop this node does not run). What health's `degraded` list and the critical-loop `DOWN` read; alert on it. It does **not** show the renewer's "holds locks and has not renewed them for a whole lock TTL" `DOWN`: a renewer stuck inside `renewAll` builds no streak, so it reads `0` here while `maestro` reads `DOWN` — alert on the `maestro` health status (or `maestro.lock.renew.failures`) for that case |
 | `maestro.taskqueue.slots.used` | `queue`, `kind` | `TaskQueueGovernor.workflowSlotsInUse(queue)` (`kind=workflow`) / `activitySlotsInUse(queue)` (`kind=activity`) |
 
 `queue` is the `taskQueue` of a registered `@DurableWorkflow` that is bounded

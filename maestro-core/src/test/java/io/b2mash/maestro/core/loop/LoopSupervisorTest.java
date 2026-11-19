@@ -418,8 +418,10 @@ class LoopSupervisorTest {
         // Since the P2b review (M1) each iteration's success is published before
         // its wait and taken back when the wait throws, so the streak is read
         // once it holds rather than at an arbitrary instant.
-        awaitUntil(() -> loop.snapshot().failing());
-        assertTrue(loop.snapshot().consecutiveFailures() >= 2, "two failures in a row: failing under streak(2)");
+        awaitUntil(() -> {
+            var snapshot = loop.snapshot();                    // one reading: failing under streak(2)
+            return snapshot.failing() && snapshot.consecutiveFailures() >= 2;
+        });
     }
 
     /**
