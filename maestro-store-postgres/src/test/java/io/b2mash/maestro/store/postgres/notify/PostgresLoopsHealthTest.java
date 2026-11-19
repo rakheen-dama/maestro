@@ -134,6 +134,71 @@ class PostgresLoopsHealthTest {
         }
     }
 
+    /**
+     * PR #76 review 4629668602: an executor stop that lands while the
+     * listener is blocked borrowing a connection (an exhausted pool) is
+     * honoured when the borrow returns — no {@code LISTEN}, no poll, the
+     * connection handed straight back. The executor's stop does not go
+     * through the listener's own {@code close()}.
+     */
+    @Test
+    @DisplayName("an executor stop during a blocked borrow is honoured when the borrow returns")
+    void aStopDuringABlockedBorrowIsHonouredWhenTheBorrowReturns() {
+        var scripted = new ScriptedPgDataSource();
+        scripted.refuseConnections(true);                     // start()'s connect fails: the loop reconnects
+        var stopping = WorkflowExecutor.builder(store, new PayloadSerializer(new ObjectMapper()), "svc-stop")
+                .distributedLock(new InMemoryDistributedLock())
+                .lifecycleEventsEnabled(false)
+                .shutdownTimeout(Duration.ofMillis(300))
+                .build();
+        var listener = scripted.newListener();
+        try {
+            listener.start(stopping);                         // refused: the loop retries 1 s later
+            scripted.blockConnections();                      // ... and that borrow blocks
+            scripted.refuseConnections(false);
+            await("the reconnect is blocked in the pool").atMost(Duration.ofSeconds(5))
+                    .until(scripted::inBlockedConnect);
+
+            stopping.shutdown();                              // the executor stops the loop, not close()
+            scripted.releaseConnections();
+
+            await("the loop ended").atMost(Duration.ofSeconds(5)).until(() -> stopping.loops().stream()
+                    .filter(l -> l.name().equals(PostgresWakeListener.LOOP_NAME)).allMatch(l -> l.state().ended()));
+            var events = scripted.events();
+            assertFalse(events.contains("LISTEN " + ScriptedPgDataSource.CHANNEL), "no session after the stop: "
+                    + events);
+            assertFalse(events.contains("poll"), "no poll after the stop: " + events);
+            assertEquals("close", events.getLast(), "the borrowed connection was handed back: " + events);
+            assertFalse(listener.isConnected());
+        } finally {
+            scripted.releaseConnections();
+            listener.close();
+        }
+    }
+
+    /**
+     * PR #76 review 4629668610: the loop's last snapshot says it is not
+     * connected — {@code onExit} released the session, so a terminal snapshot
+     * still reading {@code connected=true} would be a lie.
+     */
+    @Test
+    @DisplayName("once the listener has stopped, its snapshot reads not connected")
+    void aStoppedListenerReadsNotConnected() {
+        var scripted = new ScriptedPgDataSource();
+        var listener = scripted.newListener();
+        listener.start(executor);
+        await("connected").atMost(Duration.ofSeconds(5)).until(() -> Boolean.TRUE.equals(wakeNotes().get("connected")));
+
+        listener.close();
+
+        assertEquals(false, wakeNotes().get("connected"), "the terminal snapshot: " + wakeNotes());
+    }
+
+    private java.util.Map<String, Object> wakeNotes() {
+        return executor.loops().stream().filter(l -> l.name().equals(PostgresWakeListener.LOOP_NAME))
+                .findFirst().orElseThrow().notes();
+    }
+
     /** A data source whose {@code getConnection} throws {@code failure.get()}, sneakily if checked. */
     private static DataSource failing(java.util.function.Supplier<Throwable> failure) {
         return (DataSource) Proxy.newProxyInstance(DataSource.class.getClassLoader(), new Class<?>[]{DataSource.class},

@@ -87,6 +87,10 @@ class WorkflowInstanceLockManagerCloseTest {
         lock.awaitBlockedRenewerEnded();
         assertFalse(manager.isRenewerRunning());
         assertEquals(List.of(), observer.lockRenewFailed(), "a routine shutdown must not fire renewal-failure alerts");
+        // PR #76 review 4629668506: one stop state gates both — the supervisor
+        // counts no failure either, and the streak stays clean.
+        assertEquals(List.of(), observer.loopFailures(), "the supervisor counted no failure while stopping");
+        assertEquals(0, manager.renewFailureStreak());
     }
 
     /**

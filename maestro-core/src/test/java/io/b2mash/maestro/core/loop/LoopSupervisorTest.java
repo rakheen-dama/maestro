@@ -1,6 +1,7 @@
 package io.b2mash.maestro.core.loop;
 
 import io.b2mash.maestro.core.exception.ExecutorShutdownException;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
@@ -422,6 +423,39 @@ class LoopSupervisorTest {
             var snapshot = loop.snapshot();                    // one reading: failing under streak(2)
             return snapshot.failing() && snapshot.consecutiveFailures() >= 2;
         });
+    }
+
+    /**
+     * PR #76 review 4629668520: a loop must not die because an observer threw.
+     * A {@code VirtualMachineError} from {@code backgroundLoopFailed} — which
+     * the composite rethrows for ordinary callbacks — is contained on the
+     * supervisor's failure-reporting path: the failure is still counted, the
+     * loop backs off and runs again, as it does for the same error from its
+     * body.
+     */
+    @Test
+    void aVirtualMachineErrorFromTheFailureObserverDoesNotEndTheLoop() {
+        var calls = new AtomicInteger();
+        var throwing = new EngineObserver() {
+            @Override
+            public void backgroundLoopFailed(String loop, String failureType) {
+                throw new OutOfMemoryError("observer (scripted)");
+            }
+
+            @Override
+            public void backgroundLoopError(String loop, String errorType) {
+                throw new OutOfMemoryError("observer (scripted)");
+            }
+        };
+        var loop = LoopSupervisor.start(fast("vme-observer"), ctx -> {
+            calls.incrementAndGet();
+            throw new AssertionError("the body fails");
+        }, throwing);
+        started.add(loop);
+        awaitUntil(() -> calls.get() >= 3);
+        var snapshot = loop.snapshot();
+        assertTrue(snapshot.running(), "the loop is still running: " + snapshot.state());
+        assertTrue(snapshot.consecutiveFailures() >= 2, "each failure still counted: " + snapshot);
     }
 
     /**

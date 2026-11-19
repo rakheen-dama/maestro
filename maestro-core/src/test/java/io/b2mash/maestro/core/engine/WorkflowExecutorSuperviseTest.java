@@ -62,6 +62,18 @@ class WorkflowExecutorSuperviseTest {
                 () -> executor.supervise(spec.withInitialDelay(Duration.ZERO), ctx -> Next.afterPeriod()));
     }
 
+    /**
+     * PR #76 review 4629668495: the renewer is listed in {@code loops()} from
+     * outside the supervised map, so its name is reserved: a loop of that name
+     * would hide the renewer's snapshot from the gauge and health.
+     */
+    @Test
+    void theRenewersNameIsReserved() {
+        var spec = LoopSpec.of("instance-lock-renewer", "test-impostor", LoopRole.CRITICAL, Duration.ofHours(1));
+        assertThrows(IllegalArgumentException.class, () -> executor.supervise(spec, ctx -> Next.afterPeriod()));
+        assertEquals(1, executor.loops().stream().filter(l -> l.name().equals("instance-lock-renewer")).count());
+    }
+
     @Test
     void theMigratedEngineLoopsAreListedUnderTheirFixedNames() {
         executor.startSignalJanitor(Duration.ofHours(1), Duration.ofDays(7));

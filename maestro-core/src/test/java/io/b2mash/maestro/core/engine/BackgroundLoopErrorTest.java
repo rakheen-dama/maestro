@@ -156,13 +156,22 @@ class BackgroundLoopErrorTest {
         };
         var body = new TimerPoller(slow, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10);
         var poller = RunningLoop.start(body.spec(), body, observer);
-        assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
+        Duration elapsed;
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
 
-        poller.requestStop();
-        release.countDown();
-        var started = System.nanoTime();
-        assertTrue(poller.awaitStopped(Duration.ofSeconds(5)));
-        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+            poller.requestStop();
+            release.countDown();
+            var started = System.nanoTime();
+            assertTrue(poller.awaitStopped(Duration.ofSeconds(5)));
+            elapsed = Duration.ofNanos(System.nanoTime() - started);
+        } finally {
+            // PR #76 review 4629668532: whatever failed above, the standalone
+            // poller is stopped and its store call released, bounded.
+            poller.requestStop();
+            release.countDown();
+            poller.awaitStopped(Duration.ofSeconds(5));
+        }
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
                 "the loop ended at once after its call, took " + elapsed);
@@ -190,13 +199,22 @@ class BackgroundLoopErrorTest {
         };
         var body = new TimerPoller(slow, executor, new InMemoryDistributedLock(), "svc", Duration.ofMinutes(10), 10);
         var poller = RunningLoop.start(body.spec(), body, observer);
-        assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
+        Duration elapsed;
+        try {
+            assertTrue(entered.await(5, TimeUnit.SECONDS), "the poller never reached the store");
 
-        poller.requestStop();
-        release.countDown();
-        var started = System.nanoTime();
-        assertTrue(poller.awaitStopped(Duration.ofSeconds(5)));
-        var elapsed = Duration.ofNanos(System.nanoTime() - started);
+            poller.requestStop();
+            release.countDown();
+            var started = System.nanoTime();
+            assertTrue(poller.awaitStopped(Duration.ofSeconds(5)));
+            elapsed = Duration.ofNanos(System.nanoTime() - started);
+        } finally {
+            // PR #76 review 4629668532: whatever failed above, the standalone
+            // poller is stopped and its store call released, bounded.
+            poller.requestStop();
+            release.countDown();
+            poller.awaitStopped(Duration.ofSeconds(5));
+        }
 
         assertTrue(elapsed.compareTo(Duration.ofSeconds(4)) < 0,
                 "the loop ended at once after its call, took " + elapsed);

@@ -28,6 +28,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -162,6 +163,60 @@ class MaestroHealthSemanticsTest {
         assertThat(health.getStatus()).isEqualTo(Status.DOWN);
         assertThat(health.getDetails()).containsEntry("instanceLockRenewerRunning", false)
                 .containsEntry("instanceLocksHeld", 1);
+    }
+
+    /**
+     * PR #76 review 4629668552: before the first successful renewal the
+     * staleness counts from the held lock's acquisition — never from the
+     * current attempt, which restarts after a failed one. TTL 1.5 s (renewal
+     * every 0.5 s): the first renewal fails after 1.2 s, the second hangs. The
+     * lock expired 1.5 s after it was taken; health must read DOWN then, not
+     * once the second attempt has itself run for a TTL (about 3.7 s).
+     */
+    @Test
+    void aFirstRenewalThatFailsDoesNotResetTheStaleness() throws Exception {
+        var calls = new AtomicInteger();
+        var hang = new CountDownLatch(1);
+        var lock = new RenewAllLock(() -> {
+            if (calls.incrementAndGet() == 1) {
+                try {
+                    Thread.sleep(1200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IllegalStateException("renewAll failed (scripted)");
+            }
+            try {
+                hang.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return Set.of();
+        });
+        try {
+            var executor = executor(new InMemoryWorkflowStore(), lock, Duration.ofMillis(1500));
+            executor.startWorkflow("wf-held", "AwaitForever", "default", null, AwaitForever::new, awaitForever());
+            var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false);
+
+            await("DOWN once the held lock is a TTL old").atMost(Duration.ofMillis(2600))
+                    .pollInterval(Duration.ofMillis(50))
+                    .until(() -> indicator.health().getStatus().equals(Status.DOWN));
+            assertThat((Integer) indicator.health().getDetails().get("instanceLockRenewerConsecutiveFailures"))
+                    .as("DOWN for the stale lock, not for a streak").isLessThan(2);
+        } finally {
+            hang.countDown();
+        }
+    }
+
+    /** PR #76 review 4629668552: an idle node holds no lock, so nothing is stale however long it runs. */
+    @Test
+    void anIdleNodeHoldingNoLocksIsUpPastTheTtl() {
+        var executor = executor(new InMemoryWorkflowStore(), new RenewAllLock(() -> {
+            throw new IllegalStateException("never called without locks");
+        }), Duration.ofMillis(300));
+        var indicator = new MaestroHealthIndicator(new InMemoryWorkflowStore(), executor, false, false);
+        await().during(Duration.ofMillis(900)).atMost(Duration.ofSeconds(3))
+                .until(() -> indicator.health().getStatus().equals(Status.UP));
     }
 
     /**
