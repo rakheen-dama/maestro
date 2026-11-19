@@ -38,9 +38,9 @@ Every open issue carries one label, set against `docs/support-matrix.md`:
 Within a label the list is ranked, most important first. Five issues were closed by this
 triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Pilot readiness P2 (tasks 1–3) resolved [81](#issue-81) and [86](#issue-86), and part 2 of [68](#issue-68). Nothing below was deleted or renumbered; each section keeps its text and anchor.
 
-**`blocks-pilot`** (9 open; 80 and 70 closed by P1, 2026-11-18)
+**`blocks-pilot`** (8 open; 80 and 70 closed by P1, 2026-11-18; 41 resolved by P4 for `0.3.0-rc.1` → `main`)
 
-1. [41](#issue-41) — An older node replaying history appended by a newer node is untested
+1. ~~[41](#issue-41) — An older node replaying history appended by a newer node is untested~~ — resolved for `0.3.0-rc.1` → `main` (P4)
 2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 3. ~~[80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it~~ — closed (P1)
 4. ~~[70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown~~ — closed (P1)
@@ -3819,7 +3819,21 @@ pending-migration messages are unchanged.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Rolling upgrade from the previous release is supported by decision; the two-build rolling test (P4) is what proves it.
 
-> **Open.** Filed by the final review of WP9
+> **Resolved for the pair `0.3.0-rc.1` → `main` (pilot-readiness P4, 2026-11-19).**
+> The two-build rolling test (`RollingUpgradeIT`, task `rollingUpgradeTest`)
+> runs a node of `0.3.0-rc.1` against a database a node of this build wrote, in
+> every scenario's rollback direction, and fails if that node fails or
+> compensates a run that should not fail, loses a signal, or leaves anything
+> but a prefix of the run's correct history; both release workflows run it
+> before publishing (`RELEASING.md`, "The release gate"), which is this
+> issue's "Done when". **What remains:** the bytes this build appends are
+> pinned only once its own release fixture is captured, so a payload change
+> made after `0.3.0-rc.1` is checked only by the rolling test's scenarios and
+> not by a frozen dump; the rolling scenarios cover signal, timer and saga
+> workflows, not every event type (`docs/operations.md` §10.1, "Not
+> promised").
+
+> **Was open.** Filed by the final review of WP9
 > (2026-11-12, branch `test/schema-upgrade-safety`). Recorded, not fixed.
 
 **Kind:** Testing gap — rolling deploy. **Severity:** Medium (no defect is

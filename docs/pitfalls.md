@@ -229,7 +229,7 @@ payment.charge(order);
 
 A history written before the change resolves to `DEFAULT_VERSION` and keeps the old path. Once no pre-change instance can still be running, raise the floor (`version("fraud-check", 1, 1)`) and delete the old branch. `maxSupported` must be a code constant.
 
-**What you see:** for an ungated change, the `NONDETERMINISTIC_HISTORY` stand-down from rule 4, on every in-flight instance of the type. If you raise `minSupported` above a running instance's recorded version, that instance fails with `UnsupportedWorkflowVersionException` (an ordinary failure: compensation runs and it ends `FAILED`).
+**What you see:** for an ungated change, the `NONDETERMINISTIC_HISTORY` stand-down from rule 4, on every in-flight instance of the type. If you raise `minSupported` above a running instance's recorded version, that instance fails with `UnsupportedWorkflowVersionException` (an ordinary failure: compensation runs and it ends `FAILED`). Today a *parked* instance that recorded steps after its `version()` call does not fail: it stands down as `stale_run` on every recovery pass until code carrying its branch is back (operations §10.2, P4 finding F1, open).
 
 **Test it:** `env.crashAfter(n)`, start on the old class, then `crash.recover(NewVersion.class)`. The gated version completes; an ungated one stands down. See `ReplayDeterminismTest` in `maestro-test`.
 

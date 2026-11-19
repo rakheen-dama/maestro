@@ -67,10 +67,13 @@ finding them by hand.
 | Setup | Status | Notes |
 |---|---|---|
 | All nodes of a service on one build | **Supported** | |
-| Rolling upgrade from the **previous release** (N-1 → N) | **Supported by decision; not yet proven** | Decided 2026-11-18. Today only a persisted history written at `cbf5a2a` is replayed by the current build (`upgrade.SeededHistoryUpgradeIT`). Old and new nodes running together is untested (Issue 41); the two-build rolling test is pilot-readiness P4. Follow `docs/operations.md` §10. |
-| Rollback N → N-1 | **Limited** | Possible only as `docs/operations.md` §10.1 describes (drain parked awaits first; roll forward after). |
+| Rolling upgrade from the **previous release** (N-1 → N) | **Supported** | Old and new nodes run together on one database through the rolling window: runs parked on either build (signal, timer, saga, compensation in flight) are resumed or woken by the other, and signal ids (`client:`, `kafka:`, `hdr:`) are stored once across builds. `RollingUpgradeIT` (task `rollingUpgradeTest`) runs a real node of the previous release beside this build; the release workflows run it before publishing. Persisted history of `cbf5a2a` and `0.3.0-rc.1` replays (`SeededHistoryUpgradeIT`). The promise, sentence by sentence with its test, and what is not promised: `docs/operations.md` §10.1. |
+| Rollback N → N-1 | **Supported, with limits** | The previous release either finishes a run this build parked or stands down with a prefix of its correct history (never `FAILED`, no lost signal); a node of this build must then finish it, and a saga may stay `COMPENSATING` until then. Roll forward. `docs/operations.md` §10.1 item 5. |
+| A fleet left on two builds after the rollout | **Untested** | The rolling window and its rollback are tested; a standing mixed fleet is not. Finish the rollout or roll back. |
+| An engine upgrade and a workflow-code change in one deploy | **Untested** | Each is tested on its own (`RollingUpgradeIT`; `WorkflowCodeChangeIT`). Deploy them separately. |
 | Version skew beyond the previous release (N-2 or older beside N, or an upgrade that skips a release) | **Not supported** | Upgrade one release at a time. |
-| Workflow code changed with runs in flight | **Supported as the versioning playbook describes** | `docs/operations.md` §10.2 and `docs/pitfalls.md`. A change the playbook calls unsafe stands down (`nondeterministic_history`) rather than failing the run. |
+| An experimental release (`X.Y.Z-exp.<topic>.<n>`) | **Not supported for real data** | For running a change to events, payloads or migrations beside the previous release before it merges; never against a database that matters (`RELEASING.md`, "Experimental releases"). |
+| Workflow code changed with runs in flight | **Supported as the versioning playbook describes** | `docs/operations.md` §10.2, §10.7 and `docs/pitfalls.md`. A run parked under the old code completes under a change the playbook calls safe; a change it calls unsafe stands down (`nondeterministic_history`, `unknown_event_payload`) rather than failing the run, keeps its signals, and finishes once the old code is back (`WorkflowCodeChangeIT`). Exception: raising `minSupported` above a parked run's recorded version stands it down as `stale_run` instead of failing it as §10.2 says (P4 finding F1). |
 
 ## Runtime
 
@@ -123,6 +126,7 @@ finding them by hand.
 | One lock and one transport type | `maestro.lock.type` accepts only `postgres`, `maestro.messaging.type` only `kafka` |
 | Topics are pre-created | `KafkaTopicVerifier` (`maestro.messaging.topics.verify-on-startup`) |
 | `WorkflowStore` is internal until 1.0 | Its Javadoc; this matrix |
+| A release resumes what the previous release parked | The release gate in `release.yml` and `publish-github-packages.yml`: the previous release's fixtures exist, and `rollingUpgradeTest` passes against it (`RELEASING.md`, "The release gate") |
 
 See also: `docs/operations.md` (multi-instance behaviour, versioning, the
 shared-table runbook), `docs/configuration.md` (every property), and

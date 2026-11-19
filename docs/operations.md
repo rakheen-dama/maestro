@@ -625,24 +625,116 @@ message. An older node reads the new `failedSequences` field of a newer
 (traced, not tested). The details are in `docs/release-notes.md`, "Mixed
 fleets", under the admin Retry entry.*
 
-### 10.1 The deploy rule has not changed: upgrade all nodes together
+### 10.1 The compatibility promise: build N beside build N-1
 
-*Supported skew (`docs/support-matrix.md`): a rolling upgrade from the
-**previous release** only. Old and new nodes running together is not yet
-proven by a test (Issue 41, pilot-readiness P4); skew beyond the previous
-release is not supported.*
+*Supported skew (`docs/support-matrix.md`): the **previous release** only.
+Every sentence below names the test that backs it; what no test backs is
+listed at the end as **not promised**. "N-1" is the newest row of
+`previousReleases` in `maestro-integration-tests/rolling-node/build.gradle.kts`
+(today `0.3.0-rc.1`), run as a real process of that release beside a node of
+this build on one database.*
 
-**Upgrade every node of a service together, or drain the service first.** The
-engine now stands down rather than failing when it meets history it cannot read
-(§10.3), but that is a **safety net for the rolling window**, not a licence to
-run a mixed fleet. A workflow whose next step only an upgraded node can read
-makes no progress on the old nodes; it simply waits, safely, to be adopted by a
-new one. Leave a fleet half-upgraded and those workflows wait indefinitely.
+**1. Build N resumes anything build N-1 parked, with the workflow code
+unchanged.** A run parked by N-1 on a signal, on a durable timer, or as a saga
+before its failing step is adopted by N after N-1 shuts down and finishes
+exactly as on one build: each step once, the steps after the park on N, a saga
+compensated once per step in LIFO order and `FAILED` by its own failure. A
+compensation N-1 was running when it was killed is finished by N; that
+compensation activity may run twice (the documented at-least-once window), every
+other one runs once. A stand-down on N fails the test. (`RollingUpgradeIT`:
+`signalParkedOnPreviousIsResumedByCurrent`, `timerParkedOnPreviousIsFiredByCurrent`,
+`sagaParkedOnPreviousIsCompensatedByCurrent`,
+`compensationInFlightOnPreviousIsFinishedByCurrent`.) The same holds for the
+persisted history N-1 and an earlier commit wrote — runs parked on timers, on
+timer-backed awaits and on signals, a run crashed mid-activity, a saga crashed
+mid-compensation, a saga parked mid-flight, failed runs awaiting a Retry,
+orphan signals and stored signal ids — replayed from a frozen dump
+(`SeededHistoryUpgradeIT` over the `cbf5a2a` and `v0_3_0_rc_1` fixtures;
+`SeededParkedSagaIT`), and for the schema N-1 migrated
+(`ShippedMigrationsFrozenTest`;
+`MaestroSchemaInitializerTest.aDatabaseMigratedByTheFrozenV030Rc1SetValidatesUnderThisBuild`).
 
-New event types are rare, so this is insurance, not a hot path.
+**2. … and with the workflow code changed in a way the playbook calls safe.**
+A run parked under the old code is resumed and completed by the edited code,
+replaying every recorded step, when the change is: a step inserted behind a
+`workflow.version()` gate, a step replaced behind one, `maxSupported` raised,
+or an activity interface renamed with its recorded group pinned by
+`@Activity(name = …)` (§10.2, §10.7; `WorkflowCodeChangeIT.Safe`). These run on
+one build: the code changes, the engine does not.
 
-**This release changes the `awaitSignal` layout — rollback requires draining
-parked awaits.** An await that parks now records `TIMER_SCHEDULED` at its slot
+**3. A change the playbook calls unsafe stands down as documented.** The run
+stands down with the reason and detail §10.3 and §10.7 give —
+`nondeterministic_history` for a step renamed, reordered, inserted or removed
+without a gate, an awaited signal renamed, a `sleep()` where an activity ran, a
+`parallel()` arity change, an argument built differently (`argsHash`), a
+compensation renamed or `parallelCompensation` flipped under a compensating
+saga; `unknown_event_payload` for an incompatible activity result type or
+workflow input shape. It writes nothing, is never marked `FAILED`, never
+compensates, keeps its signals, and the old code, redeployed, finishes it
+(`WorkflowCodeChangeIT.Unsafe`). **Exception, not as documented:** raising
+`minSupported` above a parked run's recorded version does not fail the run as
+§10.2 says; it stands down as `stale_run` on every recovery pass until the old
+branch is restored, which then finishes it
+(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`;
+P4 finding F1).
+
+**4. Rolling N-1 → N is supported.** While both builds run: a run parked on
+either build is woken through the other within NOTIFY latency, without leaving
+its owner (`parkedOnPreviousIsWokenThroughCurrent`,
+`parkedOnCurrentIsWokenThroughPrevious`); one client message id sent through
+both builds is stored once (`aSignalWithOneIdThroughPreviousThenCurrentIsStoredOnce`
+and the reverse); a Kafka record consumed by either build is stored under the
+same `kafka:<topicId>:<partition>:<offset>` id and consumed by a run parked on
+the other (`aKafkaSignalStoredByPreviousIsConsumedByARunOnCurrent` and the
+reverse); one `maestro-message-id` header id read by each build in turn in one
+consumer group is stored once as `hdr:<topic>:<id>`
+(`aHeaderIdSignalRepublishedThroughCurrentAfterPreviousIsStoredOnce` and the
+reverse); and a record redelivered to the other build after a rebalance is
+stored once (`aKafkaRecordRedeliveredToCurrentAfterARebalanceIsStoredOnce` and
+the reverse). A published N-1 also runs one workflow to completion as a plain
+consumer of its BOM (`ConsumerSmokeTest`, `maestro-integration-tests/consumer-smoke`).
+
+**5. Rollback N → N-1.** A node of N-1 that adopts a run N parked either
+finishes it correctly, or stands down having recorded only a prefix of the
+run's correct history: never `FAILED` or `TERMINATED`, never a compensation in
+a run that does not fail, never a lost signal; a node of N then takes the run
+back and finishes it. A saga whose rollback stand-down came during its
+compensation may stay `COMPENSATING` until a node of N returns. Roll forward to
+finish such runs. (`RollingUpgradeIT`: `signalParkedOnCurrentIsAdoptedByPrevious`,
+`timerParkedOnCurrentIsAdoptedByPrevious`, `sagaParkedOnCurrentIsCompensatedByPrevious`,
+`compensationInFlightOnCurrentIsFinishedByPrevious`; the rule is
+`RollingUpgradeIT`'s Javadoc and `RELEASING.md`, "The rolling test against
+previous releases".)
+
+**Not promised** (no test runs it):
+
+- Skew beyond the previous release (N-2 beside N, or an upgrade that skips a
+  release).
+- An engine upgrade and a workflow-code change in **one** deploy: item 2 is
+  tested on one build only. Deploy them separately.
+- A fleet left half-upgraded indefinitely: the tests cover the rolling window
+  and its rollback, not a standing mixed fleet.
+- A graceful (SIGTERM) deploy of a node while a compensation activity is
+  running: the tests kill that node (SIGKILL).
+- A timer fired by the timer leader of the other build while the run's owner
+  is alive.
+- The engine's own Kafka signal channel (`SignalMessage` envelopes, `env:`
+  ids), lifecycle events and admin events between builds.
+- An admin Retry or Terminate issued through one build for a run the other
+  build wrote (Issue 88's window needs a build older than N-1).
+- Anything an older build than N-1 wrote, beyond the frozen `cbf5a2a` history.
+
+New event types and payload changes are what break item 5; a release that
+changes events, payloads or migrations is first published as an experimental
+release and run beside N-1 (`RELEASING.md`, "Experimental releases").
+
+#### Older builds (before `0.3.0-rc.1`)
+
+The two paragraphs below are about builds older than the previous release;
+they are kept for databases that still hold history those builds wrote.
+
+**The two-slot `awaitSignal` layout (a build before `0.3.0-rc.1`) — rollback
+past it requires draining parked awaits.** An await that parks records `TIMER_SCHEDULED` at its slot
 and its outcome at the next one (the two-slot layout, `docs/release-notes.md`
 → "`awaitSignal` deadlines are durable timers"). Histories an older build wrote
 replay safely here, but **not the reverse**: an older node that adopts a
@@ -651,8 +743,8 @@ drift guard as `nondeterministic_history` (detail
 `stored=$maestro:awaitSignal:<name> type=TIMER_SCHEDULED`, the same step name
 the code performs), a pre-drift-guard build as `stale_run` when its outcome
 append collides with the occupied slot. Nothing is written, nothing is
-compensated, but the older node makes no progress on that workflow. So upgrade
-every node together, or drain parked awaits first; **after a rollback, roll
+compensated, but the older node makes no progress on that workflow. So never
+roll back past that layout with awaits parked; **after such a rollback, roll
 forward** — redeploying the older build again (§10.7's first remedy) does not
 heal these stand-downs.
 
@@ -679,13 +771,17 @@ for the two-step ship-then-raise-the-floor pattern and the rules.
 
 Operationally, what matters:
 
-- **`VERSION_MARKER` is a new event type in this release.** A node from the
-  previous version that adopts a workflow whose history contains one cannot
-  interpret it, and stands down (§10.3). This is exactly the case §10.1's rule
-  covers.
+- **`VERSION_MARKER` predates `0.3.0-rc.1`.** A node of a build older than
+  `VERSION_MARKER` that adopts a workflow whose history contains one cannot
+  interpret it, and stands down (§10.3).
 - Raising `minSupported` before every pre-change instance has drained fails
   those instances with `UnsupportedWorkflowVersionException` — a genuine,
   deterministic workflow failure: it ends `FAILED` and saga compensation runs.
+  **Not so for a run that recorded steps after its `version()` call** (every
+  parked run): today it stands down as `stale_run` on every recovery pass
+  instead, writing nothing, until code carrying its branch is redeployed
+  (`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`;
+  P4 finding F1, open).
   Recovery: restore code carrying the old branch, then use the admin **Retry**
   action. Retry never deletes a version marker recorded before the failure, so
   the retried run replays the same recorded version against the restored
@@ -1292,7 +1388,7 @@ purged anything logs one `INFO` line with its counts; a store failure logs
   for the drain rate and how to tune it. Set `maestro.retention.enabled:
   false` on every node to keep the old keep-forever behaviour, or raise the
   retentions first and lower them later.
-- **Mixed-version deploy** (§10.1 still applies): an older node's engine does
+- **Mixed-version deploy** (§10.1): an older node's engine does
   not know the sweeper and keeps running; it merely sees finished workflows
   disappear, which no active-path read depends on.
 - **Mixed-version deploy of the paced, service-scoped housekeeping:** a node of
