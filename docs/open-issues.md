@@ -36,18 +36,16 @@ Every open issue carries one label, set against `docs/support-matrix.md`:
 - **`limitation`** — known and documented; acceptable for the pilot.
 
 Within a label the list is ranked, most important first. Five issues were closed by this
-triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Pilot readiness P2 resolved [81](#issue-81) and [86](#issue-86) (tasks 1–3), and [67](#issue-67), [68](#issue-68), [73](#issue-73) and, by decision, [75](#issue-75) (tasks 4–5). Nothing below was deleted or renumbered; each section keeps its text and anchor.
+triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Pilot readiness P2 resolved [81](#issue-81) and [86](#issue-86) (tasks 1–3), [67](#issue-67), [68](#issue-68), [73](#issue-73) and, by decision, [75](#issue-75) (tasks 4–5), and [64](#issue-64) and [65](#issue-65) (task 6). Nothing below was deleted or renumbered; each section keeps its text and anchor.
 
-**`blocks-pilot`** (8)
+**`blocks-pilot`** (6)
 
 1. [41](#issue-41) — An older node replaying history appended by a newer node is untested
 2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 3. [80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it
 4. [70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown
 5. [69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`
-6. [64](#issue-64) — `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call
-7. [66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query
-8. [65](#issue-65) — The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors`
+6. [66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query
 
 **`blocks-1.0`** (10)
 
@@ -474,8 +472,8 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [61](#issue-61) | A history the lane walk cannot place falls back to the pre-WP3 delete-all Retry | Library gap — admin retry | Medium | `limitation` — Open |
 | [62](#issue-62) | A store that does not override `reopenFailedInstance` keeps the two-step pre-WP3 Retry | Library gap — SPI | Low | **Closed** (P3: out of scope) |
 | [63](#issue-63) | The dashboard reports "Retry command sent" for a Retry the engine refused | Library gap — operability | Medium | `limitation` — Open |
-| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | `blocks-pilot` — Partly resolved (WP5: the renewer; P2: every core engine loop); the lock cleaner open |
-| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | `blocks-pilot` — Open |
+| [64](#issue-64) | `PostgresLockCleanerScheduler.close()` interrupts a thread that may be inside a JDBC call | Library defect — shutdown | Low | **Resolved** (P2) |
+| [65](#issue-65) | The lock cleaner and the wake listener are not in health and not counted on `maestro.loop.errors` | Library gap — operability | Low | **Resolved** (P2) |
 | [66](#issue-66) | A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query | Library defect — health | Low | `blocks-pilot` — Open |
 | [67](#issue-67) | Health reads `UP` for a timer poller, recovery poller, signal janitor or retention sweeper that fails every pass | Library gap — operability | Low | **Resolved** (P2) |
 | [68](#issue-68) | A renewer that failed to start reads `"idle"`/`UP` while held locks go unrenewed; an observer `Error` handles one lost lock per pass | Library defect — health | Low | **Resolved** (P2) |
@@ -4855,6 +4853,13 @@ page.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** The pollers and cleaner still interrupt JDBC; P1.
 
+> **Resolved** (pilot readiness P2 task 6, PR #TBD-P2b). The lock cleaner runs
+> under `LoopSupervisor` too: `close()` asks it to stop and never interrupts,
+> so a delete in progress finishes
+> (`PostgresLockCleanerSchedulerTest.closeWhileARunIsInProgressNeverInterruptsItAndTheCleanerEndsAfterIt`).
+> No background loop is interrupted any more. The health probe's interrupt
+> is Issue 66, not this one.
+
 > **Partly resolved further** (pilot readiness P2 task 4, PR #TBD-P2b): the
 > timer poller and the recovery poller run under `LoopSupervisor` too: no core
 > engine loop is interrupted any more (the renewer since WP5; the janitor,
@@ -4966,8 +4971,21 @@ renewal failure.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Loop supervision, P2. Kept `blocks-pilot` after the P3 review: a dead wake listener leaves an operator blind to a real fault — every cross-node signal then waits the 30 s recheck — though the lock-cleaner half alone would be a `limitation`.
 
-> **Open.** Filed by WP4, loop liveness (2026-11-17, branch
-> `fix/loop-liveness`). Recorded, not fixed.
+> **Resolved** (pilot readiness P2 task 6, PR #TBD-P2b). Both loops run under
+> the executor's `LoopSupervisor` (`lock-cleaner`, `wake-listener`): they are
+> in `WorkflowExecutor.loops()`, so `maestro` reports `lockCleanerRunning`,
+> `wakeListenerRunning` and `wakeListenerConnected` — a dead one reads `DOWN`,
+> a failing one is named in `degraded` (the listener once it has failed for
+> the wake recheck interval) — their `Error`s count on `maestro.loop.errors`
+> and every failure on `maestro.loop.failures`. A driver `Error` that repeats
+> on every poll takes the back-off (1 s doubling to 30 s) and is logged once,
+> not about 3,600 times an hour. Pinned by
+> `PostgresLockCleanerSchedulerTest.anErrorMovesLoopErrors`,
+> `PostgresWakeListenerLoopErrorTest.aDriverErrorOnEveryPollBacksOffAndIsRateLimited`
+> and `PostgresLoopsHealthTest`.
+
+> **Open** until P2 task 6. Filed by WP4, loop liveness (2026-11-17, branch
+> `fix/loop-liveness`).
 
 **Kind:** Library gap — operability. **Severity:** Low.
 

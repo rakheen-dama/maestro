@@ -109,21 +109,14 @@ public final class MicrometerEngineObserver implements EngineObserver {
 
     /**
      * Every supervised loop's fixed name, the two {@code maestro-store-postgres}
-     * loops included: the series of {@code maestro.loop.failures}, registered at
-     * zero on construction.
+     * loops included, as {@code EngineObserver#backgroundLoopError} lists them:
+     * the series of {@code maestro.loop.errors} and {@code maestro.loop.failures},
+     * registered at zero on construction. {@code LoopErrorCounterWiringTest}
+     * fails if an engine loop reports under any other name.
      */
     static final List<String> ALL_LOOPS = List.of(
             "timer-poller", "recovery-poller", "startup-recovery", "signal-janitor", "retention-sweeper",
             "instance-lock-renewer", "lock-cleaner", "wake-listener");
-
-    /**
-     * The six engine loops' fixed names, as {@code EngineObserver#backgroundLoopError}
-     * lists them; {@code LoopErrorCounterWiringTest} fails if a loop reports
-     * under any other name.
-     */
-    private static final List<String> ENGINE_LOOPS = List.of(
-            "timer-poller", "recovery-poller", "startup-recovery", "signal-janitor", "retention-sweeper",
-            "instance-lock-renewer");
 
     private final MeterRegistry registry;
     private final Set<String> warnedMeterNames = ConcurrentHashMap.newKeySet();
@@ -133,13 +126,11 @@ public final class MicrometerEngineObserver implements EngineObserver {
      */
     public MicrometerEngineObserver(MeterRegistry registry) {
         this.registry = Objects.requireNonNull(registry, "registry must not be null");
-        // Registered at zero up front, one series per engine loop: a rate or
+        // Registered at zero up front, one series per loop: a rate or
         // increase() query then sees the first Error, instead of a series that
         // first appears already at 1.
-        for (var loop : ENGINE_LOOPS) {
-            safely(LOOP_ERRORS, () -> Counter.builder(LOOP_ERRORS).tag(TAG_LOOP, loop).register(registry));
-        }
         for (var loop : ALL_LOOPS) {
+            safely(LOOP_ERRORS, () -> Counter.builder(LOOP_ERRORS).tag(TAG_LOOP, loop).register(registry));
             safely(LOOP_FAILURES, () -> Counter.builder(LOOP_FAILURES).tag(TAG_LOOP, loop).register(registry));
         }
     }

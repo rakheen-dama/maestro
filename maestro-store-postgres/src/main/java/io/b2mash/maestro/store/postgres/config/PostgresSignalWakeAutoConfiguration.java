@@ -9,6 +9,7 @@ import io.b2mash.maestro.store.postgres.notify.PostgresSignalNotifier;
 import io.b2mash.maestro.store.postgres.notify.PostgresWakeListener;
 import io.b2mash.maestro.store.postgres.notify.WakeChannel;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.SmartInitializingSingleton;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
@@ -47,13 +48,18 @@ import java.util.Objects;
  * <ul>
  *   <li>{@link PostgresWakeListener} — this node's one {@code LISTEN}
  *       session on {@link WakeChannel#channelFor the service's channel};
- *       started here, closed with the context. It holds one pool connection
+ *       closed with the context. It holds one pool connection
  *       for the application's lifetime — from the
  *       {@link MaestroDataSource @MaestroDataSource}-qualified pool when the
  *       application declares one, otherwise from its single (or
  *       {@code @Primary}) {@code DataSource}.</li>
  *   <li>{@link PostgresSignalNotifier} — the {@link SignalNotifier} SPI
  *       implementation, unless the application supplies its own</li>
+ *   <li>a {@link SmartInitializingSingleton} that starts the listener under
+ *       the executor's loop supervisor ({@code wake-listener} in
+ *       {@code WorkflowExecutor.loops()}, health and meters) once every
+ *       singleton exists. The listener cannot take the executor itself: the
+ *       executor takes the notifier, which takes the listener.</li>
  * </ul>
  *
  * <p>Ordered after {@link MaestroAutoConfiguration}; the engine's
@@ -81,7 +87,7 @@ public class PostgresSignalWakeAutoConfiguration {
      *                          one chosen
      * @param properties bound {@code maestro.*}; the channel derives from
      *                   {@code maestro.service-name}
-     * @return the started listener; closed with the context
+     * @return the listener, started by {@link #maestroPostgresWakeListenerStart}; closed with the context
      */
     @Bean(destroyMethod = "close")
     // Also backs off when the application supplies its own SignalNotifier: the
@@ -92,10 +98,25 @@ public class PostgresSignalWakeAutoConfiguration {
             ObjectProvider<DataSource> dataSource, MaestroProperties properties) {
         var serviceName = Objects.requireNonNull(properties.getServiceName(),
                 "maestro.service-name must be set (the engine checks this first)");
-        var listener = new PostgresWakeListener(
+        return new PostgresWakeListener(
                 MaestroDataSources.resolve(maestroDataSource, dataSource), WakeChannel.channelFor(serviceName));
-        listener.start();
-        return listener;
+    }
+
+    /**
+     * Starts the listener under the executor's loop supervisor once every
+     * singleton exists — before any lifecycle bean starts, so before the
+     * startup recovery. A wake published before then is covered by the
+     * recheck, as any lost {@code NOTIFY} is. An application-supplied
+     * listener is started too ({@code start} is idempotent).
+     *
+     * @param listener this node's listener, if there is one
+     * @param executor the executor whose supervisor runs it
+     * @return the callback that starts it
+     */
+    @Bean
+    public SmartInitializingSingleton maestroPostgresWakeListenerStart(
+            ObjectProvider<PostgresWakeListener> listener, WorkflowExecutor executor) {
+        return () -> listener.ifAvailable(l -> l.start(executor));
     }
 
     /**

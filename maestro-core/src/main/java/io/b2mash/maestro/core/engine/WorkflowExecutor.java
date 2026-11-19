@@ -3100,6 +3100,17 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * How often a parked run re-checks the store for its signal or timer —
+     * the correctness fallback for a lost cross-node wake. The Postgres wake
+     * listener reads failing once it has been unable to listen for this long.
+     *
+     * @return the wake recheck interval this executor was built with
+     */
+    public Duration wakeRecheckInterval() {
+        return wakeRecheckInterval;
+    }
+
+    /**
      * How many instance locks this node holds right now.
      *
      * @return the number of held instance locks

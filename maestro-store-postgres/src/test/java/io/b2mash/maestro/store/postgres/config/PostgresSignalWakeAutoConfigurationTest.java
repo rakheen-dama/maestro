@@ -83,6 +83,10 @@ class PostgresSignalWakeAutoConfigurationTest {
             assertThat(ctx).hasSingleBean(DistributedLock.class);
             assertThat(ctx.getBean(DistributedLock.class)).isInstanceOf(PostgresDistributedLock.class);
             assertThat(ctx).hasSingleBean(PostgresLockCleanerScheduler.class);
+            // P2 task 6: both Postgres loops run under the executor's supervisor.
+            assertThat(ctx.getBean(WorkflowExecutor.class).loops())
+                    .extracting(io.b2mash.maestro.core.loop.LoopSnapshot::name)
+                    .contains("lock-cleaner", "wake-listener");
         });
     }
 

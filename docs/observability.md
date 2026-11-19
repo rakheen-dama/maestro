@@ -134,7 +134,7 @@ type is known (the instance exists).
 | `maestro.retention.sweeps` | *(none)* | — | A retention sweep finished on this node as the elected leader (non-leaders never increment it) |
 | `maestro.retention.purged` | `kind` | `instance`, `event`, `signal`, `timer` | Incremented by the number of rows of that kind a retention sweep deleted |
 | `maestro.lock.renew.failures` | `outcome` | `error`, `lost` | Instance-lock renewal errored (`error`) or the lock was found gone (`lost`) |
-| `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
+| `maestro.loop.errors` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer`, `lock-cleaner`, `wake-listener` | A background loop contained an `Error` (not an `Exception`, not one of Maestro's control-flow signals) and kept running. Any increase is a bug or resource exhaustion on that node; the loop's `ERROR` log names the throwable ([Operations §14](operations.md#14-health-checks-and-kubernetes-probes)) |
 | `maestro.loop.failures` | `loop` | `timer-poller`, `recovery-poller`, `startup-recovery`, `signal-janitor`, `retention-sweeper`, `instance-lock-renewer`, `lock-cleaner`, `wake-listener` | A supervised loop's iteration failed and was counted in its streak — any failure, a store or lock-backend fault included, never one while the loop stops (`backgroundLoopFailed`; P2 task 5, Issue 67). The eight series are registered at zero. A store fault that an engine loop hits is counted here, not on `maestro.store.retries` (loop store calls are not retried in place) |
 | `maestro.store.retries` | `operation` | `append_event`, `append_event_returning_payload`, `get_event_by_sequence` | The store guard retried a run's store call in place after the store reported itself unavailable (`StoreUnavailableException`; Issue 86). Activity memo reads and outcome appends count here too: the starter's activity proxies use the executor's guarded store (`WorkflowExecutor.guardedStore()`), so one node has one episode. A retry that absorbed the fault leaves no other trace: alert on a sustained rate — a database that drops connections often but briefly. The first retry after 60 s without one logs one `WARN` (`Store unavailable on <op> — retrying in place (attempt 1/3): <diagnosis>; …`), the rest of that episode `DEBUG`. Advisory reads and background-loop store calls are never retried, so never counted. A fault that outlasts the retries is the `STORE_UNAVAILABLE` stand-down (`maestro.run.abandoned{reason="store_unavailable"}`) |
 | `maestro.observer.errors` | *(none)* | — | An observer callback threw and was contained (Issue 81) — a function counter over `WorkflowExecutor.observerErrorCount()`, counted by the executor rather than through an observer, since the observer that failed may be the Micrometer one. The `WARN` log names the callback and the delegate class. Any increase is an observer bug |
@@ -149,15 +149,17 @@ recovery poller's capacity passes — run as task-queue capacity frees while a
 recovery backlog drains — count too, but only those that read rows, so during
 a drain `scanned` grows by the rows each capacity pass reads.
 
-`maestro.loop.errors` counts the six engine loops only. The one-shot startup
+`maestro.loop.errors` counts every supervised loop. The one-shot startup
 recovery (a node with `maestro.recovery.enabled=false`) counts as
 `startup-recovery`; before pilot readiness P2 it counted as
-`recovery-poller`. The two
-`maestro-store-postgres` loops — the lock cleaner (`maestro-pg-lock-cleaner`)
-and the wake listener (`maestro-pg-wake-listener`) — contain an `Error` the
-same way and log it at `ERROR`, but they reach no `EngineObserver`, so they
-are logged and **not counted** ([Issue 65](open-issues.md#issue-65)). Unlike
-the other counters here, its six series are registered at zero when
+`recovery-poller`. The two `maestro-store-postgres` loops — the lock cleaner
+(`lock-cleaner`, thread `maestro-pg-lock-cleaner`) and the wake listener
+(`wake-listener`, thread `maestro-pg-wake-listener`) — run under the
+executor's supervisor since P2 task 6 and count like the others; before, they
+logged an `Error` and reached no `EngineObserver`
+([Issue 65](open-issues.md#issue-65)). A host that runs the lock without the
+engine starts the cleaner under a supervisor of its own, which counts nothing.
+Unlike the other counters here, its eight series are registered at zero when
 `MicrometerEngineObserver` is created, so a rate query sees the first `Error`
 rather than a series that appears already at 1. Alert on
 `increase(maestro_loop_errors_total[15m]) > 0`: it fires on a new `Error` and
