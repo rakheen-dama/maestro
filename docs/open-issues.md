@@ -85,7 +85,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 20. [57](#issue-57) — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once
 21. [58](#issue-58) — The `byte[]` template check runs before Maestro's consumers only by bean-registration order
 22. [90](#issue-90) — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing
-23. [91](#issue-91) — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan
+23. ~~[91](#issue-91) — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan~~ — resolved in the harness (derived 300 s decision timeout, 2026-11-20)
 24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 
 ---
@@ -6317,8 +6317,9 @@ monitoring is added, count this failure.
 
 ### Issue 91 — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan {#issue-91}
 
-> **Label: `limitation`.** A harness schedule exposure, not an engine defect:
-> no signal was lost and nothing regressed.
+> **Label: `limitation`, resolved in the harness 2026-11-20.** A harness
+> schedule exposure, not an engine defect: no signal was lost and nothing
+> regressed.
 
 **Observed (PR #72, head `1e38ac32`, 2026-11-19).** One chaos PR-gate run
 failed with two HAPPY loans `FAILED` on the 2-minute `verification.result`
@@ -6327,9 +6328,60 @@ about 44 s apart, leaving 83 s with no Kafka consumer, followed by a 51 s
 pause; the results arrived 8.5 s and 2.5 s after the timeout. Three reruns
 passed.
 
-**Fix when it recurs.** Either stop the schedule from taking every node of one
-service down inside one await window, or have the oracle classify a timeout
-whose result arrived late during a total outage of the answering service.
+**Second occurrence (`main` `90466073`, 2026-11-20, seed `6504955400977028`).**
+HAPPY loan 35 `FAILED` on the same await (`exit-chaos-evidence/20261120-114129-6504955400977028`).
+Here only one verification node was involved; the delay stacked across the
+two services. The verification and Kafka-group timings below come from the
+node logs, the `chaos-actions.jsonl` file and `signals.json`:
+- VERIFY_B was KILL9ed at 11:45:46 while parked on the appraisal sleep. Its
+  restarted node's startup recovery pass at 11:46:04 adopted nothing because
+  the lock had not yet expired (30 s TTL). The next pass of the 60 s recovery
+  poller adopted the run at 11:47:04 and published the result. That makes
+  78 s from kill to adoption, inside the 90 s bound (lock TTL + poll
+  interval).
+- LOAN_B owned `loans.verification.results-0/1`. It was KILL9ed at 11:46:35
+  and again at 11:47:12, so those partitions sat with dead group members
+  (45 s session timeout) until the 11:48:05.7 rebalance.
+- The appraisal `verification.result` row was saved at 11:48:06.03, 24 s
+  after the 11:47:42 deadline. It was not lost: the row exists, unconsumed
+  because the loan had already failed.
+- It is inferred, not logged, that the result sat on partition 0 or 1 and
+  that LOAN_B's replacement consumed it. LOAN_A owned partition 2 from
+  11:47:20 to 11:47:41 and did not take it.
+
+No engine bound was exceeded.
+
+> **Resolved** (2026-11-20, branch `fix/chaos-gate-timeout-exposure`). The
+> harness now gives the decision-gated awaits (`verification.result` and
+> `underwriting.decision`, plus the underwriter timeout and the driver waits
+> that depend on them) their own `decisionTimeout`, default **300 s**. The
+> override is `-Dmaestro.chaos.decisionTimeoutSeconds`. Doc and sign stay at
+> 120 s, and the drain default follows the new timeout (decision timeout +
+> 120 s).
+>
+> The bound covers one answering-side outage (KILL9: lock TTL 30 s + recovery
+> poll 60 s = 90 s), one loan-consumer outage (heal + 45 s Kafka session
+> timeout + rejoin, about 90 s), one PARTITION or BACKEND_OUTAGE (≤ 40 s), and
+> about 20 s of provider latency and timer/wake polling. That totals about
+> 240 s, so 300 s leaves a minute of margin. The derivation is on
+> `ChaosConfig.DEFAULT_DECISION_TIMEOUT_SECONDS`. The two observed late
+> results took 128 s and 144 s.
+>
+> The oracle and the schedule are unchanged. A result that never arrives still
+> times the loan out, and I1 still reports it. The deliberate SIGNAL_TIMEOUT
+> path, a withheld decision on the same timeout, still has to end `FAILED`.
+>
+> **What remains:** the bound is not absolute. A schedule that chains three or
+> more outages onto one await path within 300 s can still time out a loan.
+> Runs take about 3 minutes longer.
+>
+> **Proof.** Replaying seed `6504955400977028` reproduced the same six
+> actions, including VERIFY_B killed while loan 35's appraisal was parked on
+> it, and the run passed. Three fresh PR-gate runs also passed (seeds
+> `7775646082511633895`, `-7667190905550896166`, `8014185313928295924`), in
+> 12.5–13.3 min each with no violations. Across the four runs, 63 deliberate
+> SIGNAL_TIMEOUT loans (withheld decisions) ended `FAILED` as declared, so a
+> withheld answer still fails its loan.
 
 ## 6. Suggested order
 
