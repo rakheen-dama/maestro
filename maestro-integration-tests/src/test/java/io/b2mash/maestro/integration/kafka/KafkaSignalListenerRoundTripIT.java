@@ -53,7 +53,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.messaging.topics.admin-events=" + KafkaSignalListenerRoundTripIT.ADMIN_TOPIC,
                 // The periodic recovery poller would race per-test truncation
                 // with instances left by other suites; startup recovery still runs.
-                "maestro.recovery.enabled=false"
+                "maestro.testing.recovery.enabled=false"
         })
 @Tag("integration")
 @DisplayName("A Kafka event routed by @MaestroSignalListener wakes a parked workflow")

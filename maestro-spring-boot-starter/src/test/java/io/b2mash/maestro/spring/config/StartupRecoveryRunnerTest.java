@@ -79,9 +79,11 @@ class StartupRecoveryRunnerTest {
     }
 
     @Test
-    @DisplayName("does not start the recovery poller when maestro.recovery.enabled=false")
+    @DisplayName("does not start the recovery poller when maestro.testing.recovery.enabled=false")
     void skipsRecoveryPollerWhenDisabled() {
-        properties.setRecovery(new MaestroProperties.RecoveryProperties(false, Duration.ofSeconds(60)));
+        properties.setRecovery(new MaestroProperties.RecoveryProperties(Duration.ofSeconds(60)));
+        properties.setTesting(new MaestroProperties.TestingProperties(
+                new MaestroProperties.RecoveryTestingProperties(false)));
 
         runner.run(null);
 
@@ -128,7 +130,7 @@ class StartupRecoveryRunnerTest {
     }
 
     @Test
-    @DisplayName("with maestro.recovery.enabled=false the startup pass adopts every instance, past the bound")
+    @DisplayName("with maestro.testing.recovery.enabled=false the startup pass adopts every instance, past the bound")
     void withRecoveryDisabledTheStartupPassIsUngated() {
         var store = new InMemoryWorkflowStore();
         for (var i = 0; i < 3; i++) {
@@ -144,7 +146,7 @@ class StartupRecoveryRunnerTest {
     }
 
     @Test
-    @DisplayName("with maestro.recovery.enabled=false a startup pass that fails is retried")
+    @DisplayName("with maestro.testing.recovery.enabled=false a startup pass that fails is retried")
     void withRecoveryDisabledAFailedStartupPassIsRetried() {
         var reads = new AtomicInteger();
         var store = onPageRead(new InMemoryWorkflowStore(), () -> {
@@ -213,7 +215,9 @@ class StartupRecoveryRunnerTest {
     private static MaestroProperties recovery(boolean enabled, Duration pollInterval) {
         var properties = new MaestroProperties();
         properties.setServiceName(SERVICE);
-        properties.setRecovery(new MaestroProperties.RecoveryProperties(enabled, pollInterval));
+        properties.setRecovery(new MaestroProperties.RecoveryProperties(pollInterval));
+        properties.setTesting(new MaestroProperties.TestingProperties(
+                new MaestroProperties.RecoveryTestingProperties(enabled)));
         return properties;
     }
 

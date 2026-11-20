@@ -109,25 +109,6 @@ is still reading (`StartupRecoveryRunnerTest`), so a node reports ready
 before every orphan is re-adopted (traced, not tested: Spring Boot publishes
 readiness after its runners return).
 
-**With `maestro.recovery.enabled=false`** there is no recovery poller: one
-startup pass runs on its own thread (`maestro-startup-recovery-<service>`),
-ungated — it adopts every orphan it can lock, and the runs beyond a queue's
-bound wait for their slots holding their locks, as every pass did before
-this release. Nothing adopts orphans after it, so a node that dies later
-strands its workflows until a node restarts (traced, not tested). Since pilot
-readiness P3 the poller also runs *deferred starts* (a start whose instance
-lock could not be taken), so without it such a start is **refused** with
-`LockAcquisitionException`, persisting nothing (`MandatoryInstanceLockTest`),
-and a resume this pass skips because the lock backend failed waits until a
-node starts with recovery (its `INFO` line says so; a resume skipped because
-the lock is held elsewhere is that holder's to run). A pass that fails (a store
-outage) is logged — one `ERROR`, then an `ERROR` reminder every 5 minutes —
-and retried every `maestro.recovery.poll-interval`, **with no limit**, until
-one pass completes (`OneShotRecoveryTest`). A store fault there is not
-counted on any meter (`maestro.loop.errors` counts only `Error`s, as
-`recovery-poller`), and no health detail shows the pass: watch for the log
-line `Maestro startup recovery (recovery poller disabled) adopted …` (Issue 73).
-
 **Coverage boundary, stated honestly.** Scenario 8 drives three workflows
 into three distinct `WAITING_SIGNAL` states (fan-in await, decision await,
 signature await) — it does **not** achieve a `WAITING_TIMER` state on the

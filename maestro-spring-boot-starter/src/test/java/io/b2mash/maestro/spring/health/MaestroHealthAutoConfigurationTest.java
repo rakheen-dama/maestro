@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li><b>dead</b> — started, then stopped running — a real fault,
  *       {@code DOWN}.</li>
  * </ul>
- * A poller disabled by configuration (e.g. {@code maestro.recovery.enabled=false})
+ * A poller disabled by configuration (e.g. {@code maestro.testing.recovery.enabled=false})
  * is reported as {@code "disabled"} and never affects status, regardless of
  * whether it was ever started.
  *
@@ -170,7 +170,7 @@ class MaestroHealthAutoConfigurationTest {
     void downWhenTimerPollerStartedThenStopped() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
                 .withBean(DistributedLock.class, InMemoryDistributedLock::new)
-                .withPropertyValues("maestro.recovery.enabled=false") // isolate the assertion to the timer poller
+                .withPropertyValues("maestro.testing.recovery.enabled=false") // isolate the assertion to the timer poller
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);
@@ -214,7 +214,7 @@ class MaestroHealthAutoConfigurationTest {
     void upWhenRecoveryPollerDisabledByConfiguration() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
                 .withBean(DistributedLock.class, InMemoryDistributedLock::new)
-                .withPropertyValues("maestro.recovery.enabled=false")
+                .withPropertyValues("maestro.testing.recovery.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);
@@ -238,7 +238,7 @@ class MaestroHealthAutoConfigurationTest {
     void retentionSweeperDetailFollowsTheSweeper() {
         runner.withBean(WorkflowStore.class, InMemoryWorkflowStore::new)
                 .withBean(DistributedLock.class, InMemoryDistributedLock::new)
-                .withPropertyValues("maestro.recovery.enabled=false")
+                .withPropertyValues("maestro.testing.recovery.enabled=false")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     var executor = context.getBean(WorkflowExecutor.class);

@@ -494,7 +494,7 @@ acquire fails does not start unlocked. A fresh start is persisted, reported
 (`maestro.workflow.start.deferred`) and run by the recovery poller, which is
 prompted at once and runs it about a second later if the lock can be taken by
 then, otherwise at its next full pass; when this node runs no recovery poller
-(`maestro.recovery.enabled=false`, or before startup recovery has begun) the
+(before startup recovery has begun) the
 start is refused instead with `LockAcquisitionException` and nothing is
 persisted — likewise when the poller does not register the workflow's type
 (an embedder that starts it with a partial registration map). A resume is
@@ -594,8 +594,8 @@ A recovered run still queued for a slot when shutdown begins leaves at once: it
 stands down, recoverable, and normally hands its instance lock back before
 shutdown returns (Issue 29; `ShutdownReleasesSlotWaitersTest`). Runs the
 recovery poller admitted are at most `concurrency` per queue; the ungated
-passes — the startup pass with `maestro.recovery.enabled=false`, and
-`WorkflowExecutor.recoverWorkflows(Map)` — can leave a whole backlog queued.
+pass
+`WorkflowExecutor.recoverWorkflows(Map)` can leave a whole backlog queued.
 That is not a guarantee: the drain
 waits for the run's unwind only for what is left of
 `maestro.shutdown.timeout`, so a run still unwinding when the deadline passes
@@ -718,7 +718,6 @@ instances are never read or adopted, even when services share one table set:
 
 | Property                         | Type       | Default | Description                                                                 |
 |----------------------------------|------------|---------|-----------------------------------------------------------------------------|
-| `maestro.recovery.enabled`       | `boolean`  | `true`  | Whether the periodic recovery poller runs. `false`: a one-shot startup pass still runs, without a capacity check, retried every `poll-interval` until it completes. With `false`, a start whose instance lock cannot be taken (held elsewhere, or the lock backend failed) is **refused** with `LockAcquisitionException` and persists nothing — nothing on the node would run a deferred start — and a resume the startup pass skips because the lock backend failed waits until a node starts with recovery (one whose lock is held elsewhere is that node's to run). The same holds between context refresh and the moment `StartupRecoveryRunner` starts the poller. |
 | `maestro.recovery.poll-interval` | `Duration` | `60s`   | Interval between recovery cycles. Together with the 30s instance-lock TTL, this bounds how long an orphaned workflow waits before another node adopts it. |
 
 Migration `V101__recovery_scan_index.sql` adds the partial index the paged scan

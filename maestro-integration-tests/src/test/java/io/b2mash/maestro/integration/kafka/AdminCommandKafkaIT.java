@@ -61,7 +61,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.messaging.type=kafka",
                 "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + AdminCommandKafkaIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false",
+                "maestro.testing.recovery.enabled=false",
                 // Tight budget so the poison case's exhaustion (~1.75s of backoff)
                 // fits comfortably inside this suite's bound; production default is
                 // 10 attempts over ~2.5 minutes.

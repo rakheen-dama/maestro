@@ -627,9 +627,8 @@ flowchart TD
 
 Readiness does not wait for the first recovery pass: the runner only starts
 loops (`StartupRecoveryRunner`), and the pass adopts on the recovery poller's
-thread, gated by task-queue capacity. With `maestro.recovery.enabled=false`
-it is one ungated pass on its own thread, retried every
-`maestro.recovery.poll-interval` until it completes. Orphaned signals are
+thread, gated by task-queue capacity.
+Orphaned signals are
 adopted when a workflow starts, not at node startup.
 
 ### Graceful Shutdown

@@ -63,6 +63,8 @@ public class MaestroProperties {
 
     private RecoveryProperties recovery = RecoveryProperties.defaults();
 
+    private TestingProperties testing = TestingProperties.defaults();
+
     private RetryProperties retry = RetryProperties.defaults();
 
     private AdminProperties admin = AdminProperties.defaults();
@@ -149,6 +151,14 @@ public class MaestroProperties {
 
     public void setRecovery(RecoveryProperties recovery) {
         this.recovery = recovery;
+    }
+
+    public TestingProperties getTesting() {
+        return testing;
+    }
+
+    public void setTesting(TestingProperties testing) {
+        this.testing = testing;
     }
 
     public RetryProperties getRetry() {
@@ -547,16 +557,52 @@ public class MaestroProperties {
      * workflows owned by a node that has since died (instance lock expired)
      * are adopted without a restart.
      *
-     * @param enabled      whether the periodic recovery poller runs
      * @param pollInterval interval between recovery cycles
      */
     public record RecoveryProperties(
-            @DefaultValue("true") boolean enabled,
             @DefaultValue("60s") Duration pollInterval
     ) {
         /** @return the defaults documented above */
         public static RecoveryProperties defaults() {
-            return new RecoveryProperties(true, Duration.ofSeconds(60));
+            return new RecoveryProperties(Duration.ofSeconds(60));
+        }
+    }
+
+    /**
+     * TESTING ONLY — not a supported production setting.
+     *
+     * <p>Switches that exist so Maestro's own test suites can hold a node in a
+     * state a production node never runs in. None is a supported way to
+     * operate a service.
+     *
+     * @param recovery recovery switches for tests
+     */
+    public record TestingProperties(
+            @DefaultValue RecoveryTestingProperties recovery
+    ) {
+        /** @return the defaults documented above */
+        public static TestingProperties defaults() {
+            return new TestingProperties(RecoveryTestingProperties.defaults());
+        }
+    }
+
+    /**
+     * TESTING ONLY — not a supported production setting.
+     *
+     * <p>Recovery switches for tests, bound from {@code maestro.testing.recovery.*}.
+     *
+     * @param enabled TESTING ONLY — not a supported production setting. Whether the
+     *                periodic recovery poller runs. With {@code false} this node never
+     *                adopts unfinished workflows after a crash (only a one-shot startup
+     *                pass runs), so a workflow it or a peer left unfinished stays
+     *                stranded until a node with the poller starts.
+     */
+    public record RecoveryTestingProperties(
+            @DefaultValue("true") boolean enabled
+    ) {
+        /** @return the defaults documented above */
+        public static RecoveryTestingProperties defaults() {
+            return new RecoveryTestingProperties(true);
         }
     }
 

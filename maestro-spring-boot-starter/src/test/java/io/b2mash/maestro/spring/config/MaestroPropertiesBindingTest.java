@@ -112,7 +112,7 @@ class MaestroPropertiesBindingTest {
                         "maestro.lock.ttl=45s",
                         "maestro.timer.poll-interval=250ms",
                         "maestro.timer.batch-size=7",
-                        "maestro.recovery.enabled=false",
+                        "maestro.testing.recovery.enabled=false",
                         "maestro.recovery.poll-interval=90s",
                         "maestro.retry.default-max-attempts=5",
                         "maestro.admin.events.enabled=false",
@@ -136,7 +136,7 @@ class MaestroPropertiesBindingTest {
                     assertThat(properties.getLock().ttl()).isEqualTo(Duration.ofSeconds(45));
                     assertThat(properties.getTimer().pollInterval()).isEqualTo(Duration.ofMillis(250));
                     assertThat(properties.getTimer().batchSize()).isEqualTo(7);
-                    assertThat(properties.getRecovery().enabled()).isFalse();
+                    assertThat(properties.getTesting().recovery().enabled()).isFalse();
                     assertThat(properties.getRecovery().pollInterval()).isEqualTo(Duration.ofSeconds(90));
                     assertThat(properties.getRetry().defaultMaxAttempts()).isEqualTo(5);
                     assertThat(properties.getAdmin().events().enabled()).isFalse();
@@ -203,7 +203,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getLock().cleanupInterval()).isEqualTo(Duration.ofMinutes(10));
             assertThat(properties.getTimer().pollInterval()).isEqualTo(Duration.ofSeconds(5));
             assertThat(properties.getTimer().batchSize()).isEqualTo(100);
-            assertThat(properties.getRecovery().enabled()).isTrue();
+            assertThat(properties.getTesting().recovery().enabled()).isTrue();
             assertThat(properties.getRetry().defaultMaxAttempts()).isEqualTo(3);
             assertThat(properties.getWorker().taskQueues()).isEmpty();
             assertThat(properties.getAdmin().events().topic()).isEqualTo("maestro.admin.events");

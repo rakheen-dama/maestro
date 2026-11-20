@@ -874,7 +874,7 @@ public final class WorkflowExecutor {
             throw new LockAcquisitionException(key, "the instance lock "
                     + (heldElsewhere ? "is held elsewhere" : "could not be taken (lock backend unavailable)")
                     + " and no recovery poller that registers workflow type '" + workflowType + "' is running on "
-                    + "this node to start it later (maestro.recovery.enabled=false, recovery not started yet, or "
+                    + "this node to start it later (maestro.testing.recovery.enabled=false — testing only, recovery not started yet, or "
                     + "the type not registered with it) — nothing was persisted; retry the start");
         }
         try {
@@ -945,7 +945,7 @@ public final class WorkflowExecutor {
             throw new WorkflowNotLaunchedException(workflowId, ("Workflow '%s' was persisted (RUNNING) but not "
                     + "launched: its instance lock was lost before its run started and could not be taken again, "
                     + "and this node runs no recovery poller. It is not lost: it runs when a node of this service "
-                    + "starts with recovery enabled (maestro.recovery.enabled=true), or when this node restarts. "
+                    + "starts with recovery enabled, or when this node restarts. "
                     + "Starting it again would only find it.").formatted(workflowId));
         }
 
@@ -2258,7 +2258,7 @@ public final class WorkflowExecutor {
                             + "(RUNNING, its failure memos deleted) but not launched: its instance lock was lost "
                             + "before its run started and could not be taken again, and this node runs no recovery "
                             + "poller for its type. It is not lost: it runs when a node of this service starts with "
-                            + "recovery enabled (maestro.recovery.enabled=true), or when this node restarts. "
+                            + "recovery enabled, or when this node restarts. "
                             + "Retrying it again would answer NOT_FAILED.").formatted(workflowId));
                 }
             }
@@ -2433,7 +2433,7 @@ public final class WorkflowExecutor {
      * and {@link #isRecoveryPollerRunning()} does not report it.
      *
      * <p>The Spring Boot starter calls this at startup when
-     * {@code maestro.recovery.enabled=false}, with
+     * {@code maestro.testing.recovery.enabled=false} (TESTING ONLY), with
      * {@code maestro.recovery.poll-interval} as the retry interval.
      *
      * @param registrations map of workflow type → registration metadata
@@ -3646,7 +3646,7 @@ public final class WorkflowExecutor {
                 logger.info("Workflow '{}' instance lock {} — skipping resume{}", snapshot.workflowId(),
                         heldElsewhere ? "is held elsewhere" : "could not be taken (lock backend unavailable)",
                         heldElsewhere || isRecoveryPollerRunning() ? ""
-                                : "; this node runs no recovery poller (maestro.recovery.enabled=false), so it "
+                                : "; this node runs no recovery poller (maestro.testing.recovery.enabled=false, testing only), so it "
                                         + "waits until a node starts with recovery");
                 return false;
             }
