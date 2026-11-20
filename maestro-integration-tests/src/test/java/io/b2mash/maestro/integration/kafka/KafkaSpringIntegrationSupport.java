@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.kafka;
 
+import io.b2mash.maestro.integration.support.KafkaTopicsForTests;
 import io.b2mash.maestro.core.model.WorkflowInstance;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
@@ -8,7 +9,6 @@ import io.b2mash.maestro.store.postgres.schema.MaestroSchemaInitializer;
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -160,9 +160,7 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
             throws ExecutionException, InterruptedException {
         try (var admin = AdminClient.create(Map.of(
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
-            admin.createTopics(Arrays.stream(topicNames)
-                    .map(name -> new NewTopic(name, 1, (short) 1))
-                    .toList()).all().get();
+            KafkaTopicsForTests.create(admin, Arrays.asList(topicNames));
         }
     }
 

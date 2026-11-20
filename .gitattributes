@@ -2,3 +2,4 @@ maestro-store-postgres/src/test/resources/upgrade/** -text
 maestro-integration-tests/src/test/resources/upgrade/** -text
 maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/cbf5a2a/SeededHistoryWorkflows.java -text
 maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0_3_0_rc_1/SeededHistoryWorkflows.java -text
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0_3_0_rc_2/SeededHistoryWorkflows.java -text

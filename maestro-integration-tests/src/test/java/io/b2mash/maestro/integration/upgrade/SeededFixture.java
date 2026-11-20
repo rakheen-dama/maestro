@@ -109,6 +109,15 @@ public interface SeededFixture {
      */
     List<String> untouchedByRecovery();
 
+    /**
+     * @return what this build appends to {@code seed-saga-parked} after the
+     *         events the older build wrote ({@code SeededParkedSagaIT}), or an
+     *         empty list for a fixture without that seed ({@code cbf5a2a})
+     */
+    default List<String> parkedSagaAppended() {
+        return List.of();
+    }
+
     /** @return the frozen {@code Seeds.STATUS_AT_CAPTURE} */
     Map<String, WorkflowStatus> statusAtCapture();
 

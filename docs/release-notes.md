@@ -1,5 +1,12 @@
 # Release Notes — Maestro
 
+## Unreleased — after 0.3.0-rc.2
+
+### Fixed — the startup topic check no longer reports a just-created topic missing (Issue 90)
+
+- **What was wrong.** The startup verifier read one `UnknownTopicOrPartition` answer as "confirmed missing". A broker can give that answer for a topic created moments before (Kafka: brokers may take several seconds to learn of a new topic), so under `verify-on-startup=fail` a node started right after its topics were created could refuse to start (seen on CI: PR #78).
+- **What changes.** A topic reported unknown is re-checked every 250 ms within the existing 5 s probe window; only a topic still unknown at its end is missing, and a re-check that times out or fails otherwise never clears it. A genuinely missing topic still fails startup with the same message (or is logged under `warn`), now 5 s after the probe began instead of at once. An unreachable broker is still inconclusive and only WARNs (`KafkaTopicVerifierTest.aTopicNotYetVisibleOnTheFirstDescribeIsPresentOnceDescribed`, `genuinelyMissingTopicsStillFailStartupAfterTheRecheckWindow`).
+
 ## Unreleased — pilot readiness P1 (part 2): one lifecycle owner for loops, Kafka consumers and the health probe
 
 ### Changed — every supervised loop is a lifecycle-registry member (P1 tasks 3–4)

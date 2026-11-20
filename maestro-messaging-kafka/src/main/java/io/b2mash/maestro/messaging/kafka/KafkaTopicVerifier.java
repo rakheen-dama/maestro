@@ -46,12 +46,14 @@ import java.util.stream.Collectors;
  * enabled; and every {@code @MaestroSignalListener} topic plus its
  * {@code .DLT}. Plain {@code @KafkaListener} topics are not Maestro's and are
  * out of scope. {@link #verify} asks the broker about all of them in one
- * {@code describeTopics} call bounded by {@value #PROBE_TIMEOUT_SECONDS}
- * seconds.
+ * {@code describeTopics} call, re-checking any it reports missing, all within
+ * {@value #PROBE_TIMEOUT_SECONDS} seconds.
  *
  * <h2>Missing versus inconclusive</h2>
- * <p>A topic is <b>missing</b> only when the broker says so
- * ({@link UnknownTopicOrPartitionException}). Anything else — a timeout, an
+ * <p>A topic is <b>missing</b> only when the broker keeps saying so
+ * ({@link UnknownTopicOrPartitionException}) for the whole probe window: a
+ * broker can briefly answer that for a topic created moments ago, before its
+ * metadata has caught up. Anything else — a timeout, an
  * unreachable or unauthenticated broker, an interrupted probe — is
  * <b>inconclusive</b>: logged at WARN and never fatal, because a broker blip
  * at deploy time must not become a fleet-wide restart loop. That promise has
@@ -264,8 +266,13 @@ public final class KafkaTopicVerifier {
     }
 
     /**
-     * Asks the broker, in one bounded {@code describeTopics} call, which of the
-     * required topics exist.
+     * Asks the broker which of the required topics exist, within
+     * {@link #PROBE_TIMEOUT}: one {@code describeTopics} call, then re-checks of
+     * the topics it reported missing every {@link #MISSING_RECHECK_PAUSE} until
+     * they are described or the window ends — a topic created moments ago may
+     * not yet be known to the broker that answers. A present or inconclusive
+     * answer is final; a topic still unknown at the end of the window is
+     * missing, so a genuinely missing topic costs the whole window.
      *
      * @param admin    the admin client to probe with; the caller owns closing it
      * @param required the topics to verify
@@ -277,9 +284,61 @@ public final class KafkaTopicVerifier {
             return new Result(List.of(), List.of(), List.of());
         }
         var topics = new ArrayList<>(new LinkedHashSet<>(required));
+        var deadline = System.nanoTime() + PROBE_TIMEOUT.toNanos();
+        var result = describeOnce(admin, topics, PROBE_TIMEOUT);
+        // A broker can answer UnknownTopicOrPartition for a topic created moments
+        // ago: "It may take several seconds after CreateTopicsResult returns
+        // success for all the brokers to become aware that the topics have been
+        // created" (Admin#createTopics). So a topic is confirmed missing only if
+        // the broker keeps saying so for the probe's window (PROBE_TIMEOUT from
+        // its start); one described on a re-check is present (PR #78 CI run
+        // 44613617971). Only topics still missing are re-checked; a present or
+        // inconclusive answer is final.
+        while (!result.missing().isEmpty()) {
+            var left = deadline - System.nanoTime();
+            if (left <= 0) {
+                break;
+            }
+            try {
+                TimeUnit.NANOSECONDS.sleep(Math.min(left, MISSING_RECHECK_PAUSE.toNanos()));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+            var again = describeOnce(admin, result.missing(),
+                    Duration.ofNanos(Math.max(TimeUnit.MILLISECONDS.toNanos(1), deadline - System.nanoTime())));
+            result = merge(topics, result, again);
+        }
+        return result;
+    }
+
+    /** The pause between re-checks of topics the broker reported missing. */
+    static final Duration MISSING_RECHECK_PAUSE = Duration.ofMillis(250);
+
+    /**
+     * {@code previous} after a re-check of the topics it reported missing: a
+     * topic the re-check describes becomes present; any other answer — still
+     * unknown, a timeout, any failure — leaves it missing, because the broker
+     * has already said it does not know it and a re-check can only clear that.
+     */
+    private static Result merge(List<String> order, Result previous, Result recheck) {
+        var present = new LinkedHashSet<>(previous.present());
+        present.addAll(recheck.present());
+        var missing = new LinkedHashSet<>(previous.missing());
+        missing.removeAll(recheck.present());
+        var inconclusive = new LinkedHashSet<>(previous.inconclusive());
+        return new Result(
+                order.stream().filter(present::contains).toList(),
+                order.stream().filter(missing::contains).toList(),
+                order.stream().filter(inconclusive::contains).toList());
+    }
+
+    /** One {@code describeTopics} call bounded by {@code timeout}: present / missing / inconclusive in {@code topics}' order. */
+    private static Result describeOnce(Admin admin, List<String> topics, Duration timeout) {
+        var callDeadline = System.nanoTime() + timeout.toNanos();
         Map<String, KafkaFuture<org.apache.kafka.clients.admin.TopicDescription>> futures;
         try {
-            var options = new DescribeTopicsOptions().timeoutMs((int) PROBE_TIMEOUT.toMillis());
+            var options = new DescribeTopicsOptions().timeoutMs((int) Math.max(1, timeout.toMillis()));
             futures = admin.describeTopics(topics, options).topicNameValues();
         } catch (Exception e) {
             logger.debug("Kafka topic verification probe could not run: {}", e.getMessage(), e);
@@ -295,7 +354,7 @@ public final class KafkaTopicVerifier {
                 inconclusive.add(topic);
                 continue;
             }
-            switch (outcome(future, topic)) {
+            switch (outcome(future, topic, callDeadline)) {
                 case PRESENT -> present.add(topic);
                 case MISSING -> missing.add(topic);
                 case INCONCLUSIVE -> inconclusive.add(topic);
@@ -364,9 +423,14 @@ public final class KafkaTopicVerifier {
 
     private enum Outcome { PRESENT, MISSING, INCONCLUSIVE }
 
-    private static Outcome outcome(KafkaFuture<?> future, String topic) {
+    /**
+     * Waits for one topic's answer until {@code deadline} (a {@link System#nanoTime()}
+     * instant shared by every topic of one {@code describeTopics} call), so one
+     * call never waits longer than its timeout however many topics it covers.
+     */
+    private static Outcome outcome(KafkaFuture<?> future, String topic, long deadline) {
         try {
-            future.get(PROBE_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
+            future.get(Math.max(0, deadline - System.nanoTime()), TimeUnit.NANOSECONDS);
             return Outcome.PRESENT;
         } catch (ExecutionException e) {
             if (e.getCause() instanceof UnknownTopicOrPartitionException) {

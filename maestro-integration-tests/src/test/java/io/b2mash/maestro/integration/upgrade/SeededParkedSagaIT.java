@@ -7,19 +7,21 @@ import io.b2mash.maestro.integration.upgrade.v0_3_0_rc_1.SeededHistoryWorkflows.
 import io.b2mash.maestro.store.postgres.schema.SchemaMode;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Tag;
-import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Stream;
 
 import static io.b2mash.maestro.core.model.WorkflowStatus.FAILED;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The saga {@code v0.3.0-rc.1} left parked mid-flight ({@code seed-saga-parked}:
+ * The saga each fixture from {@code v0.3.0-rc.1} on left parked mid-flight ({@code seed-saga-parked}:
  * {@code reserve} and {@code charge} recorded, both compensations registered,
  * parked on {@code ship-now}), resumed by this build: the seed the
  * {@code cbf5a2a} fixture does not hold, so it is tested here rather than in
@@ -30,20 +32,25 @@ import static org.assertj.core.api.Assertions.assertThat;
  * fails, the compensation stack the run rebuilt from the recorded steps
  * unwinds in LIFO order — {@code refund}, then {@code releaseReservation},
  * each once — and the run ends {@code FAILED} by its own failure. No recorded
- * step runs again, the history {@code v0.3.0-rc.1} wrote is an unchanged
- * prefix, and nothing stands down.
+ * step runs again, the history the older build wrote is an unchanged
+ * prefix, and nothing stands down. It runs once per fixture of
+ * {@link SeededFixtures#all()} that holds the seed.
  */
 @Tag("integration")
-@DisplayName("A saga v0.3.0-rc.1 left parked mid-flight, under this build")
+@DisplayName("A saga an older release left parked mid-flight, under this build")
 class SeededParkedSagaIT {
 
-    /** What this build appends after the three events v0.3.0-rc.1 wrote. */
-    static final List<String> APPENDED = V030Rc1Fixture.PARKED_SAGA_APPENDED;
+    /** Every fixture that holds {@code seed-saga-parked}: {@code v0_3_0_rc_1} and later. */
+    static Stream<SeededFixture> fixturesWithAParkedSaga() {
+        return SeededFixtures.all().stream().filter(f -> f.recordedEvents().containsKey(Seeds.SAGA_PARKED));
+    }
 
-    @Test
+    @ParameterizedTest(name = "written by {0}")
+    @MethodSource("fixturesWithAParkedSaga")
     @DisplayName("the parked saga resumes on this build, fails in ship and compensates both steps once, in LIFO order")
-    void theParkedSagaResumesAndCompensates() throws Exception {
-        var fixture = V030Rc1Fixture.INSTANCE;
+    void theParkedSagaResumesAndCompensates(SeededFixture fixture) throws Exception {
+        assertThat(fixture.parkedSagaAppended()).as("%s holds the parked saga, so it pins what this build appends", fixture)
+                .isNotEmpty();
         var seeded = SeededHistory.load(fixture).upgrade(SchemaMode.FLYWAY).requireClockWithinFixtureWindow();
         var before = seeded.events(Seeds.SAGA_PARKED);
         assertThat(before.stream().map(SeededParkedSagaIT::describe)).containsExactly(
@@ -75,9 +82,9 @@ class SeededParkedSagaIT {
                 "seed-saga.reserve", 0, "seed-saga.charge", 0, "seed-saga.ship", 1, "seed-saga.refund", 1,
                 "seed-saga.releaseReservation", 1));
         var after = seeded.events(Seeds.SAGA_PARKED);
-        assertThat(after.subList(0, before.size())).as("history v0.3.0-rc.1 wrote is untouched").isEqualTo(before);
+        assertThat(after.subList(0, before.size())).as("history %s wrote is untouched", fixture).isEqualTo(before);
         assertThat(after.subList(before.size(), after.size()).stream().map(SeededParkedSagaIT::describe))
-                .as("events this build appended").containsExactlyElementsOf(APPENDED);
+                .as("events this build appended").containsExactlyElementsOf(fixture.parkedSagaAppended());
         var failed = after.getLast();
         assertThat(failed.eventType()).isEqualTo(EventType.WORKFLOW_FAILED);
         assertThat(String.valueOf(failed.payload())).as("failed by its own failure").contains("no carrier for parked");

@@ -418,8 +418,15 @@ Maestro entirely.
   topics yet.
 - **`off`** — no verification; the pre-0.5 behaviour.
 
-A topic is *missing* only when the broker says so
-(`UnknownTopicOrPartitionException`). A probe that cannot reach the broker —
+A topic is *missing* only when the broker keeps saying so
+(`UnknownTopicOrPartitionException`) for the whole 5 s probe window: a broker
+can briefly answer that for a topic created moments before — Kafka's
+`Admin#createTopics` documents that brokers may take several seconds to learn
+of a new topic — so a topic reported unknown is re-checked every 250 ms until
+it is described or the window ends; a re-check that times out or fails
+otherwise leaves it missing. A genuinely missing topic therefore fails
+startup (under `fail`) or is logged (under `warn`) 5 s after the probe began.
+A probe that cannot reach the broker —
 timeout, connection refused, authentication or authorization failure — is
 **inconclusive**: logged at `WARN` naming the unverified topics, and never
 fatal under any mode, because a broker blip at deploy time must not become a
