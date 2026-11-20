@@ -175,7 +175,14 @@ public final class ChaosRun {
                 cluster.awaitConsumerGroup("verification-gateway", 2, Duration.ofSeconds(60));
                 cluster.awaitConsumerGroup("underwriting", 2, Duration.ofSeconds(60));
 
-                driver.awaitScriptsSettled(config.decisionTimeout().plusSeconds(60));
+                // A CONDITIONS_LOOP script waits up to decisionTimeout twice in sequence.
+                int stillActive = driver.awaitScriptsSettled(
+                        config.decisionTimeout().multipliedBy(2).plusSeconds(60));
+                if (stillActive > 0) {
+                    log.error("[chaos] {} workload script(s) still running at the settlement deadline: "
+                            + "their ledger entries are missing, so verification runs without their expectations",
+                            stillActive);
+                }
                 drain(cluster, driver, config.drainSla());
 
                 periodic.stop();

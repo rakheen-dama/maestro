@@ -329,8 +329,11 @@ public final class WorkloadDriver {
      * Waits for all launched scripts to finish, up to {@code deadline}.
      *
      * @param deadline upper bound
+     * @return the number of scripts still running at the deadline; each of them
+     *         has written no ledger entry yet, so verification would run
+     *         without its expectation
      */
-    public void awaitScriptsSettled(Duration deadline) {
+    public int awaitScriptsSettled(Duration deadline) {
         long end = System.nanoTime() + deadline.toNanos();
         for (Future<?> f : futures) {
             long remain = end - System.nanoTime();
@@ -340,9 +343,16 @@ public final class WorkloadDriver {
             try {
                 f.get(remain, TimeUnit.NANOSECONDS);
             } catch (Exception ignore) {
-                // a stuck script surfaces at drain as an I1 finding, not here.
+                // counted below; a stuck script also surfaces at drain as an I1 finding.
             }
         }
+        int active = 0;
+        for (Future<?> f : futures) {
+            if (!f.isDone()) {
+                active++;
+            }
+        }
+        return active;
     }
 
     /** Shuts the virtual-thread executor down and closes the ledger writer. */
