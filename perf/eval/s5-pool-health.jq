@@ -27,8 +27,10 @@
 #                            planned probes
 #   correctness.upWhenIdle   idle and recovered: every Maestro answer UP
 #   correctness.holdsCompleted  every hold run COMPLETED, none FAILED
-#   correctness.noLoopFault  no DOWN answer explained by a stopped loop or a
-#                            failing renewer (maestro_down_other) in any phase
+#   correctness.noLoopFault  no DOWN answer explained by a dead, stopped or
+#                            failing loop, or a failing or stale renewer
+#                            (maestro_down_other) in any phase; the probe also
+#                            counts each cause on its own (k6/health-probe.js)
 #   gate.notDownWhenBusy (3.5a)  exhausted: 0 DOWN answers (any cause) and 0
 #                            unanswered within 5 s
 #   advisory.rootHealth      the root aggregate in the exhausted window (MD-7:
