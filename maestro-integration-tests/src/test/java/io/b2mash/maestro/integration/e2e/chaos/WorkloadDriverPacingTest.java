@@ -37,7 +37,7 @@ class WorkloadDriverPacingTest {
     private WorkloadDriver newDriver() {
         var config = new ChaosConfig(ChaosMode.SOAK, 42L, 1, 600,
                 Duration.ofSeconds(5), Duration.ofSeconds(5), Duration.ofSeconds(1),
-                Duration.ofSeconds(1), Duration.ofSeconds(5), Map.of(), tmp);
+                Duration.ofSeconds(1), Duration.ofSeconds(1), Duration.ofSeconds(5), Map.of(), tmp);
         var evidence = new EvidenceWriter(RunIdentity.capture(42L, ChaosMode.SOAK), tmp);
         return new WorkloadDriver(null, config, evidence, new SplittableRandom(42L));
     }

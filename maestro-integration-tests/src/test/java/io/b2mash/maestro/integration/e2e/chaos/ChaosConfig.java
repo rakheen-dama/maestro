@@ -25,7 +25,10 @@ import java.util.Map;
  * @param ratePerMinute        Poisson arrival rate (workflows per minute)
  * @param drainSla             {@code T_drain}: grace after heal-all before verify
  * @param metricsWindow        metrics sampler snapshot interval
- * @param sampleTimeout        loan doc/sign/decision timeout (env {@code MAESTRO_SAMPLE_*})
+ * @param sampleTimeout        loan doc/sign timeout (env {@code MAESTRO_SAMPLE_DOC/SIGN_TIMEOUT})
+ * @param decisionTimeout      loan decision + underwriter timeout (env
+ *                             {@code MAESTRO_SAMPLE_DECISION/UNDERWRITER_TIMEOUT}); see
+ *                             {@link #DEFAULT_DECISION_TIMEOUT_SECONDS} for its derivation
  * @param gateTimeout          withdrawal-gate timeout (kept tiny so gates resolve fast)
  * @param wakeRecheckInterval  {@code maestro.signal.wake-recheck-interval} for nodes
  * @param jarPaths             role-key → boot jar path for the three services
@@ -39,10 +42,32 @@ public record ChaosConfig(
         Duration drainSla,
         Duration metricsWindow,
         Duration sampleTimeout,
+        Duration decisionTimeout,
         Duration gateTimeout,
         Duration wakeRecheckInterval,
         Map<String, String> jarPaths,
         Path evidenceRoot) {
+
+    /**
+     * Default decision timeout (Issue 91): the loan's {@code verification.result}
+     * and {@code underwriting.decision} awaits must outlast the worst stacked
+     * outage the schedule can put between a request and its answer, or a late
+     * — not lost — result fails a HAPPY loan. Derived from the schedule and node
+     * settings, one outage per side plus one shared action:
+     * <ul>
+     *   <li>answering node KILL9ed: its run is adopted at most lock TTL 30 s +
+     *       recovery poll 60 s = 90 s later (a PAUSE_RESUME is at most 75 s);</li>
+     *   <li>loan consumer of the result partition KILL9ed: the partition stays
+     *       with the dead member for the Kafka session timeout (45 s) after a
+     *       10–30 s heal, then the group rejoins — about 90 s;</li>
+     *   <li>one PARTITION (at most 40 s) or BACKEND_OUTAGE (at most 30 s);</li>
+     *   <li>provider latency (at most 8 s) + timer poll (5 s) + wake recheck (5 s).</li>
+     * </ul>
+     * That is about 240 s; 300 s leaves a minute of margin. The two observed
+     * late results arrived 128 s and 144 s after their await began. A result
+     * that never arrives still times out the loan, and I1 still reports it.
+     */
+    static final long DEFAULT_DECISION_TIMEOUT_SECONDS = 300;
 
     /**
      * Builds a configuration from {@code -Dmaestro.chaos.*} system properties.
@@ -80,20 +105,24 @@ public record ChaosConfig(
                 "maestro.chaos.evidenceDir",
                 System.getProperty("user.dir") + "/build/chaos-evidence"));
 
+        long decisionSecs = longProp("maestro.chaos.decisionTimeoutSeconds",
+                DEFAULT_DECISION_TIMEOUT_SECONDS);
         return new ChaosConfig(
                 mode,
                 seed,
                 durationMinutes,
                 ratePerMinute,
-                // 240s, calibrated up from the design's 120s starting value
-                // (§14.7): a SIGNAL_TIMEOUT submitted at the end of generation
-                // spawns an underwriting child whose double-timeout terminal
-                // (2:00 underwriter + 0:30 senior + processing) lands ~2:35
-                // after the child starts — observed missing a 120s drain by
-                // 2 seconds (run 20260731-222409).
-                Duration.ofSeconds(longProp("maestro.chaos.drainSeconds", 240)),
+                // Decision timeout + 120s (240s when it was 120s), calibrated up
+                // from the design's 120s starting value (§14.7): a SIGNAL_TIMEOUT
+                // submitted at the end of generation spawns an underwriting child
+                // whose double-timeout terminal (underwriter timeout + 0:30 senior
+                // + processing) lands ~35s past the underwriter timeout after the
+                // child starts — observed missing a 120s drain by 2 seconds (run
+                // 20260731-222409) when that timeout was 2:00.
+                Duration.ofSeconds(longProp("maestro.chaos.drainSeconds", decisionSecs + 120)),
                 Duration.ofSeconds(longProp("maestro.chaos.metricsWindowSeconds", 15)),
                 Duration.ofSeconds(longProp("maestro.chaos.sampleTimeoutSeconds", 120)),
+                Duration.ofSeconds(decisionSecs),
                 Duration.ofSeconds(longProp("maestro.chaos.gateTimeoutSeconds", 1)),
                 Duration.ofSeconds(longProp("maestro.chaos.wakeRecheckSeconds", 5)),
                 jars,
@@ -134,5 +163,10 @@ public record ChaosConfig(
     /** @return the sample timeout as an ISO-8601 duration string for env binding. */
     public String sampleTimeoutIso() {
         return sampleTimeout.toString();
+    }
+
+    /** @return the decision timeout as an ISO-8601 duration string for env binding. */
+    public String decisionTimeoutIso() {
+        return decisionTimeout.toString();
     }
 }

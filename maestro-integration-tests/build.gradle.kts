@@ -202,5 +202,6 @@ tasks.named<Test>("e2eTest") {
         "maestro.chaos.ratePerMinute", "maestro.chaos.soak", "maestro.chaos.golden",
         "maestro.chaos.smoke", "maestro.chaos.evidenceDir", "maestro.chaos.drainSeconds",
         "maestro.chaos.tailPhaseSeconds", "maestro.chaos.tailRatePerMinute",
+        "maestro.chaos.decisionTimeoutSeconds",
     ).forEach { key -> System.getProperty(key)?.let { systemProperty(key, it) } }
 }

@@ -334,18 +334,23 @@ public final class ChaosCluster implements AutoCloseable {
         // prompt driver never times out a live path mid-chaos, short enough that
         // SIGNAL_TIMEOUT reaches terminal within the mode budget and child
         // underwriting workflows terminate within the drain SLA.
+        // The decision timeout (verification results, underwriting decisions)
+        // is longer: those answers cross a second service and Kafka, so the
+        // schedule can stack outages between request and answer (Issue 91;
+        // derivation on ChaosConfig.DEFAULT_DECISION_TIMEOUT_SECONDS).
         String t = config.sampleTimeoutIso();
+        String d = config.decisionTimeoutIso();
         env.put("MAESTRO_SAMPLE_DOC_TIMEOUT", t);
         env.put("MAESTRO_SAMPLE_SIGN_TIMEOUT", t);
-        env.put("MAESTRO_SAMPLE_DECISION_TIMEOUT", t);
+        env.put("MAESTRO_SAMPLE_DECISION_TIMEOUT", d);
         env.put("MAESTRO_SAMPLE_GATE_TIMEOUT", isoSeconds(config.gateTimeout()));
-        // Underwriter timeout matches the driver's decision deadline so a
+        // Underwriter timeout matches the loan's decision timeout so a
         // chaos-delayed decision never loses to the child's own escalation
         // (which would turn a HAPPY path into a REJECTED loan); the senior
         // timeout stays short so a deliberately-unanswered child
         // (SIGNAL_TIMEOUT path) still reaches terminal (double-timeout
         // REJECTED) within the drain SLA.
-        env.put("MAESTRO_SAMPLE_UNDERWRITER_TIMEOUT", t);
+        env.put("MAESTRO_SAMPLE_UNDERWRITER_TIMEOUT", d);
         env.put("MAESTRO_SAMPLE_SENIOR_TIMEOUT", "PT30S");
         // A consumer group's FIRST offset for a partition is 'earliest' so a
         // business event published before the group finished forming (node
