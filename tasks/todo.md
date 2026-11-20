@@ -80,7 +80,7 @@ Not in this milestone: Maven Central, the engine-version stamp design (after the
 - **Gates:** every package branch passed the uncached build and chaos PR-gate ×3; 2 h soaks passed on P3, P2 (`79d6e5e5`) and P1 (`c2a36d36`, which contained P2–P4). **Not run on final `main`:** the nightly E2E, chaos ×3 and the 2 h soak named in the exit — rc.2 was released at the maintainer's instruction with the token budget nearly spent. Run them before the pilot starts.
 - **`blocks-pilot`:** none open. Issue 88 (an older node's Retry during a rolling deploy) downgraded to `limitation` by the maintainer, 2026-11-20, with a runbook rule in operations §10.
 - **Owed after rc.2:** capture the `v0_3_0_rc_2` upgrade fixtures from the tag and add its `previousReleases` row (`RELEASING.md` § Post-Release); the next release's gate fails until then.
-- **Decided 2026-11-20:** Issue 89 — stand down (own reason; never fail-and-compensate on a replay-time exception); implementation still owed (`blocks-1.0`). **Still open:** whether `maestro.recovery.enabled=false` stays supported.
+- **Decided 2026-11-20:** Issue 89 — stand down (own reason; never fail-and-compensate on a replay-time exception); implementation still owed (`blocks-1.0`). **Decided 2026-11-20:** the recovery switch is testing only — moved to `maestro.testing.recovery.enabled`, removed from the user docs; the old name is ignored.
 - **Logged:** Issue 90 (disabled topic-verification test, parked fix), Issue 91 (chaos schedule exposure). `perf/k6/health-probe.js` does not know the new DOWN causes (failing loop, stale renewer).
 - **Process rules adopted:** one CodeRabbit round per PR; a rate-limited review is not waited for; flaky tests are root-caused, not re-run.
 
