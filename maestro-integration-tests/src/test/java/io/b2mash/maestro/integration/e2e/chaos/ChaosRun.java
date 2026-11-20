@@ -175,7 +175,7 @@ public final class ChaosRun {
                 cluster.awaitConsumerGroup("verification-gateway", 2, Duration.ofSeconds(60));
                 cluster.awaitConsumerGroup("underwriting", 2, Duration.ofSeconds(60));
 
-                driver.awaitScriptsSettled(config.sampleTimeout().plusSeconds(60));
+                driver.awaitScriptsSettled(config.decisionTimeout().plusSeconds(60));
                 drain(cluster, driver, config.drainSla());
 
                 periodic.stop();

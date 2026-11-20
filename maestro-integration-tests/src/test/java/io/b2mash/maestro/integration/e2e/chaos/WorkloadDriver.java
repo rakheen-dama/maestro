@@ -68,7 +68,9 @@ public final class WorkloadDriver {
     // generation instead of accumulating unbounded virtual threads. Sized by
     // Little's law: in-flight = arrival rate x script latency; the worst
     // legitimate script (CONDITIONS_LOOP with every effect check burning its
-    // full 120s sampleTimeout under chaos) is ~12 min, so 15 min of arrivals
+    // full timeout under chaos) is ~12 min at a 120s timeout (longer since the
+    // decision-gated checks wait the 300s decision timeout, Issue 91; any
+    // throttling stays loud, below), so 15 min of arrivals
     // can never throttle real load (soak 20/min -> 300; PR gate 12/min -> 180;
     // floor 60 covers golden/tail rates).
     private final java.util.concurrent.Semaphore inFlight;
@@ -319,7 +321,7 @@ public final class WorkloadDriver {
         runScript(appId, path, false);
         String workflowId = "loan-" + appId;
         awaitTerminal(Service.LOAN_APPLICATION, workflowId,
-                config.sampleTimeout().plusSeconds(120));
+                config.decisionTimeout().plusSeconds(120));
         return workflowId;
     }
 
@@ -446,7 +448,7 @@ public final class WorkloadDriver {
         String childId = "underwriting-" + applicationId + "-round" + round;
         boolean requested = pollUntil(
                 () -> instanceExists(Service.UNDERWRITING, childId),
-                config.sampleTimeout(), Duration.ofSeconds(1));
+                config.decisionTimeout(), Duration.ofSeconds(1));
         if (!requested) {
             notes.add("underwriting-round-" + round + "-not-requested");
         }
@@ -471,7 +473,7 @@ public final class WorkloadDriver {
                     }
                 },
                 () -> isTerminal(Service.UNDERWRITING, childId),
-                Duration.ofSeconds(25), config.sampleTimeout());
+                Duration.ofSeconds(25), config.decisionTimeout());
         if (!ok) {
             notes.add("decision-round-" + round + "-" + verdict + "-not-consumed");
         }
@@ -541,7 +543,7 @@ public final class WorkloadDriver {
         });
         boolean reserved = pollUntil(
                 () -> scanner.newLinesMatch("Reserved rate lock", pattern),
-                config.sampleTimeout(), Duration.ofSeconds(1));
+                config.decisionTimeout(), Duration.ofSeconds(1));
         if (!reserved) {
             notes.add("rate-lock-reservation-not-observed");
         }
