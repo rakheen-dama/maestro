@@ -132,16 +132,37 @@ class RecoveryPollerFailedPassTest {
      */
     @Test
     void aFirstPassThatSkippedARowForTheLockBackendIsNotTheStartupPass() throws Exception {
-        var store = failing(call -> false);
+        // The note is read on the loop thread as the second pass starts — the
+        // first pass, which skipped the row, has ended and the second has done
+        // nothing yet. Reading it from the test thread once passes >= 2 raced:
+        // with a 50 ms poll interval the third pass (which takes the lock and
+        // notes the startup pass) often ran before Awaitility's next 100 ms
+        // poll saw passes >= 2 (CI run 44605305131; 29/250 failures on main).
+        var loopRef = new AtomicReference<RunningLoop>();
+        var notedAsSecondPassStarts = new AtomicReference<Boolean>();
+        var store = scripted(call -> {
+            if (call == 2) {
+                // The test thread publishes the loop right after start() returns,
+                // long before a second pass; wait for it, bounded, all the same.
+                var until = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+                while (loopRef.get() == null && System.nanoTime() < until) {
+                    Thread.onSpinWait();
+                }
+                var notes = loopRef.get().supervisor().snapshot().notes();
+                notedAsSecondPassStarts.set(notes.containsKey(RecoveryPoller.FIRST_PASS_COMPLETE));
+            }
+        }, call -> false);
         seedRecoverable(store, "wf-skipped");
         var acquires = new AtomicInteger();
         var backend = new UnavailableFirstLock(acquires, 2);
         var executor = executor(store, backend);
-        var loop = run(new RecoveryPoller(executor, Map.of("Quick", quick()), "svc", Duration.ofMillis(50)));
+        var body = new RecoveryPoller(executor, Map.of("Quick", quick()), "svc", Duration.ofMillis(50));
+        var loop = run(body);
+        loopRef.set(loop);
 
         await("the second pass began after the first skipped the row").atMost(Duration.ofSeconds(5))
-                .until(() -> passes.get() >= 2);
-        assertFalse(snapshot(loop).notes().containsKey(RecoveryPoller.FIRST_PASS_COMPLETE),
+                .until(() -> notedAsSecondPassStarts.get() != null);
+        assertFalse(notedAsSecondPassStarts.get(),
                 "a pass that skipped a row for the lock backend is not the startup pass");
         await("the first pass that could take the lock notes it").atMost(Duration.ofSeconds(5))
                 .until(() -> Boolean.TRUE.equals(snapshot(loop).notes().get(RecoveryPoller.FIRST_PASS_COMPLETE)));

@@ -2663,24 +2663,20 @@ public final class WorkflowExecutor {
     // ── Supervised loops ────────────────────────────────────────────────
 
     /**
-     * How long a loop started concurrently with {@link #shutdown()} is waited
-     * for before its start reports the race (the start path, not a shutdown
-     * step: shutdown's own steps take what is left of its deadline).
-     */
-    static final Duration RACED_START_JOIN = Duration.ofSeconds(5);
-
-    /**
      * Runs a background loop under a {@link LoopSupervisor} this executor owns:
      * started at once, given this executor's (contained) observer, listed by
-     * {@link #loops()}, and stopped by {@link #shutdown()} — asked to stop with
-     * the other loops at its step 2, and joined against what is left of the
-     * deadline at its step 6. Never interrupted. Internal until 1.0 (see
-     * {@code io.b2mash.maestro.core.loop}); {@code maestro-store-postgres}
-     * declares its loops through it.
+     * {@link #loops()}, and stopped by {@link #shutdown()}. Never interrupted.
+     * Internal until 1.0 (see {@code io.b2mash.maestro.core.loop});
+     * {@code maestro-store-postgres} declares its loops through it.
      *
-     * <p>A start racing a shutdown never outlives it: the loop is registered
-     * before it starts and the shutdown flag re-checked after, so whichever of
-     * the two runs last stops it.
+     * <p>The loop is a {@linkplain LifecycleRegistry.Kind#LOOP loop member} of
+     * this executor's {@linkplain #lifecycle() lifecycle registry} (P1 task 3):
+     * it joins before its thread starts and leaves once that thread has ended —
+     * after its {@code onExit} and its end state are published. Shutdown asks
+     * it to stop with every other member and waits for it, after the run
+     * drain, against what is left of the one deadline. A start after shutdown
+     * has closed the registry is refused before any thread starts, so no loop
+     * can be started and forgotten.
      *
      * @param spec what the loop is and how it is run; its name must be unique
      *             on this executor
@@ -2714,30 +2710,40 @@ public final class WorkflowExecutor {
             throw new IllegalArgumentException("Background loop name '" + spec.name()
                     + "' is reserved for the instance-lock renewer");
         }
-        if (shuttingDown.get()) {
-            throw new IllegalStateException(
-                    "WorkflowExecutor is shutting down — cannot start background loop '" + spec.name() + "'");
-        }
+        // Joined before the thread starts (P1 task 3): refused once shutdown
+        // has closed the registry, and otherwise in close()'s snapshot, so
+        // shutdown asks it to stop and waits for it. A stop request that
+        // arrives before the supervisor exists is applied as it is attached.
+        var member = new LoopMember(spec.name());
+        var membership = lifecycle.join(LifecycleRegistry.Kind.LOOP, member).orElseThrow(() ->
+                new IllegalStateException(
+                        "WorkflowExecutor is shutting down — cannot start background loop '" + spec.name() + "'"));
         // A name claims its entry once, and the loop is in the map from the
         // moment its thread starts (the start runs no executor code). An
         // ended loop keeps its entry: a name is supervised once per executor.
         var holder = new LoopSupervisor[1];
-        var claimed = supervised.computeIfAbsent(spec.name(), name -> {
-            holder[0] = loopStarter.start(spec, body, observer);
-            onStarted.accept(holder[0]);
-            return holder[0];
-        });
-        if (holder[0] == null || claimed != holder[0]) {
-            throw new IllegalStateException("Background loop '" + spec.name() + "' already started");
+        try {
+            var claimed = supervised.computeIfAbsent(spec.name(), name -> {
+                holder[0] = loopStarter.start(spec, body, observer);
+                // The loop leaves the registry as its thread's very last act.
+                holder[0].whenEnded(membership::leave);
+                member.attach(holder[0]);
+                onStarted.accept(holder[0]);
+                return holder[0];
+            });
+            if (holder[0] == null || claimed != holder[0]) {
+                membership.leave(); // this call started nothing
+                throw new IllegalStateException("Background loop '" + spec.name() + "' already started");
+            }
+        } catch (RuntimeException | Error e) {
+            if (holder[0] == null) {
+                membership.leave(); // no thread started: nothing else will leave
+            } else {
+                holder[0].requestStop(); // started but unlisted: its end leaves
+            }
+            throw e;
         }
-        var supervisor = holder[0];
-        if (shuttingDown.get()) {
-            supervisor.requestStop();
-            supervisor.awaitStopped(RACED_START_JOIN);
-            throw new IllegalStateException(
-                    "WorkflowExecutor is shutting down — background loop '" + spec.name() + "' stopped");
-        }
-        return supervisor;
+        return holder[0];
     }
 
     /**
@@ -2791,7 +2797,8 @@ public final class WorkflowExecutor {
      *       janitor and retention sweeper, and the Postgres lock cleaner and
      *       wake listener when started under this executor — is asked to stop,
      *       never by an interrupt (the instance-lock renewer is not: it stops
-     *       after the drain and the give-up);
+     *       after the drain and the give-up), and so is every other registry
+     *       member, such as Maestro's Kafka listener containers;
      *       every park and retry backoff is abandoned; every run queued for a
      *       task-queue slot is released.</li>
      *   <li>Drain the runs in flight until the deadline — a launch admitted
@@ -2801,13 +2808,14 @@ public final class WorkflowExecutor {
      *       release when {@code shutdown()} returns. The lock is free if the
      *       backend's release succeeded; if it failed, the lock's row is left
      *       to expire by TTL.</li>
-     *   <li>Join the background loops for what is left. A loop still inside
-     *       a store call at the deadline is named in a {@code WARN} and ends
+     *   <li>Wait for every member asked to stop — the background loops and any
+     *       consumer — to leave the registry, for what is left. One still
+     *       inside a call at the deadline is named in a {@code WARN} and ends
      *       after that call.</li>
-     *   <li>Stop the instance-lock renewer, waiting at most two seconds of
-     *       what is left.</li>
-     *   <li>Flush queued lifecycle events, for at most five seconds of what is
-     *       left; events still queued then are counted as dropped.</li>
+     *   <li>Stop the instance-lock renewer, waiting {@code min(2 s, what is
+     *       left)}.</li>
+     *   <li>Flush queued lifecycle events, waiting {@code min(5 s, what is
+     *       left)}; events still queued then are counted as dropped.</li>
      * </ol>
      * <p>One summary line follows: {@code INFO Maestro shutdown finished in …}
      * when no run is left, otherwise {@code WARN Maestro shutdown hit its …
@@ -2915,31 +2923,25 @@ public final class WorkflowExecutor {
                     caller.getLast().name());
         }
 
-        // Steps 2–4 never wait, so their order does not matter. Step 2: ask
-        // the background loops to stop — no new timer fires and no new
-        // recovery launches — and join them only after the drain (step 6),
-        // so a loop stuck in a store call never delays it.
-        var loops = new ArrayList<StoppableLoop>(6);
-        // Every supervised loop (timer and recovery pollers, startup recovery,
-        // signal janitor, retention sweeper, and the Postgres lock cleaner and
-        // wake listener when started under this executor): asked once, never
-        // interrupted (Issue 64); they stay in the map, so loops() reads them
-        // STOPPED afterwards. The instance-lock renewer is not among them: runs need it
-        // during the drain, and step 8 stops it.
-        for (var supervisor : supervised.values()) {
-            supervisor.requestStop();
-            loops.add(StoppableLoop.of(supervisor));
-        }
+        // Steps 2–4 never wait, so their order does not matter.
         // Step 3: abandon every park so those threads exit promptly. Their
         // workflows keep the WAITING_* status they parked in and stay
         // recoverable — a park abandoned this way is not a workflow failure.
         parkingLot.shutdown();
-        // Ask every member of the snapshot to stop, outside the registry's
-        // lock: each run's cancellation gets SHUTDOWN, which abandons its
-        // retry backoff the same way (a run not started yet sees it at its
-        // first stop point). Shutdown is not checked before an activity
-        // attempt, so in-flight work still drains. Idempotent, and inert for
-        // a member that has already ended.
+        // Step 2 (S2): ask every member of the snapshot to stop, outside the
+        // registry's lock. Every supervised loop (timer and recovery pollers,
+        // startup recovery, signal janitor, retention sweeper, and the
+        // Postgres lock cleaner and wake listener when started under this
+        // executor) is a LOOP member (P1 task 3): asked by latch, never
+        // interrupted; no new timer fires and no new recovery launches; it is
+        // waited for only after the drain (S5), so a loop stuck in a store call
+        // never delays it. The instance-lock renewer is not a member: runs
+        // need it during the drain, and step 8 stops it. Each run's
+        // cancellation gets SHUTDOWN, which abandons its retry backoff the
+        // same way (a run not started yet sees it at its first stop point).
+        // Shutdown is not checked before an activity attempt, so in-flight
+        // work still drains. Idempotent, and inert for a member that has
+        // already ended.
         // Each member contained (PR #75 review): a member joined through the
         // public join() may throw from requestStop(), and one that does must
         // not cut shutdown short — the members after it, the drain, the
@@ -2978,21 +2980,16 @@ public final class WorkflowExecutor {
             member.abandon();
         }
 
-        // Step 6: join the loops asked to stop at step 2, against what is left.
+        // Step 6 (S5): wait for every other member — the loops and any other
+        // member — against what is left. One wait, ended by each member's
+        // leave(); never a join with a timeout of its own.
         var loopsStart = System.nanoTime();
-        for (var loop : loops) {
-            if (!loop.awaitStopped(deadline.remaining())) {
-                logger.warn("Background loop '{}' did not stop within the shutdown deadline; "
-                        + "it ends after its current store call", loop.loopName());
-            }
-        }
-        // S5: every other registry member, against what is left. None in core
-        // yet: the supervised loops above stop through their supervisors'
-        // requestStop/awaitStopped (steps 2 and 6) until they join the
-        // registry (P1's later task).
         if (!lifecycle.awaitNoMembers(deadline, caller)) {
             for (var member : lifecycle.remaining()) {
-                if (!member.isRun()) {
+                if (member.kind() == LifecycleRegistry.Kind.LOOP) {
+                    logger.warn("Background loop '{}' did not stop within the shutdown deadline; "
+                            + "it ends after its current store call", member.name());
+                } else if (!member.isRun()) {
                     logger.warn("Maestro {} did not stop within the shutdown deadline; it ends after its "
                             + "current call", member);
                 }

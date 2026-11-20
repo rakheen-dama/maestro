@@ -10,7 +10,9 @@ import org.slf4j.LoggerFactory;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.InstantSource;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
@@ -166,6 +168,10 @@ public final class LoopSupervisor {
     private @Nullable Status beforeAwait;
     /** When the last loud ({@code ERROR}) failure line was logged; the loop's thread only. */
     private long lastLoudNanos;
+    /** Guards {@link #endHooks}. */
+    private final Object endHooksLock = new Object();
+    /** Hooks to run once the loop's thread has ended; {@code null} once they have run. */
+    private @Nullable List<Runnable> endHooks = new ArrayList<>();
 
     private LoopSupervisor(LoopSpec spec, LoopBody body, EngineObserver observer, LongSupplier nanoTime,
                            InstantSource wallClock) {
@@ -273,6 +279,69 @@ public final class LoopSupervisor {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             return exited.getCount() == 0;
+        }
+    }
+
+    /**
+     * Runs {@code hook} once the loop's thread has ended — after
+     * {@link LoopBody#onExit()} and after its end state is published, so a
+     * snapshot then reads it ended — or at once on the calling thread if it
+     * already has. Its owner uses it to give back what the loop held for it
+     * (the engine leaves its lifecycle registry here). The hook runs once and
+     * is contained: whatever it throws, other than a
+     * {@link MaestroControlFlowError}, is logged and ignored.
+     *
+     * @param hook what to run
+     */
+    public void whenEnded(Runnable hook) {
+        Objects.requireNonNull(hook, "hook");
+        synchronized (endHooksLock) {
+            if (endHooks != null) {
+                endHooks.add(hook);
+                return;
+            }
+        }
+        runEndHook(hook);
+    }
+
+    private void runEndHooks() {
+        List<Runnable> hooks;
+        synchronized (endHooksLock) {
+            hooks = endHooks;
+            endHooks = null;
+        }
+        if (hooks == null) {
+            return;
+        }
+        // Every hook runs even if one throws a control-flow error — a later hook
+        // may be the loop's registry leave (PR #78 review 4634059382); the first
+        // such error is rethrown once all have run.
+        MaestroControlFlowError first = null;
+        for (var hook : hooks) {
+            try {
+                runEndHook(hook);
+            } catch (MaestroControlFlowError e) {
+                if (first == null) {
+                    first = e;
+                } else if (first != e) {
+                    first.addSuppressed(e);
+                }
+            }
+        }
+        if (first != null) {
+            throw first;
+        }
+    }
+
+    private void runEndHook(Runnable hook) {
+        try {
+            hook.run();
+        } catch (Throwable t) {
+            if (t instanceof MaestroControlFlowError controlFlow) {
+                throw controlFlow;
+            }
+            log(t, () -> logger.warn("An end hook of background loop '{}' threw — ignoring: {}", spec.name(),
+                    describe(t)));
         }
     }
 
@@ -385,6 +454,7 @@ public final class LoopSupervisor {
             // Whatever the lines above throw, the loop has ended: a waiter must
             // not wait out its deadline for it (review F3).
             exited.countDown();
+            runEndHooks();
         }
         if (exitFailure != null) {
             throw exitFailure;

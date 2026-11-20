@@ -142,6 +142,11 @@ abstract class KafkaSpringIntegrationSupport extends PostgresIntegrationSupport 
         registry.add("spring.kafka.bootstrap-servers", KAFKA::getBootstrapServers);
     }
 
+    /** @return the shared broker's bootstrap servers, for a suite's own admin client */
+    protected static String bootstrapServers() {
+        return KAFKA.getBootstrapServers();
+    }
+
     // ── Topics ──────────────────────────────────────────────────────────
 
     /**

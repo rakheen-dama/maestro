@@ -97,7 +97,7 @@ class KafkaCoexistenceRoundTripTest extends KafkaTestSupport {
         hostTopic = "coexist.host." + suffix;
         createTopics(hostTopic, "maestro.signals." + svc, "maestro.signals." + svc + ".DLT",
                 GOOD, GOOD + ".DLT", POISON, POISON + ".DLT");
-        executor = mock(WorkflowExecutor.class);
+        executor = MockEngines.executor();
         when(executor.deliverSignal(anyString(), eq("poison"), any(), any()))
                 .thenThrow(new IllegalStateException("poison"));
     }

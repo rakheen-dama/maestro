@@ -130,9 +130,9 @@ class LaunchOutcomeRegistryTest {
     void everyLaunchOutcomeLeavesTheRegistryEmpty(Outcome outcome) throws Exception {
         launch(outcome);
 
-        assertEquals(outcome.stillRegistered, valueWithin(() -> executor.lifecycle().remaining().size(),
+        assertEquals(outcome.stillRegistered, valueWithin(this::registeredRuns,
                         outcome.stillRegistered, Duration.ofSeconds(5)),
-                () -> "still registered after " + outcome + ": " + executor.lifecycle().remaining());
+                () -> "runs still registered after " + outcome + ": " + executor.lifecycle().remaining());
         try (var logs = CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
             var start = System.nanoTime();
             executor.shutdown();
@@ -399,7 +399,7 @@ class LaunchOutcomeRegistryTest {
                 assertEquals(2, executor.lifecycle().remaining().stream()
                         .filter(m -> m.isRun() && m.name().equals(ID)).count(), "the old and the new run");
                 go.countDown();
-                assertEquals(1, valueWithin(() -> executor.lifecycle().remaining().size(), 1, Duration.ofSeconds(5)),
+                assertEquals(1, valueWithin(this::registeredRuns, 1, Duration.ofSeconds(5)),
                         "the old run left; the new one stays");
                 assertTrue(executor.isRunning(ID), "the old run's cleanup left the new run's entry alone");
             }
@@ -459,11 +459,20 @@ class LaunchOutcomeRegistryTest {
                 Duration.ofSeconds(10)), "the prompted recovery pass ran and the poller is idle");
     }
 
+    /**
+     * The runs still in the registry. Since P1 task 3 the recovery poller —
+     * like every supervised loop — is a member too; this test is about the
+     * launches' own memberships.
+     */
+    private int registeredRuns() {
+        return (int) executor.lifecycle().remaining().stream().filter(LifecycleRegistry.Membership::isRun).count();
+    }
+
     /** Runs {@code wf-x} to {@code FAILED} on this executor and waits until that run has left. */
     private void runToFailed() throws Exception {
         start(FailingWorkflow.class, FailingWorkflow::new);
         assertEquals(WorkflowStatus.FAILED, valueWithin(this::status, WorkflowStatus.FAILED, Duration.ofSeconds(5)));
-        assertEquals(0, valueWithin(() -> executor.lifecycle().remaining().size(), 0, Duration.ofSeconds(5)));
+        assertEquals(0, valueWithin(this::registeredRuns, 0, Duration.ofSeconds(5)));
     }
 
     private void holdElsewhere() {

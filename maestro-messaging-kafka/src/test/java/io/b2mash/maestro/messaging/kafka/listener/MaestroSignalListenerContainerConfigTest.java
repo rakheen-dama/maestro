@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.MockEngines;
 import io.b2mash.maestro.messaging.kafka.KafkaTracePropagation;
 import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.messaging.kafka.config.KafkaMessagingAutoConfiguration;
@@ -62,7 +63,7 @@ class MaestroSignalListenerContainerConfigTest {
             .withConfiguration(AutoConfigurations.of(KafkaMessagingAutoConfiguration.class))
             .withUserConfiguration(PropertiesConfiguration.class, SignalListenerBeanConfiguration.class)
             .withBean(ObjectMapper.class, ObjectMapper::new)
-            .withBean(WorkflowExecutor.class, () -> mock(WorkflowExecutor.class))
+            .withBean(WorkflowExecutor.class, MockEngines::executor)
             .withPropertyValues(
                     "maestro.service-name=signal-listener-container-test",
                     "spring.kafka.bootstrap-servers=localhost:19092",
@@ -107,6 +108,7 @@ class MaestroSignalListenerContainerConfigTest {
             var props = bpp.containersForTesting().get(0).getContainerProperties();
             assertThat(props.isMissingTopicsFatal()).isFalse();
             assertThat(props.getAuthExceptionRetryInterval()).isEqualTo(java.time.Duration.ofSeconds(10));
+            assertThat(props.isStopImmediate()).as("stops after the record in hand (P1 review M1)").isTrue();
         });
     }
 

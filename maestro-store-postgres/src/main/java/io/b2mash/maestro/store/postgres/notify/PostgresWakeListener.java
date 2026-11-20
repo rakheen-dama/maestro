@@ -164,6 +164,12 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
     private final ReentrantLock lifecycle = new ReentrantLock();
 
     private volatile boolean closed;
+    /**
+     * Whether the loop runs under an executor's supervisor: that executor's
+     * shutdown waits for it on its one deadline, so {@link #close()} does not
+     * wait again (review L3). Guarded by {@code lifecycle}.
+     */
+    private boolean underExecutor;
     private volatile @Nullable Connection connection;
     private volatile @Nullable PGConnection pgConnection;
     private volatile @Nullable LoopSupervisor supervisor;
@@ -213,7 +219,7 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
      */
     public void start(WorkflowExecutor executor) {
         Objects.requireNonNull(executor, "executor");
-        startWith(spec -> executor.supervise(spec, this), executor.wakeRecheckInterval());
+        startWith(spec -> executor.supervise(spec, this), executor.wakeRecheckInterval(), true);
     }
 
     /**
@@ -221,10 +227,11 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
      * listener's own, with no observer: failing after 30 s. Never throws.
      */
     public void start() {
-        startWith(spec -> LoopSupervisor.start(spec, this, EngineObserver.NOOP), DEFAULT_FAILING_AFTER);
+        startWith(spec -> LoopSupervisor.start(spec, this, EngineObserver.NOOP), DEFAULT_FAILING_AFTER, false);
     }
 
-    private void startWith(Function<LoopSpec, LoopSupervisor> starter, Duration failingAfter) {
+    private void startWith(Function<LoopSpec, LoopSupervisor> starter, Duration failingAfter,
+                           boolean executorOwned) {
         lifecycle.lock();
         try {
             if (closed) {
@@ -250,6 +257,7 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
                     .withFailing(FailingRule.streakFor(2, failingAfter));
             try {
                 supervisor = starter.apply(spec);
+                underExecutor = executorOwned;
                 startedSpec = spec;                           // published only once the claim is won
             } catch (RuntimeException | Error e) {
                 running.set(false);
@@ -303,17 +311,23 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
     }
 
     /**
-     * Stops the loop without interrupting it, and waits for it for at most
-     * two seconds. The loop leaves within one poll (500 ms), issues
-     * {@code UNLISTEN *} and returns its connection to the pool. If it has not
-     * left in time, this method returns anyway and the loop releases the
-     * connection when its current database call returns. Idempotent, and
-     * terminal even for a listener that was never started. A {@code close()}
-     * concurrent with a start waits for that start's connect attempt.
+     * Stops the loop without interrupting it. Standalone ({@link #start()}) it
+     * waits for the loop for at most two seconds; under an executor
+     * ({@link #start(WorkflowExecutor)}) it does not wait: that executor's
+     * shutdown, which runs first, already asked the loop to stop and waited
+     * for it on its one deadline, and a second private bound would be a
+     * shutdown step with a timeout of its own. The loop leaves within one poll
+     * (500 ms), issues {@code UNLISTEN *} and returns its connection to the
+     * pool. If it has not left, this method returns anyway and the loop
+     * releases the connection when its current database call returns.
+     * Idempotent, and terminal even for a listener that was never started. A
+     * {@code close()} concurrent with a start waits for that start's connect
+     * attempt.
      */
     @Override
     public void close() {
         LoopSupervisor loop;
+        boolean waitForIt;
         lifecycle.lock();
         try {
             closed = true;
@@ -321,16 +335,20 @@ public final class PostgresWakeListener implements AutoCloseable, LoopBody {
                 return;
             }
             loop = supervisor;
+            waitForIt = !underExecutor;
         } finally {
             lifecycle.unlock();
         }
         var stopped = true;
         if (loop != null) {
             loop.requestStop();
-            stopped = loop.awaitStopped(closeJoin);
+            stopped = waitForIt ? loop.awaitStopped(closeJoin) : loop.snapshot().state().ended();
         }
         if (stopped) {
             logger.info("Postgres wake listener on channel '{}' closed", channel);
+        } else if (!waitForIt) {
+            logger.info("Postgres wake listener on channel '{}' is still in a database call after the engine's "
+                    + "shutdown; it releases its connection when that call returns", channel);
         } else {
             logger.info("Postgres wake listener on channel '{}' did not stop within {} ms (its poll thread is "
                     + "still in a database call); it releases its connection when that call returns",

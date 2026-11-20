@@ -1789,7 +1789,7 @@ Spring Boot orders statuses `DOWN`, `OUT_OF_SERVICE`, `UP`, `UNKNOWN`, so an `UN
 - **Liveness.** `management.endpoint.health.group.liveness.include=livenessState,maestroLiveness`, with a `failureThreshold` of 3 or more. Never point a liveness probe at `/actuator/health` or at `maestro`: restarting a pod whose database is down fixes nothing, and restarting a busy pod abandons its in-flight runs to the lock TTL.
 - **Readiness.** Add `maestro` only if this pod's HTTP traffic needs Maestro's store: `management.endpoint.health.group.readiness.include=readinessState,maestro`. A shared database that is down then takes every pod out of the Service, which is what you want only if the pods cannot serve without it. Leave Boot's `db` indicator out of that group (or give it its own short-timeout `DataSource`): it waits up to Hikari's `connectionTimeout` (30 s) on an exhausted pool.
 - **Probe groups, never the root (Issue 75).** Point probes at the groups, never at the root `/actuator/health`: on an exhausted shared pool the root waits on Boot's `db` indicator, though `maestro` answers `UNKNOWN` within 2 s and `maestroLiveness` at once. Probing the root on a shared pool is not supported (`docs/support-matrix.md`).
-- **Probe timeout.** `maestro` can take up to 2 s to answer: a call that starts or joins a store probe waits for it for up to 2 s (only a call that finds the probe already timed out by an earlier call answers at once). A kubelet probe's default `timeoutSeconds` is `1`, so a slow store makes the HTTP probe itself time out, which the kubelet counts as a failure — the pod leaves the Service even though `maestro` would have answered `UNKNOWN` (HTTP 200). Set the readiness probe's `timeoutSeconds` to at least `3` whenever `maestro` is in its group, and above the longest pool wait of every member of the group. (The 2 s bound is `returnsPromptlyWhenStoreBlocksIndefinitely`; the kubelet default is Kubernetes' documented behaviour, not tested here.)
+- **Probe timeout.** `maestro` can take up to 2 s to answer: a call that starts or joins a store probe waits for it for up to 2 s (only a call that finds the probe already timed out by an earlier call answers at once). A timed-out probe is never interrupted (Issue 66, fixed in P1): an interrupt on a virtual thread inside a JDBC call closes the connection and the pool evicts it, so the probe's query is left to finish and its result ignored (`HealthProbeOnHikariTest.aTimedOutProbeEvictsNoConnection`: no pool `WARN`, the connection reused). A probe is abandoned when the call waiting for it times out (2 s after it started); the first health call made 10 s (`SUPERSEDE_AFTER`, 5 × the bound) or more after that abandonment supersedes it with one fresh probe — so at least 12 s after the stuck probe started. One probe stuck for good — a half-open socket with no pgjdbc `socketTimeout` — therefore does not hold `UNKNOWN` once the store answers again: health reads the store as it is from the first call made 10 s after the abandonment. While the superseded probe is still stuck no third is started, so health probes hold at most two connections (`MaestroHealthIndicatorTest.aStuckProbeDoesNotHoldUnknownOnceTheStoreAnswers`, `atMostTwoProbesAreEverStuckAtOnce`). That bound has a price: if the fresh probe gets stuck for good too, health reads `UNKNOWN` until one of them returns — with no socket timeout, possibly never. Which one returns matters: when the fresh (in-flight) probe returns, the next call probes afresh; when the superseded one returns first, the fresh one stays in flight, and calls keep answering `"timed out"` until it returns or 10 s have passed since it was itself abandoned (its own 2 s timeout), when the next call supersedes it — never more than two probes either way. Set pgjdbc's `socketTimeout` (above the longest query the pool runs) and `tcpKeepAlive`, so a stuck call does return. A kubelet probe's default `timeoutSeconds` is `1`, so a slow store makes the HTTP probe itself time out, which the kubelet counts as a failure — the pod leaves the Service even though `maestro` would have answered `UNKNOWN` (HTTP 200). Set the readiness probe's `timeoutSeconds` to at least `3` whenever `maestro` is in its group, and above the longest pool wait of every member of the group. (The 2 s bound is `returnsPromptlyWhenStoreBlocksIndefinitely`; the kubelet default is Kubernetes' documented behaviour, not tested here.)
 - **A dead loop.** Every loop contains every `Error` except Maestro's control-flow signals, so a loop that stops is a bug: the log carries `Background loop '<name>' stopped: …` at `ERROR`, both contributors read `DOWN`, and `maestroLiveness` restarts the pod. Alert on `maestro.loop.errors` (contained `Error`s) and on `maestro.loop.failing` (a failing loop) before it comes to that.
 
 **`UNKNOWN` answers HTTP 200 by default.** That holds for `/actuator/health/maestro` too, and for a group whose only member is `maestro`. A host that wants a timed-out probe to answer 503 maps the status, and, for an aggregate or a group that also has an `UP` member, ranks `UNKNOWN` above `UP` — otherwise the aggregate stays `UP` and the mapping never applies:
@@ -1828,20 +1828,30 @@ Tomcat itself was not run). The host's `@KafkaListener` containers (phase
 | # | Step | Waits? | For at most |
 |---|---|---|---|
 | 1 | Starts the deadline; closes the lifecycle registry — from here every `startWorkflow`, recovery adoption and admin Retry is refused before it takes a lock or writes — and takes the runs it holds; logs `Maestro shutdown started` | no | — |
-| 2 | Asks every supervised loop — timer poller, recovery poller, startup recovery, signal janitor, retention sweeper, and with `maestro-store-postgres` the lock cleaner and the wake listener — to stop, never by an interrupt: no new timer fires, no new recovery starts | no | — |
+| 2 | Asks every other registry member to stop, never by an interrupt: every supervised loop — timer poller, recovery poller, startup recovery, signal janitor, retention sweeper, and with `maestro-store-postgres` the lock cleaner and the wake listener — so no new timer fires and no new recovery starts; and Maestro's Kafka listener containers — the engine's signal container and every `@MaestroSignalListener` container (Issue 69, fixed in P1) — through Spring Kafka's asynchronous `stop(Runnable)`: each finishes the record in hand and, with `stopImmediate` set, invokes the listener for nothing else from its last poll; it commits the records it handled (AckMode `RECORD`) and leaves its consumer group, and once its consumer has finished that record it leaves its consumer group and its partitions — the polled but unhandled records included, uncommitted — move to a peer: during the drain when the record in hand returns in time. A listener call that blocks keeps its consumer in the group for as long as it blocks; the deadline ends Maestro's wait, it does not make the consumer leave — that happens when the call returns, or at JVM exit, or after the broker's session timeout | no | — |
 | 3 | Abandons every park (`awaitSignal`, `sleep`) and every retry backoff | no | — |
 | 4 | Releases every run queued for a task-queue slot (Issue 29) | no | — |
 | 5 | Drains the runs still executing: every run admitted before step 1, a launch still taking its lock included, until it has released its instance lock | yes | what is left |
 | 5a | Gives up every run still executing (Issue 70): from here nothing it does is recorded | no | — |
-| 6 | Joins the loops asked to stop at step 2 (up to seven) | yes | what is left |
+| 6 | Waits for every member asked to stop at step 2 — the loops (up to seven) and the Kafka containers — to leave the registry, each once its thread has ended | yes | what is left |
 | 7 | Takes back the permits lent at step 4, so the task-queue slot counts are exact again (a pool with a thread still queued keeps its loan) | no | — |
 | 8 | Stops the instance-lock renewer, without an interrupt | yes | 2 s of what is left |
 | 9 | Flushes queued lifecycle events; what is still queued is dropped and counted | yes | 5 s of what is left |
 | 10 | Logs the summary line | no | — |
 
-Nothing is interrupted: not a run executing an activity, not the lock renewer.
-Once the drain has used the whole deadline, steps 6, 8 and 9 only signal and
-return.
+Nothing is interrupted: not a run executing an activity, not the lock renewer,
+not a Kafka consumer. Once the drain has used the whole deadline, steps 6, 8
+and 9 only signal and return. Steps 8 and 9 are the two capped steps: each
+waits `min(cap, what is left)` (`ShutdownDeadline.remainingAtMost`), so a cap
+only shortens a wait, never lengthens the deadline.
+
+Every background loop and Kafka container joins the registry **before** its
+thread starts, and leaves as its thread's last act. So a loop or container
+started after step 1 is refused before any thread exists, and none can be
+started and then forgotten by shutdown
+(`LoopMembershipTest`, `KafkaContainerGroupTest`,
+`PostgresLoopsRegistryTest`; broker-backed,
+`MaestroContainersStopInTheDrainIT.everyMaestroContainerHasStoppedWhileTheDrainIsStillWaiting`).
 
 **Admission (Issue 80).** Every launch joins the executor's lifecycle registry
 as its first act, before it takes the instance lock, and leaves it as its
@@ -1883,22 +1893,28 @@ reads and writes nothing, the row stays `FAILED`, and the admin dispatcher
 rethrows, so the record is not acknowledged. The dispatcher logs this
 refusal, and only this one, as one `WARN` without a stack trace; any other
 exception, an `IllegalStateException` from the store included, keeps its
-`ERROR` and stack trace. Until the engine's Kafka signal container stops — at bean destruction, after
-`shutdown()` returns, until [Issue 69](open-issues.md#issue-69) is fixed — the
-record is redelivered to this same draining node and refused again on each
-attempt. What happens next depends on whether the redelivery budget of
-`maestro.messaging.redelivery.*` runs out **before the container stops**. The
-budget is counted from the record's **first refusal**, not from the start of
-shutdown: a Retry first refused 19 s into a 20 s drain has used almost none of it,
-while one refused at the start of a drain longer than the budget's 151 s of
-backoff (the defaults) has used all of it. Compare the budget with the time from
-the first refusal to the container's stop, whatever the settings.
+`ERROR` and stack trace. Since P1 ([Issue 69](open-issues.md#issue-69)) the
+engine's Kafka signal container is asked to stop at step 2 and stops after the
+record in hand (`stopImmediate`), so only the record it is handling when
+shutdown begins can meet the refusal; a Retry later in the same poll is never
+handed to the listener on this node. Spring Kafka's redelivery back-off ends
+at once on a container that is no longer running (`stoppableSleep`, Spring
+Kafka 4.0.4, traced), and its error handler seeks the refused record back, so
+it is not redelivered to this node again and the drain's length no longer
+matters. The next owner of the partition — a peer after the rebalance, or,
+**on a single node, this node once it has restarted** — consumes it with a
+fresh attempt count; until then the Retry has no visible effect:
 
-| Redelivery setting | What becomes of the refused Retry |
-|---|---|
-| The container stops before the budget is spent — the usual case at the defaults: the default budget (`max-attempts` 10, backoff 1, 2, 4, 8, 16, 30, 30, 30, 30 s, 151 s in all) outlasts the default 20 s `maestro.shutdown.timeout` plus bean destruction | The offset stays uncommitted and a peer consumes the command after the rebalance |
-| The budget is spent before the container stops — whenever the backoff fits between the first refusal and the container's stop, **with the default redelivery settings too**: a `maestro.shutdown.timeout` of 3 min (with matching Spring and platform grace) gives a Retry refused early in the drain time to spend all 151 s; a smaller budget (1 + 2 + 4 + 8 = 15 s for `max-attempts` 5) fits in a 20 s drain | Dead-lettered on this node: parked in the `.DLT` topic, never lost, but it needs an operator replay |
-| `maestro.messaging.redelivery.enabled=false` | Logged and skipped after one attempt: the Retry is lost — click it again once a node is up |
+| Redelivery setting | The Retry refused at shutdown | A Retry polled but not yet handled |
+|---|---|---|
+| `max-attempts` 2 or more (the default is 10) | Refused once, offset not committed; the next owner (a peer, or this node after its restart) consumes it | Never handed to the listener here; uncommitted, consumed by the next owner |
+| `max-attempts` 1 | Dead-lettered on this node at the first refusal: parked in the `.DLT` topic, never lost, but it needs an operator replay — as for any failure with this setting | As the row above |
+| `maestro.messaging.redelivery.enabled=false` | Logged and skipped after one attempt: the Retry is lost — click it again once a node is up | As the row above |
+
+Before P1 the container stopped only at bean destruction, after `shutdown()`
+returned, so a refused Retry was redelivered to the draining node until either
+the container stopped or the budget (151 s of backoff at the defaults) ran out
+and it was dead-lettered.
 
 Before P1 such a Retry reopened the row on the draining node and launched a run
 nothing waited for (`ShutdownAdmissionTest.aRetryDuringShutdownIsRefusedAndWritesNothing`,
@@ -1972,6 +1988,8 @@ timeout to be at least `maestro.shutdown.timeout + 2 s`.
 | Deadline hit, runs left | WARN | `Maestro shutdown hit its {budget} ms deadline (maestro.shutdown.timeout): {m} of {n} run(s) still running [ids]; shutdown does not interrupt them and records nothing for them: it gave them up, so nothing they do from now on is recorded; their instance locks expire after {ttl} ms (maestro.lock.ttl) and a peer recovers them (…)` — at most ten ids, then `and {k} more` |
 | A given-up run ends | INFO | `Workflow '{}' suspended by shutdown while {} — left recoverable`, with `runAbandoned(SHUTDOWN)` |
 | A loop still inside a store call at the deadline | WARN | `Background loop '{name}' did not stop within the shutdown deadline; it ends after its current store call` |
+| Kafka containers not stopped at the deadline | WARN | `Maestro consumer '{name}' did not stop within the shutdown deadline; it ends after its current call` (`{name}` is `kafka-signal-container` or `signal-listener-containers`) |
+| Containers asked to stop | INFO | `Stopping {n} Maestro Kafka listener container(s) ({name})` |
 | Events dropped at the flush deadline | WARN | `Lifecycle event publisher stopped with {k} queued event(s) unpublished` (also added to the publisher's internal drop count) |
 | A second `shutdown()` call | INFO | `Shutdown already in progress — waiting up to {} ms for it to finish` (a WARN if that wait runs out) |
 | Handler | INFO | `Maestro graceful shutdown initiated`, `Maestro graceful shutdown complete`; ERROR `Maestro graceful shutdown failed: …` if the engine's shutdown threw |
@@ -1990,16 +2008,27 @@ after timeout of …ms: [maestroGracefulShutdownHandler]`.
 terminationGracePeriodSeconds (or docker stop -t, systemd TimeoutStopSec)
     ≥ preStop
     + the host's lifecycle beans above phase MAX-1024 (e.g. @KafkaListener containers, phase MAX-100)
-    + max(maestro.shutdown.timeout, the web server's graceful drain)
-    + Maestro's Kafka listener containers, stopped at bean destruction (≤ 10 s each; typically under 1 s, traced)
-    + 2 s for the Postgres wake listener (typically ≤ 0.5 s; WP10 measured 0–408 ms)
+    + max(maestro.shutdown.timeout + 1 s, the web server's graceful drain)
     + a margin for the DataSource and the JVM (5 s suggested)
 
 spring.lifecycle.timeout-per-shutdown-phase ≥ maestro.shutdown.timeout + 2 s
 ```
 
 Maestro's own term is bounded by `shutdownReturnsWithinItsTimeoutWhenEveryStepIsStuck`
-(timeout + under 1 s asserted; about 5 ms over the timeout measured). Every other term is traced from the Spring, Spring Kafka
+(timeout + under 1 s asserted; about 5 ms over the timeout measured). Since P1
+it includes Maestro's Kafka listener containers and, under an engine, the
+Postgres lock cleaner and wake listener: all stop at step 2 and are waited for
+on the one deadline, so their stop no longer adds to the sum. A container
+stops after the record in hand (`stopImmediate`), not after its whole last
+poll, so a backlog does not stretch its stop. A container or loop still not
+stopped at the deadline — a listener call or a database call that has not
+returned — is named in a `WARN` and not waited for again at bean destruction
+(`PostgresLoopsRegistryTest.underAnExecutorCloseDoesNotWaitAgainForAStuckPoll`
+for the wake listener; standalone, without an engine, the wake listener's
+`close()` still waits up to 2 s and the lock cleaner's 5 s): its consumer
+leaves its group when its current call returns, or by the broker's session
+timeout if the JVM exits first, and the wake listener returns its connection
+when its call returns. Every other term is traced from the Spring, Spring Kafka
 and Kubernetes sources and documentation, not run.
 
 **The web server's drain has no timeout of its own.** Spring Boot's Tomcat
@@ -2015,29 +2044,22 @@ with a request still active at the end, it is the full phase timeout. To cap
 the web drain at Maestro's deadline, set the phase timeout to
 `maestro.shutdown.timeout + 2 s` (22 s at the defaults).
 
-- **Defaults, no preStop — the typical case:** 20 (`maestro.shutdown.timeout`;
-  the web server's drain runs alongside it and is assumed to end within it) +
-  ~1 (Maestro's Kafka containers, typically under 1 s together) + 2 (the wake
-  listener, at most) + 5 (the `DataSource` and JVM margin) ≈ 28 s ≤ 30 s. That
-  fits Kubernetes' default grace (30 s, traced), narrowly, and assumes no host
-  `@KafkaListener` container is slow to stop.
+- **Defaults, no preStop — the typical case:** 21 (`maestro.shutdown.timeout`
+  plus under 1 s; the web server's drain runs alongside it and is assumed to
+  end within it) + 5 (the `DataSource` and JVM margin) ≈ 26 s ≤ 30 s. That
+  fits Kubernetes' default grace (30 s, traced), and assumes no host
+  `@KafkaListener` container is slow to stop. Before P1, Maestro's Kafka
+  containers (up to 10 s each) and the wake listener (up to 2 s) added to it
+  at bean destruction.
 - **Defaults, an HTTP request still active at the end:** the phase lasts the
-  full 30 s `timeout-per-shutdown-phase`, so 30 + ~1 + 2 + 5 ≈ 38 s, beyond
-  the 30 s default grace. Set the phase timeout to 22 s (≈ 30 s total) or
-  raise the grace.
-- **Defaults, worst case:** each of Maestro's Kafka listener containers — the
-  engine's signal container plus one per `@MaestroSignalListener`, N in all —
-  can take up to Spring Kafka's 10 s to stop, so 20 + 10·N + 2 + 5 s: 37 s
-  for N = 1, 47 s for N = 2 — or, with a request keeping the web drain open to
-  the 30 s phase timeout, 30 + 10·N + 2 + 5 s (47 s for N = 1). That exceeds the 30 s default grace, and the
-  kubelet's `SIGKILL` then lands during bean destruction — after the engine
-  has drained, so nothing durable is lost (traced), but consumers may not
-  leave their group cleanly. If your consumers stop slowly, set
-  `terminationGracePeriodSeconds` to at least `max(maestro.shutdown.timeout,
-  timeout-per-shutdown-phase if a request can stay active) + 10·N + 7` seconds
-  plus your preStop, plus whatever your own `@KafkaListener` containers and other
-  lifecycle beans take to stop (traced; Issue 69 would take these containers out of the sum).
-- **With a 5 s preStop:** ≈ 33 s typical. Set `terminationGracePeriodSeconds: 45`.
+  full 30 s `timeout-per-shutdown-phase`, so 30 + 5 ≈ 35 s, beyond the 30 s
+  default grace. Set the phase timeout to 22 s (≈ 27 s total) or raise the
+  grace.
+- **Worst case:** `max(maestro.shutdown.timeout + 1 s, timeout-per-shutdown-phase
+  if a request can stay active) + 5` seconds, plus your preStop, plus whatever
+  your own `@KafkaListener` containers and other lifecycle beans take to stop
+  (traced). Maestro's containers no longer add a term per container.
+- **With a 5 s preStop:** ≈ 31 s typical. Set `terminationGracePeriodSeconds: 45`.
 - **Keeping 30 s of drain:** `maestro.shutdown.timeout: 30s`,
   `spring.lifecycle.timeout-per-shutdown-phase: 35s`, grace ≥ 45 s + preStop.
 - **If the phase timeout is shorter than the drain:** Spring moves on to lower
@@ -2065,15 +2087,55 @@ maestro:
 
 ### 15.5 Kafka
 
-Maestro's own Kafka listener containers are not Spring lifecycle beans: they
-keep consuming through the drain, which is safe because a signal that arrives
-is persisted and recovered with the run it wakes, and they stop at bean
-destruction, where their stop time adds to the arithmetic above. The
-`@MaestroSignalListener` containers stop after the `DataSource`, so a record in
-flight in that window fails; with redelivery attempts left (the default 10) it
-is redelivered after the restart, with `maestro.messaging.redelivery.max-attempts: 1`
-it goes to `<topic>.DLT`, and with redelivery disabled it is skipped (traced,
-not run). Both are Issue 69.
+Maestro's own Kafka listener containers are not Spring lifecycle beans; since
+P1 they are members of the engine's lifecycle registry (Issue 69, fixed). Both
+the engine's signal container and the `@MaestroSignalListener` containers join
+it before they start, are asked to stop at step 2 of the engine's shutdown and
+are waited for at step 6 on the one deadline. Each stops after the record in
+hand (`stopImmediate`): the rest of its last poll is not handed to the
+listener, stays uncommitted and goes to the partition's next owner
+(`MaestroListenerStopsAfterTheRecordInHandIT`: a 40-event backlog in one poll,
+the listener invoked for nothing after the record in hand, every remaining
+event handled exactly once by the next node). Shutdown requests the stop
+before it drains, but a consumer leaves its group — and its partitions move to
+a peer — only once its record in hand has returned: an idle consumer leaves at
+once (`MaestroContainersStopInTheDrainIT` measured this for idle consumers),
+one whose listener call blocks stays in its group for as long as it blocks.
+The deadline ends Maestro's wait, it does not make that consumer leave: it
+leaves when the call returns, at JVM exit, or after the broker's session
+timeout, so its partitions can be reassigned after the deadline. A blocked
+call does not keep the partitions either: once it has blocked longer than
+`max.poll.interval.ms` (default 5 min) the broker removes that consumer and
+reassigns its partitions while the call is still running (a static member,
+`group.instance.id`, after its session timeout), so the record in hand can be
+handled again elsewhere before the first call returns — signals dedupe by
+message id, and listener code must be idempotent as for any redelivery. A container
+that has stopped by the deadline handles no record after
+the `DataSource` closes: it has stopped before `shutdown()` returns, and the
+`DataSource` is destroyed only after that (§15.1). One whose record in hand is
+still running at the deadline (a listener call that has not returned) is named
+in a `WARN`; that one call can still meet a closing `DataSource`, fail, and be
+redelivered to the next owner under the redelivery policy. A signal or domain
+event not yet consumed stays in the topic, uncommitted, for the next owner.
+
+If a consumer thread dies of a fatal error at the very moment of the stop,
+Spring Kafka can drop the stop callback (traced in 4.0.4's
+`ConcurrentMessageListenerContainer.doStop`); the group then never leaves, and
+shutdown waits out what is left of its deadline and names it in the `WARN`.
+The old blocking `stop()` waited its 10 s on the same lost callback.
+
+Spring Kafka's `stop(Runnable)` is asynchronous in 4.0.4: it returns at once
+and runs the callback from the consumer thread once that thread has left its
+loop (traced in its source; `MaestroContainersStopInTheDrainIT` measured every
+consumer gone from its group 196–204 ms after shutdown began (two runs), while the drain
+was still held open). Each bean's `destroy()` is now a request-only backstop.
+A container started where no engine exists (an embedder that never calls
+`KafkaWorkflowMessaging.joinLifecycle`) is stopped at its bean's destruction
+and waited for at most 10 s, as before.
+
+This adds no Spring phase requirement: the containers stop inside the engine's
+own phase-`MAX-1024` shutdown, and the existing rule — the phase timeout at
+least `maestro.shutdown.timeout + 2 s` — still covers them.
 
 ### 15.6 Upgrading from 30 s
 

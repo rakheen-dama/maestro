@@ -1,5 +1,6 @@
 package io.b2mash.maestro.messaging.kafka;
 
+import io.b2mash.maestro.core.engine.LifecycleRegistry;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -15,13 +16,13 @@ import org.springframework.kafka.listener.ConcurrentMessageListenerContainer;
 import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListener;
+import org.springframework.kafka.listener.MessageListenerContainer;
 import org.springframework.util.backoff.FixedBackOff;
 import tools.jackson.databind.ObjectMapper;
 
 import java.time.Duration;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -73,8 +74,11 @@ import java.util.function.Consumer;
  *
  * <h2>Thread Safety</h2>
  * <p>This class is thread-safe. Publishing can be called concurrently from
- * multiple virtual threads. Listener containers are managed in a
- * {@link CopyOnWriteArrayList} and stopped on {@link #destroy()}.
+ * multiple virtual threads. The signal container is one
+ * {@link KafkaContainerGroup}: once {@link #joinLifecycle} has joined it to the
+ * engine's lifecycle registry, the engine's shutdown stops it at the start of
+ * its drain, on its one deadline (P1 task 5, Issue 69); {@link #destroy()} is a
+ * request-only backstop.
  *
  * @see WorkflowMessaging
  * @see KafkaMessagingConfig
@@ -103,8 +107,7 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
     private final @Nullable KafkaTracePropagation tracePropagation;
     private final Duration sendTimeout;
     private final KafkaSignalIdentity signalIdentity;
-    private final List<ConcurrentMessageListenerContainer<String, byte[]>> containers =
-            new CopyOnWriteArrayList<>();
+    private final KafkaContainerGroup containers = new KafkaContainerGroup("kafka-signal-container");
 
     /**
      * Whether containers built from here are fatal on a missing topic. Set once,
@@ -321,24 +324,53 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
                 tracePropagation.runWithExtractedContext(record.headers(), () -> handler.accept(message));
             }
         });
-        containers.add(container);
-        container.start();
+        if (!containers.start(container)) {
+            logger.info("Not subscribing to signals for service '{}': the engine is shutting down", serviceName);
+            return;
+        }
         logger.info("Subscribed to signals for service '{}' on topic '{}'", serviceName, topic);
     }
 
     // ── Lifecycle ────────────────────────────────────────────────────────
 
+    /**
+     * Joins the signal container to the engine's lifecycle registry before it
+     * is started (P1 task 5, Issue 69): the engine's shutdown then stops it at
+     * the start of its drain and waits for it on its one deadline, and a
+     * {@link #subscribeSignals} after shutdown began starts nothing. The Spring
+     * Boot starter's Kafka wiring calls this at context refresh; an embedder
+     * without it calls it with {@code executor.lifecycle()} before subscribing.
+     * Internal until 1.0.
+     *
+     * @param registry the engine's lifecycle registry
+     * @return {@code false} if the registry refused it (shutdown has begun)
+     */
+    public boolean joinLifecycle(LifecycleRegistry registry) {
+        return containers.join(registry);
+    }
+
+    /**
+     * Joined to an engine: a backstop that requests the stop and returns at
+     * once (the engine's shutdown, which ran before this bean's destruction,
+     * stopped the container and waited for it on its deadline). Without an
+     * engine: stops the container and waits for it at most
+     * {@link #STANDALONE_STOP_WAIT}, as the blocking stop did before — there is
+     * no shutdown deadline to take the wait from.
+     */
     @Override
     public void destroy() {
-        logger.info("Stopping {} Kafka listener container(s)", containers.size());
-        for (var container : containers) {
-            try {
-                container.stop();
-            } catch (Exception e) {
-                logger.warn("Error stopping Kafka listener container: {}", e.getMessage(), e);
-            }
+        containers.requestStop();
+        if (!containers.joined()) {
+            containers.awaitStopped(STANDALONE_STOP_WAIT);
         }
-        containers.clear();
+    }
+
+    /** How long {@link #destroy()} waits for the container when no engine owns it: Spring Kafka's own stop bound. */
+    static final Duration STANDALONE_STOP_WAIT = Duration.ofSeconds(10);
+
+    /** @return the signal containers still running (tests) */
+    List<MessageListenerContainer> runningContainers() {
+        return containers.running();
     }
 
     // ── Internal helpers ─────────────────────────────────────────────────
@@ -389,6 +421,12 @@ public final class KafkaWorkflowMessaging implements WorkflowMessaging, Disposab
         containerProps.setGroupId(config.consumerGroup());
         containerProps.setMessageListener(listener);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
+        // Stop after the record in hand (review M1): without it a stopping
+        // consumer invokes the listener for the rest of its last poll — up to
+        // max.poll.records — which can outlast the shutdown deadline and reach
+        // a closed DataSource. The records not handled stay uncommitted (AckMode
+        // RECORD commits each handled one) and go to the partition's next owner.
+        containerProps.setStopImmediate(true);
         // Fatal only under verify-on-startup=fail AND only when the startup probe
         // confirmed every required topic present (applyTopicVerification): then a
         // topic gone at container start fails start() instead of leaving a

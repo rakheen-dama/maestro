@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
+import io.b2mash.maestro.messaging.kafka.KafkaContainerGroup;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
 import io.b2mash.maestro.messaging.kafka.KafkaRedeliveryErrorHandlers;
 import io.b2mash.maestro.messaging.kafka.KafkaSignalIdentity;
@@ -33,6 +34,7 @@ import tools.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -117,6 +119,8 @@ public class MaestroSignalListenerBeanPostProcessor
 
     private final List<ListenerRegistration> registrations = new ArrayList<>();
     private final List<ConcurrentMessageListenerContainer<String, byte[]>> containers = new CopyOnWriteArrayList<>();
+    /** The listener containers as one member of the engine's lifecycle registry (P1 task 5, Issue 69). */
+    private final KafkaContainerGroup group = new KafkaContainerGroup("signal-listener-containers");
     private @Nullable ApplicationContext applicationContext;
 
     /**
@@ -183,8 +187,17 @@ public class MaestroSignalListenerBeanPostProcessor
         // SignalSubscriptionRunner; hand it the same outcome so its container
         // follows the same rule (fatal only when every topic was confirmed).
         var engineMessaging = ctx.getBeanProvider(KafkaWorkflowMessaging.class).getIfAvailable();
+        // P1 task 5 (Issue 69): Maestro's containers join the engine's
+        // lifecycle registry before any of them starts, so the engine's
+        // shutdown stops them at the start of its drain, on its one deadline —
+        // not at bean destruction, after shutdown() returned (the engine's
+        // container) or after the DataSource closed (these).
+        var engine = ctx.getBeanProvider(WorkflowExecutor.class).getIfAvailable();
         if (engineMessaging != null) {
             engineMessaging.applyTopicVerification(verification);
+            if (engine != null) {
+                engineMessaging.joinLifecycle(engine.lifecycle());
+            }
         }
 
         if (registrations.isEmpty()) {
@@ -192,6 +205,11 @@ public class MaestroSignalListenerBeanPostProcessor
         }
 
         var executor = ctx.getBean(WorkflowExecutor.class);
+        if (!group.join(executor.lifecycle())) {
+            logger.info("Not starting {} @MaestroSignalListener container(s): the engine is shutting down",
+                    registrations.size());
+            return;
+        }
         var objectMapper = ctx.getBean(ObjectMapper.class);
         var baseGroup = resolveBaseConsumerGroup(ctx);
         var kafkaTemplate = resolveKafkaTemplate(ctx);
@@ -210,7 +228,11 @@ public class MaestroSignalListenerBeanPostProcessor
                     kafkaTemplate, redelivery, fatalOnMissing, tracePropagation, listenerObservation,
                     signalIdentity);
             containers.add(container);
-            container.start();
+            if (!group.start(container)) {
+                logger.info("Not starting the remaining @MaestroSignalListener containers: the engine is shutting "
+                        + "down");
+                return;
+            }
 
             logger.info("Started Kafka consumer for @MaestroSignalListener {}.{} on topic '{}'",
                     reg.beanName(), reg.method().getName(), reg.topic());
@@ -226,15 +248,18 @@ public class MaestroSignalListenerBeanPostProcessor
 
     // ── DisposableBean ─────���─────────────────────────────────────────────
 
+    /**
+     * A backstop for a context whose engine did not stop the containers:
+     * requests the stop and returns at once, never waiting. The engine's
+     * shutdown stops them at the start of its drain (P1 task 5, Issue 69).
+     */
     @Override
     public void destroy() {
-        logger.info("Stopping {} @MaestroSignalListener container(s)", containers.size());
-        for (var container : containers) {
-            try {
-                container.stop();
-            } catch (Exception e) {
-                logger.warn("Error stopping signal listener container: {}", e.getMessage(), e);
-            }
+        group.requestStop();
+        if (!group.joined()) {
+            // No engine owns them: no shutdown deadline; wait as the blocking
+            // stop did before.
+            group.awaitStopped(Duration.ofSeconds(10));
         }
         containers.clear();
     }
@@ -316,6 +341,12 @@ public class MaestroSignalListenerBeanPostProcessor
         var containerProps = new ContainerProperties(reg.topic());
         containerProps.setGroupId(groupId);
         containerProps.setAckMode(ContainerProperties.AckMode.RECORD);
+        // Stop after the record in hand (review M1; as KafkaWorkflowMessaging): without it a stopping
+        // consumer invokes the listener for the rest of its last poll — up to
+        // max.poll.records — which can outlast the shutdown deadline and reach
+        // a closed DataSource. The records not handled stay uncommitted (AckMode
+        // RECORD commits each handled one) and go to the partition's next owner.
+        containerProps.setStopImmediate(true);
         // Same two settings, same reasons, as KafkaWorkflowMessaging.createContainer:
         // fatal on a missing topic only under verify-on-startup=fail AND only when
         // the startup probe confirmed every topic present (KafkaTopicVerifier
