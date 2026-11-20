@@ -558,7 +558,7 @@ workflow.version("shipping-v2", 1, 1);
 shipping.dispatchWithCarrier(order, carrier);
 ```
 
-Raise the floor too early and an instance whose recorded version is below `minSupported` fails with `UnsupportedWorkflowVersionException`, naming the changeId, the recorded version and the supported range. That is an ordinary deterministic workflow failure -- saga compensation runs if registered, the instance ends `FAILED`. Restore code carrying the old branch and use the admin **Retry** action: Retry never deletes a version marker recorded before the failure, so the retried run replays the same recorded version.
+Raise the floor too early and `version()` throws `UnsupportedWorkflowVersionException` in an instance whose recorded version is below `minSupported`, naming the changeId, the recorded version and the supported range. An instance that recorded steps after its `version()` call (every parked one) is still replaying its recorded history when it throws, so it **stands down** as `replay_exception` -- nothing written, nothing compensated -- on every recovery pass until code carrying the old branch is redeployed, which finishes it (operations §10.2). An instance that reaches the call live fails with it as an ordinary deterministic workflow failure -- saga compensation runs if registered, the instance ends `FAILED`; restore code carrying the old branch and use the admin **Retry** action: Retry never deletes a version marker recorded before the failure, so the retried run replays the same recorded version.
 
 ### Rules
 

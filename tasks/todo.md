@@ -83,6 +83,7 @@ Not in this milestone: Maven Central, the engine-version stamp design (after the
 - **Decided 2026-11-20:** Issue 89 — stand down (own reason; never fail-and-compensate on a replay-time exception); implementation still owed (`blocks-1.0`). **Decided 2026-11-20:** the recovery switch is testing only — moved to `maestro.testing.recovery.enabled`, removed from the user docs; the old name is ignored.
 - **Logged:** Issue 90 (disabled topic-verification test, parked fix), Issue 91 (chaos schedule exposure). `perf/k6/health-probe.js` does not know the new DOWN causes (failing loop, stale renewer).
 - **Issue 91 fixed (harness only):** second occurrence traced to an answering-node kill plus a loan-consumer double kill, with no lost signal and no engine bound exceeded; the decision-gated awaits now get a derived 300 s chaos timeout (`fix/chaos-gate-timeout-exposure`).
+- **Issue 89 implemented** (branch `fix/issue-89-replay-exception-stand-down`): an exception thrown while the throwing lane still replays recorded history stands down as `replay_exception` (`ReplayExceptionCheck`), never fails or compensates; docs §10.2/§10.3/§10.7, pitfalls rule 7 rewritten; closed in `docs/open-issues.md`.
 - **Process rules adopted:** one CodeRabbit round per PR; a rate-limited review is not waited for; flaky tests are root-caused, not re-run.
 
 

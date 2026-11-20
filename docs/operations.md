@@ -664,15 +664,13 @@ stands down as `nondeterministic_history` with the detail §10.7 gives; an
 incompatible activity result type, or workflow input shape, as
 `unknown_event_payload` (§10.4). The run writes nothing, is never marked
 `FAILED`, never compensates, keeps its signals, and the old code, redeployed,
-finishes it (`WorkflowCodeChangeIT.Unsafe`). **Exception, not as documented:**
-raising `minSupported` above a parked run's recorded version does not fail the
-run as §10.2 says; it stands down on each recovery pass until code accepting
-the recorded version is redeployed, which then finishes it — as `stale_run`
-(detail `append collision at sequence <n>`), or as `nondeterministic_history`
-for a `@Saga` that registered a compensation before the `version()` call
-(`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`,
-`raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`;
-`docs/open-issues.md` Issue 89).
+finishes it (`WorkflowCodeChangeIT.Unsafe`). Raising `minSupported` above a
+parked run's recorded version makes the run throw while it replays recorded
+history: it stands down as `replay_exception` on each recovery pass, saga or
+not, until code accepting the recorded version is redeployed, which then
+finishes it (§10.2;
+`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDown`,
+`raisingTheFloorUnderASagaStandsDownWithoutCompensating`; Issue 89, closed).
 
 **4. Rolling N-1 → N is supported.** While both builds run: a run parked on
 either build is woken through the other within NOTIFY latency, without leaving
@@ -782,19 +780,20 @@ Operationally, what matters:
 - **`VERSION_MARKER` predates `0.3.0-rc.1`.** A node of a build older than
   `VERSION_MARKER` that adopts a workflow whose history contains one cannot
   interpret it, and stands down (§10.3).
-- Raising `minSupported` before every pre-change instance has drained fails
-  those instances with `UnsupportedWorkflowVersionException` — a genuine,
-  deterministic workflow failure: it ends `FAILED` and saga compensation runs.
-  **Not so for a run that recorded steps after its `version()` call** (every
-  parked run): today it stands down on every recovery pass instead, writing
-  nothing, until code carrying its branch is redeployed — as `stale_run`
-  (`append collision at sequence <n>`), or, for a `@Saga` that registered a
-  compensation before the `version()` call, as `nondeterministic_history`
-  (`expected=$maestro:compensation`)
-  (`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDownToday`,
-  `raisingTheFloorUnderASagaStandsDownAsNondeterministicToday`;
-  `docs/open-issues.md` Issue 89, open); redeploying that code is then the
-  whole remedy, and admin Retry does not apply (the run is not `FAILED`).
+- Raising `minSupported` before every pre-change instance has drained makes
+  `version()` throw `UnsupportedWorkflowVersionException` in those instances.
+  What follows depends on where the run is. **A run that recorded steps after
+  its `version()` call** (every parked run) throws while it is still replaying
+  recorded history, so it **stands down** as `replay_exception` (§10.3) on every
+  recovery pass — nothing written, **no compensation**, never `FAILED`, saga or
+  not — until code carrying its branch is redeployed, which then finishes it
+  (`WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDown`,
+  `raisingTheFloorUnderASagaStandsDownWithoutCompensating`; Issue 89). Redeploying
+  that code is the whole remedy; admin Retry does not apply (the run is not
+  `FAILED`). A run whose `VERSION_MARKER` is its **last** recorded event (it
+  crashed right after recording it) or that reaches `version()` live has caught
+  up with its history: there the exception is an ordinary, deterministic workflow
+  failure — it ends `FAILED` and saga compensation runs.
   Recovery for a run that did fail: restore code carrying the old branch, then use the admin **Retry**
   action. Retry never deletes a version marker recorded before the failure, so
   the retried run replays the same recorded version against the restored
@@ -804,8 +803,9 @@ Operationally, what matters:
 
 ### 10.3 Stand-down: what it is, and what it is not
 
-When a node reads persisted history it cannot interpret, the run **stands down**
-instead of failing:
+When a node reads persisted history it cannot interpret — or the workflow code
+throws while the run is still replaying recorded history (`replay_exception`) —
+the run **stands down** instead of failing:
 
 - Nothing is written. **No compensation runs.**
 - The instance keeps whatever recoverable status it already had.
@@ -826,19 +826,29 @@ instead of failing:
   change — roll back, gate the change with workflow.version(), or terminate
   (operations §10.4)`; for `nondeterministic_history`, `roll back the deploy or
   gate the change behind workflow.version()` (§10.7).
+  A `replay_exception` stand-down logs its own line instead:
+
+  ```
+  Workflow '<id>' stood down (REPLAY_EXCEPTION): its code threw while replaying
+  recorded history (seq=<n> stored=<step> type=<event type> threw=<exception
+  class>: <message>; instance status still <status>) — no failure recorded, no
+  compensation run; roll back the deploy or fix the workflow code, and the run
+  resumes (operations §10.3)
+  ```
 
 For an `unknown_event_type` stand-down, an upgraded node then adopts and
 finishes the workflow through the ordinary lock-TTL / recovery-poller
 machinery, unchanged — nothing special is needed. The other two reasons are
-**not** healed by waiting: see §10.4 and §10.7.
+**not** healed by waiting: see §10.4 and §10.7, and the `replay_exception` row below.
 
-There are three history reasons and **they mean different things**:
+There are four versioning reasons and **they mean different things**:
 
 | `reason` tag | What it means |
 |---|---|
 | `unknown_event_type` | An `event_type` string this build's enum does not define. Only a **newer** build can have written it. |
 | `unknown_event_payload` | A stored payload this build could not deserialize while replaying. A newer build *or* an incompatible payload change. |
 | `nondeterministic_history` | The current code performs a different operation at this sequence than the one recorded (step renamed/reordered, `parallel()` arity changed), or calls the recorded activity with different arguments (`argsHash` detail). A code change, or a non-deterministic activity input. See §10.7. |
+| `replay_exception` | The workflow code **threw** while the run was still replaying recorded history: the lane the exception escaped (the workflow method or a `parallel()` branch) had not reached its last recorded event — an earlier run's event already holds its next sequence. A code change made the workflow throw inside its recorded prefix: a raised `version()` floor (§10.2), a new validation, a removed `catch`. Never recorded as a failure, **never compensated** — a bad deploy must not roll back work that did not fail. The detail names the slot the replay stood at, the recorded step there and the exception (`seq=3 stored=change.b type=ACTIVITY_COMPLETED threw=…UnsupportedWorkflowVersionException: …`); the stack trace is at `DEBUG`. **What to do:** roll back the deploy, or fix the workflow code so it no longer throws on that recorded path (gate the change with `workflow.version()`); the next recovery pass resumes the run. Or terminate it. Not healed by waiting. An exception thrown once the lane has caught up — live, or a recorded failure replayed as the last event of its history (recovery after a crash, admin Retry) — is a workflow failure as before, with one exception: once a `parallel()` branch of the run has thrown inside its recorded history, any later failure of that run stands down as `replay_exception` too, even when workflow code caught the branch's exception and the later failure is live (the run has left its recorded path, so its failure is never recorded or compensated). |
 
 (A fourth value, `stale_run`, is normally unrelated to versioning — it is the
 split-brain convergence of §6: another runner owns the workflow. The one
@@ -1075,8 +1085,9 @@ Where possible, **drain in-flight instances before upgrading** a service whose
 workflow code was edited without `version()` gates since those instances
 started.
 
-**Alert.** `rate(maestro.standdown{reason="nondeterministic_history"}) > 0` →
-"an ungated workflow edit shipped; roll back". Unlike `unknown_event_type` it
+**Alert.** `increase(maestro_standdown_total{reason=~"nondeterministic_history|replay_exception"}[15m]) > 0` →
+"an ungated workflow edit shipped; roll back" (`replay_exception`: the edited
+code throws on a recorded path, §10.3). Unlike `unknown_event_type` it
 does not go away when a deploy finishes — it *is* the deploy.
 
 **Churn is by design.** Until one of the remedies ships, every recovery pass

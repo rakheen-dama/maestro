@@ -21,6 +21,22 @@ public enum StandDownReason {
     NONDETERMINISTIC_HISTORY,
 
     /**
+     * Workflow code threw while its run was still replaying recorded history
+     * (Issue 89): the lane the exception escaped (the workflow method, or a
+     * {@code parallel()} branch) had not consumed its recorded history — an
+     * event this run did not write already holds the lane's next sequence. A
+     * code change made the workflow throw inside its recorded prefix (a raised
+     * {@code version()} floor, a new check, a removed {@code catch}). Never
+     * recorded as a failure and never compensated: a bad deploy must not roll
+     * back work that did not fail. The detail names the slot the replay stood
+     * at, the recorded step there and the exception
+     * ({@code seq=<n> stored=<step> type=<event type> threw=<class>: <message>}).
+     * Rolling back, or fixing the workflow code, is the fix; the instance is left
+     * recoverable and resumes on code that matches its history.
+     */
+    REPLAY_EXCEPTION,
+
+    /**
      * Another runner owns this workflow (Issue 18 / C5). Reported when an
      * event append collided with a concurrent runner's history
      * ({@code DuplicateEventException}), and when a fresh read found the row

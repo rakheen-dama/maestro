@@ -47,7 +47,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (11)
+**`blocks-1.0`** (10 open; 89 closed 2026-11-20)
 
 1. [44](#issue-44) — Workflow input is read with the raw parameter class
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
@@ -59,7 +59,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
 9. [52](#issue-52) — `maestro-admin-client` has no wired component
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
-11. [89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`
+11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
 **`limitation`** (24)
 
@@ -6219,13 +6219,34 @@ deploy note; nothing more is needed once no pre-WP3 node can run.
 > stand-down its own reason (not `stale_run`), and correct operations §10.2
 > and pitfalls rule 7, which still describe fail-and-compensate.
 
-> **Label: `blocks-1.0`.** The behaviour is safe (nothing written, nothing
-> compensated) but contradicts operations §10.2 and pitfalls rule 7, and
-> reports itself as split-brain.
+> **Label: `blocks-1.0`. Closed (2026-11-20): fixed, as decided.** New
+> `StandDownReason.REPLAY_EXCEPTION` (`maestro.standdown{reason="replay_exception"}`).
+> Predicate (`ReplayExceptionCheck`): the lane the exception escaped — the
+> workflow method, or a `parallel()` branch, which notes it on the run's
+> `RunCancellation` — is still replaying (`WorkflowContext.isReplaying()`: no
+> memo miss yet in that lane) **and** an event already holds its next sequence
+> (`currentSequence() + 1`), other than the `COMPENSATION_STARTED` anchor of a
+> saga recovered while `COMPENSATING`. Checked in
+> `WorkflowExecutor.handleWorkflowFailure` after the stale / store-unavailable /
+> abandoned checks and before the ERROR line and the saga unwind, so it writes
+> nothing and compensates nothing; control-flow `Error`s, node errors and
+> stale-run / fence / store faults never reach it (their arms, and the join's
+> precedence, run first). A failure thrown once the lane caught up (live, or a
+> recorded failure replayed as the last event) still fails and compensates; a
+> live run never checks (genuine split-brain stays `stale_run`); a different
+> step at a recorded slot stays `nondeterministic_history` (raised at the read,
+> before any exception). The reason is in-process only (observer, metric tag,
+> span attribute, log). §10.2, §10.3, §10.7's alert, pitfalls rule 7, concepts,
+> observability and the support matrix rewritten to stand-down semantics. Tests:
+> `ReplayExceptionStandDownTest` (seven cases: prefix throw under a saga, raised
+> floor, caught-up throw, replayed `ACTIVITY_FAILED` / `SIGNAL_TIMEOUT` at the
+> end of the history, branch throw inside and after its prefix);
+> `WorkflowCodeChangeIT.Unsafe.raisingTheFloorAboveARecordedVersionStandsDown`
+> and `raisingTheFloorUnderASagaStandsDownWithoutCompensating` replace the two
+> pinned tests; the `@Disabled` fail-as-documented test is deleted.
 
-> **Open.** Filed by pilot-readiness P4 (2026-11-19, branch
-> `pilot/p4-upgrade-safety-2`), found by `WorkflowCodeChangeIT`. Pinned, not
-> fixed.
+> **Filed** by pilot-readiness P4 (2026-11-19, branch
+> `pilot/p4-upgrade-safety-2`), found by `WorkflowCodeChangeIT`.
 
 **Kind:** Library defect and documentation error — versioning. **Severity:**
 Medium (no side effect, no data loss; but a stuck run whose signals point the
