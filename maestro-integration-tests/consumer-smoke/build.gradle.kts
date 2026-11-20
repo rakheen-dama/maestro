@@ -46,5 +46,10 @@ tasks.test {
     testLogging {
         events("passed", "skipped", "failed")
         showStandardStreams = true
+        // As maestro.java-conventions sets for every build module: a failed
+        // test prints its message, causes and stack in the log.
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showCauses = true
+        showStackTraces = true
     }
 }

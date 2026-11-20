@@ -201,7 +201,9 @@ function classifyDown(details) {
     report(`maestro DOWN: instance-lock renewer failed ${c.renewerFailing} passes in a row`);
     explained = true;
   }
-  if (c.failing.length > 0 && details.store !== 'timed out') {
+  // MaestroHealthIndicator reads a failing critical loop DOWN only while the
+  // store probe answered: with the store unreachable the store explains it.
+  if (c.failing.length > 0 && details.store === 'reachable') {
     C.maestro_down_loop_failing.add(1);
     report(`maestro DOWN: failing loop ${c.failing.join(', ')}`);
     explained = true;

@@ -272,6 +272,11 @@ public final class V030Rc2Fixture implements SeededFixture {
     }
 
     @Override
+    public List<String> parkedSagaAppended() {
+        return PARKED_SAGA_APPENDED;
+    }
+
+    @Override
     public Map<String, WorkflowStatus> statusAtCapture() {
         return Seeds.STATUS_AT_CAPTURE;
     }

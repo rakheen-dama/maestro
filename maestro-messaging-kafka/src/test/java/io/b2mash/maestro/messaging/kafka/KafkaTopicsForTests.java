@@ -1,6 +1,7 @@
 package io.b2mash.maestro.messaging.kafka;
 
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.DescribeTopicsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.common.errors.UnknownTopicOrPartitionException;
 
@@ -8,6 +9,8 @@ import java.time.Duration;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Creates test topics and returns only once the broker <em>describes</em>
@@ -61,9 +64,16 @@ public final class KafkaTopicsForTests {
         var deadline = System.nanoTime() + VISIBLE_WITHIN.toNanos();
         var topics = List.copyOf(names);
         while (true) {
+            // Each request and each wait takes only what is left of the budget,
+            // so a broker that stops answering cannot stretch the wait past
+            // VISIBLE_WITHIN by the client's 60 s default API timeout.
+            var leftMs = Math.max(1, TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime()));
             try {
-                admin.describeTopics(topics).allTopicNames().get();
+                admin.describeTopics(topics, new DescribeTopicsOptions().timeoutMs((int) leftMs))
+                        .allTopicNames().get(leftMs, TimeUnit.MILLISECONDS);
                 return;
+            } catch (TimeoutException e) {
+                throw new ExecutionException("topics " + topics + " not described within " + VISIBLE_WITHIN, e);
             } catch (ExecutionException e) {
                 if (!(e.getCause() instanceof UnknownTopicOrPartitionException) || System.nanoTime() > deadline) {
                     throw e;
