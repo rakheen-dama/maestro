@@ -753,10 +753,11 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * than recording the failure the join rethrows — the root lane's own check
      * cannot see it when the fork was the root's last recorded step. Engine
      * signals (control-flow {@code Error}s, node errors, stale-run and store
-     * faults) are left to the join's precedence untouched. Returns what the
-     * branch's error slot should hold: the branch's throwable, or — if the
-     * check's own read failed with a store fault or a control-flow signal —
-     * that instead, which then outranks a plain failure at the join.
+     * faults) are left to the join's precedence untouched. Never throws:
+     * returns what the branch's error slot should hold — the branch's
+     * throwable, or, if the check's own read failed with a control-flow
+     * signal, a store fault or a node error, that instead (it outranks a plain
+     * failure at the join). Any other read failure keeps the branch's own.
      */
     private Throwable noteReplayException(WorkflowContext branchCtx, Throwable t) {
         if (t instanceof MaestroControlFlowError || (t instanceof Error e && NodeErrors.isNodeError(e))
@@ -765,18 +766,21 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             return t;
         }
         try {
-            var detail = ReplayExceptionCheck.detail(store, branchCtx, t);
+            var detail = ReplayExceptionCheck.detailOrUndecided(store, branchCtx, t);
             if (detail != null) {
                 branchCtx.cancellation().noteReplayException(detail);
             }
             return t;
-        } catch (MaestroControlFlowError | StoreUnavailableException readFailed) {
-            return readFailed;
-        } catch (RuntimeException readFailed) {
-            // Undecidable: keep the branch's own failure, as before Issue 89.
-            logger.debug("Workflow '{}': could not check branch failure for a replay exception",
-                    branchCtx.workflowId(), readFailed);
-            return t;
+        } catch (Throwable outranks) {
+            // Only a control-flow signal, a store fault or a node error gets
+            // here (an undecidable read already returned null above). Each
+            // outranks a plain failure at the join, so it fills the error
+            // slot; the slot is never left empty. The branch's own failure is
+            // kept as suppressed, except on a control-flow signal.
+            if (!(outranks instanceof MaestroControlFlowError)) {
+                outranks.addSuppressed(t);
+            }
+            return outranks;
         }
     }
 

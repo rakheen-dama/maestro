@@ -4634,10 +4634,12 @@ public final class WorkflowExecutor {
         // Before the ERROR line and before SagaManager reads its anchor (the
         // recorded step there used to report this as nondeterministic_history,
         // and the FAILED write at the occupied slot as stale_run). A store
-        // fault on the read reaches failAndCompensate's abandon arm.
+        // fault, control-flow signal or node error on the read reaches its own
+        // failAndCompensate arm; any other read failure is undecidable and
+        // the failure is recorded as before.
         var replayException = ctx.cancellation().replayException();
         if (replayException == null) {
-            replayException = ReplayExceptionCheck.detail(store, ctx, failure);
+            replayException = ReplayExceptionCheck.detailOrUndecided(store, ctx, failure);
         }
         if (replayException != null) {
             handleReplayExceptionStandDown(ctx, failure, replayException);

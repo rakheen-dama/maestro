@@ -1,9 +1,14 @@
 package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
+import io.b2mash.maestro.core.exception.MaestroControlFlowError;
+import io.b2mash.maestro.core.exception.NodeErrors;
+import io.b2mash.maestro.core.exception.StoreUnavailableException;
 import io.b2mash.maestro.core.model.EventType;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Issue 89: decides whether an exception that escaped a lane's workflow code —
@@ -37,7 +42,48 @@ import org.jspecify.annotations.Nullable;
  */
 final class ReplayExceptionCheck {
 
+    private static final Logger logger = LoggerFactory.getLogger(ReplayExceptionCheck.class);
+
     private ReplayExceptionCheck() {
+    }
+
+    /**
+     * {@link #detail} for a caller that must not lose the failure it is
+     * classifying when the check's own store read fails (PR #83 review). Three
+     * kinds of read failure are rethrown, because each outranks a workflow
+     * failure and has its own arm: a {@link MaestroControlFlowError}, a
+     * {@link StoreUnavailableException} and a node-level {@code Error}
+     * ({@link NodeErrors#isNodeError}). Anything else leaves the question
+     * undecidable: logged at WARN, and {@code null} returned so the failure
+     * is handled as it was before Issue 89.
+     *
+     * @param store   the run's store
+     * @param lane    the context of the lane the exception escaped
+     * @param failure the exception
+     * @return the stand-down detail, or {@code null} (not a replay exception,
+     *         or undecidable)
+     */
+    static @Nullable String detailOrUndecided(WorkflowStore store, WorkflowContext lane, Throwable failure) {
+        try {
+            return detail(store, lane, failure);
+        } catch (MaestroControlFlowError | StoreUnavailableException outranks) {
+            throw outranks;
+        } catch (Error error) {
+            if (NodeErrors.isNodeError(error)) {
+                throw error;
+            }
+            warnUndecidable(lane, failure, error);
+            return null;
+        } catch (RuntimeException readFailed) {
+            warnUndecidable(lane, failure, readFailed);
+            return null;
+        }
+    }
+
+    private static void warnUndecidable(WorkflowContext lane, Throwable failure, Throwable readFailed) {
+        logger.warn("Workflow '{}': could not tell whether {} was thrown while replaying recorded history "
+                        + "(the store read failed: {}) — handling it as a workflow failure",
+                lane.workflowId(), failure.getClass().getName(), readFailed.toString(), readFailed);
     }
 
     /**
