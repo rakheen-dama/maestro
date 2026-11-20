@@ -625,6 +625,12 @@ message. An older node reads the new `failedSequences` field of a newer
 (traced, not tested). The details are in `docs/release-notes.md`, "Mixed
 fleets", under the admin Retry entry.*
 
+**Do not issue an admin Retry while rolling from a build older than
+`0.3.0-rc.1`.** That older build's Retry is not fenced against a run a newer
+node has just reopened and can delete its failure memos (Issue 88, a
+documented limitation). Wait until the deploy completes. From `0.3.0-rc.1`
+onward both builds share the reworked Retry and the rule does not apply.
+
 ### 10.1 The compatibility promise: build N beside build N-1
 
 *Supported skew (`docs/support-matrix.md`): the **previous release** only.

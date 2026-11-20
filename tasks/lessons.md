@@ -154,3 +154,21 @@ Two coordinator mistakes in the engine-hardening cycle:
    `caffeinate -i -m -s`; when a timed run's wall clock is far beyond its
    window, check for gaps between its periodic log lines before reading any
    failure as a product defect.
+
+## 2026-11-20 — pilot-readiness milestone
+
+1. A test that names a mechanism must assert that mechanism's footprint. The
+   "parked in a fork branch" scenario used a one-task `parallel()`, which the
+   engine runs inline: assert the fork's history (branch sequence base), and
+   sabotage the setup to see the test fail.
+2. A test fake must copy the real library's edge behaviour before a test on
+   it means anything. The Kafka container fake did not call back on a second
+   `stop(Runnable)`; Spring Kafka does, at once — the double-stop bug passed.
+3. Polling for "N passes started" at a coarser interval than the loop runs
+   reads a later state. Read the value on the loop thread at the event.
+4. A causeless CI failure costs a diagnosis cycle. Put the startup failure in
+   the assertion message; check the uploaded test report before looping locally.
+5. Review rounds after the first are mostly wording. One automated round per
+   PR; later code findings get a coordinator check, not an engineer wave.
+6. A docs conflict in the issue-index header recurs on every parallel branch:
+   resolve it by recounting the list, not by picking a side.

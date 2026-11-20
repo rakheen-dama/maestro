@@ -38,10 +38,10 @@ Every open issue carries one label, set against `docs/support-matrix.md`:
 Within a label the list is ranked, most important first. Five issues were closed by this
 triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#issue-74) (fixed), [78](#issue-78) (out of scope), [79](#issue-79) (fixed). Issue 77 was first closed as a runbook note and reopened as `limitation` after the P3 review; Issue 86 was downgraded from `blocks-pilot` to `limitation` in the same review. Pilot readiness P2 resolved [81](#issue-81) and [86](#issue-86) (tasks 1–3), [67](#issue-67), [68](#issue-68), [73](#issue-73) and, by decision, [75](#issue-75) (tasks 4–5), and [64](#issue-64) and [65](#issue-65) (task 6). Nothing below was deleted or renumbered; each section keeps its text and anchor.
 
-**`blocks-pilot`** (1 open: 88; 80, 70, 69 and 66 closed by P1, 64, 65, 67, 68 and 75 by P2, 2026-11-19; 41 resolved by P4 for `0.3.0-rc.1` → `main`)
+**`blocks-pilot`** (none open; 88 downgraded to `limitation` by the maintainer, 2026-11-20; 80, 70, 69 and 66 closed by P1, 64, 65, 67, 68 and 75 by P2, 2026-11-19; 41 resolved by P4 for `0.3.0-rc.1` → `main`)
 
 1. ~~[41](#issue-41) — An older node replaying history appended by a newer node is untested~~ — resolved for `0.3.0-rc.1` → `main` (P4)
-2. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
+2. ~~[88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened~~ — downgraded to `limitation` (2026-11-20)
 3. ~~[80](#issue-80) — Shutdown's drain can miss a run registered after it began, and not wait for it~~ — closed (P1)
 4. ~~[70](#issue-70) — A run still executing at the shutdown deadline can record a failure caused by bean teardown~~ — closed (P1)
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
@@ -61,7 +61,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
 11. [89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`
 
-**`limitation`** (21)
+**`limitation`** (24)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
@@ -84,6 +84,9 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 19. [56](#issue-56) — An unqualified `byte[]` template point that several templates match is never failed at startup
 20. [57](#issue-57) — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once
 21. [58](#issue-58) — The `byte[]` template check runs before Maestro's consumers only by bean-registration order
+22. [90](#issue-90) — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing
+23. [91](#issue-91) — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan
+24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 
 ---
 
@@ -6158,7 +6161,11 @@ the retiring node's lock is still held.
 
 ### Issue 88 — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened {#issue-88}
 
-> **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-pilot`.** Same rolling window as Issue 41; P4 pins or documents it.
+> **Label: `limitation`** (maintainer decision, 2026-11-20; was `blocks-pilot`).
+> A reasonable operational rule covers it: do not issue an admin Retry while
+> rolling from a build older than `0.3.0-rc.1` (operations §10). It cannot
+> occur between `0.3.0-rc.1` and any later build, which share the reworked
+> Retry. Untested: derived from the older build's code.
 
 > **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from an
 > automated review of PR #64 on the WP3 plan's mixed-fleet row. Traced, not
@@ -6205,6 +6212,12 @@ deploy note; nothing more is needed once no pre-WP3 node can run.
 <a id="issue-89"></a>
 
 ### Issue 89 — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run` {#issue-89}
+
+> **Decision (maintainer, 2026-11-20): stand down.** A workflow exception
+> thrown while replaying recorded history must NOT fail-and-compensate: a bad
+> deploy must never roll back work that did not fail. To do: give this
+> stand-down its own reason (not `stale_run`), and correct operations §10.2
+> and pitfalls rule 7, which still describe fail-and-compensate.
 
 > **Label: `blocks-1.0`.** The behaviour is safe (nothing written, nothing
 > compensated) but contradicts operations §10.2 and pitfalls rule 7, and
@@ -6277,6 +6290,46 @@ support matrix say the same; the pinned and disabled tests are replaced by
 one that asserts the chosen outcome, including the `@Saga` variation.
 
 ---
+
+<a id="issue-90"></a>
+
+### Issue 90 — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing {#issue-90}
+
+> **Label: `limitation`.** Production topics exist long before a node starts;
+> the exposure is a node starting within about a second of its topics being
+> created.
+
+**Observed (PR #78 CI, 2026-11-20).** Under
+`maestro.messaging.topics.verify-on-startup=fail` the context failed to start:
+`KafkaTopicVerifier` reported both topics the test had created as missing,
+about 0.6 s after the class's broker started. A broker can take a moment to
+describe a topic it has just created. Not reproduced locally (0 in 4,800
+runs); not code PR #78 changed. The test method is `@Disabled` by maintainer
+decision; every `hasNotFailed()` in the class now prints the startup failure.
+
+**Parked fix.** The local branch `backup/p1b-kafka-verifier-investigation`
+(not pushed) holds a test helper that waits until the broker describes new
+topics, and a product change that re-checks topics the broker reports unknown
+before calling them missing. Re-enable the test with one of them. When
+monitoring is added, count this failure.
+
+<a id="issue-91"></a>
+
+### Issue 91 — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan {#issue-91}
+
+> **Label: `limitation`.** A harness schedule exposure, not an engine defect:
+> no signal was lost and nothing regressed.
+
+**Observed (PR #72, head `1e38ac32`, 2026-11-19).** One chaos PR-gate run
+failed with two HAPPY loans `FAILED` on the 2-minute `verification.result`
+await. Evidence (`p3-chaos4-evidence`): both verification nodes were killed
+about 44 s apart, leaving 83 s with no Kafka consumer, followed by a 51 s
+pause; the results arrived 8.5 s and 2.5 s after the timeout. Three reruns
+passed.
+
+**Fix when it recurs.** Either stop the schedule from taking every node of one
+service down inside one await window, or have the oracle classify a timeout
+whose result arrived late during a total outage of the answering service.
 
 ## 6. Suggested order
 
