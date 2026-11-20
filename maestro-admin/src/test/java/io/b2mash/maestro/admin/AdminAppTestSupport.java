@@ -2,7 +2,6 @@ package io.b2mash.maestro.admin;
 
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
@@ -110,9 +109,7 @@ abstract class AdminAppTestSupport {
             throws ExecutionException, InterruptedException {
         try (var admin = AdminClient.create(Map.of(
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
-            admin.createTopics(Arrays.stream(topicNames)
-                    .map(name -> new NewTopic(name, 1, (short) 1))
-                    .toList()).all().get();
+            KafkaTopicsForTests.create(admin, Arrays.asList(topicNames));
         }
     }
 

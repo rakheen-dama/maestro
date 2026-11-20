@@ -2,7 +2,6 @@ package io.b2mash.maestro.messaging.kafka;
 
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -83,10 +82,7 @@ public abstract class KafkaTestSupport {
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers()
         );
         try (var admin = AdminClient.create(adminProps)) {
-            var newTopics = Arrays.stream(topicNames)
-                    .map(name -> new NewTopic(name, 1, (short) 1))
-                    .toList();
-            admin.createTopics(newTopics).all().get();
+            KafkaTopicsForTests.create(admin, Arrays.asList(topicNames));
         }
     }
 }

@@ -28,7 +28,9 @@ import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyCollection;
+import static org.mockito.Mockito.atLeast;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -141,6 +143,92 @@ class KafkaTopicVerifierTest {
             assertThat(result.inconclusive()).as("authorization and timeout failures are inconclusive, never missing")
                     .containsExactly("c", "d");
             assertThat(result.allPresent()).isFalse();
+        }
+
+        /**
+         * PR #78 CI run 44613617971: right after {@code createTopics} succeeds a
+         * broker can still answer {@code UnknownTopicOrPartition} for the new
+         * topic — "It may take several seconds after CreateTopicsResult returns
+         * success for all the brokers to become aware that the topics have been
+         * created" (Admin#createTopics). A topic is confirmed missing only if the
+         * broker keeps saying so for the probe's window; one it describes on a
+         * re-check within it is present.
+         */
+        @Test
+        @DisplayName("a topic the broker describes on a re-check within the probe window is present, not missing")
+        void aTopicNotYetVisibleOnTheFirstDescribeIsPresentOnceDescribed() {
+            var first = mock(DescribeTopicsResult.class);
+            when(first.topicNameValues()).thenReturn(new LinkedHashMap<>(Map.of(
+                    "a", present("a"),
+                    "new", failed(new UnknownTopicOrPartitionException("not yet in this broker's metadata")))));
+            var second = mock(DescribeTopicsResult.class);
+            when(second.topicNameValues()).thenReturn(new LinkedHashMap<>(Map.of("new", present("new"))));
+            var admin = mock(Admin.class);
+            when(admin.describeTopics(anyCollection(), any(DescribeTopicsOptions.class))).thenReturn(first, second);
+
+            var result = KafkaTopicVerifier.verify(admin, List.of("a", "new"));
+
+            assertThat(result.present()).containsExactly("a", "new");
+            assertThat(result.missing()).isEmpty();
+            assertThat(result.allPresent()).isTrue();
+        }
+
+        /**
+         * A re-check can only clear a topic the broker reported unknown: a
+         * re-check that times out or fails otherwise leaves it confirmed missing
+         * (found looping KafkaTopicVerificationStartupTest: a last re-check at the
+         * end of the window timed out and turned "missing" into "inconclusive",
+         * so a context with genuinely missing topics started).
+         */
+        @Test
+        @DisplayName("a re-check that times out leaves a topic the broker reported unknown confirmed missing")
+        void aRecheckThatTimesOutDoesNotClearAMissingTopic() {
+            var first = mock(DescribeTopicsResult.class);
+            when(first.topicNameValues()).thenReturn(new LinkedHashMap<>(Map.of(
+                    "gone", failed(new UnknownTopicOrPartitionException("no such topic")))));
+            var timedOut = mock(DescribeTopicsResult.class);
+            when(timedOut.topicNameValues()).thenReturn(new LinkedHashMap<>(Map.of(
+                    "gone", failed(new org.apache.kafka.common.errors.TimeoutException("slow re-check")))));
+            var admin = mock(Admin.class);
+            when(admin.describeTopics(anyCollection(), any(DescribeTopicsOptions.class))).thenReturn(first, timedOut);
+
+            var result = KafkaTopicVerifier.verify(admin, List.of("gone"));
+
+            assertThat(result.missing()).containsExactly("gone");
+            assertThat(result.inconclusive()).isEmpty();
+        }
+
+        /**
+         * The other half of Issue 90's fix: re-checking must not let a
+         * genuinely missing topic through. A broker that answers
+         * {@code UnknownTopicOrPartition} on every re-check for the whole probe
+         * window leaves every such topic confirmed missing, within the window's
+         * bound, and {@code fail} still refuses to start naming each of them.
+         */
+        @Test
+        @DisplayName("topics the broker reports unknown for the whole probe window stay missing, and fail still refuses startup naming each")
+        void genuinelyMissingTopicsStillFailStartupAfterTheRecheckWindow() {
+            var admin = adminReturning(Map.of(
+                    "a", present("a"),
+                    "gone.one", failed(new UnknownTopicOrPartitionException("no such topic")),
+                    "gone.two.DLT", failed(new UnknownTopicOrPartitionException("no such topic"))));
+
+            var started = System.nanoTime();
+            var result = KafkaTopicVerifier.verify(admin, List.of("a", "gone.one", "gone.two.DLT"));
+            var took = Duration.ofNanos(System.nanoTime() - started);
+
+            assertThat(result.present()).containsExactly("a");
+            assertThat(result.missing()).containsExactly("gone.one", "gone.two.DLT");
+            assertThat(result.inconclusive()).isEmpty();
+            assertThat(took).as("bounded by the probe window, plus scheduling slack")
+                    .isLessThan(KafkaTopicVerifier.PROBE_TIMEOUT.plusSeconds(2));
+            verify(admin, atLeast(2)).describeTopics(anyCollection(), any(DescribeTopicsOptions.class));
+            assertThatThrownBy(() -> KafkaTopicVerifier.enforce(TopicVerification.FAIL, result, BOOTSTRAP))
+                    .isInstanceOf(IllegalStateException.class)
+                    .hasMessageContaining("2 of 3 Kafka topic(s)")
+                    .hasMessageContaining("kafka-topics.sh --bootstrap-server " + BOOTSTRAP + " --create --topic gone.one")
+                    .hasMessageContaining("kafka-topics.sh --bootstrap-server " + BOOTSTRAP
+                            + " --create --topic gone.two.DLT");
         }
 
         @Test

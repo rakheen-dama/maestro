@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.observability;
 
+import io.b2mash.maestro.integration.support.KafkaTopicsForTests;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.TraceContextHolder;
 import io.b2mash.maestro.core.spi.SignalMessage;
@@ -15,7 +16,6 @@ import io.b2mash.maestro.messaging.kafka.KafkaWorkflowMessaging;
 import io.b2mash.maestro.spring.observe.TracingEngineObserver;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -331,9 +331,7 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
     private static void createTopics(String... topics) throws ExecutionException, InterruptedException {
         try (var admin = AdminClient.create(Map.of(
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
-            admin.createTopics(Arrays.stream(topics)
-                    .map(name -> new NewTopic(name, 1, (short) 1))
-                    .toList()).all().get();
+            KafkaTopicsForTests.create(admin, Arrays.asList(topics));
         }
     }
 

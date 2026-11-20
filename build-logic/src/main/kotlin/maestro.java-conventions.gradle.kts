@@ -39,6 +39,14 @@ dependencies {
 
 tasks.withType<Test>().configureEach {
     useJUnitPlatform()
+    // A failed test prints its message, causes and stack in the build log, not
+    // only "AssertionError at Foo.java:186": CI keeps only the log readily to
+    // hand (PR #78, CI run 44613617971).
+    testLogging {
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+        showCauses = true
+        showStackTraces = true
+    }
 }
 
 tasks.withType<Javadoc>().configureEach {

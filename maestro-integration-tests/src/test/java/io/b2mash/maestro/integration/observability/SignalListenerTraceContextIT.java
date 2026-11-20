@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.observability;
 
+import io.b2mash.maestro.integration.support.KafkaTopicsForTests;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.OtelTracingFixture;
@@ -13,7 +14,6 @@ import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.propagation.Propagator;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
@@ -164,9 +164,7 @@ class SignalListenerTraceContextIT extends PostgresIntegrationSupport {
     private static void createTopics(String... topics) throws ExecutionException, InterruptedException {
         try (var admin = AdminClient.create(Map.of(
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, KAFKA.getBootstrapServers()))) {
-            admin.createTopics(Arrays.stream(topics)
-                    .map(name -> new NewTopic(name, 1, (short) 1))
-                    .toList()).all().get();
+            KafkaTopicsForTests.create(admin, Arrays.asList(topics));
         }
     }
 

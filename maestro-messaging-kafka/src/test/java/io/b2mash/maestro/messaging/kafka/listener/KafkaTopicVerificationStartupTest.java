@@ -13,7 +13,6 @@ import io.b2mash.maestro.spring.annotation.SignalRouting;
 import io.b2mash.maestro.spring.config.MaestroProperties;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
@@ -176,7 +175,6 @@ class KafkaTopicVerificationStartupTest extends KafkaTestSupport {
     }
 
     @Test
-    @Disabled("Intermittent on CI: the context failed to start once with no recorded cause (PR #78, 2026-11-20); re-enable once a failure has been captured with the startup-failure message")
     @DisplayName("fail: admin events disabled and redelivery disabled shrink the requirement to the subscribed topics")
     void failMode_disabledFeaturesAreNotRequired() throws Exception {
         var service = "verify-min-" + suffix();

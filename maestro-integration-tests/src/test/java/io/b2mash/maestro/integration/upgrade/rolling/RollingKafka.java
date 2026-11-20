@@ -1,8 +1,8 @@
 package io.b2mash.maestro.integration.upgrade.rolling;
 
+import io.b2mash.maestro.integration.support.KafkaTopicsForTests;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -76,8 +76,7 @@ final class RollingKafka {
             container.start();
             var kafka = new RollingKafka(container);
             try (var admin = kafka.admin()) {
-                admin.createTopics(TOPICS.stream().map(t -> new NewTopic(t, 1, (short) 1)).toList()).all()
-                        .get(60, TimeUnit.SECONDS);
+                KafkaTopicsForTests.create(admin, TOPICS);
             } catch (Exception e) {
                 throw new IllegalStateException("Cannot create the rolling topics " + TOPICS, e);
             }

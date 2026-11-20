@@ -84,7 +84,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 19. [56](#issue-56) — An unqualified `byte[]` template point that several templates match is never failed at startup
 20. [57](#issue-57) — The `byte[]` template check runs a host's programmatic value-serializer supplier and `configure()` once
 21. [58](#issue-58) — The `byte[]` template check runs before Maestro's consumers only by bean-registration order
-22. [90](#issue-90) — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing
+22. ~~[90](#issue-90) — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing~~ — closed (unknown topics re-checked within the 5 s probe window; test re-enabled, 2026-11-20)
 23. ~~[91](#issue-91) — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan~~ — resolved in the harness (derived 300 s decision timeout, 2026-11-20)
 24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 
@@ -6295,23 +6295,42 @@ one that asserts the chosen outcome, including the `@Saga` variation.
 
 ### Issue 90 — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing {#issue-90}
 
-> **Label: `limitation`.** Production topics exist long before a node starts;
-> the exposure is a node starting within about a second of its topics being
-> created.
+> **Label: `limitation`. Closed (2026-11-20): fixed.** The startup check
+> re-checks a topic the broker reports unknown before calling it missing, and
+> the test is enabled again.
 
 **Observed (PR #78 CI, 2026-11-20).** Under
 `maestro.messaging.topics.verify-on-startup=fail` the context failed to start:
 `KafkaTopicVerifier` reported both topics the test had created as missing,
-about 0.6 s after the class's broker started. A broker can take a moment to
-describe a topic it has just created. Not reproduced locally (0 in 4,800
-runs); not code PR #78 changed. The test method is `@Disabled` by maintainer
-decision; every `hasNotFailed()` in the class now prints the startup failure.
+about 0.6 s after the class's broker started. A broker can answer
+`UnknownTopicOrPartition` for a topic it created moments before (Kafka's
+`Admin#createTopics`: brokers may take several seconds to learn of a new
+topic), and the check read one such answer as "confirmed missing". Not
+reproduced locally (0 in 4,800 runs).
 
-**Parked fix.** The local branch `backup/p1b-kafka-verifier-investigation`
-(not pushed) holds a test helper that waits until the broker describes new
-topics, and a product change that re-checks topics the broker reports unknown
-before calling them missing. Re-enable the test with one of them. When
-monitoring is added, count this failure.
+**What changed.**
+- **Product.** `KafkaTopicVerifier.verify` re-checks, every 250 ms, only the
+  topics the broker reported unknown, until each is described or the existing
+  5 s probe window (`PROBE_TIMEOUT`, measured from the probe's start) ends. A
+  topic described on a re-check is present. Any other re-check answer (still
+  unknown, a timeout, any failure) leaves it missing: a re-check can only clear
+  a topic, never turn a confirmed-missing one inconclusive. Every per-topic wait
+  is bounded by its describe call's own deadline, so the whole probe still ends
+  within the 5 s window. A genuinely missing topic still fails startup under
+  `fail` with the same message naming every missing topic, now 5 s after the
+  probe began instead of at once. An unreachable broker is still inconclusive
+  and only WARNs (no re-check runs, because nothing was reported missing), and
+  nothing is auto-created.
+- **Tests.** `KafkaTopicVerifierTest`:
+  `aTopicNotYetVisibleOnTheFirstDescribeIsPresentOnceDescribed` (an admin
+  client that answers unknown, then present; fails without the re-check),
+  `genuinelyMissingTopicsStillFailStartupAfterTheRecheckWindow` and
+  `aRecheckThatTimesOutDoesNotClearAMissingTopic`. Every test helper that
+  creates Kafka topics (messaging-kafka, admin, integration tests, the rolling
+  broker) now returns only once the broker describes them
+  (`KafkaTopicsForTests`), and every test task prints a failed test's full
+  exception in the build log. `failMode_disabledFeaturesAreNotRequired` is
+  enabled again and keeps the startup failure in its assertion message.
 
 <a id="issue-91"></a>
 
