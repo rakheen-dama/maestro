@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assumptions.assumeThat;
 /**
  * WP9's assertions over the history a past build wrote ({@link SeededHistory}),
  * run once per seeded-history fixture ({@link SeededFixtures#all()}: today
- * {@code cbf5a2a} and {@code v0_3_0_rc_1}): this build upgrades that database
+ * {@code cbf5a2a}, {@code v0_3_0_rc_1} and {@code v0_3_0_rc_2}): this build upgrades that database
  * without losing a row, reads every seeded workflow back, and — the replay
  * half — recovers, wakes and completes the runs the older build left active,
  * suppresses a duplicate of a signal id it stored and adopts the orphan
