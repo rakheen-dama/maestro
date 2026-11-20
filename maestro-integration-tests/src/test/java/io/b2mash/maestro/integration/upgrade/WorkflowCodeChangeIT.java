@@ -17,7 +17,6 @@ import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.support.RecordingObserver;
 import org.jspecify.annotations.Nullable;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
@@ -62,14 +61,12 @@ import static org.awaitility.Awaitility.await;
  *       no activity runs again, and the {@code go} signal stays stored,
  *       unconsumed. Then the old code is redeployed (node C: the playbook's
  *       first remedy) and completes the run, consuming that same signal.</li>
- *   <li><b>Raising {@code minSupported} too early</b> is the one unsafe change
- *       the playbook says <em>fails</em> the run
- *       ({@code UnsupportedWorkflowVersionException}, §10.2). For a parked
- *       run the engine stands it down as {@code stale_run} instead
- *       ({@code docs/open-issues.md} Issue 89):
- *       {@link Unsafe#raisingTheFloorAboveARecordedVersionStandsDownToday}
- *       pins that, and the documented outcome is the disabled
- *       {@link Unsafe#raisingTheFloorAboveARecordedVersionFailsTheRunAsDocumented}.</li>
+ *   <li><b>Raising {@code minSupported} too early</b> makes the parked run
+ *       throw {@code UnsupportedWorkflowVersionException} while it replays
+ *       recorded history; it stands down as {@code replay_exception} (§10.2,
+ *       Issue 89), saga or not:
+ *       {@link Unsafe#raisingTheFloorAboveARecordedVersionStandsDown},
+ *       {@link Unsafe#raisingTheFloorUnderASagaStandsDownWithoutCompensating}.</li>
  * </ul>
  *
  * <p>A compensating saga is the one state that is not parked on a signal: its
@@ -777,67 +774,42 @@ class WorkflowCodeChangeIT extends PostgresIntegrationSupport {
         }
 
         /**
-         * Issue 89 ({@code docs/open-issues.md}): §10.2 says an instance whose recorded
-         * version is below a raised {@code minSupported} "fails with
-         * {@code UnsupportedWorkflowVersionException} ... ends {@code FAILED}
-         * and saga compensation runs". For a run that recorded steps after its
-         * {@code version()} call — every parked run — the engine instead
-         * appends the failure at the replay's sequence, which a recorded step
-         * already holds ({@code append collision at sequence 3}: seq 1 {@code a},
-         * seq 2 the marker, seq 3 {@code b}), and the run stands down as
-         * {@code STALE_RUN} — again on the next recovery pass. This pins what
-         * the engine does; the documented outcome is
-         * {@link #raisingTheFloorAboveARecordedVersionFailsTheRunAsDocumented},
-         * disabled until Issue 89 is decided (and to be deleted, not enabled,
-         * if the decision keeps a stand-down).
+         * Issue 89 ({@code docs/open-issues.md}, closed): an instance whose
+         * recorded version is below a raised {@code minSupported} — every parked
+         * run recorded steps after its {@code version()} call (seq 1 {@code a},
+         * seq 2 the marker, seq 3 {@code b}) — throws
+         * {@code UnsupportedWorkflowVersionException} while still replaying
+         * recorded history. It stands down as {@code REPLAY_EXCEPTION} on every
+         * pass (it used to report {@code stale_run}, from the FAILED write at
+         * the occupied seq 3): no failure, no compensation, and the old code
+         * completes it.
          */
         @Test
-        @DisplayName("minSupported raised above a parked run's recorded version: today it stands down as stale_run on every pass (Issue 89), never FAILED, signal kept")
-        void raisingTheFloorAboveARecordedVersionStandsDownToday() throws Exception {
+        @DisplayName("minSupported raised above a parked run's recorded version: replay_exception on every pass (Issue 89), never FAILED, signal kept")
+        void raisingTheFloorAboveARecordedVersionStandsDown() throws Exception {
             var parked = parkOn(VersionedV1.class, "m1");
-            standsDownOn(parked, RaisedFloor.class, StandDownReason.STALE_RUN,
-                    exact("append collision at sequence 3"), 2);
+            standsDownOn(parked, RaisedFloor.class, StandDownReason.REPLAY_EXCEPTION,
+                    exact("seq=3 stored=change.b type=ACTIVITY_COMPLETED "
+                            + "threw=io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException: ") + ".*", 2);
             rollBackTo(parked, VersionedV1.class, "a:m1|b:m1|ok|c:m1|v1");
         }
 
         /**
          * Issue 89's saga variation: the same raised floor under a {@code @Saga}
          * whose compensation ({@code reserve}'s) was registered before the
-         * {@code version()} call. The failure starts the compensation, whose
-         * anchor slot holds the recorded {@code charge}, and the run stands
-         * down as {@code nondeterministic_history} there instead — on every
-         * pass, writing nothing, compensating nothing.
+         * {@code version()} call. It stands down as {@code REPLAY_EXCEPTION}
+         * before the unwind reads its anchor (it used to report
+         * {@code nondeterministic_history} there) — on every pass, writing
+         * nothing, compensating nothing.
          */
         @Test
-        @DisplayName("minSupported raised above a parked saga's recorded version, a compensation registered before version(): nondeterministic_history on every pass (Issue 89)")
-        void raisingTheFloorUnderASagaStandsDownAsNondeterministicToday() throws Exception {
+        @DisplayName("minSupported raised above a parked saga's recorded version, a compensation registered before version(): replay_exception on every pass, nothing compensated (Issue 89)")
+        void raisingTheFloorUnderASagaStandsDownWithoutCompensating() throws Exception {
             var parked = parkOn(VersionedSagaV1.class, "m3");
-            standsDownOn(parked, VersionedSagaRaisedFloor.class, StandDownReason.NONDETERMINISTIC_HISTORY,
-                    exact("seq=3 expected=$maestro:compensation stored=change-saga.charge type=ACTIVITY_COMPLETED"), 2);
+            standsDownOn(parked, VersionedSagaRaisedFloor.class, StandDownReason.REPLAY_EXCEPTION,
+                    exact("seq=3 stored=change-saga.charge type=ACTIVITY_COMPLETED "
+                            + "threw=io.b2mash.maestro.core.exception.UnsupportedWorkflowVersionException: ") + ".*", 2);
             rollBackTo(parked, VersionedSagaV1.class, "saga|ok|v1");
-        }
-
-        @Disabled("Issue 89 (docs/open-issues.md): the run stands down as STALE_RUN instead of failing as operations"
-                + " §10.2 documents; delete this test rather than enable it if Issue 89 keeps a stand-down")
-        @Test
-        @DisplayName("minSupported raised above a parked run's recorded version: the run FAILS, as §10.2 documents")
-        void raisingTheFloorAboveARecordedVersionFailsTheRunAsDocumented() throws Exception {
-            var parked = parkOn(VersionedV1.class, "m2");
-            var observer = new RecordingObserver();
-            try (var nodeB = node(RaisedFloor.class, observer)) {
-                nodeB.deliverSignal(parked.workflowId(), SIGNAL, "ok");
-                assertThat(nodeB.recover()).isEqualTo(1);
-                assertThat(awaitTerminal(parked.workflowId(), BOUND).status()).isEqualTo(WorkflowStatus.FAILED);
-            }
-            assertThat(observer.standDowns()).isEmpty();
-            assertThat(observer.failed()).containsExactly(parked.workflowId());
-            var last = eventsOf(parked.instanceId()).getLast();
-            assertThat(last.eventType()).isEqualTo(EventType.WORKFLOW_FAILED);
-            assertThat(String.valueOf(last.payload())).as("the failure names the documented exception")
-                    .contains("UnsupportedWorkflowVersionException");
-            assertThat(eventsOf(parked.instanceId()).subList(0, parked.events().size()))
-                    .as("the history the old code wrote is untouched").isEqualTo(parked.events());
-            assertThat(recorder.calls).as("nothing ran again").containsExactly("a:m2", "b:m2");
         }
     }
 

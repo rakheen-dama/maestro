@@ -746,6 +746,40 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
 
     // ── parallel ───────────────────────────────────────────────────────
 
+    /**
+     * Issue 89: if a branch's workflow code threw a plain failure while the
+     * branch was still replaying its recorded history, notes it on the run's
+     * cancellation, so the run stands down as {@code REPLAY_EXCEPTION} rather
+     * than recording the failure the join rethrows — the root lane's own check
+     * cannot see it when the fork was the root's last recorded step. Engine
+     * signals (control-flow {@code Error}s, node errors, stale-run and store
+     * faults) are left to the join's precedence untouched. Returns what the
+     * branch's error slot should hold: the branch's throwable, or — if the
+     * check's own read failed with a store fault or a control-flow signal —
+     * that instead, which then outranks a plain failure at the join.
+     */
+    private Throwable noteReplayException(WorkflowContext branchCtx, Throwable t) {
+        if (t instanceof MaestroControlFlowError || (t instanceof Error e && NodeErrors.isNodeError(e))
+                || t instanceof DuplicateEventException || t instanceof StaleRunException
+                || t instanceof FencedWriteException || t instanceof StoreUnavailableException) {
+            return t;
+        }
+        try {
+            var detail = ReplayExceptionCheck.detail(store, branchCtx, t);
+            if (detail != null) {
+                branchCtx.cancellation().noteReplayException(detail);
+            }
+            return t;
+        } catch (MaestroControlFlowError | StoreUnavailableException readFailed) {
+            return readFailed;
+        } catch (RuntimeException readFailed) {
+            // Undecidable: keep the branch's own failure, as before Issue 89.
+            logger.debug("Workflow '{}': could not check branch failure for a replay exception",
+                    branchCtx.workflowId(), readFailed);
+            return t;
+        }
+    }
+
     @Override
     public <T> List<T> parallel(List<Callable<T>> tasks) {
         if (tasks.isEmpty()) {
@@ -847,7 +881,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
                                             try {
                                                 results.get(branchIndex).set(task.call());
                                             } catch (Throwable t) {
-                                                errors.get(branchIndex).set(t);
+                                                errors.get(branchIndex).set(noteReplayException(branchCtx, t));
                                             }
                                         });
                             } finally {

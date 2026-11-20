@@ -336,6 +336,7 @@ public final class MicrometerEngineObserver implements EngineObserver {
             case UNKNOWN_EVENT_TYPE -> "unknown_event_type";
             case UNKNOWN_EVENT_PAYLOAD -> "unknown_event_payload";
             case NONDETERMINISTIC_HISTORY -> "nondeterministic_history";
+            case REPLAY_EXCEPTION -> "replay_exception";
             case STALE_RUN -> "stale_run";
             case LEASE_FENCED -> "lease_fenced";
         };

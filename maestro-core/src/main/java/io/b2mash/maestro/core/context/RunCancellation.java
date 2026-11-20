@@ -157,6 +157,8 @@ public final class RunCancellation {
     private final AtomicReference<@Nullable Request> request = new AtomicReference<>();
     /** Sticky; see the class Javadoc, "Given up (abandoned)". */
     private volatile boolean abandoned;
+    /** First replay exception a branch of this run noted (Issue 89); never reset. */
+    private final AtomicReference<@Nullable String> replayException = new AtomicReference<>();
 
     /** Creates a latch with nothing requested. */
     public RunCancellation() {
@@ -252,6 +254,32 @@ public final class RunCancellation {
     public void abandon() {
         abandoned = true;
         requestShutdown();
+    }
+
+    /**
+     * Notes that workflow code in one of this run's lanes (a {@code parallel()}
+     * branch) threw while that lane was still replaying recorded history
+     * (Issue 89). Not a cancellation: nothing stops, and workflow code may
+     * still catch the branch's exception. If the run then ends in a failure,
+     * the engine stands it down as {@code REPLAY_EXCEPTION} instead of
+     * recording it — the failure descends from code that no longer matches the
+     * run's history. The first note wins; later ones are ignored.
+     *
+     * @param detail the stand-down detail: the slot the replay stood at, the
+     *               recorded step there, and the exception
+     */
+    public void noteReplayException(String detail) {
+        replayException.compareAndSet(null, detail);
+    }
+
+    /**
+     * Returns the detail of the first replay exception noted by
+     * {@link #noteReplayException(String)}, or {@code null} if none was.
+     *
+     * @return the noted detail, or {@code null}
+     */
+    public @Nullable String replayException() {
+        return replayException.get();
     }
 
     /**

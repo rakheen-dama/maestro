@@ -4423,6 +4423,28 @@ public final class WorkflowExecutor {
         observer.standDown(reason, ctx.workflowId(), detail);
     }
 
+    // ── Internal: replay-exception stand-down (Issue 89) ────────────────
+
+    /**
+     * Records that a workflow's local run stood down because its code threw
+     * while the run was still replaying recorded history — see
+     * {@link ReplayExceptionCheck} for the predicate and
+     * {@link StandDownReason#REPLAY_EXCEPTION}. Writes nothing and runs no
+     * compensation; the instance keeps its recoverable status, and every
+     * recovery pass stands it down again until code that matches its history
+     * is deployed (or the instance is terminated). The exception's stack trace
+     * is at DEBUG.
+     */
+    private void handleReplayExceptionStandDown(WorkflowContext ctx, Throwable failure, String detail) {
+        var status = statusForLog(ctx.workflowId());
+        logger.warn("Workflow '{}' stood down ({}): its code threw while replaying recorded history ({}; "
+                        + "instance status still {}) — no failure recorded, no compensation run; roll back "
+                        + "the deploy or fix the workflow code, and the run resumes (operations §10.3)",
+                ctx.workflowId(), StandDownReason.REPLAY_EXCEPTION, detail, status);
+        logger.debug("Replay exception of workflow '{}'", ctx.workflowId(), failure);
+        observer.standDown(StandDownReason.REPLAY_EXCEPTION, ctx.workflowId(), detail);
+    }
+
     // ── Internal: unknown-history stand-down (spec §C2) ────────────────
 
     /**
@@ -4603,6 +4625,24 @@ public final class WorkflowExecutor {
         // And a run shutdown has given up on (P1, Issue 70): its
         // ExecutorShutdownException reaches failAndCompensate's shutdown arm.
         ctx.cancellation().throwIfAbandoned(ctx.workflowId());
+
+        // Issue 89: workflow code threw while the run was still replaying its
+        // recorded history (a code change made it throw inside the recorded
+        // prefix) — in the workflow method, or in a parallel() branch, which
+        // noted it on the run's cancellation. Never a failure and never
+        // compensated: a bad deploy must not roll back work that did not fail.
+        // Before the ERROR line and before SagaManager reads its anchor (the
+        // recorded step there used to report this as nondeterministic_history,
+        // and the FAILED write at the occupied slot as stale_run). A store
+        // fault on the read reaches failAndCompensate's abandon arm.
+        var replayException = ctx.cancellation().replayException();
+        if (replayException == null) {
+            replayException = ReplayExceptionCheck.detail(store, ctx, failure);
+        }
+        if (replayException != null) {
+            handleReplayExceptionStandDown(ctx, failure, replayException);
+            return;
+        }
 
         // Logged after the stale check: a stand-down loser is not a failure worth
         // an ERROR line (its stand-down is logged by its own handler).
