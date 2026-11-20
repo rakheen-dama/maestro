@@ -219,7 +219,7 @@ public class MaestroHealthIndicator implements HealthIndicator {
      *
      * @param store                   the workflow store to probe for reachability
      * @param executor                the executor whose poller and running-workflow state is reported
-     * @param recoveryPollerEnabled   mirrors {@code maestro.recovery.enabled} — whether the
+     * @param recoveryPollerEnabled   mirrors {@code maestro.testing.recovery.enabled} (testing only) — whether the
      *                                recovery poller is expected to run at all
      * @param retentionSweeperEnabled mirrors {@code maestro.retention.enabled} — whether the
      *                                retention sweeper is expected to run at all

@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * A node that runs no recovery poller ({@code maestro.recovery.enabled=false}):
+ * A node that runs no recovery poller ({@code maestro.testing.recovery.enabled=false}):
  * nothing on it would later run a workflow a lock failure left behind, so a lock
  * failure must not leave one (PR #72 review, Group D):
  *

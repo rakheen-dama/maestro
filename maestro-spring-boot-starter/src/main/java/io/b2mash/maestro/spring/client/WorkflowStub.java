@@ -91,7 +91,7 @@ public final class WorkflowStub<T> {
      * @throws io.b2mash.maestro.core.exception.LockAcquisitionException if the
      *         workflow's instance lock cannot be taken (held elsewhere, or the lock
      *         backend failed) <em>and this node runs no recovery poller</em>
-     *         ({@code maestro.recovery.enabled=false}, or before startup recovery
+     *         ({@code maestro.testing.recovery.enabled=false} (testing only), or before startup recovery
      *         has started). Nothing was persisted; retry the start. With the poller
      *         running, such a start is instead persisted and this method returns its
      *         id normally: nothing runs here yet, and the recovery poller, prompted

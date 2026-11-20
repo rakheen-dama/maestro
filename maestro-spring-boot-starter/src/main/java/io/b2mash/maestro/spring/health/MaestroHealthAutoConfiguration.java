@@ -61,7 +61,7 @@ public class MaestroHealthAutoConfiguration {
      *
      * @param store      the workflow store to probe for reachability
      * @param executor   the executor whose poller and running-workflow state is reported
-     * @param properties supplies {@code maestro.recovery.enabled} and
+     * @param properties supplies {@code maestro.testing.recovery.enabled} (testing only) and
      *                   {@code maestro.retention.enabled}, so the indicator knows whether a
      *                   non-running recovery poller or retention sweeper is expected or a fault
      * @return a configured {@link MaestroHealthIndicator}
@@ -70,7 +70,7 @@ public class MaestroHealthAutoConfiguration {
     @ConditionalOnMissingBean
     public MaestroHealthIndicator maestroHealthIndicator(
             WorkflowStore store, WorkflowExecutor executor, MaestroProperties properties) {
-        return new MaestroHealthIndicator(store, executor, properties.getRecovery().enabled(),
+        return new MaestroHealthIndicator(store, executor, properties.getTesting().recovery().enabled(),
                 properties.getRetention().enabled());
     }
 }

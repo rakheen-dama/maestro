@@ -149,10 +149,7 @@ recovery poller's capacity passes — run as task-queue capacity frees while a
 recovery backlog drains — count too, but only those that read rows, so during
 a drain `scanned` grows by the rows each capacity pass reads.
 
-`maestro.loop.errors` counts every supervised loop. The one-shot startup
-recovery (a node with `maestro.recovery.enabled=false`) counts as
-`startup-recovery`; before pilot readiness P2 it counted as
-`recovery-poller`. The two `maestro-store-postgres` loops — the lock cleaner
+`maestro.loop.errors` counts every supervised loop. The two `maestro-store-postgres` loops — the lock cleaner
 (`lock-cleaner`, thread `maestro-pg-lock-cleaner`) and the wake listener
 (`wake-listener`, thread `maestro-pg-wake-listener`) — run under the
 executor's supervisor since P2 task 6 and count like the others; before, they

@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
                 "maestro.messaging.topics.admin-events=" + KafkaSignalChannelIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false"
+                "maestro.testing.recovery.enabled=false"
         })
 @Tag("integration")
 @DisplayName("The maestro.signals.{service} channel delivers signals into running workflows")

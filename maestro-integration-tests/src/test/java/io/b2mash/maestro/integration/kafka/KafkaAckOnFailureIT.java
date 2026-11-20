@@ -67,7 +67,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.lock.type=postgres",
                 "maestro.messaging.type=kafka",
                 "maestro.messaging.topics.admin-events=" + KafkaAckOnFailureIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false",
+                "maestro.testing.recovery.enabled=false",
                 // A tight budget so exhaustion (~1.75s of backoff) fits this
                 // suite's bound; the production default is 10 attempts over
                 // ~2.5 minutes. The transient test fails twice, still under 4.

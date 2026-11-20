@@ -12,8 +12,8 @@ import org.springframework.core.Ordered;
  * recovery, the timer poller, the signal janitor and (unless disabled) the
  * retention sweeper.
  *
- * <p>Recovery starts first. With {@code maestro.recovery.enabled=true} (the
- * default) that is the recovery poller, whose first pass — the startup
+ * <p>Recovery starts first. With {@code maestro.testing.recovery.enabled=true} (the
+ * default; the flag is TESTING ONLY, not a supported production setting) that is the recovery poller, whose first pass — the startup
  * recovery of workflows that were active when the service last stopped —
  * runs at once on the poller's own thread and is gated by task-queue
  * capacity. With {@code false} it is a one-shot <em>ungated</em> pass on its
@@ -62,13 +62,13 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
         // that were in flight at the last shutdown/crash on its own thread.
         var registrations = registrar.getRegistrations();
         var recovery = properties.getRecovery();
-        if (recovery.enabled()) {
+        if (properties.getTesting().recovery().enabled()) {
             executor.startRecoveryPoller(registrations, recovery.pollInterval());
             logger.info("Maestro recovery poller started (interval={}); its first pass runs now, on its own thread",
                     recovery.pollInterval());
         } else {
             executor.startOneShotRecovery(registrations, recovery.pollInterval());
-            logger.info("Maestro recovery poller disabled (maestro.recovery.enabled=false); one startup recovery "
+            logger.info("Maestro recovery poller disabled (maestro.testing.recovery.enabled=false, TESTING ONLY); one startup recovery "
                     + "pass runs on its own thread, retried every {} until it completes", recovery.pollInterval());
         }
 

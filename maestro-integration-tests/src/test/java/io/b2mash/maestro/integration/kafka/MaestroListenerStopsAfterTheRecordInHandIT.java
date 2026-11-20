@@ -130,7 +130,7 @@ class MaestroListenerStopsAfterTheRecordInHandIT extends KafkaSpringIntegrationS
                         "maestro.lock.type=postgres",
                         "maestro.messaging.type=kafka",
                         "maestro.messaging.topics.admin-events=" + ADMIN_TOPIC,
-                        "maestro.recovery.enabled=false",
+                        "maestro.testing.recovery.enabled=false",
                         "maestro.shutdown.timeout=20s")
                 .run();
     }

@@ -55,7 +55,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.messaging.type=kafka",
                 "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + KafkaLifecycleEventsIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false"
+                "maestro.testing.recovery.enabled=false"
         })
 @Tag("integration")
 @DisplayName("The engine publishes workflow lifecycle events to the admin topic")

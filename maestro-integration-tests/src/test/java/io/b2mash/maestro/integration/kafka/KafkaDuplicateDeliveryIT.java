@@ -65,7 +65,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
                 "maestro.messaging.type=kafka",
                 "maestro.admin.events.enabled=true",
                 "maestro.messaging.topics.admin-events=" + KafkaDuplicateDeliveryIT.ADMIN_TOPIC,
-                "maestro.recovery.enabled=false",
+                "maestro.testing.recovery.enabled=false",
                 "maestro.messaging.redelivery.initial-interval=200ms"
         })
 @Tag("integration")

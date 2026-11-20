@@ -69,7 +69,7 @@ class MaestroContainersStopInTheDrainIT extends KafkaSpringIntegrationSupport {
                         "maestro.lock.type=postgres",
                         "maestro.messaging.type=kafka",
                         "maestro.messaging.topics.admin-events=" + ADMIN_TOPIC,
-                        "maestro.recovery.enabled=false",
+                        "maestro.testing.recovery.enabled=false",
                         "maestro.shutdown.timeout=20s")
                 .run();
         var executor = context.getBean(WorkflowExecutor.class);
