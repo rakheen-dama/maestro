@@ -267,6 +267,8 @@ List<ApprovalResult> approvals = workflow.collectSignals(
     "manager.approval", ApprovalResult.class, 3, Duration.ofDays(7));
 ```
 
+The list is unmodifiable and in order of receipt. A signal sent with a `null` payload contributes a `null` element (as `awaitSignal` returns `null` for it; an `Optional` type reads it as `Optional.empty()`), on the first run and identically on replay.
+
 ### Sending a signal
 
 From outside the workflow, use the `MaestroClient`:
@@ -487,7 +489,7 @@ When parallel execution forks at sequence step `5`, each branch is allocated its
 
 - Each branch is independently memoized.
 - On replay, each branch replays its own stored events regardless of original execution order.
-- Results are returned in the same order as the input task list.
+- Results are returned in the same order as the input task list, as an unmodifiable list. A branch that returns `null` — the usual `() -> { activity.doIt(); return null; }` of a `Callable<Void>` — contributes a `null` element at its index.
 
 ### Depth limit
 

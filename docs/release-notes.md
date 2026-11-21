@@ -1,5 +1,13 @@
 # Release Notes — Maestro
 
+## Unreleased — after 0.3.0-rc.3
+
+### Fixed — a `null` signal payload or `parallel()` branch result is a `null` list element, not a `NullPointerException` (Issue 45)
+
+- **What was wrong.** `collectSignals` returned `List.copyOf` of the payloads it awaited, so a signal sent with a `null` payload — legal at every entry point, and returned as `null` by `awaitSignal` — threw `NullPointerException` into workflow code after the signals were consumed, failing the workflow (and compensating a `@Saga`), live and on every replay. `parallel()` had the same defect: a branch returning `null`, as every `Callable<Void>` does, threw at the join after all branches had succeeded (`List.of` for a single task, `List.copyOf` for a fork).
+- **What changes.** Both return an unmodifiable list that holds `null` where a signal carried a `null` payload or a branch returned `null`, identically on the first run and on replay (`NullElementsRecoveryTest`, `NullSignalPayloadTest`, `ParallelNullResultTest`). Nothing changes at delivery or in the store; nothing persisted changes shape.
+- **Rolling deploy.** An rc.3 node that replays such a collect or fork still throws the old `NullPointerException` and fails the run, so during a rollback window do not rely on `null` elements until every node runs this build.
+
 ## 0.3.0-rc.3
 
 ### Fixed — an exception thrown while replaying recorded history stands down as `replay_exception` (Issue 89)
