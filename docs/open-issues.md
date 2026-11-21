@@ -61,7 +61,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
-**`limitation`** (24)
+**`limitation`** (25)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
@@ -87,6 +87,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 22. ~~[90](#issue-90) — `KafkaTopicVerificationStartupTest.failMode_disabledFeaturesAreNotRequired` is disabled: the startup topic check can report a just-created topic as missing~~ — closed (unknown topics re-checked within the 5 s probe window; test re-enabled, 2026-11-20)
 23. ~~[91](#issue-91) — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan~~ — resolved in the harness (derived 300 s decision timeout, 2026-11-20)
 24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
+25. [92](#issue-92) — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change
 
 ---
 
@@ -6422,6 +6423,47 @@ No engine bound was exceeded.
 > 12.5–13.3 min each with no violations. Across the four runs, 63 deliberate
 > SIGNAL_TIMEOUT loans (withheld decisions) ended `FAILED` as declared, so a
 > withheld answer still fails its loan.
+
+<a id="issue-92"></a>
+
+### Issue 92 — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change {#issue-92}
+
+> **Label: `limitation`.** No failure observed; a watch list, not a defect.
+
+**Measured (2026-11-21, `origin/main` `b704eed1`).** `:maestro-core:test`,
+`:maestro-test:test`, `:maestro-spring-boot-starter:test`,
+`:maestro-store-jdbc:test` and the broker-free tests of
+`:maestro-messaging-kafka:test` (about 4,290 tests) ran 15 times idle and 15
+times under CPU load (9 busy loops on 10 cores, load average up to 330),
+`--rerun-tasks`: zero failures in 30 runs. The container suites were only
+read, not looped.
+
+**Suspects, unchanged because no run failed and no defect is plain from reading:**
+- `KafkaWorkflowMessagingTest` (7×), `KafkaTracePropagationContractTest` (5×):
+  `Thread.sleep(500)` after `subscribeSignals` and before the publish, as a
+  wait for partition assignment. Harmless while the consumer starts at
+  `earliest` on a fresh topic; a wait on nothing if that ever changes.
+- `KafkaTraceLinkageIT` (2×), `SignalListenerTraceContextIT`: the same wait,
+  `Thread.sleep(1000)`.
+- Negative checks bounded by a short window — `WorkflowExecutorTest`
+  (`latch.await(200–500 ms)` must stay false), `ParkedProbeStoreOutageTest`
+  (100–200 ms), `SignalManagerTest` (`Thread.sleep(500)` then "not parked"),
+  `LostLockTwinRunTest` (500 ms), `NodeStoreViewTest` (300 ms),
+  `WorkflowExecutorShutdownTest` / `ShutdownContractIT` (500 ms): on a slow
+  machine these pass without exercising the race (false pass, never a flake).
+- `WorkflowInstanceLockManagerTest` close test: `Thread.sleep(300)`, then at
+  most one renewal after close; a renewer that ignored close only slowly
+  would pass.
+- `FailureAttributionTest.anExceptionNoLongerReachableIsCollectable`: after the
+  control reference clears, 10 `System.gc()` calls must clear the registered
+  one too. That holds on today's collectors, which clear both in one cycle.
+- Short instance-lock TTLs (150–300 ms) in `LostLockTwinRunTest`,
+  `HandleScopedLockRaceTest`, `RecoveryDisabledLockFailureTest`,
+  `LaunchOutcomeRegistryTest`, `WorkflowExecutorShutdownDeadlineTest`,
+  `LoopErrorCounterWiringTest`: safe today because their locks do not expire
+  on the wall clock. Switching any of them to `InMemoryDistributedLock` would
+  bring back the `MaestroHealthIndicatorTest` failure (a TTL that really
+  expires mid-test).
 
 ## 6. Suggested order
 
