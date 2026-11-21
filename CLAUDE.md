@@ -14,7 +14,7 @@ Read these before making architectural decisions:
 - `docs/observability.md` — Meter catalog, span topology, Kafka trace-propagation contract
 - `docs/support-matrix.md` — What is supported, not supported and untested (one service per set of tables, mandatory lock, Postgres-only store, previous-release rolling upgrades, tested Postgres/pool/Kafka setups)
 - `docs/operations.md` — Multi-instance behaviour; versioning + mixed-version deploy playbook
-- `docs/pitfalls.md` — The thirteen workflow-author rules (saga throws, `causedBy`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them, no workflow operations inside an activity)
+- `docs/pitfalls.md` — The thirteen workflow-author rules (saga throws, `causedBy` and `@FailureDetails`, idempotency, determinism, owning-node queries, sequence budget, versioning, per-run fields, signal ids, control-flow `Error`s, no same-queue waits in activities, results arrive as the store returns them, no workflow operations inside an activity)
 
 ## Core Design: Hybrid Memoization
 
@@ -22,6 +22,7 @@ Read these before making architectural decisions:
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
 4. **Live (not found):** Execute activity, persist result, return it **as read back from the persisted payload** (deserialized into the method's declared return type, exactly as a replay reads it — not the activity's own object). Three exceptions return the activity's own object and still differ on replay (`docs/pitfalls.md` rule 12): a result that cannot be read back (stands down on replay), one that reads back as another class (the type valve: supertype/`Object`/type-variable declarations; a same-kind container — both `List`, `Set`, `Queue` or `Map` — is not a difference), and a `Future`/`CompletionStage` return type (never read back live). The first two are reported via `EngineObserver.activityResultUnreadable` and `maestro.activity.result.unreadable`.
+   A live **failure** has no such exceptions: once its `ACTIVITY_FAILED` memo is durable, workflow code gets the exception **rebuilt from the stored payload** (`FailureReconstruction.rebuild`), never the activity's own object — type and message, plus the properties of a class annotated `@FailureDetails` (opt-in, `details` payload field; an unfaithful rebuild is a `ReconstructedActivityFailure` on both paths, reported via `EngineObserver.activityFailureUnrebuildable` / `maestro.activity.failure.unrebuildable`). `ActivityExecutionException.failure()` exposes the record (Issue 42).
 5. **Recovery:** Re-invoke workflow method. Completed steps replay instantly. Resumes from first uncompleted step.
 
 **Determinism constraint:** Code between activity calls must be deterministic. No `Math.random()`, `LocalDateTime.now()`, `UUID.randomUUID()`, or direct I/O. Use `workflow.currentTime()`, `workflow.randomUUID()`.

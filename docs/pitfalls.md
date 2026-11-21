@@ -44,7 +44,7 @@ The throw releases the reservation, and the instance ends `FAILED` with `Workflo
 
 ## 2. Catch `ActivityExecutionException` and test it with `causedBy`; list business exceptions as non-retryable
 
-An activity's exception always reaches workflow code wrapped in `ActivityExecutionException`, both live and on replay. On replay the cause is rebuilt from the recorded class name and message. The retry policy retries every exception unless it is excluded.
+An activity's exception always reaches workflow code wrapped in `ActivityExecutionException`, both live and on replay, and the cause is always **rebuilt from the recorded failure**, never the object the activity threw: the first run sees exactly what a replay sees. The retry policy retries every exception unless it is excluded.
 
 **Wrong**
 
@@ -77,11 +77,41 @@ try {
 }
 ```
 
-`causedBy` matches the live cause and the replayed reconstruction alike. Give a business exception a public `(String)` constructor so replay rebuilds its original type. Without one, the cause is a `ReconstructedActivityFailure` naming the original class, which `causedBy` still recognises.
+`causedBy` matches the rebuilt cause and a `ReconstructedActivityFailure` alike. What is guaranteed, on the first run and after any restart:
 
-**What you see:** the business exception is retried as if it were transient, three provider calls by default with backoff. The `catch` is dead code, so the wrapper escapes and the workflow ends `FAILED` instead of returning the decline.
+- **Any exception:** its class and message. Give a business exception a public `(String)` constructor so the cause is its own type; without one it is a `ReconstructedActivityFailure` naming the original class. Its other fields, its cause chain and its stack trace are not recorded, so they are not there on either path.
+- **`e.failure()`** always returns what was recorded: `type()`, `message()` and `details()`, also when the class is missing on this node or could not be rebuilt.
+- **To branch on a field, opt the class in:** annotate it `@FailureDetails` and give it a `@JsonCreator` constructor taking `message` and each property. The properties the configured mapper writes for it (bean getters, `@JsonProperty`; never `message`, `cause`, `stackTrace`) are stored with the failure, so keep secrets out (`@JsonIgnore`), and `getCause()` is the class rebuilt from them:
 
-**Test it:** count provider calls (`assertEquals(1, provider.calls.get())`). To pin the replay path, `env.crashAfterPersisting(e -> e.eventType() == EventType.ACTIVITY_FAILED)` and `crash.recover()` (see `PaymentProcessingWorkflowTest`).
+```java
+@FailureDetails
+public class PaymentDeclinedException extends RuntimeException {
+    private final String reasonCode;
+
+    @JsonCreator
+    public PaymentDeclinedException(@JsonProperty("message") String message,
+                                    @JsonProperty("reasonCode") String reasonCode) {
+        super(message);
+        this.reasonCode = reasonCode;
+    }
+
+    public String getReasonCode() { return reasonCode; }
+}
+
+// in the workflow
+} catch (ActivityExecutionException e) {
+    if (e.getCause() instanceof PaymentDeclinedException declined) {
+        return PaymentProcessingResult.declined(declined.getReasonCode());
+    }
+    throw e;
+}
+```
+
+If the rebuilt object is not the same class with the same message and the same properties (no usable constructor, a `final` field the mapper cannot set, a property that does not round-trip), the cause is a `ReconstructedActivityFailure` on both paths, with the properties still in `e.failure().details()`.
+
+**What you see:** the business exception is retried as if it were transient, three provider calls by default with backoff. The `catch` is dead code, so the wrapper escapes and the workflow ends `FAILED` instead of returning the decline. An opted-in class that cannot be rebuilt is reported on the first run: a `WARN` naming the class and the reason (never a value), the counter `maestro.activity.failure.unrebuildable` and `EngineObserver.activityFailureUnrebuildable`.
+
+**Test it:** count provider calls (`assertEquals(1, provider.calls.get())`). For an opted-in class, fail the activity once and assert the cause's class and field: the first run already shows what every replay will. To pin the replay path, `env.crashAfterPersisting(e -> e.eventType() == EventType.ACTIVITY_FAILED)` and `crash.recover()` (see `PaymentProcessingWorkflowTest`).
 
 **Retry truncates from the earliest failure the escaping exception carries.** A workflow that loops over items, catches each failure, carries on, and finally throws one exception holding those failures as cause or suppressed, is retried from the first of them: every activity recorded after it runs again live, the successful ones included (they must be idempotent, rule 3).
 

@@ -47,13 +47,13 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (7 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21)
+**`blocks-1.0`** (6 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
 3. [48](#issue-48) — No startup check that the configured mapper reads back what it writes
 4. ~~[43](#issue-43) — Workflow input on Postgres differs between the first run and recovery~~ — closed (the first run launches from the stored input, 2026-11-21)
-5. [42](#issue-42) — A replayed activity failure keeps only the exception's type and message
+5. ~~[42](#issue-42) — A replayed activity failure keeps only the exception's type and message~~ — closed (the first run throws the failure rebuilt from its record; `@FailureDetails` opt-in, 2026-11-22; the rest is [93](#issue-93))
 6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
 7. [83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged
 8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
@@ -61,7 +61,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
-**`limitation`** (25)
+**`limitation`** (26)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
@@ -88,6 +88,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 23. ~~[91](#issue-91) — The chaos PR-gate schedule can kill both verification nodes long enough to time out a healthy loan~~ — resolved in the harness (derived 300 s decision timeout, 2026-11-20)
 24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 25. [92](#issue-92) — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change
+26. [93](#issue-93) — A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in
 
 ---
 
@@ -455,7 +456,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [39](#issue-39) | Workflows recorded under another `service_name` are stranded silently | Library gap — operability | Medium | **Resolved** (WP8) |
 | [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | `limitation` — Open |
 | [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | `blocks-pilot` — Open |
-| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | `blocks-1.0` — Open |
+| [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | **Resolved** (remainder: [93](#issue-93)) |
 | [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | **Resolved** |
 | [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | **Resolved** |
 | [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | **Resolved** |
@@ -501,6 +502,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | **Resolved** (P2) |
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
+| [93](#issue-93) | A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in | Library gap — replay fidelity | Low | `limitation` — Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -3875,8 +3877,41 @@ appended.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** What a workflow can catch on replay is API semantics.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-22)** (branch
+> `fix/issue-42-activity-failure-fidelity`), by the maintainer's decisions:
+> (1) the first run always throws the failure rebuilt from its persisted
+> record — never the activity's own object — so live and replay are identical
+> by construction; (2) recording an exception's own properties is opt-in per
+> class. `ActivityInvocationHandler` appends the `ACTIVITY_FAILED` memo with
+> `appendEventReturningPayload` and throws
+> `FailureReconstruction.rebuild(stored)` — on every path a workflow catches
+> an activity failure on (retries exhausted, non-retryable, timed-out last
+> attempt, inside a `parallel()` branch, in a `@Saga` workflow, a failing
+> `@Compensate` call: all go through that one catch). A class annotated
+> `@FailureDetails` (new, `core.annotation`) records the properties the
+> configured mapper writes for it (minus `Throwable`'s own) in a new, additive
+> `details` payload field and is rebuilt by the mapper from `{message, …}`;
+> the rebuild is kept only if the class, message and re-written properties
+> match (numbers by value), otherwise the cause is a
+> `ReconstructedActivityFailure` on both paths, reported live
+> (`EngineObserver.activityFailureUnrebuildable`,
+> `maestro.activity.failure.unrebuildable`, a `WARN` once per class).
+> `ActivityExecutionException.failure()` returns the `RecordedFailure`
+> (`type`, `message`, `details`) on every node. A null message is `null`, not
+> `"Replayed failure"`. `ActivityTimeoutException` opted in. No migration; an
+> rc.1–rc.3 record replays as before; rc.3 ignores `details`. No startup check
+> for an opted-in class that can never be rebuilt: a `throws` clause names a
+> supertype of what is thrown and Jackson finds creators by parameter name, so
+> reflection cannot decide it; the first failure reports it. **Correction to
+> "Done when" below:** the cause is not rebuilt (maintainer ruling: nice to
+> have) — the cause chain, stack trace, suppressed exceptions and fields of a
+> class that has not opted in are [Issue 93](#issue-93). Tests:
+> `FailureReconstructionTest`, `ActivityFailureFidelityTest` (core and kit:
+> opted-in, not opted-in, no `(String)` constructor, null message,
+> unfaithful, timeout, `parallel()` branch, saga), `ActivityFailureReplayIT`
+> (Postgres: `details` as `jsonb` stores them, live and on replay).
+
+> **Filed** by WP1, replay fidelity (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library gap — replay fidelity. **Severity:** Medium (workflow code
 that reads more than the type and message of a failure behaves differently
@@ -6545,6 +6580,39 @@ read, not looped.
   published on host port 63342, which IntelliJ holds on 127.0.0.1, so
   "Could not connect to Ryuk at localhost:63342" failed the class before any
   test ran. One full `./gradlew build` afterwards: green, nothing intermittent.
+
+<a id="issue-93"></a>
+
+### Issue 93 — A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in {#issue-93}
+
+> **Label: `limitation`.** Filed 2026-11-22 when [Issue 42](#issue-42) was
+> closed; the maintainer ruled these nice to have.
+
+**What is missing.** Since Issue 42 a workflow sees the same failure on the
+first run and after a recovery, by construction — but what it sees is only
+what is recorded: the class and message, and the properties of a class
+annotated `@FailureDetails`. Not recorded, so not there on either path:
+
+- the exception's cause chain (`getCause()` of the rebuilt exception is
+  `null`), not even as plain data (type and message per cause);
+- its stack trace and suppressed exceptions (the original is logged by
+  `RetryExecutor` with its stack trace when the activity fails);
+- the fields of a class that has not opted in;
+- a typed read of the recorded properties
+  (`failure().details()` is a JSON object; there is no `details(Class)`).
+
+**Harm.** None silent: the same thing is missing live and after a restart.
+Workflow code that needs a field opts the class in; code that needs the
+root cause must have the activity throw an opted-in exception carrying what
+it needs.
+
+**How to tackle it.** Cause chain as data: an additive `causes` array of
+`{exceptionType, message}` (bounded depth, cycle-safe) — but it records
+messages of classes that have not opted in, which decision 2 of Issue 42
+forbids without a further ruling. Rebuilding causes as objects would follow
+the same rule as the top-level cause.
+
+---
 
 ## 6. Suggested order
 
