@@ -47,9 +47,9 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (9 open; 89 closed 2026-11-20, 45 closed 2026-11-21)
+**`blocks-1.0`** (8 open; 89 closed 2026-11-20, 44 and 45 closed 2026-11-21)
 
-1. [44](#issue-44) — Workflow input is read with the raw parameter class
+1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
 3. [48](#issue-48) — No startup check that the configured mapper reads back what it writes
 4. [43](#issue-43) — Workflow input on Postgres differs between the first run and recovery
@@ -457,7 +457,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | `blocks-pilot` — Open |
 | [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | `blocks-1.0` — Open |
 | [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | `blocks-1.0` — Open |
-| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | `blocks-1.0` — Open |
+| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | **Resolved** |
 | [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | **Resolved** |
 | [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | `limitation` — Open |
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
@@ -3966,8 +3966,27 @@ number class.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** A generic workflow input fails with `ClassCastException`; a defect in supported use.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-21): fixed** (branch
+> `fix/issues-43-44-45-input-and-null-payloads`). The one read site every run
+> goes through (`WorkflowExecutor.invokeWorkflowMethod`: first run, recovery,
+> Retry) reads with `getGenericParameterTypes()[0]`; a raw `List`, `Object` or a
+> type variable reads as before. New: the start reads the serialized input back
+> with that type before locking or writing anything and refuses an unreadable
+> one with `UnreadableWorkflowInputException` (workflow id, type, parameter
+> type) — nothing persisted — instead of returning an id for a run that stands
+> down at sequence 0 for ever. An input that reads back as another class is
+> accepted, as the result type valve accepts it. Correction to the text below:
+> the `@QueryMethod` half is moot — query arguments are never serialized
+> (`invokeQueryMethod` passes the caller's object after an `isInstance` check),
+> so nothing changed there. Tests: `WorkflowInputTypeTest` (`List<Pair>`,
+> `Map<String, List<Pair>>`, `Object`, a type variable, a raw `List`, no
+> argument — each crashed and recovered — and the refused start),
+> `ForeignPayloadStandDownTest` (the seq-0 stand-down is now reached by a row a
+> newer node wrote, plus the refused start). Release-noted: an rc.3 node fails a
+> parameterized-input run with the old `ClassCastException`.
+
+> **Filed** by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library defect. **Severity:** Medium (the workflow fails on its
 first run, so it is caught early, but the cause is not obvious).

@@ -189,9 +189,20 @@ class ForeignPayloadStandDownTest {
         var impl = new InputWorkflow();
         // A newer node persisted this instance's input in a shape this build's
         // workflow signature cannot accept. It is re-read on EVERY recovery run.
-        var instanceId = executor.startWorkflow(workflowId, "InputWorkflow", "default",
-                Map.of("reshaped", "by a newer node"), () -> impl, methodOf(InputWorkflow.class));
+        // (Written straight to the store: a start on THIS node refuses such an
+        // input before persisting anything — Issue 44, the test below.)
+        var instanceId = UUID.randomUUID();
+        var now = Instant.now();
+        store.createInstance(io.b2mash.maestro.core.model.WorkflowInstance.builder()
+                .id(instanceId).workflowId(workflowId).runId(UUID.randomUUID())
+                .workflowType("InputWorkflow").taskQueue("default").status(WorkflowStatus.RUNNING)
+                .input(serializer.serialize(Map.of("reshaped", "by a newer node")))
+                .serviceName("old-node").eventSequence(0).startedAt(now).updatedAt(now).version(0)
+                .build());
+        executor.recoverWorkflows(Map.of("InputWorkflow",
+                new WorkflowRegistration("InputWorkflow", "default", () -> impl, methodOf(InputWorkflow.class))));
 
+        await().atMost(BOUND).until(() -> !observer.standDowns().isEmpty());
         awaitRunEnded(workflowId);
 
         var instance = store.getInstance(workflowId).orElseThrow();
@@ -208,6 +219,23 @@ class ForeignPayloadStandDownTest {
                 () -> assertEquals(List.of(StandDownReason.UNKNOWN_EVENT_PAYLOAD), reasons()),
                 () -> assertTrue(observer.standDowns().getFirst().detail().startsWith("seq=0 cause="),
                         "sequence 0 names the instance's own input rather than any event"));
+    }
+
+    @Test
+    @DisplayName("a fresh start whose input this build cannot read back is refused — nothing persisted")
+    void unreadableWorkflowInputAtStart_isRefusedBeforeAnythingIsPersisted() {
+        var impl = new InputWorkflow();
+        var thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                io.b2mash.maestro.core.exception.UnreadableWorkflowInputException.class,
+                () -> executor.startWorkflow("refused-input", "InputWorkflow", "default",
+                        Map.of("reshaped", "by a newer node"), () -> impl, methodOf(InputWorkflow.class)));
+
+        assertAll(
+                () -> assertEquals("InputWorkflow", thrown.workflowType()),
+                () -> assertEquals("java.lang.String", thrown.parameterType()),
+                () -> assertTrue(store.getInstance("refused-input").isEmpty(), "no instance row"),
+                () -> assertFalse(impl.ran(), "the body must not have run"),
+                () -> assertTrue(reasons().isEmpty(), "no run, so no stand-down"));
     }
 
     // ── F2b: the consumed signal payload (SignalManager) ──────────────────

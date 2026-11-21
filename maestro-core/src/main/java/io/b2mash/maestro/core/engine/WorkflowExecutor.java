@@ -19,7 +19,9 @@ import io.b2mash.maestro.core.exception.QueryNotDefinedException;
 import io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException;
 import io.b2mash.maestro.core.exception.StaleRunException;
 import io.b2mash.maestro.core.exception.StoreUnavailableException;
+import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.UnknownWorkflowHistoryException;
+import io.b2mash.maestro.core.exception.UnreadableWorkflowInputException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowExecutionException;
 import io.b2mash.maestro.core.exception.WorkflowInstantiationException;
@@ -775,6 +777,9 @@ public final class WorkflowExecutor {
      *         pass, and a retry of the same start throws
      *         {@link WorkflowAlreadyExistsException}
      *         ({@code AdoptionLockLeakTest.startWorkflow_aFailureAfterTheRowIsCreated_…})
+     * @throws UnreadableWorkflowInputException if {@code input} cannot be
+     *         read back into the workflow method's generic parameter type —
+     *         nothing was persisted and no lock is held (Issue 44)
      * @throws WorkflowInstantiationException if the factory throws — the
      *         instance row already exists and is left {@code RUNNING} for the
      *         recovery poller to adopt; no {@code WORKFLOW_STARTED} event or
@@ -833,6 +838,9 @@ public final class WorkflowExecutor {
         var now = Instant.now();
         var runId = UUID.randomUUID();
         var inputPayload = input != null ? serializer.serialize(input) : null;
+        // Before anything is locked or written (Issue 44): an input no run
+        // could read back would otherwise stand every run down at sequence 0.
+        requireReadableInput(workflowId, workflowType, workflowMethod, inputPayload);
 
         var instance = WorkflowInstance.builder()
                 .id(instanceId)
@@ -950,6 +958,32 @@ public final class WorkflowExecutor {
         }
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
+    }
+
+    /**
+     * Refuses a start whose serialized input cannot be read back into the
+     * workflow method's generic parameter type (Issue 44) — the read every
+     * run of the workflow performs ({@code invokeWorkflowMethod}). Called
+     * before the lock is taken and the row written, so a refused start
+     * persists nothing. Only an unreadable input is refused: one that reads
+     * back as another class (a subtype under a declared supertype, anything
+     * under {@code Object} or a type variable) is accepted, as an activity
+     * result's type valve accepts it. A method with no parameter ignores its
+     * input, as it always has.
+     *
+     * @throws UnreadableWorkflowInputException if the read-back fails
+     */
+    private void requireReadableInput(String workflowId, String workflowType, Method workflowMethod,
+                                      @Nullable JsonNode inputPayload) {
+        if (workflowMethod.getParameterCount() == 0) {
+            return;
+        }
+        var paramType = workflowMethod.getGenericParameterTypes()[0];
+        try {
+            serializer.deserialize(inputPayload, paramType);
+        } catch (SerializationException e) {
+            throw new UnreadableWorkflowInputException(workflowId, workflowType, paramType.getTypeName(), e);
+        }
     }
 
     /**
@@ -4239,7 +4273,13 @@ public final class WorkflowExecutor {
                 // serializer reads both alike — Optional.empty() for an
                 // Optional parameter, null for any other — so the live run and
                 // every recovery receive the same argument.
-                var paramType = workflowMethod.getParameterTypes()[0];
+                //
+                // Read with the GENERIC parameter type (Issue 44), as activity
+                // results are read with the generic return type: a List<Pair>
+                // parameter receives Pairs, not LinkedHashMaps. A raw type,
+                // Object or a type variable resolves to what the erased class
+                // read before.
+                var paramType = workflowMethod.getGenericParameterTypes()[0];
                 var input = UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
                         "persisted workflow input",
                         () -> serializer.deserialize(inputPayload, paramType));

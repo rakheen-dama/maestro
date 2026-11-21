@@ -395,6 +395,9 @@ public final class TestWorkflowEnvironment {
      * @param input         the workflow input, or {@code null}
      * @return a handle to the running workflow
      * @throws IllegalStateException if the node has crashed and not been recovered
+     * @throws io.b2mash.maestro.core.exception.UnreadableWorkflowInputException if
+     *         {@code input} cannot be read back into the workflow method's generic
+     *         parameter type; nothing was persisted
      */
     public TestWorkflowHandle startWorkflow(String workflowId, Class<?> workflowClass,
                                             @Nullable Object input) {
