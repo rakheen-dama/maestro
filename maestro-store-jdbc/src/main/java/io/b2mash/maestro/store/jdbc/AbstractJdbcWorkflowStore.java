@@ -137,7 +137,8 @@ import java.util.stream.Collectors;
  *       fenced {@code INSERT ... SELECT} checked (Postgres: {@code FOR SHARE}).</li>
  *   <li>{@link #returnsInsertedPayload()} — override to {@code true} when the
  *       database normalises what it stores and can return it from the insert
- *       ({@code INSERT ... RETURNING payload}; Postgres {@code jsonb}).</li>
+ *       ({@code INSERT ... RETURNING payload} for events and
+ *       {@code INSERT ... RETURNING input} for instances; Postgres {@code jsonb}).</li>
  * </ul>
  *
  * <h2>Lease fencing</h2>
@@ -419,6 +420,17 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Instance operations ───────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns a copy of {@code instance} whose input is the one this store
+     * reads back: the {@code RETURNING input} column when
+     * {@link #returnsInsertedPayload()} is on, else the text round trip of
+     * what was written ({@code null} for a {@code null} or JSON-null input,
+     * which is written as SQL {@code NULL}). Every other field is
+     * {@code instance}'s. A stored input that cannot be parsed back rolls the
+     * whole transaction back and is thrown as {@link SerializationException}.
+     */
     @Override
     public WorkflowInstance createInstance(WorkflowInstance instance) {
         Objects.requireNonNull(instance, "instance");
@@ -428,13 +440,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             conn.setAutoCommit(false);
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
-                insertInstance(conn, instance);
+                var storedInput = insertInstance(conn, instance);
                 doAdoptOrphanedSignals(conn, instance.workflowId(), instance.id());
                 conn.commit();
                 settled = true;
                 log.debug("Created workflow instance: workflowId={}, id={}",
                         instance.workflowId(), instance.id());
-                return instance;
+                // Issue 43: the input as this store reads it back, so the
+                // engine's first run receives what every recovery reads.
+                return instance.toBuilder().input(storedInput).build();
             } catch (SQLException | RuntimeException e) {
                 settled = rollbackAfter(conn, e);
                 throw e;
@@ -897,7 +911,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * Whether the database can return the inserted {@code payload} from the
      * event {@code INSERT} itself ({@code INSERT ... RETURNING payload}), so
      * {@link #appendEventReturningPayload} returns the stored form rather than
-     * a text round trip of the payload it sent. The default is {@code false}:
+     * a text round trip of the payload it sent — and likewise the inserted
+     * {@code input} from the instance {@code INSERT}
+     * ({@code INSERT ... RETURNING input}, one {@code executeQuery} returning
+     * one row), so {@link #createInstance} returns the instance with its input
+     * as stored (Issue 43). The default is {@code false}:
      * correct for a store that keeps payloads as text, because a text column
      * reads back exactly the text written. A store that normalises what it
      * stores — Postgres {@code jsonb} reorders keys and rewrites numbers —
@@ -1983,11 +2001,31 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Internal helpers ──────────────────────────────────────────────────
 
-    private void insertInstance(Connection conn, WorkflowInstance instance) throws SQLException {
+    /**
+     * Inserts the instance row and returns its {@code input} as this store
+     * reads it back (Issue 43): with {@link #returnsInsertedPayload()} on, the
+     * column the insert's {@code RETURNING input} handed back; off, the text
+     * round trip of what was written — what a text column hands back. A
+     * driver that returns no row yields the input that was sent (logged at
+     * DEBUG).
+     *
+     * <p>A stored form the parser rejects (Postgres stores {@code 1E+1500} as
+     * a 1501-digit integer, past the reader's number-length limit) is thrown
+     * as the parser's {@link SerializationException}: {@link #getInstance}
+     * would meet the same failure, so no recovery could ever load the row.
+     * {@link #createInstance} rolls the insert back — and the orphan-signal
+     * adoption with it — so nothing is persisted and the start fails before
+     * any run begins.
+     *
+     * @throws SerializationException if the stored input cannot be parsed back
+     */
+    private @Nullable JsonNode insertInstance(Connection conn, WorkflowInstance instance) throws SQLException {
+        boolean returning = returnsInsertedPayload();
         String sql = "INSERT INTO " + tableName("workflow_instance")
                 + " (id, workflow_id, run_id, workflow_type, task_queue, status, "
                 + "input, output, service_name, event_sequence, started_at, completed_at, "
-                + "updated_at, version, lease_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "updated_at, version, lease_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                + (returning ? RETURNING_INPUT : "");
 
         try (var ps = conn.prepareStatement(sql)) {
             ps.setObject(1, instance.id());
@@ -2005,9 +2043,25 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setTimestamp(13, Timestamp.from(instance.updatedAt()));
             ps.setInt(14, instance.version());
             ps.setLong(15, instance.leaseEpoch());
-            ps.executeUpdate();
+            if (!returning) {
+                ps.executeUpdate();
+                var input = instance.input();
+                // What a text column hands back; SQL NULL for a null or JSON-null input.
+                return input == null || input.isNull() ? null : parseJsonNode(toJsonString(input));
+            }
+            try (var rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    log.debug("The instance insert of workflow {} returned no row; returning the input that "
+                            + "was sent", instance.workflowId());
+                    return instance.input();
+                }
+                // Not caught: a stored input nothing can read back must fail the start.
+                return getJsonValue(rs, "input");
+            }
         }
     }
+
+    private static final String RETURNING_INPUT = " RETURNING input";
 
     private void doAdoptOrphanedSignals(Connection conn, String workflowId,
                                          UUID instanceId) throws SQLException {

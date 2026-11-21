@@ -57,7 +57,7 @@ public class OrderFulfilmentWorkflow {
 
 - `name` defaults to the class simple name if omitted. It correlates instances with their implementation during recovery.
 - `taskQueue` defaults to `"default"`. It names the concurrency bucket the workflow's runs and their live activities count against — the per-node limits configured under `maestro.worker.task-queues[]` (see [Worker Configuration](configuration.md#worker-configuration)); a queue not configured there gets `maestro.worker.default-concurrency` / `default-activity-concurrency` (20 runs / 20 live activities per node unless set; both `0` = unbounded). It does not route: a workflow runs in-process on the node that starts it, or on the node that recovers it.
-- The `@WorkflowMethod` may accept zero or one parameter (the workflow input) and its return type is serialized as the workflow output.
+- The `@WorkflowMethod` may accept zero or one parameter (the workflow input) and its return type is serialized as the workflow output. The input is persisted as JSON and every run — the first, each recovery, a Retry — receives it as read back from the store with the parameter's generic type (so the first run sees exactly what a recovery sees: on Postgres, `jsonb`'s key order and number forms), so `List<Order>` or `Map<String, List<Line>>` arrive typed; a raw type, `Object` or a type variable reads as Jackson's natural form (maps and lists). A start whose input cannot be read back into the declared type (an interface with no type information, a class Jackson cannot construct) is refused with `UnreadableWorkflowInputException`, and nothing is persisted.
 - **One `@WorkflowMethod` per class.** Multiple workflow types require separate classes.
 - **One object per run.** The engine instantiates the workflow class for every start, recovery and retry. Instance fields are per-run state; never put per-instance state in `static` fields.
 
@@ -266,6 +266,8 @@ The timeout is durable: it is a timer row in `maestro_workflow_timer`, so a cras
 List<ApprovalResult> approvals = workflow.collectSignals(
     "manager.approval", ApprovalResult.class, 3, Duration.ofDays(7));
 ```
+
+The list is unmodifiable and in order of receipt. A signal sent with a `null` payload contributes a `null` element (as `awaitSignal` returns `null` for it; an `Optional` type reads it as `Optional.empty()`), on the first run and identically on replay.
 
 ### Sending a signal
 
@@ -487,7 +489,7 @@ When parallel execution forks at sequence step `5`, each branch is allocated its
 
 - Each branch is independently memoized.
 - On replay, each branch replays its own stored events regardless of original execution order.
-- Results are returned in the same order as the input task list.
+- Results are returned in the same order as the input task list, as an unmodifiable list. A branch that returns `null` — the usual `() -> { activity.doIt(); return null; }` of a `Callable<Void>` — contributes a `null` element at its index.
 
 ### Depth limit
 

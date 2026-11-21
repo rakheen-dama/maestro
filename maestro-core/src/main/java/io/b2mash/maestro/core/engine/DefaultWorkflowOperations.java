@@ -741,7 +741,10 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             results.add(awaitSignal(signalName, type, remaining));
         }
 
-        return List.copyOf(results);
+        // Not List.copyOf: a signal sent with a null payload is a null element
+        // (Issue 45), and the copy would throw after the signals were consumed.
+        // The list is local and never escapes, so wrapping it needs no copy.
+        return Collections.unmodifiableList(results);
     }
 
     // ── parallel ───────────────────────────────────────────────────────
@@ -791,7 +794,8 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
         }
         if (tasks.size() == 1) {
             try {
-                return List.of(tasks.getFirst().call());
+                // Not List.of: a branch may return null (Issue 45's sibling).
+                return Collections.singletonList(tasks.getFirst().call());
             } catch (RuntimeException e) {
                 throw e;
             } catch (Exception e) {
@@ -1002,12 +1006,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             }
         }
 
-        // Collect results in order
+        // Collect results in order. Not List.copyOf: a branch returning null
+        // (a Callable<Void>) is a null element, not a failure after the join.
         var resultList = new ArrayList<T>(branchCount);
         for (int i = 0; i < branchCount; i++) {
             resultList.add(results.get(i).get());
         }
-        return List.copyOf(resultList);
+        return Collections.unmodifiableList(resultList);
     }
 
     // ── currentTime ────────────────────────────────────────────────────

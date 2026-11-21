@@ -88,6 +88,10 @@ public final class WorkflowStub<T> {
      *         {@code startAsync} with the same workflow ID therefore throws
      *         {@code WorkflowAlreadyExistsException} — the workflow exists and
      *         will run; it is not started a second time.
+     * @throws io.b2mash.maestro.core.exception.UnreadableWorkflowInputException if
+     *         {@code input} cannot be read back into the workflow method's generic
+     *         parameter type — every run receives its input as read back, so no run
+     *         could start. Nothing was persisted; fix the type and start again.
      * @throws io.b2mash.maestro.core.exception.LockAcquisitionException if the
      *         workflow's instance lock cannot be taken (held elsewhere, or the lock
      *         backend failed) <em>and this node runs no recovery poller</em>
@@ -136,6 +140,9 @@ public final class WorkflowStub<T> {
      * @throws io.b2mash.maestro.core.exception.WorkflowInstantiationException if the
      *         workflow bean cannot be created — the instance row stays
      *         {@code RUNNING} for recovery (see {@link #startAsync})
+     * @throws io.b2mash.maestro.core.exception.UnreadableWorkflowInputException if
+     *         {@code input} cannot be read back into the workflow method's parameter
+     *         type; nothing was persisted (see {@link #startAsync})
      * @throws io.b2mash.maestro.core.exception.LockAcquisitionException if the instance
      *         lock cannot be taken and this node runs no recovery poller (see
      *         {@link #startAsync}). When the start is deferred instead, the wait covers

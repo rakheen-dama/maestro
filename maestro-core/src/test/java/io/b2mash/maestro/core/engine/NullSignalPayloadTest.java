@@ -30,9 +30,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * never stands the run down (WP1 Task 5 ruling: outside the {@code Optional}
  * family a JSON null reads as Java {@code null}, exactly as before Task 5).
  *
- * <p>{@code collectSignals} is not exercised: it returns {@code List.copyOf}
- * of what it awaited, which throws {@code NullPointerException} on a null
- * element — before Task 5 and after it alike.
+ * <p>{@code collectSignals} carries such a signal as a {@code null} element
+ * of the list it returns, live and on replay (Issue 45: it used to return
+ * {@code List.copyOf} of what it awaited, which threw
+ * {@code NullPointerException} on the null element and failed the run).
  */
 class NullSignalPayloadTest {
 
@@ -93,6 +94,63 @@ class NullSignalPayloadTest {
         var instance = store.getInstance(id).orElseThrow();
         assertEquals(WorkflowStatus.COMPLETED, instance.status());
         assertEquals("awaited=null", serializer.deserialize(instance.output(), String.class));
+    }
+
+    @Test
+    @Timeout(30)
+    void aNullPayloadCollectsAsANullElement_liveAndOnReplay_withoutAStandDown() throws Exception {
+        var id = "null-collect-signal";
+        var seen = Collections.synchronizedList(new ArrayList<@Nullable Object>());
+        var method = NullCollectSignalWorkflow.class.getMethod("run");
+
+        nodeA.startWorkflow(id, "NullCollectSignalWorkflow", "default", null,
+                () -> new NullCollectSignalWorkflow(seen), method);
+        nodeA.deliverSignal(id, NullCollectSignalWorkflow.ITEM, null);
+        nodeA.deliverSignal(id, NullCollectSignalWorkflow.ITEM, "v");
+
+        await().atMost(BOUND).until(() -> !seen.isEmpty()
+                || store.getInstance(id).map(i -> i.status().isTerminal()).orElse(false));
+        assertEquals(List.of(), observerA.standDowns(), "live stand-downs");
+        assertEquals(List.of(Arrays.asList(null, "v")), new ArrayList<>(seen), "live collect");
+
+        nodeA.shutdown();
+        nodeA = null;
+        nodeB = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock()).observer(observerB).build();
+        nodeB.recoverWorkflows(Map.of("NullCollectSignalWorkflow", new WorkflowRegistration(
+                "NullCollectSignalWorkflow", "default", () -> new NullCollectSignalWorkflow(seen), method)));
+
+        await().atMost(BOUND).until(() -> seen.size() >= 2 || !observerB.standDowns().isEmpty());
+        assertEquals(List.of(), observerB.standDowns(), "replay stand-downs");
+        assertEquals(List.of(Arrays.asList(null, "v"), Arrays.asList(null, "v")), new ArrayList<>(seen),
+                "live collect, then replayed collect");
+
+        nodeB.deliverSignal(id, NullCollectSignalWorkflow.GO, "go");
+        await().atMost(BOUND).until(() -> store.getInstance(id).map(i -> i.status().isTerminal()).orElse(false));
+        assertEquals(WorkflowStatus.COMPLETED, store.getInstance(id).orElseThrow().status());
+    }
+
+    /** Collects two signals (a null payload among them), records the list, then parks until "go". */
+    @DurableWorkflow(name = "NullCollectSignalWorkflow")
+    public static class NullCollectSignalWorkflow {
+
+        static final String ITEM = "item";
+        static final String GO = "go";
+
+        private final List<@Nullable Object> seen;
+
+        NullCollectSignalWorkflow(List<@Nullable Object> seen) {
+            this.seen = seen;
+        }
+
+        /** @return the collected count */
+        @WorkflowMethod
+        public String run() {
+            var workflow = WorkflowContext.current();
+            var items = workflow.collectSignals(ITEM, String.class, 2, Duration.ofSeconds(30));
+            seen.add(new ArrayList<>(items));
+            workflow.awaitSignal(GO, String.class, Duration.ofSeconds(30));
+            return String.valueOf(items.size());
+        }
     }
 
     /** Awaits a signal as {@code int.class}, then parks until "go". */

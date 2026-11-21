@@ -88,6 +88,7 @@ Not in this milestone: Maven Central, the engine-version stamp design (after the
 - **Process rules adopted:** one CodeRabbit round per PR; a rate-limited review is not waited for; flaky tests are root-caused, not re-run.
 - **Flaky-test sweep (2026-11-21, branch `test/flaky-test-sweep`):** no-Docker suites 0 failures in 15 idle + 15 loaded runs; E2E scenario 10 fixed (terminate target parked on the document wait, so an adoption by node B before the terminate cannot time it out); unchanged suspects listed as Issue 92.
 - **Issue 92 worked (2026-11-21, branch `test/issue-92-flaky-container-tests`):** the `MultiNodeTimerWakeIT` miss root-caused to a test race, not the engine — its first wait awaited the transient `WAITING_TIMER` (≈ 1 s wide while node B's poller is already running); it now awaits the durable timer row. Four Kafka suites wait for partition assignment, the lock-manager close test for the renewer's thread, the GC test as long as its control; no product defect found.
+- **Issues 43–45 fixed (2026-11-21, branch `fix/issues-43-44-45-input-and-null-payloads`):** `collectSignals`/`parallel()` return null-tolerant unmodifiable lists (45, `parallel()` sibling confirmed and fixed with it); the workflow input is read with the generic parameter type and an unreadable input is refused at start with `UnreadableWorkflowInputException`, nothing persisted (44); `createInstance` returns the stored input (`RETURNING input` on Postgres) and the first run launches from it (43). No migration, no SPI signature change.
 
 
 ---

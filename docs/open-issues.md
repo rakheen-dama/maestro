@@ -47,14 +47,14 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (10 open; 89 closed 2026-11-20)
+**`blocks-1.0`** (7 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21)
 
-1. [44](#issue-44) — Workflow input is read with the raw parameter class
+1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
 3. [48](#issue-48) — No startup check that the configured mapper reads back what it writes
-4. [43](#issue-43) — Workflow input on Postgres differs between the first run and recovery
+4. ~~[43](#issue-43) — Workflow input on Postgres differs between the first run and recovery~~ — closed (the first run launches from the stored input, 2026-11-21)
 5. [42](#issue-42) — A replayed activity failure keeps only the exception's type and message
-6. [45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload
+6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
 7. [83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged
 8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
 9. [52](#issue-52) — `maestro-admin-client` has no wired component
@@ -456,9 +456,9 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [40](#issue-40) | Under `validate`, a role that cannot see `maestro_schema_history` is told to apply every migration | Library gap — operability | Low | `limitation` — Open |
 | [41](#issue-41) | An older node replaying history appended by a newer node is untested | Testing gap — rolling deploy | Medium | `blocks-pilot` — Open |
 | [42](#issue-42) | A replayed activity failure keeps only the exception's type and message | Library gap — replay fidelity | Medium | `blocks-1.0` — Open |
-| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | `blocks-1.0` — Open |
-| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | `blocks-1.0` — Open |
-| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | `blocks-1.0` — Open |
+| [43](#issue-43) | Workflow input on Postgres differs between the first run and recovery | Library defect — replay fidelity | Low | **Resolved** |
+| [44](#issue-44) | Workflow input is read with the raw parameter class | Library defect | Medium | **Resolved** |
+| [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | **Resolved** |
 | [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | `limitation` — Open |
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
 | [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | `blocks-1.0` — Open |
@@ -3921,8 +3921,27 @@ and after `crashAfter(n)` + `recover()`.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** First run and recovery read different input; replay fidelity.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-21): fixed, as proposed below**
+> (branch `fix/issues-43-44-45-input-and-null-payloads`). `createInstance`
+> returns the instance with its input as stored — JDBC: `INSERT … RETURNING
+> input` when `returnsInsertedPayload()` is on (Postgres), else the text round
+> trip — and `WorkflowExecutor.startWorkflow` launches the first run (and its
+> deferred / relaunch fallbacks) from that input; only the input is taken from
+> the returned instance, and a `null` return keeps the input as sent. No SPI
+> signature change; the contract Javadoc says the returned input is what the
+> store reads back and that a decorator returns its delegate's result. The
+> kit's `InMemoryWorkflowStore` text-round-trips the input through the
+> environment's mapper. Correction to the text below: the first run never got
+> the caller's object — it already read back the node *sent*; the delta was
+> jsonb normalisation only. Tests: `WorkflowInputMatchesRecoveryIT` (the
+> "done when" below: `[b, n, aa] n=Integer` on both runs, no stand-down),
+> `PostgresPayloadFidelityTest.createInstanceReturnsTheInputGetInstanceReads`
+> / `createInstanceReturnsJsonbsFormOfTheInput`,
+> `JdbcCreateInstanceReturningInputTest`, `StartLaunchesFromTheStoredInputTest`,
+> `InMemoryWorkflowStoreTest`, `WorkflowInputTypeTest.anUntypedMapInputIsTheSameOnTheFirstRunAndAfterRecover`.
+
+> **Filed** by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library defect — replay fidelity. **Severity:** Low (only untyped or
 order-sensitive input shapes are affected).
@@ -3966,8 +3985,27 @@ number class.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** A generic workflow input fails with `ClassCastException`; a defect in supported use.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-21): fixed** (branch
+> `fix/issues-43-44-45-input-and-null-payloads`). The one read site every run
+> goes through (`WorkflowExecutor.invokeWorkflowMethod`: first run, recovery,
+> Retry) reads with `getGenericParameterTypes()[0]`; a raw `List`, `Object` or a
+> type variable reads as before. New: the start reads the serialized input back
+> with that type before locking or writing anything and refuses an unreadable
+> one with `UnreadableWorkflowInputException` (workflow id, type, parameter
+> type) — nothing persisted — instead of returning an id for a run that stands
+> down at sequence 0 for ever. An input that reads back as another class is
+> accepted, as the result type valve accepts it. Correction to the text below:
+> the `@QueryMethod` half is moot — query arguments are never serialized
+> (`invokeQueryMethod` passes the caller's object after an `isInstance` check),
+> so nothing changed there. Tests: `WorkflowInputTypeTest` (`List<Pair>`,
+> `Map<String, List<Pair>>`, `Object`, a type variable, a raw `List`, no
+> argument — each crashed and recovered — and the refused start),
+> `ForeignPayloadStandDownTest` (the seq-0 stand-down is now reached by a row a
+> newer node wrote, plus the refused start). Release-noted: an rc.3 node fails a
+> parameterized-input run with the old `ClassCastException`.
+
+> **Filed** by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library defect. **Severity:** Medium (the workflow fails on its
 first run, so it is caught early, but the cause is not obvious).
@@ -4004,8 +4042,27 @@ reads `Pair`s, live and after recovery.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** A null signal payload is a supported value.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-21): fixed at consume** (branch
+> `fix/issues-43-44-45-input-and-null-payloads`). `collectSignals` returns
+> `Collections.unmodifiableList` of what it awaited, so a `null` payload is a
+> `null` element, live and on replay; nothing changed at delivery or in the
+> store. **Same defect in `parallel()`, fixed with it:** a branch returning
+> `null` (every `Callable<Void>`) threw `NullPointerException` at the join
+> after every branch had succeeded — `List.of` on the single-task path,
+> `List.copyOf` after a fork — confirmed by a failing test before the fix; the
+> result now holds `null` at that branch's index. No other null-hostile
+> collection factory carries user values in `DefaultWorkflowOperations` or its
+> neighbours (`SignalManager`, `ActivityInvocationHandler`, `ReadBack`,
+> `WorkflowExecutor`'s input/output and query paths). Javadoc of
+> `WorkflowContext`/`WorkflowOperations` `collectSignals` and `parallel` and
+> concepts § Collecting multiple signals / Parallel Execution state that
+> elements may be `null`. Tests: `NullElementsRecoveryTest` (kit, crash and
+> recover: `[null, "v"]`, the `Optional` variant, one-task and two-task forks),
+> `NullSignalPayloadTest.aNullPayloadCollectsAsANullElement_liveAndOnReplay_withoutAStandDown`
+> (two nodes), `ParallelNullResultTest`.
+
+> **Filed** by WP1, replay fidelity
+> (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library defect. **Severity:** Low (a null signal payload is unusual,
 but legal for `awaitSignal`).
@@ -6567,3 +6624,5 @@ environment, not the bound properties).
 It is written down rather than tidied into a story. If lifecycle publishing
 starts misbehaving again, start here — and be suspicious of any explanation that
 doesn't account for the earlier passing run.
+
+**Related gap seen while fixing Issue 44 (2026-11-21), not filed separately: Kafka listener payload type.** `MaestroSignalListenerBeanPostProcessor` reads a `@MaestroSignalListener` method's payload with the erased parameter class, so a generic payload such as `List<Order>` loses its element type — the same mistake Issue 44 fixed for workflow input, on the listener path. Not fixed.

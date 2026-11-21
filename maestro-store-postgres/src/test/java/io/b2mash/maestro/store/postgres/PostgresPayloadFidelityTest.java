@@ -578,6 +578,32 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
 
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("returnedPayloadCorpus")
+    @DisplayName("createInstance returns the input exactly as getInstance reads it, property order included (Issue 43)")
+    void createInstanceReturnsTheInputGetInstanceReads(String label, @Nullable JsonNode input) {
+        var workflowId = "created-input-" + UUID.randomUUID();
+
+        var returned = store.createInstance(newInstance(workflowId).toBuilder().input(input).build()).input();
+        var reread = store.getInstance(workflowId).orElseThrow().input();
+
+        assertEquals(reread, returned, label);
+        // JsonNode.equals ignores property order; the rendered text does not.
+        assertEquals(String.valueOf(reread), String.valueOf(returned), label);
+    }
+
+    @Test
+    @DisplayName("createInstance returns jsonb's form of the input: keys reordered, a whole exponent an integer")
+    void createInstanceReturnsJsonbsFormOfTheInput() {
+        var sent = objectMapper.createObjectNode().put("aa", 1).put("b", 2).put("n", 1.0E7);
+
+        var returned = store.createInstance(newInstance("created-jsonb-" + UUID.randomUUID()).toBuilder()
+                .input(sent).build()).input();
+
+        assertEquals(List.of("b", "n", "aa"), propertyNames(returned));
+        assertEquals("{\"b\":2,\"n\":10000000,\"aa\":1}", returned.toString());
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("returnedPayloadCorpus")
     @DisplayName("RETURNING stores the same jsonb as appendEvent")
     void returningInsertStoresTheSameJsonbAsAppendEvent(String label, @Nullable JsonNode payload) throws SQLException {
         var instance = createInstance(store, "returning-bytes-" + UUID.randomUUID());
@@ -653,6 +679,24 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
         assertEquals(1, payloadTexts(instance.id()).size(), "the row was written");
         org.junit.jupiter.api.Assertions.assertThrows(SerializationException.class,
                 () -> store.getEventBySequence(instance.id(), 1), "a later read cannot parse it either");
+    }
+
+    @Test
+    @DisplayName("an input whose stored form cannot be parsed back fails createInstance and rolls the insert back, adoption included")
+    void anInputTheStoreCannotParseBackFailsCreateInstanceAndRollsBack() {
+        var workflowId = "created-unparseable-" + UUID.randomUUID();
+        // A pre-delivered signal the same transaction would adopt.
+        store.saveSignal(new WorkflowSignal(UUID.randomUUID(), null, workflowId, "early",
+                serializer.serialize("x"), false, Instant.now().truncatedTo(ChronoUnit.MILLIS), null));
+        // jsonb stores 1E+1500 as a 1501-digit integer, past the parser's number-length limit.
+        var input = serializer.serialize(Map.of("x", new BigDecimal("1E+1500")));
+
+        org.junit.jupiter.api.Assertions.assertThrows(SerializationException.class,
+                () -> store.createInstance(newInstance(workflowId).toBuilder().input(input).build()));
+
+        assertTrue(store.getInstance(workflowId).isEmpty(), "the insert was rolled back");
+        assertEquals(null, store.getUnconsumedSignals(workflowId, "early").getFirst().workflowInstanceId(),
+                "the adoption was rolled back with it");
     }
 
     private static WorkflowEvent event(UUID instanceId, int seq, @Nullable JsonNode payload) {

@@ -97,7 +97,10 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      * @param count      the number of signals to collect
      * @param timeout    maximum total time to wait for all signals
      * @param <T>        the payload type
-     * @return the collected signal payloads in order of receipt
+     * @return the collected signal payloads in order of receipt, as an
+     *         unmodifiable list; a signal sent with a {@code null} payload
+     *         contributes a {@code null} element (as {@link #awaitSignal}
+     *         returns {@code null} for it), identically live and on replay
      * @throws io.b2mash.maestro.core.exception.SignalTimeoutException if the timeout elapses
      */
     <T> List<T> collectSignals(String signalName, Class<T> type, int count, Duration timeout);
@@ -131,7 +134,10 @@ public sealed interface WorkflowOperations permits DefaultWorkflowOperations {
      *
      * @param tasks the tasks to execute in parallel
      * @param <T>   the result type
-     * @return the results in the same order as the input tasks
+     * @return the results in the same order as the input tasks, as an
+     *         unmodifiable list; a branch that returns {@code null} (for
+     *         example a {@code Callable<Void>}) contributes a {@code null}
+     *         element at its index, identically live and on replay
      * @throws io.b2mash.maestro.core.exception.BranchSequenceExhaustedException
      *         if a branch takes a 1000th sequence slot
      * @throws io.b2mash.maestro.core.exception.SequenceSpaceExhaustedException
