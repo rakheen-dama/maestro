@@ -120,6 +120,10 @@ E2E_CLUSTER="${E2E_CLUSTER:-0}"
 # E2E_ONLY="1 2 3"). Unset/empty = run all scenarios (default behaviour
 # unchanged). Skipped scenarios do not appear in the results table.
 E2E_ONLY="${E2E_ONLY:-}"
+# E2E_S10_AWAIT_ADOPTION=1: scenario 10 waits for node B to adopt the
+# terminate target before publishing $maestro:terminate (forces the
+# adopted-before-terminate order; default 0 = whichever comes first).
+E2E_S10_AWAIT_ADOPTION="${E2E_S10_AWAIT_ADOPTION:-0}"
 
 # Lock backend: Postgres is the only one (PostgresDistributedLock in
 # maestro-store-postgres, sharing the workflow store's DataSource;
@@ -1901,15 +1905,30 @@ scenario_cross_node_admin() {
     log "SQL: $wfid_retry COMPENSATION_STARTED count = $comp_count (must be 0 - Issue 16 precondition for a retryable FAILED)"
     assert_eq "COMPENSATION_STARTED events for $wfid_retry" "0" "$comp_count" || return 1
 
-    # ── Terminate-target: create LAST, right before the kill, so it never
-    # gets close to node A's short decision-timeout ─────────────────────
+    # ── Terminate-target: parked on document.uploaded (doc withheld, like
+    # scenario 8's $id_docs), NOT on underwriting.decision. The await
+    # deadline is persisted when the run parks, on node A's clock and with
+    # node A's timeout, so a run parked on the decision would carry node A's
+    # short $RETRY_DECISION_TIMEOUT however late it was created: once node B's
+    # recovery adopts it (the instance lock expires ~30s after the kill, and
+    # B's recovery poll can fall before the terminate arrives), the deadline
+    # has passed and it FAILS at once, leaving the terminate ALREADY_TERMINAL.
+    # The document wait uses maestro.sample.doc-timeout, which node A's
+    # override leaves at its PT10M default, so an adoption by node B simply
+    # re-parks the run and the terminate still finds it active - whichever
+    # comes first. (Verification fan-in still runs under the short timeout,
+    # one fresh PT8S per result, exactly as the retry target's does.)
     local id_term="e2e-${RUN_ID}-s10-term" wfid_term
     wfid_term="loan-$id_term"
     create_app "$id_term" '["s10t"]' 400000 100000 650000 '["pay-stub"]' || return 1
-    upload_doc "$id_term" "pay-stub" "s10t" || return 1
-    wait_for_pending_review "$id_term" 1 "$WAIT_PENDING_SECS" || return 1
-    wait_for_log_line "$loan_log" "Requested underwriting round 1 for loan $id_term" 30 || return 1
-    log "OWNERSHIP PROOF (log): node A's log shows 'Requested underwriting round 1 for loan $id_term' - node A owns $wfid_term"
+    log "Created $id_term (document withheld - will park awaiting document.uploaded)"
+    wait_for_log_line "$loan_log" "Requested 3 verifications for loan $id_term" 30 || return 1
+    log "OWNERSHIP PROOF (log): node A's log shows 'Requested 3 verifications for loan $id_term' - node A owns $wfid_term"
+    # WAITING_SIGNAL alone does not say which await the run is on; 3/3
+    # verification results consumed means it is past fan-in and parked on
+    # document.uploaded (same proof as scenario 8).
+    wait_for_signal_received_count "$wfid_term" "verification.result" 3 "$WAIT_PENDING_SECS" || return 1
+    log "$id_term parked awaiting document.uploaded (verification fan-in confirmed complete: 3/3)"
     local body_term; body_term="$(app_status_json "$id_term")"
     assert_eq "pre-kill engine status ($id_term)" "WAITING_SIGNAL" "$(json_get "$body_term" status)" || return 1
 
@@ -1958,6 +1977,16 @@ scenario_cross_node_admin() {
     log "$wfid_retry retried by node B alone and completed FUNDED"
 
     # ── $maestro:terminate, published raw ────────────────────────────────
+    # Either order is valid: node B terminates the run unadopted (a store
+    # write), or its recovery adopted the run first and it re-parked on the
+    # document wait. E2E_S10_AWAIT_ADOPTION=1 forces the second order by
+    # waiting for node B's adoption before publishing.
+    if [[ "$E2E_S10_AWAIT_ADOPTION" == 1 ]]; then
+        log "E2E_S10_AWAIT_ADOPTION=1 - waiting for node B's recovery to adopt $wfid_term before the terminate"
+        wait_for_log_line "$loan_log_b" "Resuming workflow '$wfid_term'" "$WAIT_RECOVERY_SECS" || return 1
+        wait_for_engine_status_via "$LOAN_URL_B" "$id_term" WAITING_SIGNAL 30 || return 1
+        log "Node B adopted $wfid_term and it re-parked WAITING_SIGNAL (document wait, long timeout)"
+    fi
     kafka_produce_signal "maestro.signals.loan-application" "$wfid_term" \
         "{\"workflowId\":\"$wfid_term\",\"signalName\":\"\$maestro:terminate\",\"payload\":{\"reason\":\"e2e admin terminate test\"}}" || return 1
     log "Published \$maestro:terminate for $wfid_term to maestro.signals.loan-application (node A dead, only node B can consume it)"
@@ -1999,11 +2028,10 @@ scenario_cross_node_admin() {
     # scenario 1/5/7/8 baseline exactly (fully contiguous, the two
     # withdrawal gates memoized as SIGNAL_TIMEOUT events).
     assert_event_log_integrity "$wfid_retry" "" || return 1
-    # $wfid_term: terminated mid-flight, WAITING_SIGNAL on the underwriting
-    # decision (never resolved) - terminateWorkflow appends NO event of its
-    # own (see its Javadoc), so there is no WORKFLOW_COMPLETED to check for;
-    # gate 1's timeout is memoized as SIGNAL_TIMEOUT (Issue 19), so the log
-    # below its max event is fully contiguous.
+    # $wfid_term: terminated mid-flight, WAITING_SIGNAL on document.uploaded
+    # (never resolved) - terminateWorkflow appends NO event of its own (see
+    # its Javadoc), so there is no WORKFLOW_COMPLETED to check for; the log
+    # ends at the document await's park memo and is fully contiguous.
     assert_event_log_integrity "$wfid_term" "" "" || return 1
 
     # ── Cleanup: restart node A with default config, node B with default
