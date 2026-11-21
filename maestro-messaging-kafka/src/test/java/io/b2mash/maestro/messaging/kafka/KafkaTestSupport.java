@@ -21,10 +21,16 @@ import org.springframework.kafka.core.DefaultKafkaConsumerFactory;
 import org.springframework.kafka.core.DefaultKafkaProducerFactory;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.core.ProducerFactory;
+import org.springframework.kafka.listener.MessageListenerContainer;
 
+import java.time.Duration;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
+
+import static org.awaitility.Awaitility.await;
 
 /**
  * Base class for Kafka integration tests.
@@ -71,6 +77,34 @@ public abstract class KafkaTestSupport {
                 ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest"
         );
         consumerFactory = new DefaultKafkaConsumerFactory<>(consumerProps);
+    }
+
+    /** How long a fresh consumer may take to join its group and be assigned its partitions. */
+    protected static final Duration ASSIGNMENT_BOUND = Duration.ofSeconds(30);
+
+    /**
+     * Waits until every container has been assigned partitions — the
+     * precondition a test that publishes right after subscribing depends on
+     * once its consumer does not start at {@code earliest} (Issue 92: a fixed
+     * {@code Thread.sleep} waited on nothing in particular).
+     *
+     * @param containers the started containers; at least one
+     */
+    protected static void awaitAssignment(Collection<? extends MessageListenerContainer> containers) {
+        if (containers.isEmpty()) {
+            throw new IllegalArgumentException("no container to wait for");
+        }
+        await().atMost(ASSIGNMENT_BOUND)
+                .pollInterval(Duration.ofMillis(20))
+                .until(() -> containers.stream().allMatch(c -> {
+                    var assigned = c.getAssignedPartitions();
+                    return assigned != null && !assigned.isEmpty();
+                }));
+    }
+
+    /** @param containers the started containers */
+    protected static void awaitAssignment(MessageListenerContainer... containers) {
+        awaitAssignment(List.of(containers));
     }
 
     /**

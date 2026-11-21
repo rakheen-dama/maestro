@@ -78,7 +78,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             var received = new CopyOnWriteArrayList<SignalMessage>();
 
             messaging.subscribeSignals(serviceName, received::add);
-            Thread.sleep(500);
+            awaitAssignment(messaging.runningContainers());
 
             var payloadNode = objectMapper.readTree("{\"success\":true,\"txId\":\"tx-001\"}");
             var signal = new SignalMessage("order-456", "payment.result", payloadNode);
@@ -115,7 +115,8 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
 
             var received = new CopyOnWriteArrayList<SignalMessage>();
             messaging.subscribeSignals(serviceName, received::add);
-            Thread.sleep(500);
+            awaitAssignment(messaging.runningContainers());
+            awaitAssignment(tap);
 
             // 1. Envelope id: carried in the envelope AND the header.
             messaging.publishSignal(serviceName, new SignalMessage("wf-1", "approval", null, "env-1"));
@@ -161,7 +162,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             var container = new org.springframework.kafka.listener.ConcurrentMessageListenerContainer<>(
                     consumerFactory, containerProps);
             container.start();
-            Thread.sleep(500);
+            awaitAssignment(container);
 
             messaging.publishSignal(serviceName, new SignalMessage("wf-abc", "approval", null));
 
@@ -182,7 +183,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
 
             var received = new CopyOnWriteArrayList<SignalMessage>();
             messaging.subscribeSignals(serviceName, received::add);
-            Thread.sleep(500);
+            awaitAssignment(messaging.runningContainers());
 
             var signal = new SignalMessage("wf-1", "timeout", null);
             messaging.publishSignal(serviceName, signal);
@@ -220,7 +221,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
             var container = new org.springframework.kafka.listener.ConcurrentMessageListenerContainer<>(
                     consumerFactory, containerProps);
             container.start();
-            Thread.sleep(500);
+            awaitAssignment(container);
 
             var event = new WorkflowLifecycleEvent(
                     UUID.randomUUID(), "order-1", "order-fulfilment", "order-service",
@@ -265,7 +266,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
                 }
                 successCount.incrementAndGet();
             });
-            Thread.sleep(500);
+            awaitAssignment(messaging.runningContainers());
 
             // Send a message that will fail
             messaging.publishSignal(serviceName, new SignalMessage("fail-me", "approval", null));
@@ -392,7 +393,7 @@ class KafkaWorkflowMessagingTest extends KafkaTestSupport {
 
             var received = new CopyOnWriteArrayList<SignalMessage>();
             overrideMessaging.subscribeSignals("ignored-service-name", received::add);
-            Thread.sleep(500);
+            awaitAssignment(overrideMessaging.runningContainers());
 
             overrideMessaging.publishSignal("ignored-service-name", new SignalMessage("wf-1", "approval", null));
 

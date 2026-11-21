@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.observability;
 
+import io.b2mash.maestro.integration.support.KafkaAssignmentWait;
 import io.b2mash.maestro.integration.support.KafkaTopicsForTests;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
@@ -134,10 +135,10 @@ class SignalListenerTraceContextIT extends PostgresIntegrationSupport {
                 // to maestro-messaging-kafka, so this only confirms the bean exists.
                 assertThat(ctx.getBean(MaestroSignalListenerBeanPostProcessor.class)).isNotNull();
 
-                // Let the listener container get its partition assignment before
-                // publishing — the one Thread.sleep this module's timing rules
-                // permit (SPEC.md), mirroring KafkaTraceLinkageIT.
-                Thread.sleep(1000);
+                // Wait for the listener container's partition assignment before
+                // publishing — read from the broker, not slept for (Issue 92).
+                // The group is the listener's default, "maestro-" + service name.
+                KafkaAssignmentWait.awaitAssigned(KAFKA.getBootstrapServers(), "maestro-" + SERVICE, TOPIC);
 
                 publishWithTraceparent(workflowId, traceId);
 

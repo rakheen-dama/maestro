@@ -1,5 +1,6 @@
 package io.b2mash.maestro.integration.observability;
 
+import io.b2mash.maestro.integration.support.KafkaAssignmentWait;
 import io.b2mash.maestro.integration.support.KafkaTopicsForTests;
 import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.core.observe.TraceContextHolder;
@@ -121,7 +122,8 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                     nodeB.deliverSignal(message.workflowId(), message.signalName(),
                             message.payload() == null ? null
                                     : serializer.deserialize(message.payload(), String.class)));
-            Thread.sleep(1000);
+            KafkaAssignmentWait.awaitAssigned(KAFKA.getBootstrapServers(),
+                    "trace-linkage-" + suffix + "-b", signalTopic);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("trace-linkage");
             var handle = nodeB.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
@@ -216,7 +218,8 @@ class KafkaTraceLinkageIT extends PostgresIntegrationSupport {
                     nodeB.deliverSignal(message.workflowId(), message.signalName(),
                             message.payload() == null ? null
                                     : serializer.deserialize(message.payload(), String.class)));
-            Thread.sleep(1000);
+            KafkaAssignmentWait.awaitAssigned(KAFKA.getBootstrapServers(),
+                    "trace-linkage-" + suffix + "-b", signalTopic);
 
             var workflowId = MaestroEngineHarness.uniqueWorkflowId("trace-oversize");
             var handle = nodeB.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");

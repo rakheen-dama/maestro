@@ -66,9 +66,11 @@ restart and PID-identity checks that a JUnit port would have put at risk.
   sentence on class and method; method names `subjectUnderTest_expectation`.
 - Assertions: **plain JUnit** `org.junit.jupiter.api.Assertions.*` (the repo does
   not use AssertJ outside Spring context-runner tests, which may use it).
-- Waiting: **Awaitility only**. No `Thread.sleep` as synchronisation — the one
-  permitted exception is letting a Kafka listener container get its partition
-  assignment, mirroring `KafkaWorkflowMessagingTest`.
+- Waiting: **Awaitility only**. No `Thread.sleep` as synchronisation — a Kafka
+  listener's partition assignment is awaited with
+  `KafkaAssignmentWait.awaitAssigned` (Issue 92), and a transient status
+  (`WAITING_TIMER`/`WAITING_SIGNAL` while something can already end it) is
+  never awaited: wait for a durable row or event instead.
 
 ## Shared fixtures — the API every suite uses
 
