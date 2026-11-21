@@ -85,6 +85,7 @@ Not in this milestone: Maven Central, the engine-version stamp design (after the
 - **Issue 91 fixed (harness only):** second occurrence traced to an answering-node kill plus a loan-consumer double kill, with no lost signal and no engine bound exceeded; the decision-gated awaits now get a derived 300 s chaos timeout (`fix/chaos-gate-timeout-exposure`).
 - **Issue 89 implemented** (branch `fix/issue-89-replay-exception-stand-down`): an exception thrown while the throwing lane still replays recorded history stands down as `replay_exception` (`ReplayExceptionCheck`), never fails or compensates; docs §10.2/§10.3/§10.7, pitfalls rule 7 rewritten; closed in `docs/open-issues.md`.
 - **Process rules adopted:** one CodeRabbit round per PR; a rate-limited review is not waited for; flaky tests are root-caused, not re-run.
+- **Flaky-test sweep (2026-11-21, branch `test/flaky-test-sweep`):** no-Docker suites 0 failures in 15 idle + 15 loaded runs; E2E scenario 10 fixed (terminate target parked on the document wait, so an adoption by node B before the terminate cannot time it out); unchanged suspects listed as Issue 92.
 
 
 ---
