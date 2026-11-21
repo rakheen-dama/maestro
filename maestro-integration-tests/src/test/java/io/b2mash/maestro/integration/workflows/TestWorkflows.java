@@ -315,7 +315,12 @@ public final class TestWorkflows {
             } catch (ActivityExecutionException e) {
                 seen = e.getCause().getClass().getName() + "|" + e.getCause().getMessage()
                         + (e.getCause() instanceof ReconstructedActivityFailure r
-                        ? "|" + r.originalClassName() : "");
+                        ? "|" + r.originalClassName() : "")
+                        + (e.getCause() instanceof CountingActivities.DetailedFailure d
+                        ? "|" + d.getCode() + "|" + d.getAmount() + "|" + d.getAttributes()
+                                + "|" + d.getAttributes().values().stream().map(v -> v.getClass().getSimpleName()).toList()
+                        : "")
+                        + (e.failure().details().isEmpty() ? "" : "|" + e.failure().details());
             }
             observations.add(seen);
             parked.countDown();

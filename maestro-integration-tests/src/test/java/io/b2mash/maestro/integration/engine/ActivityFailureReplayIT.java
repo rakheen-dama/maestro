@@ -6,6 +6,7 @@ import io.b2mash.maestro.core.model.WorkflowStatus;
 import io.b2mash.maestro.integration.support.MaestroEngineHarness;
 import io.b2mash.maestro.integration.support.PostgresIntegrationSupport;
 import io.b2mash.maestro.integration.support.WorkflowHandle;
+import io.b2mash.maestro.integration.workflows.CountingActivities.DetailedFailure;
 import io.b2mash.maestro.integration.workflows.CountingActivities.DomainFailure;
 import io.b2mash.maestro.integration.workflows.CountingActivities.FailingActivities;
 import io.b2mash.maestro.integration.workflows.CountingActivities.NoCtorFailure;
@@ -63,9 +64,30 @@ class ActivityFailureReplayIT extends PostgresIntegrationSupport {
     void exceptionWithoutStringCtor_replaysAsReconstructedWithOriginalName() throws Exception {
         var run = runLiveThenReplay("failure-noctor", () -> new NoCtorFailure("boom", 7));
 
-        assertEquals(NoCtorFailure.class.getName() + "|boom", run.live().getFirst());
+        // Issue 42: the first run already throws the reconstruction a replay throws.
         assertEquals(ReconstructedActivityFailure.class.getName() + "|boom|" + NoCtorFailure.class.getName(),
-                run.replay().getFirst());
+                run.live().getFirst());
+        assertEquals(run.live().getFirst(), run.replay().getFirst());
+        assertEquals(1, run.failedEvents(), "replay re-executed nothing");
+    }
+
+    @Test
+    @DisplayName("an opted-in exception's recorded properties are read as jsonb stores them, live and on replay")
+    void optedInExceptionWithPropertiesJsonbNormalises_isTheSameLiveAndOnReplay() throws Exception {
+        var attributes = new java.util.LinkedHashMap<String, Object>();
+        attributes.put("zone", "eu");
+        attributes.put("limit", 1.0E10);
+        var run = runLiveThenReplay("failure-detailed",
+                () -> new DetailedFailure("declined", "51", 1.0E7, attributes));
+
+        // jsonb stores 1.0E10 as 10000000000 (an untyped Long on the way back)
+        // and orders keys shortest first; both paths read that form.
+        assertEquals(DetailedFailure.class.getName() + "|declined|51|1.0E7|{zone=eu, limit=10000000000}"
+                        + "|[String, Long]|{\"code\":\"51\",\"amount\":10000000,"
+                        + "\"attributes\":{\"zone\":\"eu\",\"limit\":10000000000}}",
+                run.live().getFirst());
+        assertEquals(run.live().getFirst(), run.replay().getFirst());
+        assertEquals(run.live().getFirst(), run.result());
         assertEquals(1, run.failedEvents(), "replay re-executed nothing");
     }
 

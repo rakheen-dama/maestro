@@ -1,7 +1,10 @@
 package io.b2mash.maestro.integration.workflows;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.annotation.FailureDetails;
 
 import java.time.Duration;
 import java.util.List;
@@ -78,6 +81,49 @@ public final class CountingActivities {
          */
         public NoCtorFailure(String m, int code) {
             super(m);
+        }
+    }
+
+    /**
+     * Opted-in exception type ({@link FailureDetails}, Issue 42) whose
+     * recorded properties {@code jsonb} normalises: a whole-exponent double
+     * and an untyped map with a whole-exponent number and reordered keys.
+     */
+    @FailureDetails
+    public static final class DetailedFailure extends RuntimeException {
+        private final String code;
+        private final double amount;
+        private final Map<String, Object> attributes;
+
+        /**
+         * @param message    the message
+         * @param code       a decline code
+         * @param amount     an amount
+         * @param attributes free-form attributes
+         */
+        @JsonCreator
+        public DetailedFailure(@JsonProperty("message") String message, @JsonProperty("code") String code,
+                               @JsonProperty("amount") double amount,
+                               @JsonProperty("attributes") Map<String, Object> attributes) {
+            super(message);
+            this.code = code;
+            this.amount = amount;
+            this.attributes = attributes;
+        }
+
+        /** @return the decline code */
+        public String getCode() {
+            return code;
+        }
+
+        /** @return the amount */
+        public double getAmount() {
+            return amount;
+        }
+
+        /** @return the attributes */
+        public Map<String, Object> getAttributes() {
+            return attributes;
         }
     }
 
