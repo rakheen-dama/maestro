@@ -6467,6 +6467,28 @@ read, not looped.
 
 **Seen once (2026-11-21, local full build under the rc.3 fixture work).** `MultiNodeTimerWakeIT`, "a timer fired by node B's poller wakes the workflow sleeping on node A", missed its 15 s bound once and passed on the next run. Not root-caused. A container suite, so it was not covered by the looped sweep.
 
+**Worked (2026-11-21, branch `test/issue-92-flaky-container-tests`).**
+- The miss above is a test race, not an engine defect (root-caused, fixed).
+  Budget to completion ≈ 2 s: the 1 s nap, one 200 ms poll by node B (leader
+  at its first poll; the leader row is truncated before each test), one
+  500 ms recheck by node A (timers have no NOTIFY path). Not reproduced in
+  60 idle + 60 loaded runs, and none after the fix took over 4.3 s. Its first wait,
+  `awaitStatus(WAITING_TIMER)`, awaited a status that lasts ≈ 1 s once B's
+  poller runs; an observer stalled past it waits for a status that never
+  returns. Stalling the test thread 2.5 s reproduces it every time: workflow
+  `COMPLETED`, the wait fails after 15.0 s. It now awaits the timer row.
+- `Thread.sleep` before publishing replaced by a wait for partition assignment
+  (`KafkaTestSupport.awaitAssignment`, `KafkaAssignmentWait`) in the four
+  Kafka suites; the lock-manager close test awaits the renewer's thread; the
+  GC test polls the registered reference as long as its control.
+- Sibling ITs checked, none changed: no other awaits a transient status while
+  its waker runs, and every bound sits above its budget.
+- Unchanged: the negative checks and short TTLs above (false pass at worst).
+- Seen once in the proof loop, environment only: Testcontainers' Ryuk was
+  published on host port 63342, which IntelliJ holds on 127.0.0.1, so
+  "Could not connect to Ryuk at localhost:63342" failed the class before any
+  test ran. One full `./gradlew build` afterwards: green, nothing intermittent.
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
