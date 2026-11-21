@@ -6424,6 +6424,8 @@ No engine bound was exceeded.
 > SIGNAL_TIMEOUT loans (withheld decisions) ended `FAILED` as declared, so a
 > withheld answer still fails its loan.
 
+<a id="issue-92"></a>
+
 ### Issue 92 — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change {#issue-92}
 
 > **Label: `limitation`.** No failure observed; a watch list, not a defect.
