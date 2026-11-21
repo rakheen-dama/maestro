@@ -2,6 +2,8 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.engine.WorkflowInstanceLockManager.Acquisition;
 import io.b2mash.maestro.core.exception.LockBackendException;
+import io.b2mash.maestro.core.loop.LoopSupervisor;
+import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import org.junit.jupiter.api.AfterEach;
@@ -220,16 +222,25 @@ class WorkflowInstanceLockManagerTest {
 
     @Test
     @DisplayName("close stops the renewer")
-    void closeStopsRenewer() throws Exception {
+    void closeStopsRenewer() {
         var lock = new RecordingLock();
-        manager = new WorkflowInstanceLockManager(lock, "svc", SHORT_TTL, SHORT_RENEW);
+        var renewer = new AtomicReference<LoopSupervisor>();
+        manager = new WorkflowInstanceLockManager(lock, "svc", WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                SHORT_TTL, SHORT_RENEW, EngineObserver.NOOP, (spec, body, observer) -> {
+                    var started = LoopStarter.DEFAULT.start(spec, body, observer);
+                    renewer.set(started);
+                    return started;
+                });
         manager.tryAcquire("order-1");
         await().atMost(Duration.ofSeconds(2)).until(() -> lock.renewAttempts.get() >= 1);
 
         manager.close();
-
         var countAtClose = lock.renewAttempts.get();
-        Thread.sleep(300);
+
+        // Wait on the renewer's thread itself, not on a sleep (Issue 92): once
+        // it has ended no further pass can start, so the count below is final.
+        assertTrue(renewer.get().awaitStopped(Duration.ofSeconds(5)),
+                "the renewer's thread must end after close");
         assertTrue(lock.renewAttempts.get() <= countAtClose + 1,
                 "renewer must stop after close (at most one in-flight cycle)");
     }

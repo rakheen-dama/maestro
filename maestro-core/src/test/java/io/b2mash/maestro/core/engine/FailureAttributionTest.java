@@ -220,7 +220,10 @@ class FailureAttributionTest {
         }
         assumeTrue(refs.control().get() == null,
                 "no collection cleared an unreachable control object within 100 System.gc() calls");
-        for (int i = 0; i < 10 && refs.registered().get() != null; i++) {
+        // The same bound as the control (Issue 92): the registered exception
+        // became unreachable at the same moment, so a collector that clears it
+        // at all clears it within as many collections as the control needed.
+        for (int i = 0; i < 100 && refs.registered().get() != null; i++) {
             System.gc();
             Thread.sleep(10);
         }
