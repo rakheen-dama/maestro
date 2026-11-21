@@ -6624,3 +6624,5 @@ environment, not the bound properties).
 It is written down rather than tidied into a story. If lifecycle publishing
 starts misbehaving again, start here — and be suspicious of any explanation that
 doesn't account for the earlier passing run.
+
+**Related gap seen while fixing Issue 44 (2026-11-21), not filed separately: Kafka listener payload type.** `MaestroSignalListenerBeanPostProcessor` reads a `@MaestroSignalListener` method's payload with the erased parameter class, so a generic payload such as `List<Order>` loses its element type — the same mistake Issue 44 fixed for workflow input, on the listener path. Not fixed.
