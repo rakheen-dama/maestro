@@ -102,6 +102,28 @@ class WorkflowInputMatchesRecoveryIT extends PostgresIntegrationSupport {
                 () -> assertEquals(seen.get(1), seen.get(0), "the first run reads the same"));
     }
 
+    @Test
+    void anInputJsonbStoresInAFormThatCannotBeReadBackFailsTheStart_nothingPersisted() throws Exception {
+        var workflowId = MaestroEngineHarness.uniqueWorkflowId("input-unparseable");
+        // Readable as sent ("1E+1500"), but jsonb stores a 1501-digit integer
+        // the parser refuses, so no recovery could ever load the row.
+        var input = new LinkedHashMap<String, Object>();
+        input.put("x", new java.math.BigDecimal("1E+1500"));
+
+        try (var node = node(new CountDownLatch(1), null)) {
+            var thrown = org.junit.jupiter.api.Assertions.assertThrows(
+                    io.b2mash.maestro.core.exception.UnreadableWorkflowInputException.class,
+                    () -> node.start(workflowId, InputWorkflow.class, input));
+            assertEquals("input-matches-recovery", thrown.workflowType());
+            assertTrue(store.getInstance(workflowId).isEmpty(), "the insert was rolled back");
+
+            // The lock was released and the id is not burnt.
+            var ok = new LinkedHashMap<String, Object>();
+            ok.put("n", 1);
+            node.start(workflowId, InputWorkflow.class, ok).awaitStatus(WorkflowStatus.WAITING_SIGNAL, BOUND);
+        }
+    }
+
     private MaestroEngineHarness node(CountDownLatch parked, @Nullable RecordingObserver observer) {
         var builder = MaestroEngineHarness.builder(store, objectMapper)
                 .serviceName(SERVICE)

@@ -3,6 +3,7 @@ package io.b2mash.maestro.test;
 import io.b2mash.maestro.core.exception.DuplicateEventException;
 import io.b2mash.maestro.core.exception.FencedWriteException;
 import io.b2mash.maestro.core.exception.OptimisticLockException;
+import io.b2mash.maestro.core.exception.SerializationException;
 import io.b2mash.maestro.core.exception.WorkflowAlreadyExistsException;
 import io.b2mash.maestro.core.exception.WorkflowNotFoundException;
 import io.b2mash.maestro.core.model.EventType;
@@ -137,13 +138,19 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
      * What a text column hands back for {@code input}: {@code null} for a
      * {@code null} or JSON-null input (SQL {@code NULL}), else the parse of
      * the mapper's text with exact decimals. Unlike Postgres {@code jsonb},
-     * key order and number forms are kept.
+     * key order and number forms are kept. A failed round trip throws
+     * {@link SerializationException} and stores nothing.
      */
     private @Nullable JsonNode storedForm(@Nullable JsonNode input) {
         if (input == null || input.isNull()) {
             return null;
         }
-        return inputReader.readTree(mapper.writeValueAsString(input));
+        try {
+            return inputReader.readTree(mapper.writeValueAsString(input));
+        } catch (RuntimeException e) {
+            // As the JDBC store: nothing is stored, the start is refused.
+            throw new SerializationException("Workflow input does not survive a text round trip", e);
+        }
     }
 
     // ── Lease fencing (Issue 11) ─────────────────────────────────────────

@@ -118,6 +118,20 @@ class JdbcCreateInstanceReturningInputTest {
                 () -> assertEquals(given.output(), created.output()));
     }
 
+    @Test
+    @DisplayName("hook on: a returned input the store cannot parse fails createInstance and rolls back")
+    void hookOn_anUnparseableReturnedInputRollsBack() {
+        var db = new ScriptedDb().returning("{not json");
+        var store = new Store(db.dataSource(), true);
+
+        org.junit.jupiter.api.Assertions.assertThrows(io.b2mash.maestro.core.exception.SerializationException.class,
+                () -> store.createInstance(instance(JsonNodeFactory.instance.objectNode().put("a", 1))));
+
+        assertAll(
+                () -> assertTrue(db.connectionCalls.contains("rollback"), db.connectionCalls.toString()),
+                () -> assertTrue(!db.connectionCalls.contains("commit"), db.connectionCalls.toString()));
+    }
+
     // ── harness ───────────────────────────────────────────────────────────
 
     private static final class Store extends AbstractJdbcWorkflowStore {
@@ -143,6 +157,7 @@ class JdbcCreateInstanceReturningInputTest {
     private static final class ScriptedDb {
         final List<String> sql = new ArrayList<>();
         final List<String> executions = new ArrayList<>();
+        final List<String> connectionCalls = new ArrayList<>();
         @Nullable String writtenInputText;
         private @Nullable String returnedText;
 
@@ -166,7 +181,10 @@ class JdbcCreateInstanceReturningInputTest {
                             sql.add((String) a[0]);
                             yield statement(sql.size() == 1);
                         }
-                        case "setAutoCommit", "commit", "rollback", "close" -> null;
+                        case "setAutoCommit", "commit", "rollback", "close" -> {
+                            connectionCalls.add(m.getName());
+                            yield null;
+                        }
                         default -> throw new UnsupportedOperationException(m.getName());
                     });
         }

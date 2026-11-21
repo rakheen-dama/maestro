@@ -13,7 +13,13 @@ package io.b2mash.maestro.core.exception;
  * attempt. The start reads the serialized input back first and refuses such
  * an input with this exception instead: <b>nothing is persisted</b> and no
  * lock is held, so the same workflow id can be started again with a readable
- * input.
+ * input. The same refusal covers an absent input ({@code null}, or a JSON
+ * {@code null}) for a primitive parameter, which no run could be invoked
+ * with, and an input the store keeps in a form it cannot parse back (the JDBC
+ * store then rolls its insert back).
+ *
+ * <p>The cause is the {@link SerializationException} the read-back raised,
+ * or an {@link IllegalArgumentException} for the primitive case.
  *
  * <p>Only an unreadable input is refused. An input that reads back as
  * another class than the one passed — a subtype under a declared supertype,
@@ -21,7 +27,6 @@ package io.b2mash.maestro.core.exception;
  * natural form — is accepted, as an activity result declared that way is:
  * every run, the first included, receives the read-back value.
  *
- * <p>The cause is the {@link SerializationException} the read-back raised.
  */
 public final class UnreadableWorkflowInputException extends MaestroException {
 

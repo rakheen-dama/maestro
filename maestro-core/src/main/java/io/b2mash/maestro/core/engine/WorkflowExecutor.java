@@ -778,8 +778,10 @@ public final class WorkflowExecutor {
      *         {@link WorkflowAlreadyExistsException}
      *         ({@code AdoptionLockLeakTest.startWorkflow_aFailureAfterTheRowIsCreated_…})
      * @throws UnreadableWorkflowInputException if {@code input} cannot be
-     *         read back into the workflow method's generic parameter type —
-     *         nothing was persisted and no lock is held (Issue 44)
+     *         read back into the workflow method's generic parameter type, is
+     *         absent for a primitive parameter, or is stored in a form the
+     *         store cannot parse back — nothing was persisted and no lock is
+     *         held (Issue 44)
      * @throws WorkflowInstantiationException if the factory throws — the
      *         instance row already exists and is left {@code RUNNING} for the
      *         recovery poller to adopt; no {@code WORKFLOW_STARTED} event or
@@ -897,7 +899,7 @@ public final class WorkflowExecutor {
             refuseIfGivenUp(cancellation, workflowId, "its instance row was written", false);
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
             // signals sent before workflow starts are stored with null instanceId)
-            persisted = withStoredInput(instance, store.createInstance(instance));
+            persisted = withStoredInput(instance, createInstanceRefusingUnreadableInput(instance, workflowMethod));
             // A createInstance that returned only after the give-up: the row
             // is committed, so the start says so (WorkflowNotLaunchedException,
             // not "nothing was persisted") and writes nothing more — no
@@ -966,6 +968,25 @@ public final class WorkflowExecutor {
     }
 
     /**
+     * {@link WorkflowStore#createInstance}, with a stored input the store
+     * cannot parse back — it threw {@link SerializationException} and rolled
+     * the insert back — refused as {@link UnreadableWorkflowInputException},
+     * as {@link #requireReadableInput} refuses one before the insert. The
+     * caller releases the lock; nothing was persisted.
+     */
+    private @Nullable WorkflowInstance createInstanceRefusingUnreadableInput(WorkflowInstance instance,
+                                                                             Method workflowMethod) {
+        try {
+            return store.createInstance(instance);
+        } catch (SerializationException e) {
+            var parameterType = workflowMethod.getParameterCount() == 0
+                    ? "(no parameter)" : workflowMethod.getGenericParameterTypes()[0].getTypeName();
+            throw new UnreadableWorkflowInputException(instance.workflowId(), instance.workflowType(),
+                    parameterType, e);
+        }
+    }
+
+    /**
      * {@code sent} with the input {@link WorkflowStore#createInstance} handed
      * back (Issue 43). Only the input is taken from {@code created}: every
      * other field stays the one this start built. A store that returned
@@ -986,8 +1007,10 @@ public final class WorkflowExecutor {
      * persists nothing. Only an unreadable input is refused: one that reads
      * back as another class (a subtype under a declared supertype, anything
      * under {@code Object} or a type variable) is accepted, as an activity
-     * result's type valve accepts it. A method with no parameter ignores its
-     * input, as it always has.
+     * result's type valve accepts it. An absent input (Java {@code null} or a
+     * JSON {@code null}) is refused for a primitive parameter, which cannot
+     * receive {@code null}, and accepted for any other. A method with no
+     * parameter ignores its input, as it always has.
      *
      * @throws UnreadableWorkflowInputException if the read-back fails
      */
@@ -997,10 +1020,19 @@ public final class WorkflowExecutor {
             return;
         }
         var paramType = workflowMethod.getGenericParameterTypes()[0];
+        @Nullable Object read;
         try {
-            serializer.deserialize(inputPayload, paramType);
+            read = serializer.deserialize(inputPayload, paramType);
         } catch (SerializationException e) {
             throw new UnreadableWorkflowInputException(workflowId, workflowType, paramType.getTypeName(), e);
+        }
+        // An absent input — Java null or a JSON null — reads as null, which
+        // Method.invoke cannot pass to a primitive parameter: every run would
+        // fail before its body ran. A reference type or Optional accepts it.
+        if (read == null && paramType instanceof Class<?> declared && declared.isPrimitive()) {
+            throw new UnreadableWorkflowInputException(workflowId, workflowType, paramType.getTypeName(),
+                    new IllegalArgumentException("a null input cannot be passed to the primitive parameter "
+                            + declared.getName()));
         }
     }
 

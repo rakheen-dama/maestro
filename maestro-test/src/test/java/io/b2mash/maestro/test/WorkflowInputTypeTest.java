@@ -159,6 +159,35 @@ class WorkflowInputTypeTest {
         assertSame(WorkflowStatus.WAITING_SIGNAL, awaitParked(handle));
     }
 
+    @Test
+    void aNullInputForAPrimitiveParameterIsRejectedAtStart_nothingPersisted() {
+        // Java null and a JSON null (Optional.empty() serializes to NullNode)
+        // both read as null, which Method.invoke cannot pass to an int.
+        for (var input : new Object[]{null, java.util.Optional.empty()}) {
+            var id = "primitive-" + (input == null ? "java-null" : "json-null");
+            var thrown = assertThrows(UnreadableWorkflowInputException.class,
+                    () -> env.startWorkflow(id, PrimitiveInputWorkflow.class, input), String.valueOf(input));
+            assertEquals("int", thrown.parameterType());
+            assertTrue(env.getStore().getInstance(id).isEmpty(), "no instance row for " + id);
+        }
+        assertTrue(SEEN.isEmpty(), "workflow code never ran");
+
+        // A present value still starts.
+        var handle = env.startWorkflow("primitive-present", PrimitiveInputWorkflow.class, 7);
+        assertSame(WorkflowStatus.WAITING_SIGNAL, awaitParked(handle));
+        assertEquals(List.of("int 7"), copy());
+    }
+
+    @Test
+    void aNullInputForABoxedOrOptionalParameterStillStarts() {
+        var boxed = env.startWorkflow("boxed-null", BoxedInputWorkflow.class, null);
+        var optional = env.startWorkflow("optional-null", OptionalInputWorkflow.class, null);
+
+        assertSame(WorkflowStatus.WAITING_SIGNAL, awaitParked(boxed));
+        assertSame(WorkflowStatus.WAITING_SIGNAL, awaitParked(optional));
+        assertTrue(copy().containsAll(List.of("boxed null", "optional Optional.empty")), copy().toString());
+    }
+
     // ── helpers ──────────────────────────────────────────────────────────
 
     /** Waits for the first run to park on "go", crashes, recovers, waits for the replay, releases it. */
@@ -223,6 +252,30 @@ class WorkflowInputTypeTest {
         @WorkflowMethod
         public String run(Map<String, Object> input) {
             return seeAndPark(input.keySet() + " n=" + input.get("n").getClass().getSimpleName());
+        }
+    }
+
+    @DurableWorkflow(name = "primitive-input")
+    public static class PrimitiveInputWorkflow {
+        @WorkflowMethod
+        public String run(int input) {
+            return seeAndPark("int " + input);
+        }
+    }
+
+    @DurableWorkflow(name = "boxed-input")
+    public static class BoxedInputWorkflow {
+        @WorkflowMethod
+        public String run(@org.jspecify.annotations.Nullable Integer input) {
+            return seeAndPark("boxed " + input);
+        }
+    }
+
+    @DurableWorkflow(name = "optional-input")
+    public static class OptionalInputWorkflow {
+        @WorkflowMethod
+        public String run(java.util.Optional<Integer> input) {
+            return seeAndPark("optional " + input);
         }
     }
 

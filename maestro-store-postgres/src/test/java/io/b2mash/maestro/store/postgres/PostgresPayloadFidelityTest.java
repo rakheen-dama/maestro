@@ -681,6 +681,24 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
                 () -> store.getEventBySequence(instance.id(), 1), "a later read cannot parse it either");
     }
 
+    @Test
+    @DisplayName("an input whose stored form cannot be parsed back fails createInstance and rolls the insert back, adoption included")
+    void anInputTheStoreCannotParseBackFailsCreateInstanceAndRollsBack() {
+        var workflowId = "created-unparseable-" + UUID.randomUUID();
+        // A pre-delivered signal the same transaction would adopt.
+        store.saveSignal(new WorkflowSignal(UUID.randomUUID(), null, workflowId, "early",
+                serializer.serialize("x"), false, Instant.now().truncatedTo(ChronoUnit.MILLIS), null));
+        // jsonb stores 1E+1500 as a 1501-digit integer, past the parser's number-length limit.
+        var input = serializer.serialize(Map.of("x", new BigDecimal("1E+1500")));
+
+        org.junit.jupiter.api.Assertions.assertThrows(SerializationException.class,
+                () -> store.createInstance(newInstance(workflowId).toBuilder().input(input).build()));
+
+        assertTrue(store.getInstance(workflowId).isEmpty(), "the insert was rolled back");
+        assertEquals(null, store.getUnconsumedSignals(workflowId, "early").getFirst().workflowInstanceId(),
+                "the adoption was rolled back with it");
+    }
+
     private static WorkflowEvent event(UUID instanceId, int seq, @Nullable JsonNode payload) {
         return new WorkflowEvent(UUID.randomUUID(), instanceId, seq, EventType.ACTIVITY_COMPLETED,
                 "Probes.probe", payload, Instant.now().truncatedTo(ChronoUnit.MILLIS));

@@ -428,7 +428,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * {@link #returnsInsertedPayload()} is on, else the text round trip of
      * what was written ({@code null} for a {@code null} or JSON-null input,
      * which is written as SQL {@code NULL}). Every other field is
-     * {@code instance}'s.
+     * {@code instance}'s. A stored input that cannot be parsed back rolls the
+     * whole transaction back and is thrown as {@link SerializationException}.
      */
     @Override
     public WorkflowInstance createInstance(WorkflowInstance instance) {
@@ -974,26 +975,17 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     /** What a text column hands back for {@code event}'s payload (see {@link #appendEventReturningPayload}). */
     private @Nullable JsonNode textRoundTrip(WorkflowEvent event) {
-        return textRoundTrip(event.payload(), "payload of (instance=%s, seq=%d)"
-                .formatted(event.workflowInstanceId(), event.sequenceNumber()));
-    }
-
-    /**
-     * What a text column hands back for {@code node}: {@code null} for a
-     * {@code null} or JSON-null node (written as SQL NULL), else the parse of
-     * the text {@link #setJsonParameter} writes — or {@code node} itself if
-     * that text does not parse back (logged at DEBUG, naming {@code what}).
-     */
-    private @Nullable JsonNode textRoundTrip(@Nullable JsonNode node, String what) {
-        if (node == null || node.isNull()) {
+        var payload = event.payload();
+        if (payload == null || payload.isNull()) {
             return null;            // written as SQL NULL, read back as null
         }
         try {
-            return parseJsonNode(toJsonString(node));
+            return parseJsonNode(toJsonString(payload));
         } catch (SerializationException unparseable) {
-            log.debug("The {} does not survive a text round trip; returning the node that was sent: {}",
-                    what, unparseable.toString());
-            return node;
+            log.debug("Payload of (instance={}, seq={}) does not survive a text round trip; returning the "
+                            + "payload that was sent: {}", event.workflowInstanceId(), event.sequenceNumber(),
+                    unparseable.toString());
+            return payload;
         }
     }
 
@@ -2014,9 +2006,18 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * reads it back (Issue 43): with {@link #returnsInsertedPayload()} on, the
      * column the insert's {@code RETURNING input} handed back; off, the text
      * round trip of what was written — what a text column hands back. A
-     * returned form the parser rejects, or a driver that returns no row,
-     * yields the input that was sent (logged at DEBUG): the row is written,
-     * and a later read of it fails exactly as it would have anyway.
+     * driver that returns no row yields the input that was sent (logged at
+     * DEBUG).
+     *
+     * <p>A stored form the parser rejects (Postgres stores {@code 1E+1500} as
+     * a 1501-digit integer, past the reader's number-length limit) is thrown
+     * as the parser's {@link SerializationException}: {@link #getInstance}
+     * would meet the same failure, so no recovery could ever load the row.
+     * {@link #createInstance} rolls the insert back — and the orphan-signal
+     * adoption with it — so nothing is persisted and the start fails before
+     * any run begins.
+     *
+     * @throws SerializationException if the stored input cannot be parsed back
      */
     private @Nullable JsonNode insertInstance(Connection conn, WorkflowInstance instance) throws SQLException {
         boolean returning = returnsInsertedPayload();
@@ -2044,7 +2045,9 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setLong(15, instance.leaseEpoch());
             if (!returning) {
                 ps.executeUpdate();
-                return textRoundTrip(instance.input(), "input of workflow " + instance.workflowId());
+                var input = instance.input();
+                // What a text column hands back; SQL NULL for a null or JSON-null input.
+                return input == null || input.isNull() ? null : parseJsonNode(toJsonString(input));
             }
             try (var rs = ps.executeQuery()) {
                 if (!rs.next()) {
@@ -2052,13 +2055,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
                             + "was sent", instance.workflowId());
                     return instance.input();
                 }
-                try {
-                    return getJsonValue(rs, "input");
-                } catch (SerializationException unparseable) {
-                    log.debug("Stored input of workflow {} cannot be parsed back; returning the input that "
-                            + "was sent: {}", instance.workflowId(), unparseable.toString());
-                    return instance.input();
-                }
+                // Not caught: a stored input nothing can read back must fail the start.
+                return getJsonValue(rs, "input");
             }
         }
     }
