@@ -1,6 +1,6 @@
 # Release Notes — Maestro
 
-## Unreleased — after 0.3.0-rc.2
+## 0.3.0-rc.3
 
 ### Fixed — an exception thrown while replaying recorded history stands down as `replay_exception` (Issue 89)
 

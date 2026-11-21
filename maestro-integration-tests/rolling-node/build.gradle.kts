@@ -26,6 +26,7 @@ data class PreviousRelease(val maestroVersion: String, val springBootVersion: St
 val previousReleases = listOf(
     PreviousRelease(maestroVersion = "0.3.0-rc.1", springBootVersion = "4.0.5"),
     PreviousRelease(maestroVersion = "0.3.0-rc.2", springBootVersion = "4.0.5"),
+    PreviousRelease(maestroVersion = "0.3.0-rc.3", springBootVersion = "4.0.5"),
 )
 
 // Where the previous releases come from. Default: a final release from Maven
