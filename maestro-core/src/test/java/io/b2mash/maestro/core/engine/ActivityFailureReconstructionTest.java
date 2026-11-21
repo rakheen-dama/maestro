@@ -114,16 +114,47 @@ class ActivityFailureReconstructionTest {
     }
 
     @Test
-    void liveAndReplay_agreeOnTheWrapperAndOnOriginalClassName() {
+    void liveAndReplay_throwTheSameReconstruction() {
+        // Issue 42: the live run throws the failure rebuilt from its record, as
+        // a replay does — a type without a (String) constructor is a
+        // ReconstructedActivityFailure on the first run too.
         var live = assertThrows(ActivityExecutionException.class, this::callExplode);
         // A fresh context restarts the sequence, so this reads the ACTIVITY_FAILED just persisted.
         var replayed = assertThrows(ActivityExecutionException.class, this::callExplode);
         assertAll(
                 () -> assertEquals(live.activityName(), replayed.activityName()),
-                () -> assertInstanceOf(NoStringCtorException.class, live.getCause()),
+                () -> assertEquals(live.getMessage(), replayed.getMessage()),
+                () -> assertEquals(NoStringCtorException.class.getName(),
+                        assertInstanceOf(ReconstructedActivityFailure.class, live.getCause()).originalClassName()),
                 () -> assertEquals(NoStringCtorException.class.getName(),
                         assertInstanceOf(ReconstructedActivityFailure.class, replayed.getCause()).originalClassName()),
-                () -> assertEquals("boom", replayed.getCause().getMessage()));
+                () -> assertEquals("boom", live.getCause().getMessage()),
+                () -> assertEquals("boom", replayed.getCause().getMessage()),
+                () -> assertEquals(live.failure(), replayed.failure()));
+    }
+
+    @Test
+    void aNullMessage_isNullLiveAndOnReplay() {
+        // Issue 42 (e): a null message used to replay as "Replayed failure".
+        store = new InMemoryWorkflowStore();
+        ExplodingActivities impl = () -> {
+            throw new DomainException(null);
+        };
+        proxy = new ActivityProxyFactory().createProxy(
+                ExplodingActivities.class, impl,
+                store, new RecordingLock(), new RecordingMessaging(),
+                RetryPolicy.noRetry(), Duration.ofSeconds(30),
+                new PayloadSerializer(MAPPER), new RetryExecutor());
+        var live = assertThrows(ActivityExecutionException.class, this::callExplode);
+        var replayed = assertThrows(ActivityExecutionException.class, this::callExplode);
+        assertAll(
+                () -> assertInstanceOf(DomainException.class, live.getCause()),
+                () -> assertNull(live.getCause().getMessage()),
+                () -> assertInstanceOf(DomainException.class, replayed.getCause()),
+                () -> assertNull(replayed.getCause().getMessage()),
+                () -> assertEquals("Activity '" + STEP + "' failed in workflow 'wf-1': "
+                        + DomainException.class.getName(), live.getMessage()),
+                () -> assertEquals(live.getMessage(), replayed.getMessage()));
     }
 
     @Test

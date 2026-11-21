@@ -223,6 +223,29 @@ public interface EngineObserver {
      */
     default void activityResultUnreadable(ActivityInfo a, String exceptionType) {}
 
+    /**
+     * A live activity failed with an exception whose class opted in to
+     * {@link io.b2mash.maestro.core.annotation.FailureDetails @FailureDetails},
+     * the failure was persisted, and the exception could not be rebuilt
+     * faithfully from the record: its properties could not be written, the
+     * mapper could not create the class from them, or the object it created
+     * does not have the recorded message or properties. Workflow code gets a
+     * {@link io.b2mash.maestro.core.exception.ReconstructedActivityFailure} —
+     * on this run and on every replay of the step alike — and the recorded
+     * properties stay readable through
+     * {@link io.b2mash.maestro.core.exception.ActivityExecutionException#failure()}.
+     * The failure-side twin of {@link #activityResultUnreadable}: the class
+     * needs a creator that rebuilds it (see the annotation's Javadoc).
+     *
+     * <p>Fired live only, on the workflow thread, after the failure append and
+     * before {@link #activityFailed}. Never fired on replay.
+     *
+     * @param a             the activity whose failure was not rebuilt as its class
+     * @param exceptionType fully-qualified class name of the opted-in exception
+     *                      the activity threw; never use it as a metric tag
+     */
+    default void activityFailureUnrebuildable(ActivityInfo a, String exceptionType) {}
+
     // ── Signals ───────────────────────────────────────────────────────
 
     /** A signal row was durably persisted (delivery side, any node). */

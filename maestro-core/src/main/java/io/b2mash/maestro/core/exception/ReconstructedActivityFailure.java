@@ -5,22 +5,28 @@ import org.jspecify.annotations.Nullable;
 import java.util.Objects;
 
 /**
- * Stands in, on replay, for an activity exception whose original type cannot be
- * safely re-created from the persisted failure record.
+ * Stands in for an activity exception whose original type cannot be safely
+ * re-created from the persisted failure record — on the first run and on
+ * replay alike, since both rebuild the cause from that record (Issue 42).
  *
  * <p>It is produced as the {@link ActivityExecutionException#getCause() cause}
- * of a replayed {@link ActivityExecutionException} whenever the original type
- * cannot be re-created: it is not an accessible public class with a public
- * {@code (String)} constructor that completes normally (package-private or
- * private nested classes, abstract classes, a missing constructor and a
- * throwing constructor all qualify); the class is not on this node's
- * classpath; no type was recorded (reported as {@code "unknown"}); or the
- * recorded type names an engine control-flow signal
+ * of an {@link ActivityExecutionException} whenever the original type cannot
+ * be re-created: for a class that has not opted in to
+ * {@link io.b2mash.maestro.core.annotation.FailureDetails @FailureDetails}, it
+ * is not an accessible public class with a public {@code (String)} constructor
+ * that completes normally (package-private or private nested classes, abstract
+ * classes, a missing constructor and a throwing constructor all qualify); for
+ * an opted-in class, the mapper cannot create it from the recorded message and
+ * properties, or the object it creates does not reproduce them; for either,
+ * the class is not on this node's classpath, no type was recorded (reported as
+ * {@code "unknown"}), or the recorded type names an engine control-flow signal
  * ({@link MaestroControlFlowError} subtype), which is never instantiated from
  * stored data. {@link #originalClassName()} names the type the activity
- * actually threw, so workflow code can branch on it identically live and on
- * replay. The message is the recorded one, except that a null or empty
- * recorded message replays as {@code "Replayed failure"}.
+ * actually threw, so workflow code can branch on it identically on every
+ * path, and {@link ActivityExecutionException#failure()} still holds every
+ * recorded property. The message is the recorded one, {@code null} included.
+ * (A record written by an older build that was <em>replayed</em> there with a
+ * null or empty message read {@code "Replayed failure"}.)
  *
  * <p>Deliberately <b>not</b> a {@link MaestroException}: it represents the
  * <em>user's</em> exception, and {@code catch (MaestroException)} must keep

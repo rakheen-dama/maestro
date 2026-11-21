@@ -27,10 +27,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * Which store method a workflow operation's event append names when the store
  * is down (final fix wave C4 and its follow-up). Only the appends whose
  * returned payload is read back call {@code appendEventReturningPayload}: a
- * completed activity's outcome and {@code currentTime()}. {@code sleep},
- * {@code parallel}, {@code randomUUID}, {@code version} and a failed
- * activity's {@code ACTIVITY_FAILED} memo call {@code appendEvent}, as before
- * the read-back work. The store-fault latch's {@code WARN} names that method
+ * completed activity's outcome, a failed activity's {@code ACTIVITY_FAILED}
+ * memo (rebuilt from the stored payload since Issue 42) and
+ * {@code currentTime()}. {@code sleep}, {@code parallel}, {@code randomUUID}
+ * and {@code version} call {@code appendEvent}, as before the read-back work. The store-fault latch's {@code WARN} names that method
  * ({@code Store unavailable on <method> — …}); either way the guard retries the
  * write three times, then latches the run {@code STORE_UNAVAILABLE} and
  * abandons it — never fails it.
@@ -89,7 +89,7 @@ class OperationAppendFaultDetailTest {
     @ParameterizedTest(name = "{0} -> {1}")
     @CsvSource({
             "succeed, appendEventReturningPayload",
-            "fail,    appendEvent"})
+            "fail,    appendEventReturningPayload"})
     void anActivityOutcomeAppendNamesItsStoreMethod_andTheFaultAbandonsTheRunWithoutFailingIt(
             String outcome, String storeMethod) throws Exception {
         var id = "fault-activity-" + outcome;

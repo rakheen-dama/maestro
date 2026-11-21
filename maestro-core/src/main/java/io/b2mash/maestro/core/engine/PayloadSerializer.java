@@ -1,5 +1,6 @@
 package io.b2mash.maestro.core.engine;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import io.b2mash.maestro.core.exception.SerializationException;
 import org.jspecify.annotations.Nullable;
 import tools.jackson.core.StreamWriteFeature;
@@ -13,12 +14,14 @@ import tools.jackson.databind.ObjectWriter;
 import tools.jackson.databind.SerializationFeature;
 import tools.jackson.databind.cfg.JsonNodeFeature;
 import tools.jackson.databind.node.NullNode;
+import tools.jackson.databind.node.ObjectNode;
 
 import java.lang.reflect.Type;
 import java.util.Optional;
 import java.util.OptionalDouble;
 import java.util.OptionalInt;
 import java.util.OptionalLong;
+import java.util.Set;
 
 /**
  * Serializes and deserializes activity method arguments and return values
@@ -108,6 +111,21 @@ public final class PayloadSerializer {
     private final ObjectWriter nodeWriter;
 
     /**
+     * {@link Throwable}'s own bean properties: never part of an exception's
+     * recorded properties ({@link #failureDetails}).
+     */
+    static final Set<String> THROWABLE_PROPERTIES =
+            Set.of("message", "cause", "stackTrace", "suppressed", "localizedMessage");
+
+    /**
+     * The mapper {@link #failureDetails} writes with: this serializer's mapper
+     * with {@link Throwable}'s own properties ignored, so a cause chain or a
+     * stack trace is never even visited. Built on first use; a benign race
+     * builds it twice at worst.
+     */
+    private volatile @Nullable ObjectMapper failureDetailsMapper;
+
+    /**
      * @param objectMapper the Jackson 3 ObjectMapper to use
      */
     public PayloadSerializer(ObjectMapper objectMapper) {
@@ -183,6 +201,56 @@ public final class PayloadSerializer {
             throw new SerializationException(
                     "Failed to deserialize JsonNode to " + type.getTypeName(), e);
         }
+    }
+
+    /**
+     * The recorded properties of an exception whose class opted in to
+     * {@link io.b2mash.maestro.core.annotation.FailureDetails}: what this
+     * serializer's mapper writes for it, without {@link #THROWABLE_PROPERTIES}.
+     *
+     * @param failure the exception
+     * @return a JSON object (empty when the class has no other property)
+     * @throws SerializationException if the mapper cannot write it, or writes
+     *                                something other than a JSON object
+     */
+    ObjectNode failureDetails(Throwable failure) {
+        JsonNode written;
+        try {
+            written = detailsMapper().valueToTree(failure);
+        } catch (Exception e) {
+            throw new SerializationException(
+                    "Failed to serialize the properties of " + failure.getClass().getName(), e);
+        }
+        if (!(written instanceof ObjectNode object)) {
+            var shape = written == null ? "nothing" : String.valueOf(written.getNodeType());
+            throw new SerializationException("The properties of " + failure.getClass().getName()
+                    + " were not written as a JSON object",
+                    new IllegalStateException("written as " + shape));
+        }
+        // Also stripped here: a mapper that could not be rebuilt with the mixin
+        // wrote them, and the mixin does not see a property renamed onto one.
+        object.remove(THROWABLE_PROPERTIES);
+        return object;
+    }
+
+    private ObjectMapper detailsMapper() {
+        var mapper = failureDetailsMapper;
+        if (mapper == null) {
+            try {
+                mapper = objectMapper.rebuild().addMixIn(Throwable.class, ThrowablePropertiesIgnored.class).build();
+            } catch (RuntimeException cannotRebuild) {
+                // A mapper type that cannot be rebuilt: write with it as it is
+                // (the cause chain is then visited), and strip afterwards.
+                mapper = objectMapper;
+            }
+            failureDetailsMapper = mapper;
+        }
+        return mapper;
+    }
+
+    /** The mixin {@link #detailsMapper} adds for {@link Throwable}. */
+    @JsonIgnoreProperties({"message", "cause", "stackTrace", "suppressed", "localizedMessage"})
+    private abstract static class ThrowablePropertiesIgnored {
     }
 
     private static boolean isAbsent(@Nullable JsonNode node) {

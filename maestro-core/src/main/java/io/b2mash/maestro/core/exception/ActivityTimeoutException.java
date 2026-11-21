@@ -1,5 +1,10 @@
 package io.b2mash.maestro.core.exception;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import io.b2mash.maestro.core.annotation.FailureDetails;
+
 import java.time.Duration;
 
 /**
@@ -32,12 +37,21 @@ import java.time.Duration;
  * fails with an {@link ActivityExecutionException} whose cause is this
  * exception; use
  * {@link ActivityExecutionException#causedBy(Class)
- * causedBy(ActivityTimeoutException.class)} to detect it — that check also
- * holds on replay, where the recorded failure is rebuilt as a
- * {@link ReconstructedActivityFailure} naming this class.
+ * causedBy(ActivityTimeoutException.class)} to detect it.
+ *
+ * <h2>Recorded and rebuilt</h2>
+ * <p>The class is annotated {@link FailureDetails}: a timeout's workflow id,
+ * step name and timeout are recorded with the failure, and the cause workflow
+ * code gets — on the first run and on replay alike — is this class rebuilt
+ * from them (its message is derived from them, so it is ignored on the way
+ * in). A record written by a build before Issue 42 carries no properties and
+ * is rebuilt as a {@link ReconstructedActivityFailure} naming this class,
+ * which {@code causedBy} recognises too.
  *
  * <p><b>Thread safety:</b> immutable.
  */
+@FailureDetails
+@JsonIgnoreProperties("message")
 public final class ActivityTimeoutException extends MaestroException {
 
     private final String workflowId;
@@ -49,7 +63,10 @@ public final class ActivityTimeoutException extends MaestroException {
      * @param activityName the step name of the activity whose attempt timed out
      * @param timeout      the {@code startToCloseTimeout} the attempt exceeded
      */
-    public ActivityTimeoutException(String workflowId, String activityName, Duration timeout) {
+    @JsonCreator
+    public ActivityTimeoutException(@JsonProperty("workflowId") String workflowId,
+                                    @JsonProperty("activityName") String activityName,
+                                    @JsonProperty("timeout") Duration timeout) {
         super("Activity '%s' in workflow '%s' exceeded its startToCloseTimeout of %s"
                 .formatted(activityName, workflowId, timeout));
         this.workflowId = workflowId;
@@ -58,16 +75,19 @@ public final class ActivityTimeoutException extends MaestroException {
     }
 
     /** Returns the workflow ID that owns the activity. */
+    @JsonProperty("workflowId")
     public String workflowId() {
         return workflowId;
     }
 
     /** Returns the step name of the activity whose attempt timed out. */
+    @JsonProperty("activityName")
     public String activityName() {
         return activityName;
     }
 
     /** Returns the {@code startToCloseTimeout} the attempt exceeded. */
+    @JsonProperty("timeout")
     public Duration timeout() {
         return timeout;
     }
