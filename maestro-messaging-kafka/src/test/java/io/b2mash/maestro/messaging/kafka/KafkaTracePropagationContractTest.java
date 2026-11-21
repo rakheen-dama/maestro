@@ -272,7 +272,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
             seenHolder.set(TraceContextHolder.current());
             received.add(message);
         });
-        Thread.sleep(500);
+        awaitAssignment(traced.runningContainers());
 
         var span = otel.tracer().nextSpan().name("publish").start();
         String publishedTraceId;
@@ -307,7 +307,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
         var holderValues = new CopyOnWriteArrayList<String>();
         traced.subscribeSignals(service, message ->
                 holderValues.add(String.valueOf(TraceContextHolder.current())));
-        Thread.sleep(500);
+        awaitAssignment(traced.runningContainers());
 
         var span = otel.tracer().nextSpan().name("publish").start();
         try (var ignored = otel.tracer().withSpan(span)) {
@@ -338,7 +338,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
             holder.set(TraceContextHolder.current());
             received.add(message);
         });
-        Thread.sleep(500);
+        awaitAssignment(traced.runningContainers());
 
         untraced.publishSignal(service, new SignalMessage("order-1", "approval", null));
 
@@ -372,7 +372,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
             holder.set(TraceContextHolder.current());
             received.add(message);
         });
-        Thread.sleep(500);
+        awaitAssignment(traced.runningContainers());
 
         // 512 characters — four times the column width.
         var oversized = "00-" + "a".repeat(509);
@@ -397,7 +397,7 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
         var seen = new CopyOnWriteArrayList<String>();
         traced.subscribeSignals(service, message ->
                 seen.add(String.valueOf(TraceContextHolder.current())));
-        Thread.sleep(500);
+        awaitAssignment(traced.runningContainers());
 
         for (var bogus : List.of(
                 "not-a-traceparent",

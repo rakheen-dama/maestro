@@ -36,7 +36,13 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  *
  * <h2>Timing contract</h2>
  * <p>Node A's wake-recheck interval is 500ms, so a recheck-driven wake lands
- * comfortably inside the 15s bounds. Before the Issue 17 fix, node B durably
+ * comfortably inside the 15s bounds. The fire test's budget from the timer row
+ * to completion: the 1 s nap, at most one 200 ms poll by B (elected at its
+ * first poll — the leader row is truncated before each test), at most one
+ * 500 ms recheck by A (timers have no NOTIFY path), plus a few writes:
+ * ≈ 2 s, measured 1.3–4.3 s idle and under load. Before the wake it awaits the
+ * timer row, which cannot be missed, not the transient {@code WAITING_TIMER}
+ * status (Issue 92). Before the Issue 17 fix, node B durably
  * marks the timer {@code FIRED} (making it invisible to {@code getDueTimers}
  * forever), nothing on node A wakes, and these tests time out.
  */
@@ -86,7 +92,12 @@ class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
         var workflowId = MaestroEngineHarness.uniqueWorkflowId("xnode-timer-fire");
         var handle = nodeA.start(workflowId, TestWorkflows.SleepingWorkflow.class, "seed");
 
-        handle.awaitStatus(WorkflowStatus.WAITING_TIMER, Duration.ofSeconds(15));
+        // Not awaitStatus(WAITING_TIMER) (Issue 92): with B's poller already
+        // running, WAITING_TIMER lasts only from the park to A's first recheck
+        // after the fire (≈ 1 s here), and an observer that misses it waits for
+        // a status that never comes back. The timer row stays once written.
+        await().atMost(Duration.ofSeconds(15)).pollInterval(Duration.ofMillis(50)).until(() ->
+                store.findTimer(handle.instanceId(), "sleep-2").isPresent());
 
         assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(WAKE_BOUND),
                 "node B's poller fires the timer in the store; node A must notice via its "
@@ -99,6 +110,9 @@ class MultiNodeTimerWakeIT extends PostgresIntegrationSupport {
         assertEquals(List.of(), recorderB.invocations(),
                 "node B fires the timer; it must not execute the workflow");
 
+        assertEquals(1, handle.events().stream()
+                        .filter(e -> e.eventType() == EventType.TIMER_SCHEDULED).count(),
+                "the run must have parked on its timer before the wake");
         assertEquals(1, handle.events().stream()
                         .filter(e -> e.eventType() == EventType.TIMER_FIRED).count(),
                 "the cross-node wake must memoize TIMER_FIRED exactly once");
