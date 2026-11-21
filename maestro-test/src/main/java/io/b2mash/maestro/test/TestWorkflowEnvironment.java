@@ -185,7 +185,7 @@ public final class TestWorkflowEnvironment {
         this.taskQueueLimits = Map.copyOf(taskQueueLimits);
         this.defaultTaskQueueLimits = defaultTaskQueueLimits;
         this.clock = new ControllableClock();
-        this.store = new InMemoryWorkflowStore();
+        this.store = new InMemoryWorkflowStore(objectMapper);
         this.messaging = new InMemoryWorkflowMessaging();
         this.lock = new InMemoryDistributedLock();
         this.signalNotifier = new InMemorySignalNotifier();

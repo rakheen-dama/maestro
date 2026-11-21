@@ -137,7 +137,8 @@ import java.util.stream.Collectors;
  *       fenced {@code INSERT ... SELECT} checked (Postgres: {@code FOR SHARE}).</li>
  *   <li>{@link #returnsInsertedPayload()} — override to {@code true} when the
  *       database normalises what it stores and can return it from the insert
- *       ({@code INSERT ... RETURNING payload}; Postgres {@code jsonb}).</li>
+ *       ({@code INSERT ... RETURNING payload} for events and
+ *       {@code INSERT ... RETURNING input} for instances; Postgres {@code jsonb}).</li>
  * </ul>
  *
  * <h2>Lease fencing</h2>
@@ -419,6 +420,16 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Instance operations ───────────────────────────────────────────────
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Returns a copy of {@code instance} whose input is the one this store
+     * reads back: the {@code RETURNING input} column when
+     * {@link #returnsInsertedPayload()} is on, else the text round trip of
+     * what was written ({@code null} for a {@code null} or JSON-null input,
+     * which is written as SQL {@code NULL}). Every other field is
+     * {@code instance}'s.
+     */
     @Override
     public WorkflowInstance createInstance(WorkflowInstance instance) {
         Objects.requireNonNull(instance, "instance");
@@ -428,13 +439,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             conn.setAutoCommit(false);
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
-                insertInstance(conn, instance);
+                var storedInput = insertInstance(conn, instance);
                 doAdoptOrphanedSignals(conn, instance.workflowId(), instance.id());
                 conn.commit();
                 settled = true;
                 log.debug("Created workflow instance: workflowId={}, id={}",
                         instance.workflowId(), instance.id());
-                return instance;
+                // Issue 43: the input as this store reads it back, so the
+                // engine's first run receives what every recovery reads.
+                return instance.toBuilder().input(storedInput).build();
             } catch (SQLException | RuntimeException e) {
                 settled = rollbackAfter(conn, e);
                 throw e;
@@ -897,7 +910,11 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * Whether the database can return the inserted {@code payload} from the
      * event {@code INSERT} itself ({@code INSERT ... RETURNING payload}), so
      * {@link #appendEventReturningPayload} returns the stored form rather than
-     * a text round trip of the payload it sent. The default is {@code false}:
+     * a text round trip of the payload it sent — and likewise the inserted
+     * {@code input} from the instance {@code INSERT}
+     * ({@code INSERT ... RETURNING input}, one {@code executeQuery} returning
+     * one row), so {@link #createInstance} returns the instance with its input
+     * as stored (Issue 43). The default is {@code false}:
      * correct for a store that keeps payloads as text, because a text column
      * reads back exactly the text written. A store that normalises what it
      * stores — Postgres {@code jsonb} reorders keys and rewrites numbers —
@@ -957,17 +974,26 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     /** What a text column hands back for {@code event}'s payload (see {@link #appendEventReturningPayload}). */
     private @Nullable JsonNode textRoundTrip(WorkflowEvent event) {
-        var payload = event.payload();
-        if (payload == null || payload.isNull()) {
+        return textRoundTrip(event.payload(), "payload of (instance=%s, seq=%d)"
+                .formatted(event.workflowInstanceId(), event.sequenceNumber()));
+    }
+
+    /**
+     * What a text column hands back for {@code node}: {@code null} for a
+     * {@code null} or JSON-null node (written as SQL NULL), else the parse of
+     * the text {@link #setJsonParameter} writes — or {@code node} itself if
+     * that text does not parse back (logged at DEBUG, naming {@code what}).
+     */
+    private @Nullable JsonNode textRoundTrip(@Nullable JsonNode node, String what) {
+        if (node == null || node.isNull()) {
             return null;            // written as SQL NULL, read back as null
         }
         try {
-            return parseJsonNode(toJsonString(payload));
+            return parseJsonNode(toJsonString(node));
         } catch (SerializationException unparseable) {
-            log.debug("Payload of (instance={}, seq={}) does not survive a text round trip; returning the "
-                            + "payload that was sent: {}", event.workflowInstanceId(), event.sequenceNumber(),
-                    unparseable.toString());
-            return payload;
+            log.debug("The {} does not survive a text round trip; returning the node that was sent: {}",
+                    what, unparseable.toString());
+            return node;
         }
     }
 
@@ -1983,11 +2009,22 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
 
     // ── Internal helpers ──────────────────────────────────────────────────
 
-    private void insertInstance(Connection conn, WorkflowInstance instance) throws SQLException {
+    /**
+     * Inserts the instance row and returns its {@code input} as this store
+     * reads it back (Issue 43): with {@link #returnsInsertedPayload()} on, the
+     * column the insert's {@code RETURNING input} handed back; off, the text
+     * round trip of what was written — what a text column hands back. A
+     * returned form the parser rejects, or a driver that returns no row,
+     * yields the input that was sent (logged at DEBUG): the row is written,
+     * and a later read of it fails exactly as it would have anyway.
+     */
+    private @Nullable JsonNode insertInstance(Connection conn, WorkflowInstance instance) throws SQLException {
+        boolean returning = returnsInsertedPayload();
         String sql = "INSERT INTO " + tableName("workflow_instance")
                 + " (id, workflow_id, run_id, workflow_type, task_queue, status, "
                 + "input, output, service_name, event_sequence, started_at, completed_at, "
-                + "updated_at, version, lease_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+                + "updated_at, version, lease_epoch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                + (returning ? RETURNING_INPUT : "");
 
         try (var ps = conn.prepareStatement(sql)) {
             ps.setObject(1, instance.id());
@@ -2005,9 +2042,28 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setTimestamp(13, Timestamp.from(instance.updatedAt()));
             ps.setInt(14, instance.version());
             ps.setLong(15, instance.leaseEpoch());
-            ps.executeUpdate();
+            if (!returning) {
+                ps.executeUpdate();
+                return textRoundTrip(instance.input(), "input of workflow " + instance.workflowId());
+            }
+            try (var rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    log.debug("The instance insert of workflow {} returned no row; returning the input that "
+                            + "was sent", instance.workflowId());
+                    return instance.input();
+                }
+                try {
+                    return getJsonValue(rs, "input");
+                } catch (SerializationException unparseable) {
+                    log.debug("Stored input of workflow {} cannot be parsed back; returning the input that "
+                            + "was sent: {}", instance.workflowId(), unparseable.toString());
+                    return instance.input();
+                }
+            }
         }
     }
+
+    private static final String RETURNING_INPUT = " RETURNING input";
 
     private void doAdoptOrphanedSignals(Connection conn, String workflowId,
                                          UUID instanceId) throws SQLException {

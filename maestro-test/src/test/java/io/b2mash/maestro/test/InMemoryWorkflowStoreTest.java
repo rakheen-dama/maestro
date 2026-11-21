@@ -64,6 +64,32 @@ class InMemoryWorkflowStoreTest {
     }
 
     @Test
+    void createInstanceReturnsTheInputAsStored_aParsedCopyGetInstanceReadsToo() {
+        // Like the JDBC store (Issue 43): the input goes through the mapper's
+        // text form and the exact-decimal reader, so the engine's first run
+        // receives what a recovery reads, and a test catches an input that
+        // does not survive the round trip.
+        var sent = MAPPER.createObjectNode().put("aa", 1).put("x", 0.1);
+
+        var created = store.createInstance(buildInstance("wf-input").toBuilder().input(sent).build());
+        var reread = store.getInstance("wf-input").orElseThrow().input();
+
+        assertNotSame(sent, created.input(), "a parsed copy, not the node sent");
+        assertEquals("{\"aa\":1,\"x\":0.1}", String.valueOf(created.input()));
+        assertEquals("DecimalNode", created.input().get("x").getClass().getSimpleName());
+        assertSame(created.input(), reread, "what createInstance returns is what the store holds");
+    }
+
+    @Test
+    void createInstanceStoresAJsonNullInputAsNull() {
+        var created = store.createInstance(buildInstance("wf-null-input").toBuilder()
+                .input(tools.jackson.databind.node.NullNode.getInstance()).build());
+
+        assertNull(created.input(), "as a JDBC store writes SQL NULL");
+        assertNull(store.getInstance("wf-null-input").orElseThrow().input());
+    }
+
+    @Test
     void createDuplicateThrows() {
         store.createInstance(buildInstance("wf-dup"));
         assertThrows(WorkflowAlreadyExistsException.class,

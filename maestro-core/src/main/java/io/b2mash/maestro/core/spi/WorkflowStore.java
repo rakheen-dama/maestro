@@ -123,8 +123,24 @@ public interface WorkflowStore {
      * workflow's {@link WorkflowInstance#workflowId()} (see
      * {@link #adoptOrphanedSignals(String, UUID)}).
      *
+     * <p><b>The returned input.</b> The engine launches the workflow's first
+     * run from the returned instance's {@link WorkflowInstance#input()}, so
+     * that the first run reads exactly what every recovery and Retry will read
+     * from {@link #getInstance} (Issue 43; the instance-row twin of
+     * {@link #appendEventReturningPayload}). A store that normalises what it
+     * stores — Postgres {@code jsonb} reorders object keys and rewrites
+     * numbers — must return the input in its stored form (the JDBC store:
+     * {@code INSERT ... RETURNING input}); a store that keeps the text it was
+     * given may return the text round trip, or the input as given. A store
+     * decorator must return what its delegate returned. Returning the
+     * argument unchanged keeps the first run on the input as sent — correct
+     * only for a store that reads back exactly that. Only the input is taken
+     * from the returned instance; every other field the engine uses is the
+     * argument's.
+     *
      * @param instance the workflow instance to create
-     * @return the created instance (may have store-assigned fields)
+     * @return the created instance, with its input as this store will read it
+     *         back (may also have store-assigned fields)
      * @throws WorkflowAlreadyExistsException if a workflow with the same
      *         {@link WorkflowInstance#workflowId()} already exists
      */

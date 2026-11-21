@@ -125,6 +125,22 @@ class WorkflowInputTypeTest {
     }
 
     @Test
+    void anUntypedMapInputIsTheSameOnTheFirstRunAndAfterRecover() throws Exception {
+        // Issue 43's kit twin: the first run launches from the input the store
+        // returned, so it reads exactly what the recovered run reads.
+        var input = new LinkedHashMap<String, Object>();
+        input.put("aa", 1);
+        input.put("b", 2);
+        input.put("n", 1.0E7);
+        var handle = env.startWorkflow(UntypedMapWorkflow.class, input);
+
+        var result = parkCrashRecoverAndFinish(handle);
+
+        assertEquals("[aa, b, n] n=Double", result, "the kit keeps the order the map had");
+        assertEquals(List.of(result, result), copy());
+    }
+
+    @Test
     void anInputThatCannotBeReadBackIsRejectedAtStart_nothingPersisted() {
         var thrown = assertThrows(UnreadableWorkflowInputException.class,
                 () -> env.startWorkflow("opaque-1", OpaqueInputWorkflow.class, new Square(7)));
@@ -199,6 +215,14 @@ class WorkflowInputTypeTest {
                 out.append(';');
             }
             return seeAndPark(out.toString());
+        }
+    }
+
+    @DurableWorkflow(name = "untyped-map-input")
+    public static class UntypedMapWorkflow {
+        @WorkflowMethod
+        public String run(Map<String, Object> input) {
+            return seeAndPark(input.keySet() + " n=" + input.get("n").getClass().getSimpleName());
         }
     }
 

@@ -885,6 +885,11 @@ public final class WorkflowExecutor {
                     + "this node to start it later (maestro.testing.recovery.enabled=false — testing only, recovery not started yet, or "
                     + "the type not registered with it) — nothing was persisted; retry the start");
         }
+        // The instance as persisted: its input is the one the store will read
+        // back (Issue 43), so the first run below receives exactly what every
+        // recovery and Retry reads — jsonb's key order and number forms
+        // included — rather than the node sent.
+        WorkflowInstance persisted;
         try {
             // A start still taking its lock when shutdown gave it up at the
             // deadline (P1, Issue 70) writes nothing: it is refused like a
@@ -892,7 +897,7 @@ public final class WorkflowExecutor {
             refuseIfGivenUp(cancellation, workflowId, "its instance row was written", false);
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
             // signals sent before workflow starts are stored with null instanceId)
-            store.createInstance(instance);
+            persisted = withStoredInput(instance, store.createInstance(instance));
             // A createInstance that returned only after the give-up: the row
             // is committed, so the start says so (WorkflowNotLaunchedException,
             // not "nothing was persisted") and writes nothing more — no
@@ -918,13 +923,13 @@ public final class WorkflowExecutor {
             // durable and the recovery poller runs here, so the start is not
             // lost: it is asked for a prompt pass (L3), which adopts it as soon
             // as the lock can be taken.
-            deferStart(instance, heldElsewhere);
+            deferStart(persisted, heldElsewhere);
             return;
         }
 
         // Launch on virtual thread (WORKFLOW_STARTED is published inside, once
         // the run's workflow object has been built)
-        if (!launchWorkflow(instance, workflowFactory, workflowMethod, inputPayload, false, handle, null,
+        if (!launchWorkflow(persisted, workflowFactory, workflowMethod, persisted.input(), false, handle, null,
                 cancellation, membership)) {
             // Given up at the deadline before the run started (the launch
             // released its lock): the row is durable; say so, nothing more.
@@ -932,14 +937,14 @@ public final class WorkflowExecutor {
             // The lock was reported lost between the acquire and the run's
             // registration (a stall of a whole TTL): the row is durable.
             if (canDeferStart(workflowType)) {
-                deferStart(instance, false); // the recovery poller runs it
+                deferStart(persisted, false); // the recovery poller runs it
                 return;
             }
             // PR #72 review: nothing on this node would run it later. Relaunch
             // once, with a fresh acquisition, as a resume of the persisted row.
             // The resume joins the registry on its own (refused once shutdown
             // has begun); this start's membership is left by the caller after.
-            if (resumeWorkflow(instance, workflowFactory, workflowMethod)) {
+            if (resumeWorkflow(persisted, workflowFactory, workflowMethod)) {
                 logger.info("Workflow '{}' lost its instance lock before its run started; relaunched it",
                         workflowId);
                 return;
@@ -958,6 +963,19 @@ public final class WorkflowExecutor {
         }
 
         logger.info("Started workflow '{}' (type={}, id={})", workflowId, workflowType, instanceId);
+    }
+
+    /**
+     * {@code sent} with the input {@link WorkflowStore#createInstance} handed
+     * back (Issue 43). Only the input is taken from {@code created}: every
+     * other field stays the one this start built. A store that returned
+     * {@code null} (a stub) or its argument leaves the input as sent.
+     */
+    private static WorkflowInstance withStoredInput(WorkflowInstance sent, @Nullable WorkflowInstance created) {
+        if (created == null || created == sent || created.input() == sent.input()) {
+            return sent;
+        }
+        return sent.toBuilder().input(created.input()).build();
     }
 
     /**

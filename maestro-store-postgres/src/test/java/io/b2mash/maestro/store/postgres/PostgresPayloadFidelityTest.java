@@ -578,6 +578,32 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
 
     @ParameterizedTest(name = "[{index}] {0}")
     @MethodSource("returnedPayloadCorpus")
+    @DisplayName("createInstance returns the input exactly as getInstance reads it, property order included (Issue 43)")
+    void createInstanceReturnsTheInputGetInstanceReads(String label, @Nullable JsonNode input) {
+        var workflowId = "created-input-" + UUID.randomUUID();
+
+        var returned = store.createInstance(newInstance(workflowId).toBuilder().input(input).build()).input();
+        var reread = store.getInstance(workflowId).orElseThrow().input();
+
+        assertEquals(reread, returned, label);
+        // JsonNode.equals ignores property order; the rendered text does not.
+        assertEquals(String.valueOf(reread), String.valueOf(returned), label);
+    }
+
+    @Test
+    @DisplayName("createInstance returns jsonb's form of the input: keys reordered, a whole exponent an integer")
+    void createInstanceReturnsJsonbsFormOfTheInput() {
+        var sent = objectMapper.createObjectNode().put("aa", 1).put("b", 2).put("n", 1.0E7);
+
+        var returned = store.createInstance(newInstance("created-jsonb-" + UUID.randomUUID()).toBuilder()
+                .input(sent).build()).input();
+
+        assertEquals(List.of("b", "n", "aa"), propertyNames(returned));
+        assertEquals("{\"b\":2,\"n\":10000000,\"aa\":1}", returned.toString());
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("returnedPayloadCorpus")
     @DisplayName("RETURNING stores the same jsonb as appendEvent")
     void returningInsertStoresTheSameJsonbAsAppendEvent(String label, @Nullable JsonNode payload) throws SQLException {
         var instance = createInstance(store, "returning-bytes-" + UUID.randomUUID());

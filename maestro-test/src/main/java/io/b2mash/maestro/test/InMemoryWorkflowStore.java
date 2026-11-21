@@ -18,6 +18,11 @@ import io.b2mash.maestro.core.spi.RecoveryCursor;
 import io.b2mash.maestro.core.spi.TerminalWrites;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectReader;
+import tools.jackson.databind.cfg.JsonNodeFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -53,6 +58,34 @@ import java.util.stream.Collectors;
  */
 public final class InMemoryWorkflowStore implements WorkflowStore {
 
+    /**
+     * Writes and re-reads a workflow input the way a JDBC store's text column
+     * does (Issue 43): the mapper's text, parsed with exact decimals.
+     */
+    private final ObjectMapper mapper;
+    private final ObjectReader inputReader;
+
+    /** Creates a store that round-trips workflow inputs through a default {@link JsonMapper}. */
+    public InMemoryWorkflowStore() {
+        this(JsonMapper.builder().build());
+    }
+
+    /**
+     * Creates a store that round-trips workflow inputs through {@code mapper}
+     * — the engine's own, so a test meets the same input a JDBC store
+     * configured with that mapper would hand back.
+     *
+     * @param mapper the mapper inputs are written and re-read with
+     */
+    public InMemoryWorkflowStore(ObjectMapper mapper) {
+        this.mapper = Objects.requireNonNull(mapper, "mapper");
+        var own = mapper.reader();
+        this.inputReader = own.readTree("0.10").isBigDecimal()
+                ? own
+                : own.with(JsonNodeFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+                        .without(JsonNodeFeature.STRIP_TRAILING_BIGDECIMAL_ZEROES);
+    }
+
     // workflowId → WorkflowInstance
     private final ConcurrentHashMap<String, WorkflowInstance> instances = new ConcurrentHashMap<>();
 
@@ -86,13 +119,31 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
 
     @Override
     public WorkflowInstance createInstance(WorkflowInstance instance) {
-        var existing = instances.putIfAbsent(instance.workflowId(), instance);
+        // Stored, and returned, with its input as a JDBC store reads it back
+        // (Issue 43): the engine's first run launches from this, so it reads
+        // exactly what a recovery reads, and an input that does not survive
+        // the round trip fails in a test as it would in production.
+        var stored = instance.toBuilder().input(storedForm(instance.input())).build();
+        var existing = instances.putIfAbsent(stored.workflowId(), stored);
         if (existing != null) {
-            throw new WorkflowAlreadyExistsException(instance.workflowId());
+            throw new WorkflowAlreadyExistsException(stored.workflowId());
         }
-        instanceLocks.putIfAbsent(instance.workflowId(), new Object());
-        idToWorkflowId.put(instance.id(), instance.workflowId());
-        return instance;
+        instanceLocks.putIfAbsent(stored.workflowId(), new Object());
+        idToWorkflowId.put(stored.id(), stored.workflowId());
+        return stored;
+    }
+
+    /**
+     * What a text column hands back for {@code input}: {@code null} for a
+     * {@code null} or JSON-null input (SQL {@code NULL}), else the parse of
+     * the mapper's text with exact decimals. Unlike Postgres {@code jsonb},
+     * key order and number forms are kept.
+     */
+    private @Nullable JsonNode storedForm(@Nullable JsonNode input) {
+        if (input == null || input.isNull()) {
+            return null;
+        }
+        return inputReader.readTree(mapper.writeValueAsString(input));
     }
 
     // ── Lease fencing (Issue 11) ─────────────────────────────────────────
