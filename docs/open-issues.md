@@ -6465,6 +6465,8 @@ read, not looped.
   bring back the `MaestroHealthIndicatorTest` failure (a TTL that really
   expires mid-test).
 
+**Seen once (2026-11-21, local full build under the rc.3 fixture work).** ``, "a timer fired by node B's poller wakes the workflow sleeping on node A", missed its 15 s bound once and passed on the next run. Not root-caused. A container suite, so it was not covered by the looped sweep.
+
 ## 6. Suggested order
 
 **Historical note:** the order below was the plan followed by the
