@@ -67,6 +67,24 @@ class ActivityFutureReturnTypeTest {
         String plain();
     }
 
+    /** A generic parent whose result type is a type variable (erases to Object). */
+    interface GenericParent<T> {
+        T result();
+    }
+
+    /** The parent specialised to a future: {@code result()} returns a CompletableFuture here. */
+    interface FutureChild extends GenericParent<CompletableFuture<String>> {
+        String plain();
+    }
+
+    /** Two levels down, through a type variable passed along. */
+    interface Middle<U> extends GenericParent<U> { }
+
+    interface StageGrandchild extends Middle<CompletionStage<Integer>> { }
+
+    /** The same parent specialised to a plain value: accepted. */
+    interface StringChild extends GenericParent<String> { }
+
     /** Two offending methods: both are named. */
     interface TwoFutures {
         CompletableFuture<String> first();
@@ -125,6 +143,33 @@ class ActivityFutureReturnTypeTest {
                 () -> proxy(InheritingActivities.class));
         assertEquals(InheritingActivities.class.getName(), refused.activityInterface());
         assertEquals(List.of("fetch"), refused.methods());
+    }
+
+    @Test
+    @DisplayName("a generic parent's T result() specialised to a CompletableFuture is refused, naming the resolved type")
+    void aGenericParentSpecialisedToAFutureIsRefused() {
+        var refused = assertThrows(UnsupportedActivityReturnTypeException.class, () -> proxy(FutureChild.class));
+        assertEquals(FutureChild.class.getName(), refused.activityInterface());
+        assertEquals(List.of("result"), refused.methods());
+        assertTrue(refused.getMessage().contains(
+                "result() returns java.util.concurrent.CompletableFuture<java.lang.String>"), refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("a type variable passed through an intermediate interface is resolved too")
+    void aTypeVariablePassedThroughIsResolved() {
+        var refused = assertThrows(UnsupportedActivityReturnTypeException.class,
+                () -> proxy(StageGrandchild.class));
+        assertEquals(List.of("result"), refused.methods());
+        assertTrue(refused.getMessage().contains(
+                "result() returns java.util.concurrent.CompletionStage<java.lang.Integer>"), refused.getMessage());
+    }
+
+    @Test
+    @DisplayName("a generic parent specialised to a plain value, or left unbound, is accepted")
+    void aGenericParentSpecialisedToAValueIsAccepted() {
+        assertInstanceOf(StringChild.class, proxy(StringChild.class));
+        assertDoesNotThrow(() -> ActivityProxyFactory.requireSupportedReturnTypes(GenericParent.class));
     }
 
     @Test

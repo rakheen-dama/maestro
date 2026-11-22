@@ -4309,7 +4309,12 @@ starts silently.
 > `ReadBackFormsTest.aStubWithAFutureResult_isRefusedAtStart_andNothingIsPersisted`.
 > A future parameter and a `static` interface method are not refused. The
 > handler's live future skip stays for a handler built directly. Pitfalls rule
-> 12 now lists two exceptions, not three.
+> 12 now lists two exceptions, not three. PR #89 review: a return type
+> inherited as a generic super-interface's type variable (`T result()` under
+> `extends Fetcher<CompletableFuture<String>>`) is resolved against the
+> interface's type arguments before the test (Jackson's `TypeFactory`), so it
+> is refused too; the engine's read-back does not resolve it (it reads `T` as
+> its bound, the type valve), so such a result could never have worked.
 
 > Filed by WP1, replay fidelity (2026-11-12, branch `fix/replay-fidelity`).
 
