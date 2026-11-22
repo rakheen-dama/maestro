@@ -325,7 +325,6 @@ The following modules are published to Maven Central:
 | `maestro-store-jdbc` | `io.b2mash.maestro:maestro-store-jdbc` |
 | `maestro-store-postgres` | `io.b2mash.maestro:maestro-store-postgres` |
 | `maestro-messaging-kafka` | `io.b2mash.maestro:maestro-messaging-kafka` |
-| `maestro-admin-client` | `io.b2mash.maestro:maestro-admin-client` |
 | `maestro-test` | `io.b2mash.maestro:maestro-test` |
 
 Each published artifact includes: compiled JAR, sources JAR, Javadoc JAR, GPG signatures, and POM.

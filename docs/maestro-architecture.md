@@ -81,7 +81,6 @@ graph TB
         STORE_JDBC["maestro-store-jdbc"]
         MSG_KAFKA["maestro-messaging-kafka"]
         ADMIN["maestro-admin"]
-        ADMIN_CLIENT["maestro-admin-client"]
         TEST["maestro-test"]
     end
 
@@ -115,7 +114,6 @@ graph TB
 | `maestro-store-postgres` | Postgres `WorkflowStore`; table-backed `DistributedLock` + leader election (`io.b2mash.maestro.store.postgres.lock`); `LISTEN/NOTIFY` cross-node signal wake (`...store.postgres.notify`); Flyway 11 migrations (own history table). | Yes (auto-configuration only) |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` implementation. `@MaestroSignalListener` processing. | Yes |
 | `maestro-admin` | Standalone dashboard app (Thymeleaf + HTMX, own Postgres schema). | Yes |
-| `maestro-admin-client` | A plain `AdminEventPublisher` class, not auto-configured; no service needs it. Services publish lifecycle events through `maestro-messaging-kafka`. Its future is [Issue 52](open-issues.md#issue-52). | Minimal |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. | No |
 
 > **One implementation per SPI ships today.** `maestro-store-postgres` provides both the `WorkflowStore` and the `DistributedLock` (same database, same `DataSource`); `maestro-messaging-kafka` is the only `WorkflowMessaging`. The SPIs remain the seam — `maestro-test` provides in-memory implementations of all three — but there is no second production backend to choose between. `WorkflowStore` is internal until 1.0, and a `DistributedLock` is mandatory; see [`docs/support-matrix.md`](support-matrix.md).

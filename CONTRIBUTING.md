@@ -96,7 +96,6 @@ Before you begin, ensure you have the following installed:
 | `maestro-store-postgres` | Postgres `WorkflowStore`, table-backed `DistributedLock` + leader election, LISTEN/NOTIFY signal wake, Flyway 11 migrations. |
 | `maestro-messaging-kafka` | Spring Kafka 4.x `WorkflowMessaging` SPI implementation (the only transport). |
 | `maestro-admin` | Standalone dashboard (Thymeleaf + HTMX). |
-| `maestro-admin-client` | Lightweight lifecycle event publisher. |
 | `maestro-test` | In-memory SPIs, controllable clock, `TestWorkflowEnvironment`. |
 | `maestro-samples/` | Example applications demonstrating Maestro usage. |
 

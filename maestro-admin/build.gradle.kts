@@ -5,7 +5,8 @@ plugins {
 description = "Maestro Admin — Standalone workflow dashboard"
 
 dependencies {
-    implementation(project(":maestro-admin-client"))
+    // WorkflowLifecycleEvent and LifecycleEventType, the event the dashboard consumes.
+    implementation(project(":maestro-core"))
     implementation(libs.spring.boot.starter.webmvc)
     implementation(libs.spring.boot.starter.thymeleaf)
     implementation(libs.spring.boot.starter.jdbc)

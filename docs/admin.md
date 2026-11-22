@@ -171,7 +171,7 @@ maestro:
 
 The engine publishes lifecycle events off the workflow thread, through its bounded lifecycle-event sink; a failed or slow publish never interrupts workflow execution (see [Release notes § Kafka — missing topics fail startup; lifecycle publishes never block a workflow](release-notes.md#kafka--missing-topics-fail-startup-lifecycle-publishes-never-block-a-workflow)).
 
-`maestro-admin-client` contributes no auto-configuration. Its `AdminEventPublisher` is a plain class, not a bean; a Maestro service does not need it.
+A service needs no extra module to feed the dashboard: the engine publishes its lifecycle events through `maestro-messaging-kafka`. (The former `maestro-admin-client` module, whose only class was an `AdminEventPublisher` nothing used, was removed; Issue 52.)
 
 ---
 

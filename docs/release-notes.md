@@ -41,6 +41,11 @@
 - **What changes.** `ActivityProxyFactory.createProxy` and the `ActivityInvocationHandler` constructors no longer take a `DistributedLock` or a lock key prefix: both were ignored since the per-activity lock was removed (3.10). The overloads that differed only by the prefix are gone (five `createProxy` overloads and five constructors remain, each two parameters shorter), and `DefaultWorkflowOperations` loses its unused `distributedLock` field and constructor parameter. No behaviour changes.
 - **API.** Source- and binary-incompatible, deprecation-free: all three types are in `io.b2mash.maestro.core.engine`, internal until 1.0 (the API compatibility report lists them under "Internal packages"). A caller drops the two arguments; `@ActivityStub` users, the Spring starter and the test kit are unaffected.
 
+### Removed — the `maestro-admin-client` module (Issue 52)
+
+- **What changes.** The module, its one class `AdminEventPublisher` (a hand-built Kafka publisher of `WorkflowLifecycleEvent` that nothing called) and its tests are deleted, and `io.b2mash.maestro:maestro-admin-client` is no longer published nor constrained by `maestro-bom`. Nothing a service needs is lost: the engine publishes its lifecycle events to the dashboard through `maestro-messaging-kafka` when `maestro.admin.events.enabled=true` ([Admin § Enabling Event Publishing in Services](admin.md#enabling-event-publishing-in-services)). The dashboard (`maestro-admin`) now depends on `maestro-core` directly, which is all it ever used through the module.
+- **Upgrade.** Remove a `maestro-admin-client` dependency; with the BOM it no longer resolves without a version. Code that built an `AdminEventPublisher` by hand can send the same JSON with its own `KafkaTemplate`, or turn on `maestro.admin.events.enabled` on a Maestro service.
+
 ## 0.3.0-rc.3
 
 ### Fixed — an exception thrown while replaying recorded history stands down as `replay_exception` (Issue 89)

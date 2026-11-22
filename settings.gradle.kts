@@ -28,7 +28,6 @@ include(
     // build and against each previous release (not published).
     "maestro-integration-tests:rolling-node",
     "maestro-admin",
-    "maestro-admin-client",
     "maestro-samples:sample-order-service",
     "maestro-samples:sample-payment-gateway",
     "maestro-samples:sample-perf",

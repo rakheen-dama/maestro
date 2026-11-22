@@ -21,7 +21,6 @@ COPY maestro-store-postgres maestro-store-postgres
 COPY maestro-messaging-kafka maestro-messaging-kafka
 COPY maestro-test maestro-test
 COPY maestro-admin maestro-admin
-COPY maestro-admin-client maestro-admin-client
 COPY maestro-samples maestro-samples
 RUN chmod +x gradlew && \
     ./gradlew :maestro-samples:sample-order-service:bootJar \

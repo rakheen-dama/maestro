@@ -47,7 +47,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (4 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 83 and 50 closed 2026-11-22)
+**`blocks-1.0`** (3 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 83, 50 and 52 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
@@ -57,7 +57,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
 7. ~~[83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged~~ — closed (the engine adopts; the janitor purges orphans past `maestro.signal.orphan-retention`, 2026-11-22)
 8. ~~[50](#issue-50) — The activity proxy keeps two ignored lock parameters~~ — closed (removed; internal package, no deprecation, 2026-11-22)
-9. [52](#issue-52) — `maestro-admin-client` has no wired component
+9. ~~[52](#issue-52) — `maestro-admin-client` has no wired component~~ — closed (option 1: the module removed, 2026-11-22)
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
@@ -169,8 +169,6 @@ maestro-messaging-kafka       Kafka transport (the only one).
 maestro-test                  In-memory SPIs, TestWorkflowEnvironment, DeterminismChecker.
 maestro-integration-tests     Real-backend suites (not published).
 maestro-admin                 Dashboard.
-maestro-admin-client          One hand-built lifecycle-event publisher; no
-                              auto-configuration (Issue 52).
 maestro-samples/…             Demos, incl. the loan-origination E2E and
                               sample-perf (the k6 load-test app, not published).
 ```
@@ -466,7 +464,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | `blocks-1.0` — Open |
 | [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | **Resolved** |
 | [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | `limitation` — Open |
-| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | `blocks-1.0` — Open — maintainer to decide |
+| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | **Resolved** |
 | [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | `limitation` — Open |
 | [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | `limitation` — Open |
 | [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | `limitation` — Open |
@@ -4437,7 +4435,24 @@ the database clock, and the kit's `advanceTime` tests pass unchanged.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Module scope is a product decision before 1.0.
 
-> **Open.** Filed by WP7, Kafka coexistence
+> **Label: `blocks-1.0`. Closed (2026-11-22): option 1, the module removed**
+> (branch `chore/issues-50-52-83-85-housekeeping`). The simplest option, and
+> the only one that needs no new purpose invented for the module: option 3
+> would need a use nobody has, and option 2 would keep a class nobody calls.
+> `maestro-admin-client` (its `AdminEventPublisher`, `package-info.java` and
+> both tests) is deleted; it is gone from `settings.gradle.kts`, the BOM, the
+> aggregate Javadoc list, `RELEASING.md`'s artifact table, both issue
+> templates and the PR template, `README.md`, `CONTRIBUTING.md`, `CLAUDE.md`,
+> `docs/maestro-architecture.md`, `docs/maestro-prd.md`, `docs/admin.md`,
+> `docs/test-plan.md`, §1 of this file and the root `Dockerfile`.
+> `maestro-admin` depends on `maestro-core` directly, as traced. The API
+> compatibility report (`maestro-integration-tests/api-compat`) no longer
+> resolves the module on the new side and lists it as removed until the
+> newest previous release stops publishing it. Older release notes and
+> plans keep their historical mentions. Release notes § "Removed — the
+> `maestro-admin-client` module".
+
+> Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not decided: this is
 > the maintainer's call.
 

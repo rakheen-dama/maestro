@@ -16,7 +16,7 @@
 - [ ] `maestro-spring-boot-starter`
 - [ ] `maestro-store-jdbc` / `maestro-store-postgres`
 - [ ] `maestro-messaging-kafka`
-- [ ] `maestro-admin` / `maestro-admin-client`
+- [ ] `maestro-admin`
 - [ ] `maestro-test`
 - [ ] `maestro-samples`
 - [ ] Build / CI / docs
