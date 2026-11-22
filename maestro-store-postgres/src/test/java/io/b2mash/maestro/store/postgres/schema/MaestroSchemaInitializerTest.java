@@ -481,6 +481,26 @@ class MaestroSchemaInitializerTest {
     }
 
     /**
+     * The same for the fourth published pre-release, {@code v0.3.0-rc.4}
+     * (pilot-readiness P4): a database exactly its frozen migration set
+     * migrated, as its initializer did ({@code outOfOrder(true)}), is taken
+     * over by this build in {@code flyway} and {@code validate} mode.
+     */
+    @Test
+    @DisplayName("a database migrated by exactly the set shipped at v0.3.0-rc.4 validates under this build")
+    void aDatabaseMigratedByTheFrozenV030Rc4SetValidatesUnderThisBuild() throws SQLException {
+        // v0.3.0-rc.4's initializer had outOfOrder(true).
+        FrozenMigrations.named("v0_3_0_rc_4").olderBuild(ds, true).migrate();
+        assertThat(versions(MaestroSchemaInitializer.HISTORY_TABLE))
+                .containsExactly("1", "2", "3", "4", "5", "6", "7", "8", "9", "100", "101");
+
+        assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.FLYWAY, cl).initialize())
+                .doesNotThrowAnyException();
+        assertThatCode(() -> new MaestroSchemaInitializer(ds, SchemaMode.VALIDATE, cl).initialize())
+                .doesNotThrowAnyException();
+    }
+
+    /**
      * A database that ran the retired Postgres messaging transport, exactly as
      * main @ {@code c01d498} left it: V1–V5, V100 and V200–V202, migrated by
      * that build's initializer (no {@code outOfOrder}) over the frozen copy of
