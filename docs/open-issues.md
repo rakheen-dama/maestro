@@ -6793,10 +6793,20 @@ the generic parent says `T`.
 
 **Harm.** Silent until a restart, then a `ClassCastException` or a
 `nondeterministic_history` stand-down in a run that did not fail on its
-first pass. Reported, so detectable through the observer and the meter.
+first pass. Reported, so detectable through the observer and the meter —
+for a scalar result. A collection result is worse and is not reported: when
+`T` is bound to `List<Order>` and the activity returns an `ArrayList`, the
+type valve compares only the container kind (rule 12: a same-kind container
+is not a difference), accepts the read-back list of maps, and reports
+nothing. The workflow then gets maps on the first run as well and fails with
+a `ClassCastException` where it reads an element as `Order`.
 Workaround: redeclare the method in the child interface
 (`Order load();`) or do not inherit a generic method into an activity
-interface.
+interface. When redeclaring, copy the parent method's annotations too:
+the engine reads `@Compensate` (and the other activity annotations) from the
+method that is invoked, and an interface method does not inherit its
+parent's annotations, so a redeclaration without `@Compensate` silently
+drops the compensation.
 
 **How to tackle it.** `ActivityProxyFactory.requireSupportedReturnTypes`
 (Issue 49, PR #89) already resolves each method's generic return type
