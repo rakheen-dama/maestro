@@ -61,7 +61,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. ~~[85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package~~ — closed (procedure in `RELEASING.md`; drivers read git's stderr apart, 2026-11-22)
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
-**`limitation`** (26)
+**`limitation`** (27)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
@@ -89,6 +89,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 25. [92](#issue-92) — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change
 26. [93](#issue-93) — A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in
+27. [94](#issue-94) — An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes
 
 ---
 
@@ -501,6 +502,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
 | [93](#issue-93) | A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in | Library gap — replay fidelity | Low | `limitation` — Open |
+| [94](#issue-94) | An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes | Library gap — replay fidelity | Low | `limitation` — Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -6747,6 +6749,82 @@ it needs.
 messages of classes that have not opted in, which decision 2 of Issue 42
 forbids without a further ruling. Rebuilding causes as objects would follow
 the same rule as the top-level cause.
+
+---
+
+<a id="issue-94"></a>
+
+### Issue 94 — An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes {#issue-94}
+
+> **Label: `limitation`.** Filed 2026-11-22. Found in the PR #89 review
+> (Issue 49 note); not fixed there because Issue 49 only refuses a future.
+
+**What is wrong.** Given
+
+```java
+interface Parent<T> { T load(); }
+interface Orders extends Parent<Order> {}   // the activity interface
+```
+
+the stub for `Orders` returns `Order` as far as the author can see, but the
+engine reads the stored result back with the method's declared generic
+return type, and for `load()` that is the type variable `T`. Verified in the
+code: a JDK proxy of `Orders` is invoked with the `Method` of the declaring
+interface (`Parent.load`), and `ActivityInvocationHandler.deserializeResult`
+(used by the live read-back and by replay alike) calls
+`serializer.deserialize(payload, method.getGenericReturnType())`, which is
+`T`; Jackson's `TypeFactory.constructType` resolves an unbound type variable
+to its bound, `Object`. So the stored JSON reads back as a `LinkedHashMap`.
+
+- **First run.** `readBack` reads the persisted payload as `Object`, finds a
+  `LinkedHashMap` where the activity returned an `Order`, and the type valve
+  (`readsBackAsAnotherClass`, pitfalls rule 12) keeps the activity's own
+  `Order`. It reports `EngineObserver.activityResultUnreadable` with
+  `READ_BACK_TYPE_MISMATCH` (counter `maestro.activity.result.unreadable`)
+  and logs one WARN per method.
+- **Replay.** The same read returns the `LinkedHashMap`. A cast to `Order`
+  that worked on the first run throws after a restart, and a later activity
+  fed the value stands the run down as `nondeterministic_history` when the
+  map serializes differently from the `Order`.
+
+This is rule 12's "a type variable" case, but the author never declared a
+type variable: they declared `Order` in the interface they proxy, and only
+the generic parent says `T`.
+
+**Harm.** Silent until a restart, then a `ClassCastException` or a
+`nondeterministic_history` stand-down in a run that did not fail on its
+first pass. Reported, so detectable through the observer and the meter —
+for a scalar result. A collection result is worse and is not reported: when
+`T` is bound to `List<Order>` and the activity returns an `ArrayList`, the
+type valve compares only the container kind (rule 12: a same-kind container
+is not a difference), accepts the read-back list of maps, and reports
+nothing. The workflow then gets maps on the first run as well and fails with
+a `ClassCastException` where it reads an element as `Order`.
+Workaround: redeclare the method in the child interface
+(`Order load();`) or do not inherit a generic method into an activity
+interface. When redeclaring, copy the parent method's annotations too:
+the engine reads `@Compensate` (and the other activity annotations) from the
+method that is invoked, and an interface method does not inherit its
+parent's annotations, so a redeclaration without `@Compensate` silently
+drops the compensation.
+
+**How to tackle it.** `ActivityProxyFactory.requireSupportedReturnTypes`
+(Issue 49, PR #89) already resolves each method's generic return type
+against the proxied interface's type arguments
+(`resolvedReturnType(TypeFactory, JavaType, Method)`, Jackson's
+`resolveMemberType`). The same resolver can serve the read-back: the factory
+knows the interface, the handler (which only sees the `Method` and the
+implementation) does not, so the factory would pass the handler a resolved
+`Type` per method (or the interface itself) and `deserializeResult` and the
+two warnings would use it in place of `getGenericReturnType()`. The pieces
+to settle: whether the resolved type of an unbound variable stays its bound
+(it does today), the same resolution for the recorded-result paths of
+`@Compensate` argument matching (`validateCompensateAnnotations` uses
+`method.getReturnType()`), and a test pair in `ReadBackTypeValveTest`
+(first run equals replay for `Orders`). The change affects what a replay of
+an already-recorded step reads, so it needs a release note and a look at
+parked runs: a step recorded under the old read replays as `Order` instead
+of a map, which only helps a cast and may change an argument fingerprint.
 
 ---
 

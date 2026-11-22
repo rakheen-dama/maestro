@@ -19,7 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Pins the migrations shipped at {@code main} @ {@code cbf5a2a} and at the
- * releases {@code v0.3.0-rc.1}, {@code v0.3.0-rc.2} and {@code v0.3.0-rc.3} (one frozen set per fixture,
+ * releases {@code v0.3.0-rc.1}, {@code v0.3.0-rc.2}, {@code v0.3.0-rc.3} and {@code v0.3.0-rc.4} (one frozen set per fixture,
  * {@link #SHIPPING_FIXTURES}): every one is still shipped by this module, byte
  * for byte up to line endings. Flyway
  * checksums a migration's content, so a database that recorded a shipped
@@ -36,7 +36,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * which nothing ships any more), so no frozen set can be rewritten together
  * with its manifest unnoticed.
  */
-@DisplayName("Migrations shipped at cbf5a2a, v0.3.0-rc.1, v0.3.0-rc.2 and v0.3.0-rc.3, and the frozen cbf5a2a, v0_3_0_rc_1, v0_3_0_rc_2, v0_3_0_rc_3 and c01d498 sets, are frozen")
+@DisplayName("Migrations shipped at cbf5a2a, v0.3.0-rc.1, v0.3.0-rc.2, v0.3.0-rc.3 and v0.3.0-rc.4, and the frozen cbf5a2a, v0_3_0_rc_1, v0_3_0_rc_2, v0_3_0_rc_3, v0_3_0_rc_4 and c01d498 sets, are frozen")
 class ShippedMigrationsFrozenTest {
 
     static final String CBF5A2A = "cbf5a2a06acfba9b0f7ae23f37b3f1f1713928f7";
@@ -50,12 +50,15 @@ class ShippedMigrationsFrozenTest {
     /** The commit tag {@code v0.3.0-rc.3} points at. */
     static final String V0_3_0_RC_3 = "0df2d8c9fa1dbd8ff0aa6c2442812227a06823d9";
 
+    /** The commit tag {@code v0.3.0-rc.4} points at. */
+    static final String V0_3_0_RC_4 = "a6693588950e9a0e92f41f46c714442f13457d6c";
+
     /**
      * The frozen sets whose every migration this build must still ship: one
      * per release fixture (RELEASING.md § Upgrade fixtures). {@code c01d498}
      * is not one: it holds the retired V200–V202 band, which nothing ships.
      */
-    static final List<String> SHIPPING_FIXTURES = List.of("cbf5a2a", "v0_3_0_rc_1", "v0_3_0_rc_2", "v0_3_0_rc_3");
+    static final List<String> SHIPPING_FIXTURES = List.of("cbf5a2a", "v0_3_0_rc_1", "v0_3_0_rc_2", "v0_3_0_rc_3", "v0_3_0_rc_4");
 
     /** Frozen sets that are not a shipping fixture, each with the reason. */
     static final Map<String, String> NOT_SHIPPING = Map.of(
@@ -218,6 +221,36 @@ class ShippedMigrationsFrozenTest {
         assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(frozen.read("SOURCE"))))
                 .as("upgrade/v0_3_0_rc_3/SOURCE changed; frozen fixtures are never edited or regenerated")
                 .isEqualTo(V0_3_0_RC_3_SOURCE_SHA256);
+        assertThat(frozen.files()).containsExactly(
+                "store/V1__create_maestro_schema.sql", "store/V2__create_indexes.sql",
+                "store/V3__timer_lookup_index.sql", "store/V4__signal_trace_context.sql",
+                "store/V5__signal_received_at_default.sql", "store/V6__instance_lease_epoch.sql",
+                "store/V7__workflow_event_args_hash.sql", "store/V8__retention_indexes.sql",
+                "store/V9__signal_message_id.sql", "lock/V100__maestro_lock_postgres.sql",
+                "store/V101__recovery_scan_index.sql");
+        for (var file : frozen.files()) {
+            assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(frozen.read(file))))
+                    .as("frozen copy of %s hashes to its SOURCE entry", file)
+                    .isEqualTo(frozen.recordedSha256(file));
+        }
+    }
+
+    /**
+     * SHA-256 of {@code upgrade/v0_3_0_rc_4/SOURCE} (line endings folded to
+     * LF), as committed: the migrations the fourth published pre-release
+     * shipped. Never update it to make this test pass.
+     */
+    static final String V0_3_0_RC_4_SOURCE_SHA256 = "51203df6d199d3c65883891670d2ca34930b2e108c60fac1d123b241fa101f6a";
+
+    @Test
+    @DisplayName("the v0_3_0_rc_4 frozen set is exactly what v0.3.0-rc.4 shipped, each copy matches SOURCE, and SOURCE is pinned")
+    void theFrozenSetIsEverythingShippedAtV030Rc4() {
+        var frozen = FrozenMigrations.named("v0_3_0_rc_4");
+
+        assertThat(frozen.ref()).isEqualTo(V0_3_0_RC_4);
+        assertThat(FrozenMigrations.sha256(FrozenMigrations.lf(frozen.read("SOURCE"))))
+                .as("upgrade/v0_3_0_rc_4/SOURCE changed; frozen fixtures are never edited or regenerated")
+                .isEqualTo(V0_3_0_RC_4_SOURCE_SHA256);
         assertThat(frozen.files()).containsExactly(
                 "store/V1__create_maestro_schema.sql", "store/V2__create_indexes.sql",
                 "store/V3__timer_lookup_index.sql", "store/V4__signal_trace_context.sql",
