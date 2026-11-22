@@ -119,9 +119,9 @@ public interface WorkflowStore {
      * Creates a new workflow instance.
      *
      * <p>The instance's {@link WorkflowInstance#version()} should be {@code 0}.
-     * After creation, the store should adopt any orphaned signals for the
-     * workflow's {@link WorkflowInstance#workflowId()} (see
-     * {@link #adoptOrphanedSignals(String, UUID)}).
+     * Creating the instance does <em>not</em> adopt its orphaned signals: the
+     * engine does, with one {@link #adoptOrphanedSignals(String, UUID)} call
+     * after this returns (Issue 83). A store must not adopt here as well.
      *
      * <p><b>The returned input.</b> The engine launches the workflow's first
      * run from the returned instance's {@link WorkflowInstance#input()}, so
@@ -827,7 +827,17 @@ public interface WorkflowStore {
      * {@code workflowInstanceId} (pre-delivery pattern). This method
      * links them to the newly created workflow instance.
      *
-     * <p>Should be called during workflow instance creation.
+     * <p><b>The engine is the one owner of adoption</b> (Issue 83):
+     * {@code WorkflowExecutor.startWorkflow} calls this once, right after
+     * {@link #createInstance} returns, and nothing else adopts —
+     * {@link #createInstance} does not. Adoption is bookkeeping, not delivery:
+     * {@link #getUnconsumedSignals} selects by workflow id, so an await
+     * consumes a row whether or not it was adopted. A row can therefore stay
+     * unadopted without losing anything — a node that crashed between the two
+     * calls, or a delivery that looked the instance up just before the start
+     * created it and saved its row just after the adoption ran — and
+     * {@link #deleteOrphanedSignalsBefore} is what eventually removes such a
+     * row once no workflow can consume it.
      *
      * @param workflowId the business workflow ID to match signals against
      * @param instanceId the workflow instance UUID to assign
@@ -855,7 +865,8 @@ public interface WorkflowStore {
      *       discarded.</li>
      *   <li><b>Orphans are never touched.</b> A signal with a {@code null}
      *       {@code workflowInstanceId} belongs to a workflow that has not
-     *       started yet (pre-delivery) and will be adopted when it does.</li>
+     *       started yet (pre-delivery) and will be adopted when it does; its
+     *       purge is {@link #deleteOrphanedSignalsBefore}.</li>
      *   <li><b>Consumed rows are never touched here.</b> Their retention is a
      *       separate concern this method does not address.</li>
      *   <li>Instances with a {@code null} {@code completedAt}, or one at or
@@ -927,6 +938,71 @@ public interface WorkflowStore {
             throw new IllegalArgumentException("limit must be positive, got " + limit);
         }
         return deleteUnconsumedSignalsForTerminalInstancesBefore(cutoff);
+    }
+
+    /**
+     * Deletes at most {@code limit} orphaned signals that no workflow can
+     * consume any more (Issue 83): unconsumed rows with a {@code null}
+     * {@link WorkflowSignal#workflowInstanceId()}, received strictly before
+     * {@code receivedBefore}, whose workflow id names no instance that could
+     * still consume them.
+     *
+     * <p>Exactly these rows are deleted — {@code consumed = false},
+     * {@code workflowInstanceId} {@code null}, {@code receivedAt} before
+     * {@code receivedBefore}, and no instance with the row's
+     * {@link WorkflowSignal#workflowId()} in a status other than
+     * {@link io.b2mash.maestro.core.model.WorkflowStatus#COMPLETED COMPLETED}
+     * or {@link io.b2mash.maestro.core.model.WorkflowStatus#TERMINATED
+     * TERMINATED}. That covers a signal to a workflow id that never started
+     * (or whose instance retention already purged), and a row the start's
+     * adoption missed (see {@link #adoptOrphanedSignals}) once its workflow
+     * completed or was terminated. Everything else survives:
+     * <ul>
+     *   <li><b>A workflow that may still start.</b> An orphan younger than
+     *       {@code receivedBefore} is kept, so a workflow started within the
+     *       retention after its signal still consumes it — the
+     *       pre-delivery guarantee (self-recovery case 2) is bounded by the
+     *       caller's retention, never by this method.</li>
+     *   <li><b>A workflow that may still consume it.</b> While an instance
+     *       with the row's workflow id is active or {@code FAILED} (a Retry
+     *       may consume it), the row is kept however old it is.</li>
+     *   <li>Adopted rows and consumed rows: their purges are
+     *       {@link #deleteUnconsumedSignalsForTerminalInstancesBefore(String, Instant, int)}
+     *       and {@link #purgeTerminalInstancesBefore(String, io.b2mash.maestro.core.model.WorkflowStatus, Instant, int)}.</li>
+     * </ul>
+     *
+     * <p><b>Not scoped by service.</b> An orphan row carries a workflow id but
+     * no service name and no instance, so nothing attributes it to a service.
+     * Every node's janitor applies this rule to every orphan of the tables it
+     * runs on; that is the service's own rows, because services never share
+     * Maestro tables ({@code docs/support-matrix.md}).
+     *
+     * <p><b>At most {@code limit} rows per call</b>, which rows is up to the
+     * store; the engine's signal janitor calls it in a loop until a call
+     * returns fewer. Idempotent and safe to run concurrently: two callers may
+     * select the same rows, and the later one deletes fewer. The outer
+     * statement must re-check {@code consumed = false} and the {@code null}
+     * instance, so a row consumed or adopted after the candidates were read
+     * survives.
+     *
+     * <p><b>The default deletes nothing</b> and returns {@code 0}: a store that
+     * does not implement it keeps its orphans for ever, as before, and never
+     * discards a signal. The shipped JDBC store and the in-memory test store
+     * override it; a store decorator must forward it.
+     *
+     * @param receivedBefore orphans received strictly before this instant are
+     *                       candidates
+     * @param limit          the most rows to delete in this call; positive
+     * @return the number of signal rows deleted
+     * @throws NullPointerException     if {@code receivedBefore} is {@code null}
+     * @throws IllegalArgumentException if {@code limit} is not positive
+     */
+    default int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
+        Objects.requireNonNull(receivedBefore, "receivedBefore");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        return 0;
     }
 
     // ── Retention ────────────────────────────────────────────────────────

@@ -57,6 +57,8 @@ class JdbcCreateInstanceReturningInputTest {
         var created = store.createInstance(instance(sent));
 
         assertAll(
+                () -> assertEquals(1, db.sql.size(), "createInstance writes the instance row and nothing else: "
+                        + "the engine adopts orphaned signals (Issue 83) " + db.sql),
                 () -> assertTrue(!db.sql.getFirst().contains("RETURNING"), db.sql.getFirst()),
                 () -> assertEquals("executeUpdate", db.executions.getFirst()),
                 () -> assertEquals(sent, JsonMapper.builder().build().readTree(db.writtenInputText)),
@@ -153,7 +155,7 @@ class JdbcCreateInstanceReturningInputTest {
         }
     }
 
-    /** A connection that scripts the instance insert and the orphan-signal adoption that follows it. */
+    /** A connection that scripts the instance insert (and records any statement after it). */
     private static final class ScriptedDb {
         final List<String> sql = new ArrayList<>();
         final List<String> executions = new ArrayList<>();

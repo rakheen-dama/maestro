@@ -47,7 +47,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (6 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 closed 2026-11-22)
+**`blocks-1.0`** (5 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 and 83 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
@@ -55,7 +55,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 4. ~~[43](#issue-43) — Workflow input on Postgres differs between the first run and recovery~~ — closed (the first run launches from the stored input, 2026-11-21)
 5. ~~[42](#issue-42) — A replayed activity failure keeps only the exception's type and message~~ — closed (the first run throws the failure rebuilt from its record; `@FailureDetails` opt-in, 2026-11-22; the rest is [93](#issue-93))
 6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
-7. [83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged
+7. ~~[83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged~~ — closed (the engine adopts; the janitor purges orphans past `maestro.signal.orphan-retention`, 2026-11-22)
 8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
 9. [52](#issue-52) — `maestro-admin-client` has no wired component
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
@@ -496,7 +496,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | **Closed** (P1: fixed) |
 | [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | **Resolved** (P2) |
 | [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | `limitation` — Open |
-| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | `blocks-1.0` — Open |
+| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | **Resolved** |
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | `limitation` — Open |
 | [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | `blocks-1.0` — Open |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | **Resolved** (P2) |
@@ -6009,7 +6009,38 @@ documented and the error names it.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** An SPI contract with two owners, and rows that are never purged.
 
-> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
+> **Label: `blocks-1.0`. Closed (2026-11-22): fixed, the janitor purges
+> orphans** (branch `chore/issues-50-52-83-85-housekeeping`). **One owner:**
+> the engine — `WorkflowExecutor.startWorkflow` calls `adoptOrphanedSignals`
+> once, after `createInstance`, which no longer adopts in the JDBC store (the
+> in-memory store never did); both Javadocs say so. **The purge**, the
+> entry's second option: new `WorkflowStore.deleteOrphanedSignalsBefore(Instant,
+> int)` deletes unconsumed `NULL`-instance rows received before the cutoff
+> whose workflow id has no instance in a status other than
+> `COMPLETED`/`TERMINATED` — so a never-started id, an instance retention
+> already purged, and the race's row once its workflow finished; an active
+> or `FAILED` instance keeps them. The signal janitor runs it after its
+> terminal-instance phase, in batches of its own (1,000, at most 1,000 per
+> sweep), with a retention of its own, `maestro.signal.orphan-retention`
+> (default 7d, documented in `docs/configuration.md`): reusing
+> `terminal-retention` would let an operator who shortens it for finished
+> workflows cut how long a pre-delivered signal waits. A workflow started
+> within the retention still adopts and consumes its signal. **Not
+> service-scoped:** an orphan row carries no service name and no instance,
+> so nothing attributes it; every node's janitor purges every orphan of its
+> tables, which are one service's (services never share Maestro tables). No
+> migration: the V2 partial index `idx_wf_signal_orphan` covers exactly the
+> candidate rows. The SPI default deletes nothing. Tests:
+> `PostgresStoreHygieneTest$OrphanPurge` (this entry's done-when — a `NULL`
+> row of a workflow completed past the retention is gone — the batch bound
+> `[2, 1, 0]`, the survivors, a start after a sweep inside the retention),
+> its in-memory twin, `SignalJanitorBatchingTest` (the orphan phase, its
+> cutoff and batch cap), `PostgresWorkflowStoreTest`
+> (`createInstance` leaves the orphan), `JdbcCreateInstanceReturningInputTest`
+> (one statement), `EnginePostgresSignalIT.orphanSignal_isAdoptedOnWorkflowStart`
+> (a six-day-old orphan survives a sweep and is adopted by the engine's start).
+
+> Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
 > final review; rewritten after the WP13 review. Traced, not tested.
 
 **Kind:** Library gap — SPI contract, retention. **Severity:** Low.

@@ -118,6 +118,8 @@ class SignalJanitorTest {
                 () -> new SignalJanitor(new RecordingStore(), "svc", Duration.ZERO, Duration.ofDays(7)));
         assertThrows(IllegalArgumentException.class,
                 () -> new SignalJanitor(new RecordingStore(), "svc", Duration.ofHours(1), Duration.ofSeconds(-1)));
+        assertThrows(IllegalArgumentException.class, () -> new SignalJanitor(new RecordingStore(), "svc",
+                Duration.ofHours(1), Duration.ofDays(7), Duration.ZERO, new BatchPacer()));
     }
 
     /**

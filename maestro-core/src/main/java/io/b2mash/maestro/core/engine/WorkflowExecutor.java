@@ -903,10 +903,12 @@ public final class WorkflowExecutor {
             // A createInstance that returned only after the give-up: the row
             // is committed, so the start says so (WorkflowNotLaunchedException,
             // not "nothing was persisted") and writes nothing more — no
-            // adoption, no run. Skipping the adoption is crash-equivalent: an
-            // await selects signals by workflow id, and the JDBC store adopts
-            // inside createInstance anyway (Issue 83).
+            // adoption, no run. Skipping the adoption is crash-equivalent and
+            // loses nothing: an await selects signals by workflow id, and the
+            // janitor purges an unadopted row once no workflow can consume it.
             refuseIfGivenUp(cancellation, workflowId, "its orphaned signals were adopted", true);
+            // The one owner of adoption (Issue 83): the store's createInstance
+            // does not adopt; this call, once per start, does.
             signalManager.adoptOrphanedSignals(workflowId, instanceId);
         } catch (RuntimeException | Error e) {
             // An Error too (control-flow ones included): no run owns this lock yet, so
@@ -2542,11 +2544,41 @@ public final class WorkflowExecutor {
      * The settings a signal janitor was started with — see
      * {@link #startSignalJanitor(Duration, Duration)}.
      *
-     * @param interval  time between sweeps
-     * @param retention how long after a workflow reached {@code COMPLETED} or
-     *                  {@code TERMINATED} its unconsumed signals are kept
+     * @param interval        time between sweeps
+     * @param retention       how long after a workflow reached {@code COMPLETED}
+     *                        or {@code TERMINATED} its unconsumed signals are kept
+     * @param orphanRetention how long an orphaned signal waits for its workflow
+     *                        to start (Issue 83)
      */
-    public record SignalJanitorSettings(Duration interval, Duration retention) {
+    public record SignalJanitorSettings(Duration interval, Duration retention, Duration orphanRetention) {
+
+        /**
+         * Settings with the default orphan retention (7 days).
+         *
+         * @param interval  time between sweeps
+         * @param retention how long after a workflow finished its unconsumed
+         *                  signals are kept
+         */
+        public SignalJanitorSettings(Duration interval, Duration retention) {
+            this(interval, retention, SignalJanitor.DEFAULT_ORPHAN_RETENTION);
+        }
+    }
+
+    /**
+     * Starts the background signal janitor with the default orphan retention
+     * (7 days): {@link #startSignalJanitor(Duration, Duration, Duration)}.
+     *
+     * @param interval  time between sweeps; must be positive
+     * @param retention how long after a workflow finished its unconsumed
+     *                  signals are kept; must be positive
+     * @throws IllegalArgumentException if either duration is {@code null},
+     *                                  zero or negative, or this executor's
+     *                                  service name is blank
+     * @throws IllegalStateException    if the janitor is already started or
+     *                                  the executor is shutting down
+     */
+    public void startSignalJanitor(Duration interval, Duration retention) {
+        startSignalJanitor(interval, retention, SignalJanitor.DEFAULT_ORPHAN_RETENTION);
     }
 
     /**
@@ -2564,27 +2596,39 @@ public final class WorkflowExecutor {
      * counts in its streak, and the next sweep runs one interval later.
      * {@link #shutdown()} stops it.
      *
+     * <p>Each sweep then purges orphaned signals (Issue 83): unconsumed
+     * signals with no instance, received more than {@code orphanRetention}
+     * ago, whose workflow id has no instance that could still consume them,
+     * via {@link WorkflowStore#deleteOrphanedSignalsBefore(Instant, int)}. A
+     * workflow started within {@code orphanRetention} of its signal still
+     * adopts and consumes it. Orphans name no service, so this phase covers
+     * every orphan of the tables (one service's, as the support matrix
+     * requires).
+     *
      * <p>If this method is never called, nothing is purged. The Spring Boot
      * starter calls it automatically ({@code maestro.signal.janitor-interval},
-     * {@code maestro.signal.terminal-retention}).
+     * {@code maestro.signal.terminal-retention},
+     * {@code maestro.signal.orphan-retention}).
      *
-     * @param interval  time between sweeps; must be positive
-     * @param retention how long after a workflow finished its unconsumed
-     *                  signals are kept; must be positive
-     * @throws IllegalArgumentException if either duration is {@code null},
-     *                                  zero or negative, or this executor's
-     *                                  service name is blank
+     * @param interval        time between sweeps; must be positive
+     * @param retention       how long after a workflow finished its unconsumed
+     *                        signals are kept; must be positive
+     * @param orphanRetention how long an orphaned signal waits for its
+     *                        workflow to start; must be positive
+     * @throws IllegalArgumentException if a duration is {@code null}, zero or
+     *                                  negative, or this executor's service
+     *                                  name is blank
      * @throws IllegalStateException    if the janitor is already started or
      *                                  the executor is shutting down
      */
-    public void startSignalJanitor(Duration interval, Duration retention) {
+    public void startSignalJanitor(Duration interval, Duration retention, Duration orphanRetention) {
         if (shuttingDown.get()) {
             throw new IllegalStateException(
                     "WorkflowExecutor is shutting down — cannot start signal janitor");
         }
-        var janitor = new SignalJanitor(store, serviceName, interval, retention);
+        var janitor = new SignalJanitor(store, serviceName, interval, retention, orphanRetention);
         supervise(janitor.spec(), janitor);
-        signalJanitorSettings = new SignalJanitorSettings(interval, retention);
+        signalJanitorSettings = new SignalJanitorSettings(interval, retention, orphanRetention);
         logger.info("Signal janitor started ({})", janitor.describeSettings());
     }
 

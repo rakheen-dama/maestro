@@ -682,10 +682,10 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
     }
 
     @Test
-    @DisplayName("an input whose stored form cannot be parsed back fails createInstance and rolls the insert back, adoption included")
+    @DisplayName("an input whose stored form cannot be parsed back fails createInstance and rolls the insert back")
     void anInputTheStoreCannotParseBackFailsCreateInstanceAndRollsBack() {
         var workflowId = "created-unparseable-" + UUID.randomUUID();
-        // A pre-delivered signal the same transaction would adopt.
+        // A pre-delivered signal: it must stay an orphan (createInstance never adopts, Issue 83).
         store.saveSignal(new WorkflowSignal(UUID.randomUUID(), null, workflowId, "early",
                 serializer.serialize("x"), false, Instant.now().truncatedTo(ChronoUnit.MILLIS), null));
         // jsonb stores 1E+1500 as a 1501-digit integer, past the parser's number-length limit.
@@ -696,7 +696,7 @@ class PostgresPayloadFidelityTest extends PostgresTestSupport {
 
         assertTrue(store.getInstance(workflowId).isEmpty(), "the insert was rolled back");
         assertEquals(null, store.getUnconsumedSignals(workflowId, "early").getFirst().workflowInstanceId(),
-                "the adoption was rolled back with it");
+                "the failed create left the orphan as it was");
     }
 
     private static WorkflowEvent event(UUID instanceId, int seq, @Nullable JsonNode payload) {

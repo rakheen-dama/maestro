@@ -150,6 +150,127 @@ class PostgresStoreHygieneTest extends PostgresTestSupport {
     }
 
     /**
+     * The janitor's orphan purge (Issue 83), against a real Postgres. Every
+     * row below has a {@code NULL} instance; the cutoff is 7 days ago.
+     * Deletable: an orphan received 10 days ago for an id that never started,
+     * and two received 10 days ago whose workflow (created without adopting
+     * them, as a delivery that raced the start leaves them) COMPLETED or was
+     * TERMINATED 10 days ago. Kept: an orphan received 1 day ago (its
+     * workflow may still start), old orphans of a RUNNING and of a FAILED
+     * instance (both may still consume them), a consumed old orphan, and an
+     * adopted unconsumed signal of the old COMPLETED instance (the terminal
+     * rule's, not this one's).
+     */
+    @Nested
+    class OrphanPurge {
+
+        private final List<UUID> deletable = new ArrayList<>();
+        private final List<UUID> kept = new ArrayList<>();
+
+        @BeforeEach
+        void fixture() throws Exception {
+            deletable.add(orphan("never-started-old", 10));
+            deletable.add(orphan(finished("done-c", "orders", WorkflowStatus.COMPLETED, 10).workflowId(), 10));
+            deletable.add(orphan(finished("done-t", "orders", WorkflowStatus.TERMINATED, 10).workflowId(), 10));
+            kept.add(orphan("never-started-new", 1));
+            kept.add(orphan(active("live-r").workflowId(), 10));
+            kept.add(orphan(finished("done-f", "orders", WorkflowStatus.FAILED, 10).workflowId(), 10));
+            var consumed = orphan("consumed-old", 10);
+            assertTrue(store.markSignalConsumed(consumed));
+            kept.add(consumed);
+            var adopted = newSignal("done-c", store.getInstance("done-c").orElseThrow().id());
+            store.saveSignal(adopted);
+            kept.add(adopted.id());
+        }
+
+        /** The done-when of Issue 83, and the batch bound: at most {@code limit} rows per call. */
+        @Test
+        void deletesExactlyTheOrphansNoWorkflowCanConsumeAtMostLimitPerCall() throws Exception {
+            var deleted = IntStream.range(0, 3)
+                    .map(i -> store.deleteOrphanedSignalsBefore(cutoff, 2)).boxed().toList();
+            assertEquals(List.of(2, 1, 0), deleted);
+            assertEquals(List.of(), deletable.stream().filter(this::exists).toList(), "deletable rows left");
+            assertEquals(kept, kept.stream().filter(this::exists).toList(), "a kept row was deleted");
+        }
+
+        /**
+         * A signal that arrived before its workflow started is kept by a sweep
+         * inside the retention, and a start after the sweep adopts it and
+         * reads it.
+         */
+        @Test
+        void aWorkflowStartedAfterASweepInsideTheRetentionStillGetsItsSignal() throws Exception {
+            var early = orphan("late-start", 6);
+            while (store.deleteOrphanedSignalsBefore(cutoff, 2) == 2) {
+                // drain the deletable rows
+            }
+            var instance = active("late-start");
+            store.adoptOrphanedSignals(instance.workflowId(), instance.id());
+            var signals = store.getUnconsumedSignals("late-start", "s");
+            assertEquals(List.of(early), signals.stream().map(WorkflowSignal::id).toList());
+            assertEquals(instance.id(), signals.getFirst().workflowInstanceId());
+        }
+
+        @Test
+        void rejectsANonPositiveLimit() {
+            assertThrows(IllegalArgumentException.class, () -> store.deleteOrphanedSignalsBefore(cutoff, 0));
+        }
+
+        /**
+         * Guard: the load suite counts the janitor by the leading text
+         * {@code DELETE FROM maestro_workflow_signal WHERE consumed = }, which
+         * this statement shares with the terminal-instance delete.
+         */
+        @Test
+        void theOrphanStatementKeepsTheLeadingTextThePerfHarnessMatches() {
+            var sql = new CopyOnWriteArrayList<String>();
+            new PostgresWorkflowStore(recording(dataSource, sql), objectMapper).deleteOrphanedSignalsBefore(cutoff, 2);
+            var janitor = sql.stream().map(s -> s.replaceAll("\\s+", " ").strip())
+                    .filter(s -> s.startsWith("DELETE FROM maestro_workflow_signal")).toList();
+            assertEquals(1, janitor.size());
+            assertTrue(janitor.getFirst().startsWith("DELETE FROM maestro_workflow_signal WHERE consumed = "),
+                    janitor.getFirst());
+        }
+
+        /** Saves an orphan for {@code workflowId} and backdates its {@code received_at} by {@code daysAgo}. */
+        private UUID orphan(String workflowId, int daysAgo) throws Exception {
+            var signal = newSignal(workflowId, null);
+            store.saveSignal(signal);
+            try (Connection conn = dataSource.getConnection();
+                 var ps = conn.prepareStatement("UPDATE maestro_workflow_signal SET received_at = ? WHERE id = ?")) {
+                ps.setTimestamp(1, java.sql.Timestamp.from(now.minus(Duration.ofDays(daysAgo))));
+                ps.setObject(2, signal.id());
+                assertEquals(1, ps.executeUpdate());
+            }
+            return signal.id();
+        }
+
+        private WorkflowInstance active(String workflowId) {
+            return store.createInstance(WorkflowInstance.builder()
+                    .id(UUID.randomUUID())
+                    .workflowId(workflowId)
+                    .runId(UUID.randomUUID())
+                    .workflowType("test-workflow")
+                    .taskQueue("default")
+                    .status(WorkflowStatus.RUNNING)
+                    .serviceName("orders")
+                    .eventSequence(0)
+                    .startedAt(now.minus(Duration.ofDays(11)))
+                    .updatedAt(now)
+                    .version(0)
+                    .build());
+        }
+
+        private boolean exists(UUID signalId) {
+            try {
+                return count("SELECT count(*) FROM maestro_workflow_signal WHERE id = ?", signalId) == 1;
+            } catch (Exception e) {
+                throw new IllegalStateException(e);
+            }
+        }
+    }
+
+    /**
      * {@code orders}: 3 COMPLETED finished 10 days ago; {@code billing}: 2
      * COMPLETED finished 10 days ago. Each has two events, a PENDING and a
      * FIRED timer, and a consumed and an unconsumed signal. The cutoff is 7

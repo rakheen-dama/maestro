@@ -104,9 +104,10 @@ public interface WorkflowStore {
     void saveSignal(WorkflowSignal signal);
     List<WorkflowSignal> getUnconsumedSignals(String workflowId, String signalName);
     boolean markSignalConsumed(UUID signalId);           // CAS: false if already consumed
-    void adoptOrphanedSignals(String workflowId, UUID instanceId);
+    void adoptOrphanedSignals(String workflowId, UUID instanceId); // one owner: the engine's start, after createInstance (which never adopts; Issue 83)
     int deleteUnconsumedSignalsForTerminalInstancesBefore(Instant cutoff); // COMPLETED/TERMINATED only, every service; the engine no longer calls it
     default int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit); // janitor batch, this service only; default = the unscoped, unbounded one
+    default int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit); // janitor orphan batch: NULL-instance rows no active/FAILED instance can consume; unscoped (rows name no service); default deletes nothing
     PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize); // one batch = one transaction, children before parent; every service
     default PurgeResult purgeTerminalInstancesBefore(String serviceName, WorkflowStatus status, Instant cutoff, int batchSize); // retention sweeper, this service only; default = unscoped
 
@@ -204,7 +205,7 @@ Any active → TERMINATED
 
 Signals are persisted immediately. Three cases:
 1. Signal before `awaitSignal()` → stored, consumed when reached.
-2. Signal before workflow starts → stored with null instance, adopted on start.
+2. Signal before workflow starts → stored with null instance, adopted on start (kept `maestro.signal.orphan-retention`, 7d, for a workflow that never starts).
 3. Signal while service is down → persisted, found on recovery.
 
 **Never discard a signal.** A signal carries a message id; duplicates are suppressed — at most one row per `(workflowId, signalName, messageId)` (`WorkflowStore.saveSignalIfAbsent`), ids namespaced by source (`env:`, `hdr:<topic>:`, `kafka:<topicId>:<p>:<o>`, `client:`). A signal without an id is never deduplicated. Consuming is atomic: the `SIGNAL_RECEIVED` memo and the `consumed` flip are one transaction (`WorkflowStore.appendEventAndConsumeSignal`); a consumer that loses the row writes nothing and moves to the next row or parks.
@@ -258,7 +259,10 @@ the tracing flag gates the Kafka W3C header injection too — see
 `maestro.signal.terminal-retention` (default 7d) (the signal janitor purges
 unconsumed signals of workflows `COMPLETED`/`TERMINATED` longer ago than the
 retention, this service's only, in batches of 1,000, at most 1,000 batches per
-sweep; `FAILED` keeps them for retry), `maestro.retention.*` (`enabled` default
+sweep; `FAILED` keeps them for retry) / `maestro.signal.orphan-retention`
+(default 7d) (then, in batches of its own, unconsumed `NULL`-instance signals
+received longer ago whose workflow id has no active or `FAILED` instance —
+unscoped, because an orphan row names no service), `maestro.retention.*` (`enabled` default
 `true`, `interval` 1h, `completed-retention` 30d, `terminated-retention` 30d,
 `failed-retention` 90d, `batch-size` 500, `max-batches-per-sweep` 100 — the
 leader-elected retention sweeper purges finished workflows of this service only,

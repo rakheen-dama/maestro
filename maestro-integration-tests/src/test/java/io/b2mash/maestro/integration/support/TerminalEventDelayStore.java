@@ -234,6 +234,11 @@ public final class TerminalEventDelayStore implements WorkflowStore {
     }
 
     @Override
+    public int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
+        return delegate.deleteOrphanedSignalsBefore(receivedBefore, limit);
+    }
+
+    @Override
     public PurgeResult purgeTerminalInstancesBefore(WorkflowStatus status, Instant cutoff, int batchSize) {
         return delegate.purgeTerminalInstancesBefore(status, cutoff, batchSize);
     }

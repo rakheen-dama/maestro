@@ -126,6 +126,10 @@ sequenceDiagram
 
 The `idx_wf_signal_orphan` partial index on `(workflow_id, consumed) WHERE workflow_instance_id IS NULL AND consumed = false` ensures the adoption query is efficient.
 
+Adoption has one owner, that `startWorkflow` call; the store's `createInstance` does not adopt. Adoption is bookkeeping, not delivery: the await reads signals by workflow ID, so a row left unadopted (a crash between the two calls, or a delivery that raced the start) is consumed all the same.
+
+**How long an orphan waits.** `maestro.signal.orphan-retention` (default 7 days). A workflow started within it after its signal adopts and consumes the signal. After it, the signal janitor deletes an unconsumed orphan whose workflow ID has no instance that could still consume it — none was ever started, or it completed or was terminated; an active or `FAILED` workflow keeps its orphans however old (Issue 83). A signal sent to an ID that never runs therefore no longer stays in `maestro_workflow_signal` for ever. Raise the retention if your workflows may start more than a week after their first signal.
+
 ---
 
 ## Case 3: Signal During Service Downtime

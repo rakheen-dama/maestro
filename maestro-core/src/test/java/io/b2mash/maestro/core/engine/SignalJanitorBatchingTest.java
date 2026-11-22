@@ -61,6 +61,39 @@ class SignalJanitorBatchingTest {
         assertEquals(0, store.unscopedCalls(), "the unscoped, unbounded delete is never issued");
     }
 
+    /**
+     * Issue 83: after the terminal-instance batches the sweep purges orphans
+     * no workflow can consume, in batches of its own with its own cutoff
+     * ({@code now - orphanRetention}, fixed once per sweep), until a short
+     * batch.
+     */
+    @Test
+    void aSweepThenPurgesOrphansInBatchesWithTheOrphanRetentionAsItsCutoff() {
+        store.script(3, ms(5));
+        store.scriptOrphans(1000, ms(20)).scriptOrphans(1000, ms(30)).scriptOrphans(4, ms(1));
+        var janitor = new SignalJanitor(store, "orders", Duration.ofHours(1), Duration.ofDays(7),
+                Duration.ofDays(30), pacer);
+        var before = Instant.now();
+        assertEquals(3 + 2004, janitor.sweepOnce());
+        assertEquals(3, store.orphanCalls().size());
+        assertTrue(store.orphanCalls().stream().allMatch(c -> c.limit() == SignalJanitor.BATCH_SIZE));
+        assertEquals(1, store.orphanCalls().stream().map(Call::cutoff).distinct().count(), "one cutoff per sweep");
+        var cutoff = store.orphanCalls().getFirst().cutoff();
+        assertTrue(Duration.between(before.minus(Duration.ofDays(30)), cutoff).abs()
+                .compareTo(Duration.ofSeconds(5)) < 0, "orphan cutoff " + cutoff);
+        assertEquals(List.of(ms(20), ms(30)), pauses, "paced as the terminal batches are");
+    }
+
+    /** The orphan phase has a batch cap of its own. */
+    @Test
+    void theOrphanPhaseEndsAfterItsBatchCapEvenIfEveryBatchIsFull() {
+        for (int i = 0; i <= SignalJanitor.MAX_BATCHES_PER_SWEEP; i++) {
+            store.scriptOrphans(SignalJanitor.BATCH_SIZE, ms(1));
+        }
+        var swept = janitor(pacer).sweepOnce();
+        assertEquals(List.of(1_000, 1_000_000), List.of(store.orphanCalls().size(), swept));
+    }
+
     @Test
     void betweenTwoBatchesTheJanitorPausesAsLongAsTheBatchBeforeIt() {
         store.script(1000, ms(40)).script(1000, ms(70)).script(5, ms(10));
@@ -87,6 +120,7 @@ class SignalJanitorBatchingTest {
         assertNotNull(result, "sweepOnce was still paused 1 s after requestStop");
         assertEquals(1000, result);
         assertEquals(1, store.calls().size(), "no batch after the stop");
+        assertEquals(List.of(), store.orphanCalls(), "no orphan batch after the stop");
         assertFalse(interruptedAfter.get(), "nothing interrupted the sweeping thread");
     }
 
@@ -174,7 +208,9 @@ class SignalJanitorBatchingTest {
 
         private final AtomicLong clock;
         private final List<Call> calls = new CopyOnWriteArrayList<>();
+        private final List<Call> orphanCalls = new CopyOnWriteArrayList<>();
         private final Deque<Step> scripted = new ArrayDeque<>();
+        private final Deque<Step> scriptedOrphans = new ArrayDeque<>();
         private volatile @Nullable Step forever;
         private volatile int failOnCall = -1;
         private volatile @Nullable RuntimeException failure;
@@ -187,6 +223,26 @@ class SignalJanitorBatchingTest {
         synchronized ScopedJanitorStore script(int deleted, Duration took) {
             scripted.addLast(new Step(deleted, took));
             return this;
+        }
+
+        synchronized ScopedJanitorStore scriptOrphans(int deleted, Duration took) {
+            scriptedOrphans.addLast(new Step(deleted, took));
+            return this;
+        }
+
+        List<Call> orphanCalls() {
+            return orphanCalls;
+        }
+
+        @Override
+        public synchronized int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
+            orphanCalls.add(new Call("", receivedBefore, limit));
+            var step = scriptedOrphans.pollFirst();
+            if (step == null) {
+                return 0;
+            }
+            clock.addAndGet(step.took().toNanos());
+            return step.deleted();
         }
 
         void scriptForever(int deleted, Duration took) {
