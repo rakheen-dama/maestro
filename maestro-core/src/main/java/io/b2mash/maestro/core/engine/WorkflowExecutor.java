@@ -909,7 +909,7 @@ public final class WorkflowExecutor {
             refuseIfGivenUp(cancellation, workflowId, "its orphaned signals were adopted", true);
             // The one owner of adoption (Issue 83): the store's createInstance
             // does not adopt; this call, once per start, does.
-            signalManager.adoptOrphanedSignals(workflowId, instanceId);
+            adoptOrphanedSignalsContained(workflowId, instanceId);
         } catch (RuntimeException | Error e) {
             // An Error too (control-flow ones included): no run owns this lock yet, so
             // keeping it would leave the handle renewed for ever and the workflow, whose
@@ -2536,6 +2536,34 @@ public final class WorkflowExecutor {
         }
         var recovery = new OneShotRecovery(this, registrations, serviceName, retryInterval);
         supervise(recovery.spec(), recovery);
+    }
+
+    /**
+     * The start's one adoption of its orphaned signals (Issue 83), with a
+     * failure of the adoption alone contained. The {@code RUNNING} row is
+     * already committed, and adoption is bookkeeping, not delivery: an await
+     * finds a signal by workflow id and name and consumes it by row id, so an
+     * unadopted row is consumed all the same, and the janitor's orphan purge
+     * removes it once no workflow can consume it. Failing the start here would
+     * release the lock and report a failure for a workflow whose row exists
+     * (recovery would run it, and a retried start would get
+     * {@code WorkflowAlreadyExistsException}), so a {@code RuntimeException} —
+     * {@code StoreUnavailableException} included, a store fault on a write the
+     * run does not need — is logged once at {@code WARN} with the workflow id
+     * and the start continues. It is not the run's store fault: no run exists
+     * yet, so there is no {@code STORE_UNAVAILABLE} latch to set, and the run's
+     * own writes meet the guard as usual. An {@code Error} — a
+     * {@code MaestroControlFlowError} above all — is never contained: it
+     * propagates, and the caller releases the lock.
+     */
+    private void adoptOrphanedSignalsContained(String workflowId, UUID instanceId) {
+        try {
+            signalManager.adoptOrphanedSignals(workflowId, instanceId);
+        } catch (RuntimeException adoptionFailure) {
+            logger.warn("Workflow '{}': adopting its pre-delivered signals failed; the start continues, because an "
+                    + "await reads signals by workflow id and the signal janitor purges an unadopted row once no "
+                    + "workflow can consume it", workflowId, adoptionFailure);
+        }
     }
 
     // ── Signal janitor ──────────────────────────────────────────────────

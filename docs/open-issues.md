@@ -6099,8 +6099,16 @@ documented and the error names it.
 > service-scoped:** an orphan row carries no service name and no instance,
 > so nothing attributes it; every node's janitor purges every orphan of its
 > tables, which are one service's (services never share Maestro tables). No
-> migration: the V2 partial index `idx_wf_signal_orphan` covers exactly the
-> candidate rows. The SPI default deletes nothing. Tests:
+> migration. **Not index-supported** (narrowed after review): no index is on
+> `received_at` — `idx_wf_signal_orphan` is `(workflow_id, consumed)` — so
+> each batch scans this table's unconsumed orphans; fine at the expected
+> volumes, and a partial index on `received_at` is a possible later
+> migration. **A failed adoption is contained** (review): a
+> `RuntimeException` from the start's one adoption, `StoreUnavailableException`
+> included, is logged at `WARN` with the workflow id and the start goes on
+> (the row is committed and adoption is bookkeeping); an `Error`, a
+> `MaestroControlFlowError` above all, still propagates and releases the lock
+> (`AdoptionLockLeakTest`). The SPI default deletes nothing. Tests:
 > `PostgresStoreHygieneTest$OrphanPurge` (this entry's done-when — a `NULL`
 > row of a workflow completed past the retention is gone — the batch bound
 > `[2, 1, 0]`, the survivors, a start after a sweep inside the retention),

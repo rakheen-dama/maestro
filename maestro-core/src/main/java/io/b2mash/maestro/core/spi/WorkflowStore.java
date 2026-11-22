@@ -834,7 +834,7 @@ public interface WorkflowStore {
      * {@link #getUnconsumedSignals} selects by workflow id, so an await
      * consumes a row whether or not it was adopted. A row can therefore stay
      * unadopted without losing anything — a node that crashed between the two
-     * calls, or a delivery that looked the instance up just before the start
+     * calls, an adoption that failed (the start logs it and goes on), or a delivery that looked the instance up just before the start
      * created it and saved its row just after the adoption ran — and
      * {@link #deleteOrphanedSignalsBefore} is what eventually removes such a
      * row once no workflow can consume it.

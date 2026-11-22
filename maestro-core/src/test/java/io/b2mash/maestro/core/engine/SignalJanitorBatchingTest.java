@@ -84,6 +84,24 @@ class SignalJanitorBatchingTest {
         assertEquals(List.of(ms(20), ms(30)), pauses, "paced as the terminal batches are");
     }
 
+    /**
+     * A store fault in the orphan phase fails the sweep: it propagates out of
+     * {@code sweepOnce} to the supervisor (the loop body throws, never
+     * swallows), and what the terminal phase deleted is still logged.
+     */
+    @Test
+    void aStoreFaultInTheOrphanPhasePropagatesOutOfTheSweep() {
+        store.script(7, ms(1));
+        store.failOrphansWith(new StoreUnavailableException("down", new SQLException()));
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(SignalJanitor.class)) {
+            var thrown = assertThrows(StoreUnavailableException.class, () -> janitor(pacer).sweepOnce());
+            assertEquals("down", thrown.getMessage());
+            assertTrue(logs.records().stream().anyMatch(r -> r.message().startsWith("Signal janitor purged 7 ")),
+                    "the terminal phase's deletions are logged: " + logs.records());
+        }
+        assertEquals(1, store.orphanCalls().size());
+    }
+
     /** The orphan phase has a batch cap of its own. */
     @Test
     void theOrphanPhaseEndsAfterItsBatchCapEvenIfEveryBatchIsFull() {
@@ -234,9 +252,19 @@ class SignalJanitorBatchingTest {
             return orphanCalls;
         }
 
+        private volatile @Nullable RuntimeException orphanFailure;
+
+        void failOrphansWith(RuntimeException failure) {
+            this.orphanFailure = failure;
+        }
+
         @Override
         public synchronized int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
             orphanCalls.add(new Call("", receivedBefore, limit));
+            var failure = orphanFailure;
+            if (failure != null) {
+                throw failure;
+            }
             var step = scriptedOrphans.pollFirst();
             if (step == null) {
                 return 0;

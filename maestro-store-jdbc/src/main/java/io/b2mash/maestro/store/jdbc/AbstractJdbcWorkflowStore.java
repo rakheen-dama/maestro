@@ -1848,10 +1848,15 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * ONLY}. The outer {@code consumed = FALSE AND workflow_instance_id IS
      * NULL} re-checks a row consumed or adopted after the subquery read it
      * (under Postgres' read committed, the {@code DELETE} re-evaluates both on
-     * the row's newest version). No migration: the V2 partial index
-     * {@code idx_wf_signal_orphan} covers exactly the unconsumed
-     * {@code NULL}-instance rows, and the instance's unique
-     * {@code workflow_id} serves the {@code NOT EXISTS}.
+     * the row's newest version). No migration, and no index serves the
+     * {@code received_at} cutoff: the V2 partial index
+     * {@code idx_wf_signal_orphan} is on {@code (workflow_id, consumed)}, so
+     * each call scans this table's unconsumed {@code NULL}-instance rows
+     * (through that index or the table) and filters them by
+     * {@code received_at}. That is fine at the expected volumes — orphans are
+     * pre-delivered signals, normally few — and a partial index on
+     * {@code received_at} is a possible later migration. The instance's
+     * unique {@code workflow_id} serves the {@code NOT EXISTS}.
      */
     @Override
     public int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {

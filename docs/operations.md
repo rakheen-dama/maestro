@@ -1347,7 +1347,10 @@ orphan names no service, so this phase is not service-scoped: each node
 purges every orphan of its tables, which belong to its service alone. Same
 batches, pause and per-sweep cap as above (`PostgresStoreHygieneTest$OrphanPurge`).
 Adoption itself has one owner: the engine's start calls
-`adoptOrphanedSignals` once, after `createInstance` (which does not adopt).
+`adoptOrphanedSignals` once, after `createInstance` (which does not adopt); if
+that call fails with an exception the start logs one `WARN` naming the
+workflow and continues. The purge has no index on `received_at`, so each batch
+scans the table's unconsumed orphans — fine while orphans are few.
 
 ### 11.2 What a purge means downstream
 
