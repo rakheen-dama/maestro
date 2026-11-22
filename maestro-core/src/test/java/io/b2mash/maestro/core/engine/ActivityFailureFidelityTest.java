@@ -48,9 +48,9 @@ class ActivityFailureFidelityTest {
         Charging impl = () -> {
             throw thrown.get();
         };
-        return new ActivityProxyFactory().createProxy(Charging.class, impl, store, null,
+        return new ActivityProxyFactory().createProxy(Charging.class, impl, store,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), new PayloadSerializer(JsonMapper.builder().build()),
-                new RetryExecutor(), WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer,
+                new RetryExecutor(), observer,
                 TaskQueueGovernor.UNBOUNDED, LifecycleEventSink.NOOP, true);
     }
 
@@ -145,9 +145,9 @@ class ActivityFailureFidelityTest {
             }
             return "late";
         };
-        var proxy = new ActivityProxyFactory().createProxy(Charging.class, impl, store, null,
+        var proxy = new ActivityProxyFactory().createProxy(Charging.class, impl, store,
                 RetryPolicy.noRetry(), Duration.ofMillis(100), new PayloadSerializer(JsonMapper.builder().build()),
-                new RetryExecutor(), WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer,
+                new RetryExecutor(), observer,
                 TaskQueueGovernor.UNBOUNDED, LifecycleEventSink.NOOP, true);
 
         var live = call(proxy);

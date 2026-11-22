@@ -61,7 +61,7 @@ class FailureAttributionTest {
                 .shutdownTimeout(Duration.ofSeconds(5))
                 .wakeRecheckInterval(Duration.ofMillis(200))
                 .build();
-        acts = new ActivityProxyFactory().createProxy(Acts.class, new FailingActs(), store, null, null,
+        acts = new ActivityProxyFactory().createProxy(Acts.class, new FailingActs(), store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, new RetryExecutor());
     }
 

@@ -85,7 +85,7 @@ class AdminRetryTest {
                 .observer(observer)
                 .build();
         impl = new ActsImpl();
-        acts = new ActivityProxyFactory().createProxy(Acts.class, impl, store, null, null,
+        acts = new ActivityProxyFactory().createProxy(Acts.class, impl, store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, new RetryExecutor());
     }
 

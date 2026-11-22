@@ -341,8 +341,8 @@ class RecoveryDisabledLockFailureTest {
             }
             return "ok";
         };
-        return new ActivityProxyFactory().createProxy(Boom.class, impl, store, null, null, RetryPolicy.noRetry(),
-                Duration.ofSeconds(30), serializer, new RetryExecutor(), WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+        return new ActivityProxyFactory().createProxy(Boom.class, impl, store, null, RetryPolicy.noRetry(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor(),
                 EngineObserver.NOOP, node.taskQueueGovernor());
     }
 

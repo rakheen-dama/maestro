@@ -81,9 +81,8 @@ class WorkflowExecutorObserverTest {
 
     private StepActivities proxy(EngineObserver obs, StepActivities impl) {
         return proxyFactory.createProxy(StepActivities.class, impl,
-                store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(30),
-                serializer, retryExecutor,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, obs);
+                store, null, RetryPolicy.noRetry(), Duration.ofSeconds(30),
+                serializer, retryExecutor, obs);
     }
 
     // ── Workflow lifecycle + activities ───────────────────────────────

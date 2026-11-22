@@ -111,7 +111,7 @@ class WorkflowVersionParallelBranchTest {
     private void run(java.util.function.Consumer<DefaultWorkflowOperations> body) {
         var parkingLot = new ParkingLot();
         var signalManager = new SignalManager(store, null, null, serializer, parkingLot);
-        var ops = new DefaultWorkflowOperations(store, null, null, serializer, parkingLot,
+        var ops = new DefaultWorkflowOperations(store, null, serializer, parkingLot,
                 new CompensationStack(), signalManager);
         var ctx = new WorkflowContext(
                 instance.id(), instance.workflowId(), instance.runId(),

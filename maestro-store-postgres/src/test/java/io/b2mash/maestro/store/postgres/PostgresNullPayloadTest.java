@@ -136,8 +136,8 @@ class PostgresNullPayloadTest extends PostgresTestSupport {
 
         OptionalEverywhere(List<@Nullable Object> seen, WorkflowStore store, PayloadSerializer serializer) {
             this.seen = seen;
-            this.nothing = new ActivityProxyFactory().createProxy(Nothing.class, Optional::empty, store, null, null,
-                    RetryPolicy.noRetry(), Duration.ofSeconds(10), serializer, new RetryExecutor(), "maestro:lock:");
+            this.nothing = new ActivityProxyFactory().createProxy(Nothing.class, Optional::empty, store, null,
+                    RetryPolicy.noRetry(), Duration.ofSeconds(10), serializer, new RetryExecutor());
         }
 
         /**

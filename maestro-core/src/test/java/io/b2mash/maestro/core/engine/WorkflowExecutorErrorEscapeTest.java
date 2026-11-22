@@ -166,7 +166,7 @@ class WorkflowExecutorErrorEscapeTest {
         var proxy = new ActivityProxyFactory().createProxy(LinkingActivity.class, () -> {
             attempts.incrementAndGet();
             throw new NoClassDefFoundError("com/acme/Missing");
-        }, store, null, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
+        }, store, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflowId = "error-activity-ncdfe";
         var instanceId = executor.startWorkflow(workflowId, "ActivityCallingWorkflow", "default", null,
                 () -> new ActivityCallingWorkflow(compensations, proxy),
@@ -197,7 +197,7 @@ class WorkflowExecutorErrorEscapeTest {
         var proxy = new ActivityProxyFactory().createProxy(LinkingActivity.class, () -> {
             attempts.incrementAndGet();
             throw new NoClassDefFoundError("com/acme/Missing");
-        }, store, null, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
+        }, store, null, policy, Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflowId = "error-compensation-ncdfe";
         var instanceId = executor.startWorkflow(workflowId, "CompensatingViaActivityWorkflow", "default", null,
                 () -> new CompensatingViaActivityWorkflow(proxy),

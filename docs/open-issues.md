@@ -47,7 +47,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (5 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 and 83 closed 2026-11-22)
+**`blocks-1.0`** (4 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 83 and 50 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
@@ -56,7 +56,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[42](#issue-42) — A replayed activity failure keeps only the exception's type and message~~ — closed (the first run throws the failure rebuilt from its record; `@FailureDetails` opt-in, 2026-11-22; the rest is [93](#issue-93))
 6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
 7. ~~[83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged~~ — closed (the engine adopts; the janitor purges orphans past `maestro.signal.orphan-retention`, 2026-11-22)
-8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
+8. ~~[50](#issue-50) — The activity proxy keeps two ignored lock parameters~~ — closed (removed; internal package, no deprecation, 2026-11-22)
 9. [52](#issue-52) — `maestro-admin-client` has no wired component
 10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
@@ -464,7 +464,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
 | [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | `blocks-1.0` — Open |
 | [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | `blocks-1.0` — Open |
-| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | `blocks-1.0` — Open |
+| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | **Resolved** |
 | [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | `limitation` — Open |
 | [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | `blocks-1.0` — Open — maintainer to decide |
 | [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | `limitation` — Open |
@@ -4323,7 +4323,25 @@ replaced by that test.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Public API cleanup (ignored parameters) before the API freezes.
 
-> **Open.** Filed by WP2, wake permits, timer clock and activity lock
+> **Label: `blocks-1.0`. Closed (2026-11-22): fixed, the parameters removed**
+> (branch `chore/issues-50-52-83-85-housekeeping`). The done-when holds: no
+> `ActivityInvocationHandler` constructor or `createProxy` overload takes a
+> `DistributedLock` or a lock key prefix, and `DefaultWorkflowOperations`
+> has no `distributedLock` field (nor the constructor parameter that fed
+> it). Not the builder this entry suggested: dropping the two parameters
+> leaves five overloads per type (the one that differed only by the prefix
+> collapsed into its neighbour), which every call site keeps with two
+> arguments fewer, so a builder would have rewritten every call for no
+> behaviour. Deprecation-free, because all three types are in
+> `io.b2mash.maestro.core.engine`, internal until 1.0: the API
+> compatibility report lists the change under "Internal packages" and never
+> in the public verdict. Callers migrated: the starter's
+> `ActivityStubBeanPostProcessor` (its unused lock and prefix fields went
+> too), the test kit, `MaestroEngineHarness`, and the tests; the frozen
+> upgrade packages call none of them. Release notes § "Removed — the ignored
+> lock parameters".
+
+> Filed by WP2, wake permits, timer clock and activity lock
 > (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
 
 **Kind:** Library gap — API design. **Severity:** Low (dead arguments, no

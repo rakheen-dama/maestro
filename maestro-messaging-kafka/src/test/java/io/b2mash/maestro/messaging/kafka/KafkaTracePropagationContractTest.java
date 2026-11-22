@@ -199,10 +199,9 @@ class KafkaTracePropagationContractTest extends KafkaTestSupport {
                     "order-1", "approval", objectMapper.valueToTree("granted")));
         };
         var proxy = new ActivityProxyFactory().createProxy(
-                PublishingActivities.class, impl, emptyMemoizationStore(), null, null,
+                PublishingActivities.class, impl, emptyMemoizationStore(), null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
-                new PayloadSerializer(objectMapper), new RetryExecutor(),
-                "maestro:lock:", tracing);
+                new PayloadSerializer(objectMapper), new RetryExecutor(), tracing);
         var ctx = new WorkflowContext(UUID.randomUUID(), "order-1", UUID.randomUUID(),
                 "OrderWorkflow", "q", service, 0, false);
         try {

@@ -67,9 +67,8 @@ class ObserverReplayNoDoubleCountTest {
         return proxyFactory.createProxy(
                 WorkflowExecutorObserverTest.StepActivities.class,
                 new WorkflowExecutorObserverTest.StepActivitiesImpl(),
-                store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(30),
-                serializer, retryExecutor,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, obs);
+                store, null, RetryPolicy.noRetry(), Duration.ofSeconds(30),
+                serializer, retryExecutor, obs);
     }
 
     // ── The pin ───────────────────────────────────────────────────────

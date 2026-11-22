@@ -71,8 +71,8 @@ class ActivityLockStatementCountTest {
                 .instanceLockTtl(Duration.ofMinutes(10))
                 .lifecycleEventsEnabled(false)
                 .build();
-        var steps = new ActivityProxyFactory().createProxy(Steps.class, input -> input + "+", store, lock, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), "maestro:lock:");
+        var steps = new ActivityProxyFactory().createProxy(Steps.class, input -> input + "+", store, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var method = FiveSteps.class.getMethod("run", String.class);
 
         counting.reset();

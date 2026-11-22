@@ -56,7 +56,7 @@ abstract class ParallelSagaTestSupport {
         var parkingLot = new ParkingLot();
         var signalManager = new SignalManager(store, null, null, serializer, parkingLot);
         stack = new CompensationStack();
-        ops = new DefaultWorkflowOperations(store, null, null, serializer, parkingLot,
+        ops = new DefaultWorkflowOperations(store, null, serializer, parkingLot,
                 stack, signalManager);
         sagaManager = new SagaManager(store, null, serializer, "test-service");
         ctx = newContext(0, true, ops);

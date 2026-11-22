@@ -189,12 +189,12 @@ class WorkflowExecutorDuplicateEventStandDownTest {
         var factory = new ActivityProxyFactory();
         var retryExecutor = new RetryExecutor();
         var impl = new TwoActivityWorkflow(
-                factory.createProxy(StepA.class, input -> input + "-a", store, null, null,
+                factory.createProxy(StepA.class, input -> input + "-a", store, null,
                         RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, retryExecutor),
                 factory.createProxy(StepB.class, input -> {
                     secondActivityCalls.incrementAndGet();
                     return input + "-b";
-                }, store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, retryExecutor));
+                }, store, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, retryExecutor));
         try {
             var method = TwoActivityWorkflow.class.getMethod("run");
             executor.startWorkflow(workflowId, "TwoActivityWorkflow", "default", null, () -> impl, method);

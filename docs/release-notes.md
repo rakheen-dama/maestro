@@ -36,6 +36,11 @@
 - **API and SPI.** `WorkflowStore.deleteOrphanedSignalsBefore(Instant, int)` (internal SPI; the default deletes nothing, a store decorator must forward it); `WorkflowExecutor.startSignalJanitor(Duration, Duration, Duration)` and a third `SignalJanitorSettings` component (the two-argument forms remain, with the 7-day default). `MaestroProperties.SignalProperties` gains `orphanRetention` (its canonical constructor changes). No migration: the V2 partial index `idx_wf_signal_orphan` serves the purge.
 - **Rolling deploy.** An rc.3 node still adopts inside `createInstance`, which is harmless beside this build's single adoption; it does not purge orphans.
 
+### Removed — the ignored lock parameters of the activity proxy factory (Issue 50)
+
+- **What changes.** `ActivityProxyFactory.createProxy` and the `ActivityInvocationHandler` constructors no longer take a `DistributedLock` or a lock key prefix: both were ignored since the per-activity lock was removed (3.10). The overloads that differed only by the prefix are gone (five `createProxy` overloads and five constructors remain, each two parameters shorter), and `DefaultWorkflowOperations` loses its unused `distributedLock` field and constructor parameter. No behaviour changes.
+- **API.** Source- and binary-incompatible, deprecation-free: all three types are in `io.b2mash.maestro.core.engine`, internal until 1.0 (the API compatibility report lists them under "Internal packages"). A caller drops the two arguments; `@ActivityStub` users, the Spring starter and the test kit are unaffected.
+
 ## 0.3.0-rc.3
 
 ### Fixed — an exception thrown while replaying recorded history stands down as `replay_exception` (Issue 89)

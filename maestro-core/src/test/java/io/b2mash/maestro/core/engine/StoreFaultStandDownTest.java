@@ -101,7 +101,7 @@ class StoreFaultStandDownTest {
     }
 
     private <T> T proxy(Class<T> iface, T impl, WorkflowStore store, RetryPolicy policy) {
-        return new ActivityProxyFactory().createProxy(iface, impl, store, null, null, policy,
+        return new ActivityProxyFactory().createProxy(iface, impl, store, null, policy,
                 Duration.ofSeconds(30), serializer, new RetryExecutor());
     }
 

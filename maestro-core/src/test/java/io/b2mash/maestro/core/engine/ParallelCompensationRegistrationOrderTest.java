@@ -360,7 +360,7 @@ class ParallelCompensationRegistrationOrderTest extends ParallelSagaTestSupport 
     private void freshRun() {
         var parkingLot = new ParkingLot();
         stack = new CompensationStack();
-        ops = new DefaultWorkflowOperations(store, null, null, serializer, parkingLot, stack,
+        ops = new DefaultWorkflowOperations(store, null, serializer, parkingLot, stack,
                 new SignalManager(store, null, null, serializer, parkingLot));
         ctx = newContext(0, true, ops);
     }

@@ -45,7 +45,7 @@ class ParallelFailureCompensationSequenceTest extends ParallelSagaTestSupport {
             @Override public void releaseReservation(String reservation) { released.incrementAndGet(); }
             @Override public String charge(String item) { throw new IllegalStateException("declined"); }
         };
-        proxy = new ActivityProxyFactory().createProxy(PayActivities.class, impl, store, null, null,
+        proxy = new ActivityProxyFactory().createProxy(PayActivities.class, impl, store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, new RetryExecutor());
     }
 

@@ -197,7 +197,7 @@ class WorkflowVersionUnreadableMarkerTest {
     private <T> T inRun(Function<DefaultWorkflowOperations, T> body) {
         var parkingLot = new ParkingLot();
         var signalManager = new SignalManager(store, null, null, serializer, parkingLot);
-        var ops = new DefaultWorkflowOperations(store, null, null, serializer, parkingLot,
+        var ops = new DefaultWorkflowOperations(store, null, serializer, parkingLot,
                 new CompensationStack(), signalManager);
         var ctx = new WorkflowContext(
                 instance.id(), instance.workflowId(), instance.runId(),

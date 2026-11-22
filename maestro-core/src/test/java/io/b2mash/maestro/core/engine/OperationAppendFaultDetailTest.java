@@ -93,9 +93,8 @@ class OperationAppendFaultDetailTest {
     void anActivityOutcomeAppendNamesItsStoreMethod_andTheFaultAbandonsTheRunWithoutFailingIt(
             String outcome, String storeMethod) throws Exception {
         var id = "fault-activity-" + outcome;
-        var acts = new ActivityProxyFactory().createProxy(Acts.class, new ActsImpl(), guarded, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer, TaskQueueGovernor.UNBOUNDED,
+        var acts = new ActivityProxyFactory().createProxy(Acts.class, new ActsImpl(), guarded,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), observer, TaskQueueGovernor.UNBOUNDED,
                 LifecycleEventSink.NOOP, true);
         try (var logs = CapturingSlf4jProvider.watch(StoreFaultGuard.class)) {
             executor.startWorkflow(id, "ActivityWorkflow", "default", outcome,

@@ -220,9 +220,8 @@ class ShutdownGiveUpTest {
         // idempotent: no second guard, no second check, no bypass).
         var guarded = node.guardedStore();
         assertTrue(StoreFaultGuard.wrap(guarded) == guarded, "the executor's guard is used as is");
-        return new ActivityProxyFactory().createProxy(Steps.class, impl, guarded, null, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, node.observer(), node.taskQueueGovernor());
+        return new ActivityProxyFactory().createProxy(Steps.class, impl, guarded, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), node.observer(), node.taskQueueGovernor());
     }
 
     private long count(EventType type) {

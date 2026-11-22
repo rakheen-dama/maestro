@@ -12,7 +12,6 @@ import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
-import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import io.b2mash.maestro.spring.config.MaestroProperties;
@@ -80,11 +79,9 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
     private volatile boolean dependenciesResolved;
     private @Nullable ActivityProxyFactory proxyFactory;
     private @Nullable WorkflowStore store;
-    private @Nullable DistributedLock distributedLock;
     private LifecycleEventSink lifecycleEventSink = LifecycleEventSink.NOOP;
     private @Nullable PayloadSerializer serializer;
     private @Nullable RetryExecutor retryExecutor;
-    private @Nullable String lockKeyPrefix;
     private MaestroProperties.@Nullable RetryProperties retryDefaults;
     private EngineObserver observer = EngineObserver.NOOP;
     private TaskQueueGovernor governor = TaskQueueGovernor.UNBOUNDED;
@@ -154,15 +151,11 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
         serializer = ctx.getBean(PayloadSerializer.class);
         retryExecutor = ctx.getBean(RetryExecutor.class);
         var properties = ctx.getBean(MaestroProperties.class);
-        lockKeyPrefix = properties.getLock().keyPrefix();
         retryDefaults = properties.getRetry();
         // Feature 4: whether replays compare the arguments' fingerprint with the
         // recorded outcome's (maestro.replay.verify-arguments). Live outcomes
         // record the fingerprint either way.
         verifyArguments = properties.getReplay().verifyArguments();
-
-        // Optional SPIs — null when not available
-        distributedLock = ctx.getBeanProvider(DistributedLock.class).getIfAvailable();
 
         // F8: the executor's governor, so maestro.worker.task-queues[].activity-concurrency
         // bounds live executions of these proxies. Without an executor bean no
@@ -295,12 +288,10 @@ public class ActivityStubBeanPostProcessor implements BeanPostProcessor, Applica
                     (Class) activityInterface,
                     activityImpl,
                     store,
-                    distributedLock,
                     retryPolicy,
                     timeout,
                     serializer,
                     retryExecutor,
-                    lockKeyPrefix,
                     observer,
                     governor,
                     lifecycleEventSink,

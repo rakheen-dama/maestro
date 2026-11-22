@@ -3860,7 +3860,7 @@ public final class WorkflowExecutor {
             afterLaunchAdmission.run();
             var compensationStack = new CompensationStack();
             var operations = new DefaultWorkflowOperations(
-                    store, distributedLock, serializer, parkingLot, compensationStack,
+                    store, serializer, parkingLot, compensationStack,
                     signalManager, wakeRecheckInterval, observer, taskQueueGovernor, lifecycleEventSink);
 
             var ctx = new WorkflowContext(

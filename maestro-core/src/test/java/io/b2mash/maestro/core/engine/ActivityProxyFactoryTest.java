@@ -8,7 +8,6 @@ import io.b2mash.maestro.core.model.WorkflowSignal;
 import io.b2mash.maestro.core.model.WorkflowTimer;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
-import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.SignalMessage;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
@@ -44,7 +43,6 @@ class ActivityProxyFactoryTest {
 
     private final ActivityProxyFactory factory = new ActivityProxyFactory();
     private final WorkflowStore store = new StubWorkflowStore();
-    private final DistributedLock lock = new StubDistributedLock();
     private final WorkflowMessaging messaging = new StubWorkflowMessaging();
     private final RetryPolicy retryPolicy = RetryPolicy.defaultPolicy();
     private final Duration timeout = Duration.ofSeconds(30);
@@ -104,7 +102,7 @@ class ActivityProxyFactoryTest {
                 factory.createProxy(
                         (Class) NotAnInterface.class,
                         impl,
-                        store, lock, messaging,
+                        store, messaging,
                         retryPolicy, timeout, serializer, retryExecutor
                 )
         );
@@ -119,7 +117,7 @@ class ActivityProxyFactoryTest {
         NamedActivities proxy = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -133,7 +131,7 @@ class ActivityProxyFactoryTest {
         NamedActivities proxy = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -150,7 +148,7 @@ class ActivityProxyFactoryTest {
         UnnamedActivities proxy = factory.createProxy(
                 UnnamedActivities.class,
                 new UnnamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -167,7 +165,7 @@ class ActivityProxyFactoryTest {
         NamedActivities proxy = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -183,7 +181,7 @@ class ActivityProxyFactoryTest {
         NamedActivities proxy = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -196,7 +194,7 @@ class ActivityProxyFactoryTest {
         NamedActivities proxy = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -207,19 +205,19 @@ class ActivityProxyFactoryTest {
         NamedActivities other = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
         assertNotEquals(proxy, other);
     }
 
     @Test
-    @DisplayName("createProxy works with null lock and messaging")
+    @DisplayName("createProxy works with null messaging")
     void proxyWithNullOptionalDependencies() {
         NamedActivities proxy = factory.createProxy(
                 NamedActivities.class,
                 new NamedActivitiesImpl(),
-                store, null, null,
+                store, null,
                 retryPolicy, timeout, serializer, retryExecutor
         );
 
@@ -281,7 +279,7 @@ class ActivityProxyFactoryTest {
         var proxy = factory.createProxy(
                 ValidCompensateActivities.class,
                 new ValidCompensateActivitiesImpl(),
-                store, lock, messaging,
+                store, messaging,
                 retryPolicy, timeout, serializer, retryExecutor
         );
         assertNotNull(proxy);
@@ -294,7 +292,7 @@ class ActivityProxyFactoryTest {
                 factory.createProxy(
                         BadCompensateMethodActivities.class,
                         new BadCompensateMethodActivitiesImpl(),
-                        store, lock, messaging,
+                        store, messaging,
                         retryPolicy, timeout, serializer, retryExecutor
                 ));
     }
@@ -306,7 +304,7 @@ class ActivityProxyFactoryTest {
                 factory.createProxy(
                         BadCompensateParamsActivities.class,
                         new BadCompensateParamsActivitiesImpl(),
-                        store, lock, messaging,
+                        store, messaging,
                         retryPolicy, timeout, serializer, retryExecutor
                 ));
     }
@@ -417,32 +415,6 @@ class ActivityProxyFactoryTest {
 
         @Override
         public boolean markTimerCancelled(UUID timerId) {
-            throw new UnsupportedOperationException("stub");
-        }
-    }
-
-    /**
-     * Minimal stub — all methods throw {@link UnsupportedOperationException}.
-     */
-    private static class StubDistributedLock implements DistributedLock {
-
-        @Override
-        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
-            throw new UnsupportedOperationException("stub");
-        }
-
-        @Override
-        public void release(LockHandle handle) {
-            throw new UnsupportedOperationException("stub");
-        }
-
-        @Override
-        public boolean renew(LockHandle handle, Duration ttl) {
-            throw new UnsupportedOperationException("stub");
-        }
-
-        @Override
-        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
             throw new UnsupportedOperationException("stub");
         }
     }

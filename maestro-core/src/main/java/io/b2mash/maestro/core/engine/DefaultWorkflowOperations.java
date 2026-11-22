@@ -27,7 +27,6 @@ import io.b2mash.maestro.core.observe.TimerInfo;
 import io.b2mash.maestro.core.observe.WorkflowInfo;
 import io.b2mash.maestro.core.retry.RetryUntilOptions;
 import io.b2mash.maestro.core.saga.CompensationStack;
-import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -130,7 +129,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             Collections.synchronizedSet(Collections.newSetFromMap(new WeakHashMap<>()));
 
     private final WorkflowStore store;
-    private final @Nullable DistributedLock distributedLock;
     private final LifecycleEventSink lifecycleEventSink;
     private final PayloadSerializer serializer;
     private final ParkingLot parkingLot;
@@ -164,7 +162,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * (30s — the same default {@code SignalManager} uses).
      *
      * @param store             workflow store for event persistence and signal management
-     * @param distributedLock   optional distributed lock backend
      * @param messaging         optional messaging for lifecycle event publishing
      * @param serializer        Jackson serializer for payloads
      * @param parkingLot        virtual thread parking mechanism
@@ -173,14 +170,13 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     public DefaultWorkflowOperations(
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
             CompensationStack compensationStack,
             SignalManager signalManager
     ) {
-        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+        this(store, messaging, serializer, parkingLot, compensationStack,
                 signalManager, SignalManager.DEFAULT_WAKE_RECHECK_INTERVAL);
     }
 
@@ -188,7 +184,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * Creates workflow operations with an explicit wake re-check interval.
      *
      * @param store               workflow store for event persistence and signal management
-     * @param distributedLock     optional distributed lock backend
      * @param messaging           optional messaging for lifecycle event publishing
      * @param serializer          Jackson serializer for payloads
      * @param parkingLot          virtual thread parking mechanism
@@ -203,7 +198,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     public DefaultWorkflowOperations(
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
@@ -211,7 +205,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             SignalManager signalManager,
             Duration wakeRecheckInterval
     ) {
-        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+        this(store, messaging, serializer, parkingLot, compensationStack,
                 signalManager, wakeRecheckInterval, EngineObserver.NOOP);
     }
 
@@ -220,7 +214,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * an {@link EngineObserver}.
      *
      * @param store               workflow store for event persistence and signal management
-     * @param distributedLock     optional distributed lock backend
      * @param messaging           optional messaging for lifecycle event publishing
      * @param serializer          Jackson serializer for payloads
      * @param parkingLot          virtual thread parking mechanism
@@ -236,7 +229,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     public DefaultWorkflowOperations(
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
@@ -245,7 +237,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             Duration wakeRecheckInterval,
             EngineObserver observer
     ) {
-        this(store, distributedLock, messaging, serializer, parkingLot, compensationStack,
+        this(store, messaging, serializer, parkingLot, compensationStack,
                 signalManager, wakeRecheckInterval, observer, TaskQueueGovernor.UNBOUNDED);
     }
 
@@ -254,7 +246,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * {@link EngineObserver} and a {@link TaskQueueGovernor}.
      *
      * @param store               workflow store for event persistence and signal management
-     * @param distributedLock     optional distributed lock backend
      * @param messaging           optional messaging for lifecycle event publishing
      * @param serializer          Jackson serializer for payloads
      * @param parkingLot          virtual thread parking mechanism
@@ -273,7 +264,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     public DefaultWorkflowOperations(
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
@@ -283,7 +273,7 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
-        this(store, distributedLock, serializer, parkingLot, compensationStack, signalManager,
+        this(store, serializer, parkingLot, compensationStack, signalManager,
                 wakeRecheckInterval, observer, governor, LifecycleEventSink.direct(messaging));
     }
 
@@ -295,7 +285,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      * {@code TIMER_*} events never block a workflow thread on the transport.
      *
      * @param store               workflow store for event persistence and signal management
-     * @param distributedLock     optional distributed lock backend
      * @param serializer          Jackson serializer for payloads
      * @param parkingLot          virtual thread parking mechanism
      * @param compensationStack   LIFO compensation stack (shared with WorkflowExecutor)
@@ -310,7 +299,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
      */
     public DefaultWorkflowOperations(
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             PayloadSerializer serializer,
             ParkingLot parkingLot,
             CompensationStack compensationStack,
@@ -321,7 +309,6 @@ public final class DefaultWorkflowOperations implements WorkflowOperations {
             LifecycleEventSink lifecycleEventSink
     ) {
         this.store = store;
-        this.distributedLock = distributedLock;
         this.lifecycleEventSink = lifecycleEventSink;
         this.serializer = serializer;
         this.parkingLot = parkingLot;

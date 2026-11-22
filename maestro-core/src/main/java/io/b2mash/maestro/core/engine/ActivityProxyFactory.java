@@ -6,7 +6,6 @@ import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
-import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
@@ -32,7 +31,7 @@ import java.util.List;
  * var proxy = factory.createProxy(
  *     InventoryActivities.class,
  *     new InventoryActivitiesImpl(),
- *     store, lock, messaging,
+ *     store, messaging,
  *     RetryPolicy.defaultPolicy(),
  *     Duration.ofSeconds(30),
  *     serializer, retryExecutor
@@ -52,8 +51,6 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
@@ -66,53 +63,14 @@ public final class ActivityProxyFactory {
             Class<T> activityInterface,
             T activityImpl,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor
     ) {
-        return createProxy(activityInterface, activityImpl, store, distributedLock, messaging,
-                retryPolicy, startToCloseTimeout, serializer, retryExecutor,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX);
-    }
-
-    /**
-     * Creates a memoizing proxy for the given activity interface that takes a
-     * (now ignored) lock key prefix.
-     *
-     * @param <T>                 the activity interface type
-     * @param activityInterface   the activity interface class (must be an interface)
-     * @param activityImpl        the real implementation to delegate live calls to
-     * @param store               the workflow store for memoization
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
-     * @param messaging           optional messaging for lifecycle events
-     * @param retryPolicy         retry policy for failed invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
-     * @param serializer          Jackson serializer for payloads
-     * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
-     * @return a proxy instance that implements {@code activityInterface}
-     * @throws IllegalArgumentException if {@code activityInterface} is not an interface
-     */
-    public <T> T createProxy(
-            Class<T> activityInterface,
-            T activityImpl,
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            RetryPolicy retryPolicy,
-            Duration startToCloseTimeout,
-            PayloadSerializer serializer,
-            RetryExecutor retryExecutor,
-            String lockKeyPrefix
-    ) {
-        return createProxy(activityInterface, activityImpl, store, distributedLock, messaging,
-                retryPolicy, startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
-                EngineObserver.NOOP);
+        return createProxy(activityInterface, activityImpl, store, messaging,
+                retryPolicy, startToCloseTimeout, serializer, retryExecutor, EngineObserver.NOOP);
     }
 
     /**
@@ -123,15 +81,11 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam handed to the created
      *                            handler — see
      *                            {@link EngineObserver} for the callback contract;
@@ -143,17 +97,15 @@ public final class ActivityProxyFactory {
             Class<T> activityInterface,
             T activityImpl,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer
     ) {
-        return createProxy(activityInterface, activityImpl, store, distributedLock, messaging,
-                retryPolicy, startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
+        return createProxy(activityInterface, activityImpl, store, messaging,
+                retryPolicy, startToCloseTimeout, serializer, retryExecutor,
                 observer, TaskQueueGovernor.UNBOUNDED);
     }
 
@@ -166,15 +118,11 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle events
      * @param retryPolicy         retry policy for failed invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam handed to the created
      *                            handler; never {@code null} (pass {@link EngineObserver#NOOP})
      * @param governor            bounds live executions per task queue
@@ -189,18 +137,16 @@ public final class ActivityProxyFactory {
             Class<T> activityInterface,
             T activityImpl,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
-        return createProxy(activityInterface, activityImpl, store, distributedLock, retryPolicy,
-                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix, observer, governor,
+        return createProxy(activityInterface, activityImpl, store, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, observer, governor,
                 LifecycleEventSink.direct(messaging));
     }
 
@@ -221,14 +167,10 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -241,18 +183,16 @@ public final class ActivityProxyFactory {
             Class<T> activityInterface,
             T activityImpl,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer,
             TaskQueueGovernor governor,
             LifecycleEventSink lifecycleEventSink
     ) {
-        return createProxy(activityInterface, activityImpl, store, distributedLock, retryPolicy,
-                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix, observer, governor,
+        return createProxy(activityInterface, activityImpl, store, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, observer, governor,
                 lifecycleEventSink, true);
     }
 
@@ -264,14 +204,10 @@ public final class ActivityProxyFactory {
      * @param activityInterface   the activity interface class (must be an interface)
      * @param activityImpl        the real implementation to delegate live calls to
      * @param store               the workflow store for memoization
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -289,12 +225,10 @@ public final class ActivityProxyFactory {
             Class<T> activityInterface,
             T activityImpl,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer,
             TaskQueueGovernor governor,
             LifecycleEventSink lifecycleEventSink,
@@ -321,12 +255,10 @@ public final class ActivityProxyFactory {
                 // node-wide episode. A plain store gets a guard of its own that
                 // still counts its retries through this proxy's observer.
                 StoreFaultGuard.wrap(store, CompositeEngineObserver.contain(observer)),
-                distributedLock,
                 retryPolicy,
                 startToCloseTimeout,
                 serializer,
                 retryExecutor,
-                lockKeyPrefix,
                 observer,
                 governor,
                 lifecycleEventSink,

@@ -65,7 +65,6 @@ public final class MaestroEngineHarness implements AutoCloseable {
     private final ActivityProxyFactory proxyFactory = new ActivityProxyFactory();
     private final RetryExecutor retryExecutor = new RetryExecutor();
     private final EngineObserver observer;
-    private final String lockKeyPrefix;
     private final boolean verifyArguments;
     private final Map<Class<?>, Object> activityImpls = new ConcurrentHashMap<>();
     private final Map<String, WorkflowRegistration> registrations = new ConcurrentHashMap<>();
@@ -80,7 +79,6 @@ public final class MaestroEngineHarness implements AutoCloseable {
         this.lock = builder.lock != null ? builder.lock : new InMemoryDistributedLock();
         this.messaging = builder.messaging;
         this.observer = builder.observer != null ? builder.observer : EngineObserver.NOOP;
-        this.lockKeyPrefix = builder.lockKeyPrefix;
         this.verifyArguments = builder.verifyArguments;
         // Everything the harness builder leaves unset takes WorkflowExecutor.Builder's default.
         var executorBuilder = WorkflowExecutor.builder(builder.store, this.serializer, builder.serviceName)
@@ -358,12 +356,10 @@ public final class MaestroEngineHarness implements AutoCloseable {
                     (Class) activityInterface,
                     impl,
                     store,
-                    lock,
                     RetryPolicy.fromAnnotation(stub.retryPolicy()),
                     Duration.parse(stub.startToCloseTimeout()),
                     serializer,
                     retryExecutor,
-                    lockKeyPrefix,
                     observer,
                     executor.taskQueueGovernor(),
                     executor.lifecycleEventSink(),

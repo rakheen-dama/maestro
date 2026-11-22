@@ -615,8 +615,7 @@ class LoanApplicationWorkflowV2Test {
                         "No activity impl registered for " + activityInterface.getName());
             }
             @SuppressWarnings({"unchecked", "rawtypes"})
-            var proxy = proxyFactory.createProxy((Class) activityInterface, activityImpl, store,
-                    lock, messaging, RetryPolicy.fromAnnotation(stub.retryPolicy()),
+            var proxy = proxyFactory.createProxy((Class) activityInterface, activityImpl, store, messaging, RetryPolicy.fromAnnotation(stub.retryPolicy()),
                     Duration.parse(stub.startToCloseTimeout()), serializer, retryExecutor);
             try {
                 field.setAccessible(true);
