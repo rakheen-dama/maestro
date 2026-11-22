@@ -36,6 +36,18 @@ import java.lang.annotation.Target;
  *       exactly, the original arguments are passed.</li>
  * </ol>
  *
+ * <p>The rules are tried in that order, so a signature both fit gets the
+ * <b>return value</b>: {@code undo(String)} for
+ * {@code @Compensate("undo") String reserve(String orderId)} receives the
+ * reservation, never the order id. To receive the arguments, give the
+ * compensation a parameter the return type is not assignable to (or take the
+ * id from the result). Types are compared as the proxied interface binds
+ * them: a method inherited from a generic parent ({@code T reserve(String)}
+ * in {@code Reserving<T>}, proxied as {@code Reservations extends
+ * Reserving<String>}) returns {@code String} here, not the erased
+ * {@code Object} (Issue 94), and the compensation method is looked up on the
+ * proxied interface.
+ *
  * <p>Incompatible signatures are detected at proxy creation time
  * (fail-fast validation at startup).
  *

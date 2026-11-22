@@ -77,7 +77,7 @@ public final class MaestroClient {
      */
     public <T> WorkflowStub<T> newWorkflow(Class<T> workflowClass, WorkflowOptions options) {
         var registration = registrar.getRegistration(workflowClass);
-        return new WorkflowStub<>(executor, registration, options, serializer, store);
+        return new WorkflowStub<>(executor, registration, workflowClass, options, serializer, store);
     }
 
     /**

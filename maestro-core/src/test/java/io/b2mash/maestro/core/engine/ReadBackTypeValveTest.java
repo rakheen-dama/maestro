@@ -45,6 +45,7 @@ import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Supplier;
 import java.util.stream.Stream;
 
 import static org.awaitility.Awaitility.await;
@@ -190,6 +191,82 @@ class ReadBackTypeValveTest {
                 },
                 () -> assertEquals(List.of(), observerB.unreadableResults(), "never reported on replay"),
                 () -> assertEquals(List.of(), observerA.failed(), "nothing failed"));
+    }
+
+    // ── Issue 94: a method inherited from a generic parent interface ─────
+
+    /**
+     * An activity method inherited from a generic parent is read back as the
+     * type the <em>proxied</em> interface binds to the parent's variable, so
+     * the first run and a replay hand workflow code the same value. Only a
+     * variable nothing binds (a method's own {@code <R> R}) keeps its bound
+     * and stays behind the type valve.
+     */
+    static Stream<Arguments> inheritedShapes() {
+        var pair = "Pair Pair[left=l, right=r]";
+        var pairAsMap = "LinkedHashMap {left=l, right=r}";
+        return Stream.of(
+                // label,                         interface,                    impl,                                   method, live, reported, replayed
+                Arguments.of("direct generic parent", PairLoader.class, (Supplier<Object>) PairLoaderImpl::new,
+                        "load", pair, false, pair),
+                Arguments.of("generic impl class", PairLoader.class, (Supplier<Object>) GenericPairLoaderImpl::new,
+                        "load", pair, false, pair),
+                Arguments.of("two-level chain", ChainedPairLoader.class, (Supplier<Object>) ChainedPairLoaderImpl::new,
+                        "load", pair, false, pair),
+                Arguments.of("List<Pair>", PairListLoader.class, (Supplier<Object>) PairListLoaderImpl::new,
+                        "load", "ArrayList [Pair[left=l, right=r]]", false, "ArrayList [Pair[left=l, right=r]]"),
+                Arguments.of("Map<String, List<Pair>>", PairMapLoader.class, (Supplier<Object>) PairMapLoaderImpl::new,
+                        "load", "LinkedHashMap {k=[Pair[left=l, right=r]]}", false,
+                        "LinkedHashMap {k=[Pair[left=l, right=r]]}"),
+                Arguments.of("bound beside a method variable", MethodVariableLoader.class,
+                        (Supplier<Object>) MethodVariableLoaderImpl::new, "load", pair, false, pair),
+                Arguments.of("method-level variable stays the valve", MethodVariableLoader.class,
+                        (Supplier<Object>) MethodVariableLoaderImpl::new, "call", pair, true, pairAsMap));
+    }
+
+    @ParameterizedTest(name = "[{index}] {0}")
+    @MethodSource("inheritedShapes")
+    @Timeout(30)
+    void inheritedGenericMethod_firstRunEqualsReplay(String label, Class<?> iface, Supplier<Object> impl,
+                                                     String method, String live, boolean reported,
+                                                     String replayed) throws Exception {
+        var id = "valve-inherited-" + label.replaceAll("[^A-Za-z0-9]", "-");
+        var run = InheritedWorkflow.class.getMethod("run", String.class);
+        var a = nodeA;
+        a.startWorkflow(id, "InheritedWorkflow", "default", method,
+                () -> new InheritedWorkflow(iface, inheritedProxy(iface, impl.get(), observerA)), run);
+        await().atMost(BOUND).until(() -> Seen.of(id).size() == 1
+                && store.getInstance(id).map(i -> i.status() == WorkflowStatus.WAITING_SIGNAL).orElse(false));
+
+        a.shutdown();
+        nodeA = null;
+        var b = WorkflowExecutor.builder(store, serializer, SERVICE).distributedLock(new InMemoryDistributedLock())
+                .observer(observerB).build();
+        nodeB = b;
+        b.recoverWorkflows(Map.of("InheritedWorkflow", new WorkflowRegistration("InheritedWorkflow", "default",
+                () -> new InheritedWorkflow(iface, inheritedProxy(iface, impl.get(), observerB)), run)));
+        await().atMost(BOUND).until(() -> Seen.of(id).size() == 2 || !observerB.standDowns().isEmpty());
+        b.deliverSignal(id, "go", "go");
+        await().atMost(BOUND).until(() -> store.getInstance(id).map(i -> i.status().isTerminal()).orElse(false));
+
+        var seen = Seen.of(id);
+        assertAll(label,
+                () -> assertEquals(live, seen.getFirst(), "live"),
+                () -> assertEquals(reported ? List.of(EngineObserver.READ_BACK_TYPE_MISMATCH) : List.of(),
+                        observerA.unreadableResults().stream()
+                                .map(RecordingEngineObserver.UnreadableResult::exceptionType).toList(),
+                        "reported live"),
+                () -> assertEquals(2, seen.size(), "seen " + seen),
+                () -> assertEquals(replayed, seen.get(1), "replayed"),
+                () -> assertEquals(WorkflowStatus.COMPLETED, store.getInstance(id).orElseThrow().status()),
+                () -> assertEquals(List.of(), observerA.failed(), "nothing failed"));
+    }
+
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    private Object inheritedProxy(Class iface, Object impl, EngineObserver observer) {
+        return new ActivityProxyFactory().createProxy(iface, impl, store, RetryPolicy.noRetry(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor(), observer, TaskQueueGovernor.UNBOUNDED,
+                LifecycleEventSink.NOOP, true);
     }
 
     // ── The predicate, including the cases no activity here produces ────
@@ -434,6 +511,90 @@ class ReadBackTypeValveTest {
             Object value;
             try {
                 value = Shapes.class.getMethod(method).invoke(shapes);
+            } catch (InvocationTargetException e) {
+                throw e.getCause();
+            }
+            var described = describe(value);
+            Seen.record(WorkflowContext.current().workflowId(), described);
+            WorkflowContext.current().awaitSignal("go", String.class, Duration.ofMinutes(5));
+            return described;
+        }
+    }
+
+    public interface Loader<T> {
+        T load();
+    }
+
+    public interface MidLoader<T> extends Loader<T> { }
+
+    public interface PairLoader extends Loader<Pair> { }
+
+    public interface ChainedPairLoader extends MidLoader<Pair> { }
+
+    public interface PairListLoader extends Loader<List<Pair>> { }
+
+    public interface PairMapLoader extends Loader<Map<String, List<Pair>>> { }
+
+    public interface MethodVariableLoader extends Loader<Pair> {
+        <R> R call();
+    }
+
+    /** A generic implementation class: the impl side must not matter. */
+    public static class FixedLoader<T> implements Loader<T> {
+        private final T value;
+
+        FixedLoader(T value) {
+            this.value = value;
+        }
+
+        @Override
+        public T load() {
+            return value;
+        }
+    }
+
+    public static final class PairLoaderImpl implements PairLoader {
+        @Override public Pair load() { return new Pair("l", "r"); }
+    }
+
+    public static final class GenericPairLoaderImpl extends FixedLoader<Pair> implements PairLoader {
+        GenericPairLoaderImpl() { super(new Pair("l", "r")); }
+    }
+
+    public static final class ChainedPairLoaderImpl extends FixedLoader<Pair> implements ChainedPairLoader {
+        ChainedPairLoaderImpl() { super(new Pair("l", "r")); }
+    }
+
+    public static final class PairListLoaderImpl extends FixedLoader<List<Pair>> implements PairListLoader {
+        PairListLoaderImpl() { super(new ArrayList<>(List.of(new Pair("l", "r")))); }
+    }
+
+    public static final class PairMapLoaderImpl extends FixedLoader<Map<String, List<Pair>>>
+            implements PairMapLoader {
+        PairMapLoaderImpl() { super(new LinkedHashMap<>(Map.of("k", List.of(new Pair("l", "r"))))); }
+    }
+
+    public static final class MethodVariableLoaderImpl extends FixedLoader<Pair> implements MethodVariableLoader {
+        MethodVariableLoaderImpl() { super(new Pair("l", "r")); }
+
+        @SuppressWarnings("unchecked")
+        @Override public <R> R call() { return (R) new Pair("l", "r"); }
+    }
+
+    /** Calls the named method of {@code iface} on its proxy, records what it got, parks on "go". */
+    public static class InheritedWorkflow {
+        private final Class<?> iface;
+        private final Object activities;
+
+        InheritedWorkflow(Class<?> iface, Object activities) {
+            this.iface = iface;
+            this.activities = activities;
+        }
+
+        public String run(String method) throws Throwable {
+            Object value;
+            try {
+                value = iface.getMethod(method).invoke(activities);
             } catch (InvocationTargetException e) {
                 throw e.getCause();
             }

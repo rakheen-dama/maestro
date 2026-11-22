@@ -447,7 +447,7 @@ public interface Couriers {
 }
 ```
 
-- Declare the concrete type the activity returns, one that reads back as itself: never a supertype of it, `Object` or a type variable. Where several types are possible, put `@JsonTypeInfo` and `@JsonSubTypes` on the supertype, so the payload carries the subtype and reads back as it.
+- Declare the concrete type the activity returns, one that reads back as itself: never a supertype of it, `Object` or a type variable. A type variable here is one nothing binds — a method's own `<R> R call()`, or the parameter of a generic interface proxied raw. A variable the activity interface binds is not one: a method inherited from a generic parent is read as the proxied interface binds it, so `T load()` in `interface Orders extends Parent<Order>` (directly or through `Mid<T> extends Parent<T>`) reads back as an `Order`, and a `List<T>` or `Map<String, List<T>>` as a container of `Order`s, on the first run and on every replay (Issue 94; rc.4 and earlier read it as `Object`). Where several types are possible, put `@JsonTypeInfo` and `@JsonSubTypes` on the supertype, so the payload carries the subtype and reads back as it.
 - Use `Instant` for a point in time, and keep an offset or zone id as its own field if the workflow needs it.
 - Declare `List` or `Set`, not `Collection` or `Iterable`. When order matters, use a `List`, or a `SortedSet` (it arrives as a `TreeSet`). For an ordered map use a `SortedMap` (it arrives as a `TreeMap`) or a `List` of entries.
 - Use typed fields, and a typed `BigDecimal` for money, rather than `Map<String, Object>`. A typed `BigDecimal` keeps its digits and scale, on Postgres too.

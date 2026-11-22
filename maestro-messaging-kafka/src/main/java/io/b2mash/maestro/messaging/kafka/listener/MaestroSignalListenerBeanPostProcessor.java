@@ -1,5 +1,6 @@
 package io.b2mash.maestro.messaging.kafka.listener;
 
+import io.b2mash.maestro.core.engine.ResolvedTypes;
 import io.b2mash.maestro.core.engine.WorkflowExecutor;
 import io.b2mash.maestro.messaging.kafka.KafkaContainerGroup;
 import io.b2mash.maestro.messaging.kafka.KafkaMessagingConfig;
@@ -132,8 +133,11 @@ public class MaestroSignalListenerBeanPostProcessor
      * ({@link Method#getGenericParameterTypes()}), so a {@code List<Order>}
      * parameter receives {@code Order}s rather than {@code LinkedHashMap}s
      * (Issue 92, "Kafka listener payload type"; the listener-side twin of Issue
-     * 44). A raw type, {@code Object} or a type variable reads as the erased
-     * class read before.
+     * 44). It is resolved against the bean's class (Issue 94), so
+     * {@code onEvent(E payload)} inherited by
+     * {@code OrderListener extends TypedListener<OrderEvent>} reads an
+     * {@code OrderEvent}. A raw type, {@code Object} or a type variable the
+     * bean's class leaves unbound reads as the erased class read before.
      */
     private record ListenerRegistration(
             Object bean,
@@ -163,7 +167,7 @@ public class MaestroSignalListenerBeanPostProcessor
                     method,
                     annotation.topic(),
                     annotation.signalName(),
-                    method.getGenericParameterTypes()[0],
+                    ResolvedTypes.parameterType(bean.getClass(), method, 0),
                     annotation.groupIdSuffix()
             ));
 

@@ -133,6 +133,19 @@ class MaestroSignalListenerPayloadTypeTest {
         });
     }
 
+    @Test
+    @DisplayName("a listener method inherited from a generic superclass reads the type the bean's class binds (Issue 94)")
+    void anInheritedGenericParameterReadsTheBoundType() {
+        runner.run(ctx -> {
+            deliver(ctx, "orders.inherited", "{\"id\":\"o-5\",\"amount\":4}");
+
+            var listener = ctx.getBean(InheritedOrderListener.class);
+            assertThat(listener.received.get()).isEqualTo(new Order("o-5", new BigDecimal("4")));
+            verify(ctx.getBean(WorkflowExecutor.class))
+                    .deliverSignal(eq("wf-o-5"), eq("inherited.signal"), any(), anyString());
+        });
+    }
+
     private static void deliver(AssertableApplicationContext ctx, String topic, String json) {
         var record = new ConsumerRecord<String, byte[]>(topic, 0, 0L, "key",
                 json.getBytes(StandardCharsets.UTF_8));
@@ -184,11 +197,36 @@ class MaestroSignalListenerPayloadTypeTest {
         }
     }
 
+    /** The listener method lives on a generic superclass; only the subclass binds {@code E}. */
+    public abstract static class TypedListener<E> {
+        final AtomicReference<@Nullable Object> received = new AtomicReference<>();
+
+        @MaestroSignalListener(topic = "orders.inherited", signalName = "inherited.signal")
+        public SignalRouting onEvent(E event) {
+            received.set(event);
+            return route(event);
+        }
+
+        protected abstract SignalRouting route(E event);
+    }
+
+    public static class InheritedOrderListener extends TypedListener<Order> {
+        @Override
+        protected SignalRouting route(Order order) {   // the bridge casts: a LinkedHashMap would throw here
+            return SignalRouting.builder().workflowId("wf-" + order.id()).payload(order).build();
+        }
+    }
+
     @Configuration(proxyBeanMethods = false)
     static class ListenerConfiguration {
         @Bean
         TypedListeners typedListeners() {
             return new TypedListeners();
+        }
+
+        @Bean
+        InheritedOrderListener inheritedOrderListener() {
+            return new InheritedOrderListener();
         }
     }
 

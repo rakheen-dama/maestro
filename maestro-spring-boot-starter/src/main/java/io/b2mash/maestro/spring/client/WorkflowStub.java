@@ -47,6 +47,8 @@ public final class WorkflowStub<T> {
 
     private final WorkflowExecutor executor;
     private final WorkflowRegistration registration;
+    /** The workflow class, against which an inherited generic {@code @WorkflowMethod}'s input type is resolved (Issue 94). */
+    private final Class<T> workflowClass;
     private final WorkflowOptions options;
     private final PayloadSerializer serializer;
     private final WorkflowStore store;
@@ -54,12 +56,14 @@ public final class WorkflowStub<T> {
     WorkflowStub(
             WorkflowExecutor executor,
             WorkflowRegistration registration,
+            Class<T> workflowClass,
             WorkflowOptions options,
             PayloadSerializer serializer,
             WorkflowStore store
     ) {
         this.executor = executor;
         this.registration = registration;
+        this.workflowClass = workflowClass;
         this.options = options;
         this.serializer = serializer;
         this.store = store;
@@ -112,7 +116,8 @@ public final class WorkflowStub<T> {
                 registration.taskQueue(),
                 input,
                 registration.workflowFactory(),
-                registration.workflowMethod()
+                registration.workflowMethod(),
+                workflowClass
         );
     }
 

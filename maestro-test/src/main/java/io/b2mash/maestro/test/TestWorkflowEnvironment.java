@@ -433,7 +433,8 @@ public final class TestWorkflowEnvironment {
         // every launch of this workflow, each call building and wiring a fresh
         // instance — exactly as the Spring starter does with prototype beans.
         var instanceId = node.executor.startWorkflow(
-                workflowId, workflowType, taskQueue, input, workflowFactory(workflowClass), workflowMethod);
+                workflowId, workflowType, taskQueue, input, workflowFactory(workflowClass), workflowMethod,
+                workflowClass);
 
         logger.debug("Test: started workflow '{}' (type={}, instanceId={})",
                 workflowId, workflowType, instanceId);

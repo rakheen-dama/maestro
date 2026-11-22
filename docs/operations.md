@@ -1058,6 +1058,24 @@ value this run cannot reproduce. Then:
   while it is off, so nothing is lost for later checks. The engine WARNs at
   startup while the check is off; do not leave it off.
 
+**Upgrade note — inherited generic activity results (Issue 94, after
+0.3.0-rc.4).** An activity interface that inherits a generic method
+(`Orders extends Parent<Order>`) had that method's results read as maps on
+rc.1–rc.4 and reads them typed now. An `argsHash` stand-down after the
+upgrade, on a step whose argument was built from such a result, is this
+change, not a code change or a non-deterministic input — when the typed
+value does not serialize back to the stored JSON up to key order and
+numeric form (a decimal finer than a `double`, a property the class drops
+or the stored JSON lacks, an offset date-time normalised to UTC). The
+argument is the same value in another form, so set
+`maestro.replay.verify-arguments: false` on the fleet until those instances
+drain, then set it back; or terminate them. The same upgrade changes which
+value an inherited generic `@Compensate` receives when its single parameter
+fits both the argument and the result (it now gets the result): a saga
+whose compensation was recorded with the argument stands down the same way
+— drain such sagas on the old build before upgrading, or terminate them
+(`docs/release-notes.md`).
+
 **Exception — `stored=$maestro:awaitSignal:* type=TIMER_SCHEDULED` after a
 rollback → roll forward.** When `expected` and `stored` name the same
 `$maestro:awaitSignal:<name>` step and the stored type is `TIMER_SCHEDULED`,

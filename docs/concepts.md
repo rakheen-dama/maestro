@@ -433,6 +433,8 @@ public interface InventoryActivities {
 }
 ```
 
+A compensation method takes no parameters, a single parameter the activity's return type is assignable to (it receives the **result**), or exactly the activity's parameters (it receives the **original arguments**), tried in that order. A signature that fits both gets the result: `undo(String)` for `@Compensate("undo") String reserve(String orderId)` receives the reservation, not the order id. Types are compared as the proxied interface binds them, so a method inherited from a generic parent (`T reserve(String)` in `Reserving<T>`, proxied as `Reservations extends Reserving<String>`) is matched as returning `String` (Issue 94).
+
 ```java
 @WorkflowMethod
 @Saga(parallelCompensation = false)
