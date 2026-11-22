@@ -26,6 +26,7 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import tools.jackson.databind.JavaType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 
@@ -533,8 +534,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
 
     /** The erased class of {@link #returnType}. */
     private Class<?> rawReturnType(Method method) {
-        var iface = activityInterface;
-        return iface == null ? method.getReturnType() : ResolvedTypes.rawReturnType(iface, method);
+        return returnType(method) instanceof JavaType resolved ? resolved.getRawClass() : method.getReturnType();
     }
 
     @Override
