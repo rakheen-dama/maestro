@@ -293,6 +293,11 @@ public final class CompositeEngineObserver implements EngineObserver {
     }
 
     @Override
+    public void activityFailureUnrebuildable(ActivityInfo a, String exceptionType) {
+        fanOut("activityFailureUnrebuildable", d -> d.activityFailureUnrebuildable(a, exceptionType));
+    }
+
+    @Override
     public void signalPersisted(SignalInfo s) {
         fanOut("signalPersisted", d -> d.signalPersisted(s));
     }

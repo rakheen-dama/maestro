@@ -50,6 +50,7 @@ public class RecordingEngineObserver implements EngineObserver {
     private final List<ActivityCompletion> activityCompleted = new CopyOnWriteArrayList<>();
     private final List<ActivityFailure> activityFailed = new CopyOnWriteArrayList<>();
     private final List<UnreadableResult> unreadableResults = new CopyOnWriteArrayList<>();
+    private final List<UnreadableResult> unrebuildableFailures = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalPersisted = new CopyOnWriteArrayList<>();
     private final List<SignalConsumption> signalConsumed = new CopyOnWriteArrayList<>();
     private final List<SignalInfo> signalDuplicates = new CopyOnWriteArrayList<>();
@@ -153,6 +154,12 @@ public class RecordingEngineObserver implements EngineObserver {
     public void activityResultUnreadable(ActivityInfo a, String exceptionType) {
         record("activityResultUnreadable", a, exceptionType);
         unreadableResults.add(new UnreadableResult(a, exceptionType));
+    }
+
+    @Override
+    public void activityFailureUnrebuildable(ActivityInfo a, String exceptionType) {
+        record("activityFailureUnrebuildable", a, exceptionType);
+        unrebuildableFailures.add(new UnreadableResult(a, exceptionType));
     }
 
     @Override
@@ -270,6 +277,7 @@ public class RecordingEngineObserver implements EngineObserver {
     public List<ActivityCompletion> activityCompleted() { return List.copyOf(activityCompleted); }
     public List<ActivityFailure> activityFailed() { return List.copyOf(activityFailed); }
     public List<UnreadableResult> unreadableResults() { return List.copyOf(unreadableResults); }
+    public List<UnreadableResult> unrebuildableFailures() { return List.copyOf(unrebuildableFailures); }
     public List<SignalInfo> signalPersisted() { return List.copyOf(signalPersisted); }
     public List<SignalConsumption> signalConsumed() { return List.copyOf(signalConsumed); }
     public List<SignalInfo> signalDuplicates() { return List.copyOf(signalDuplicates); }

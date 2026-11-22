@@ -28,6 +28,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
 import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.JsonNodeFactory;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
@@ -121,6 +122,21 @@ import java.util.concurrent.TimeoutException;
  *       future's bean properties, never its value); no callback, no WARN.</li>
  * </ul>
  * The WARNs share one once-per-activity-method set per handler.
+ *
+ * <h2>Live failures are rebuilt from their record</h2>
+ * <p>A live failure (retries exhausted, a non-retryable exception, a timed-out
+ * last attempt) is recorded as an {@code ACTIVITY_FAILED} memo
+ * ({@link FailureReconstruction#record}: type, message and — for a class
+ * annotated {@link io.b2mash.maestro.core.annotation.FailureDetails} — its
+ * properties), appended asking for the payload as stored, and workflow code
+ * gets the {@link ActivityExecutionException} a replay of the step throws:
+ * its cause rebuilt from that payload ({@link FailureReconstruction#rebuild}),
+ * never the object the activity threw, so the first run and every recovery
+ * see the same exception. A record of an opted-in class
+ * that cannot be rebuilt as that class is a {@code ReconstructedActivityFailure}
+ * on both paths, reported on the live one
+ * ({@link EngineObserver#activityFailureUnrebuildable} and a WARN, once per
+ * exception class of this handler).
  *
  * <h2>Idempotency</h2>
  * <p>The Postgres unique constraint on {@code (workflow_instance_id, sequence_number)}
@@ -220,9 +236,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private static final Logger logger = LoggerFactory.getLogger(ActivityInvocationHandler.class);
 
     /**
-     * The cause message a replayed failure gets when its {@code ACTIVITY_FAILED}
-     * memo has no (or an empty) message ({@link #reconstructFailure}). The
-     * Retry planner's legacy message match rebuilds it.
+     * The cause message a build before Issue 42 gave a <em>replayed</em>
+     * failure whose {@code ACTIVITY_FAILED} memo had no (or an empty) message;
+     * such a build may have written it into {@code WORKFLOW_FAILED}, so the
+     * Retry planner's legacy message match still rebuilds it. This build
+     * rebuilds a missing message as {@code null}, on both paths.
      */
     static final String REPLAYED_FAILURE_MESSAGE = "Replayed failure";
 
@@ -239,6 +257,8 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final TaskQueueGovernor governor;
     /** Activity methods whose unreadable or other-class result has already been WARNed by this handler. */
     private final Set<Method> warnedUnreadable = ConcurrentHashMap.newKeySet();
+    /** Opted-in exception classes whose failure this handler has already WARNed as not rebuilt. */
+    private final Set<String> warnedUnrebuildable = ConcurrentHashMap.newKeySet();
 
     /**
      * Creates a new handler.
@@ -603,7 +623,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             }
             case ACTIVITY_FAILED -> {
                 logger.debug("Replaying failed activity '{}' at seq {}", stepName, seq);
-                var replayed = reconstructFailure(event, stepName, ctx.workflowId());
+                var replayed = rebuildFailure(event.payload(), ctx, seq, stepName, null);
                 WorkflowContextInternals.recordFailureMemo(ctx, replayed, seq);
                 throw replayed;
             }
@@ -787,32 +807,60 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Reconstructs an {@link ActivityExecutionException} from a stored failure event.
+     * The {@link ActivityExecutionException} a recorded failure is thrown as —
+     * on the live run once its {@code ACTIVITY_FAILED} memo is durable, and on
+     * every replay of the step: the cause {@link FailureReconstruction#rebuild}
+     * makes of the payload as the store returned it, wrapped with what was
+     * recorded ({@link ActivityExecutionException#failure()}).
      *
-     * <p>The cause is rebuilt by {@link FailureReconstruction#reconstruct}: the
-     * original type only via a public {@code (String)} constructor, otherwise a
-     * {@code ReconstructedActivityFailure} naming the original class.
+     * <p>A record carrying an opted-in class's properties that is rebuilt as a
+     * {@code ReconstructedActivityFailure} is logged — at WARN the first time
+     * per exception class of this handler, at DEBUG after that — and, live
+     * only, reported through
+     * {@link EngineObserver#activityFailureUnrebuildable}.
+     *
+     * @param stored the {@code ACTIVITY_FAILED} payload as the store returned it
+     * @param live   the step's activity info on the live run, {@code null} on replay
      */
-    private ActivityExecutionException reconstructFailure(
-            WorkflowEvent event, String stepName, String workflowId
+    private ActivityExecutionException rebuildFailure(
+            @Nullable JsonNode stored, WorkflowContext ctx, int seq, String stepName, @Nullable ActivityInfo live
     ) {
-        var message = REPLAYED_FAILURE_MESSAGE;
-        var exceptionType = (String) null;
-
-        if (event.payload() != null) {
-            if (event.payload().has("message")) {
-                var text = event.payload().get("message").stringValue();
-                if (text != null && !text.isEmpty()) {
-                    message = text;
-                }
+        var rebuilt = FailureReconstruction.rebuild(stored, serializer);
+        if (rebuilt.notRebuilt() != null) {
+            var type = rebuilt.failure().type();
+            if (live != null) {
+                observer.activityFailureUnrebuildable(live, type);
             }
-            if (event.payload().has("exceptionType")) {
-                exceptionType = event.payload().get("exceptionType").stringValue();
+            var warning = unrebuildableFailureWarning(ctx.workflowId(), stepName, seq, type, rebuilt.notRebuilt());
+            if (warnedUnrebuildable.add(type)) {
+                logger.warn("{}", warning);
+            } else {
+                logger.debug("{}", warning);
             }
         }
+        return new ActivityExecutionException(ctx.workflowId(), stepName, rebuilt.cause(), rebuilt.failure());
+    }
 
-        var cause = FailureReconstruction.reconstruct(exceptionType, message);
-        return new ActivityExecutionException(workflowId, stepName, cause);
+    /**
+     * The fixed WARN copy for a failure of an opted-in exception class that is
+     * rebuilt as a {@code ReconstructedActivityFailure}. Class names and a
+     * fixed reason only — never a message or a property value.
+     *
+     * @param workflowId the run's workflow id
+     * @param stepName   {@code <ActivityName>.<method>}
+     * @param seq        the step's sequence number
+     * @param type       the recorded exception class
+     * @param reason     why it was not rebuilt ({@link FailureReconstruction.Rebuilt#notRebuilt()})
+     * @return the log line
+     */
+    static String unrebuildableFailureWarning(String workflowId, String stepName, int seq, String type,
+                                              String reason) {
+        return ("Workflow '%s': the failure of activity '%s' at sequence %d is recorded as %s with its "
+                + "@FailureDetails properties, but cannot be rebuilt as that class: %s. Workflow code gets a "
+                + "ReconstructedActivityFailure on this run and on every replay of the step; "
+                + "ActivityExecutionException.failure() holds the recorded properties — give the class a "
+                + "@JsonCreator constructor taking 'message' and each recorded property (docs/pitfalls.md, rule 2)")
+                .formatted(workflowId, stepName, seq, type, reason);
     }
 
     // ── Live execution path ───────────────────────────────────────────
@@ -909,9 +957,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             throw givenUp;
         } catch (ActivityExecutionException e) {
             var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
-            // Retries exhausted — persist the failure.
+            // Retries exhausted — persist the failure, asking for the payload
+            // as stored: what workflow code gets is rebuilt from it below.
+            var recorded = failureRecord(e);
+            JsonNode stored;
             try {
-                persistFailure(ctx, seq, stepName, argsHash, e);
+                stored = appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, recorded, argsHash, true);
             } catch (DuplicateEventException | FencedWriteException | StoreUnavailableException
                      | ExecutorShutdownException notRecorded) {
                 // A concurrent runner already recorded an outcome at this
@@ -928,15 +979,21 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 observer.activityFailed(info, elapsed, failureExceptionType(e), false);
                 throw notRecorded;
             }
-            // WP3: the memo at seq is durable — remember which object carries
-            // it, so WORKFLOW_FAILED can name it (failedSequences). First, so
-            // nothing below can skip it.
-            WorkflowContextInternals.recordFailureMemo(ctx, e, seq);
+            // Issue 42: the memo is durable — throw what a replay of this step
+            // throws, rebuilt from the payload as the store returned it (a
+            // store that returns nothing: as sent), never the activity's own
+            // exception object. RetryExecutor has logged that one with its
+            // stack trace; the observer below still gets its class.
+            var thrown = rebuildFailure(stored != null ? stored : recorded, ctx, seq, stepName, info);
+            // WP3: remember which object carries the memo at seq, so
+            // WORKFLOW_FAILED can name it (failedSequences). First after the
+            // rebuild, so nothing below can skip it.
+            WorkflowContextInternals.recordFailureMemo(ctx, thrown, seq);
             publishLifecycleEvent(ctx, stepName, LifecycleEventType.ACTIVITY_FAILED);
             // (An Error — e.g. a shutdown signal — never reaches this catch
             // and is never observed as a failure.)
             observer.activityFailed(info, elapsed, failureExceptionType(e), false);
-            throw e;
+            throw thrown;
         }
         var elapsed = Duration.ofNanos(System.nanoTime() - startNanos);
 
@@ -1127,10 +1184,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * Appends an event to the memoization log; a lost append race stands this
      * run down.
      *
-     * <p>Only the {@code ACTIVITY_COMPLETED} outcome reads back what it
-     * appended, so only it asks the store for the stored payload
+     * <p>Both live outcomes — {@code ACTIVITY_COMPLETED} and, since Issue 42,
+     * {@code ACTIVITY_FAILED} — read back what they appended, so both ask the
+     * store for the stored payload
      * ({@link io.b2mash.maestro.core.spi.WorkflowStore#appendEventReturningPayload});
-     * the {@code ACTIVITY_FAILED} memo uses
+     * without {@code returnStoredPayload} the write is
      * {@link WorkflowStore#appendEvent(WorkflowEvent, io.b2mash.maestro.core.spi.RunLease)}.
      * Either is the same write, with the same fencing and the same
      * store-fault handling; only the method a store-fault message names
@@ -1211,39 +1269,29 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Persists an ACTIVITY_FAILED event with error details in the payload.
-     *
-     * @throws DuplicateEventException if a concurrent runner already persisted
-     *                                 an outcome at {@code seq} — see
-     *                                 {@link #appendEventSafe}
+     * The {@code ACTIVITY_FAILED} payload for a live failure
+     * ({@link FailureReconstruction#record}): the cause's class and message,
+     * plus its properties for a class annotated
+     * {@link io.b2mash.maestro.core.annotation.FailureDetails}. The fields
+     * are written by name, independent of the mapper's naming or inclusion
+     * settings, because every build reads them by these names.
      */
-    private void persistFailure(
-            WorkflowContext ctx, int seq, String stepName, @Nullable String argsHash,
-            ActivityExecutionException exception
-    ) {
-        JsonNode errorPayload;
-        try {
-            var errorDetail = new ErrorDetail(
-                    exception.getCause() != null ? exception.getCause().getClass().getName() : "unknown",
-                    exception.getCause() != null ? exception.getCause().getMessage() : exception.getMessage()
-            );
-            errorPayload = serializer.serialize(errorDetail);
-        } catch (SerializationException e) {
-            logger.warn("Failed to serialize error detail for '{}' at seq {}", stepName, seq, e);
-            errorPayload = null;
+    private JsonNode failureRecord(ActivityExecutionException exception) {
+        var cause = exception.getCause();
+        if (cause == null) {
+            // Not produced by RetryExecutor; recorded as the wrapper used to be.
+            var payload = JsonNodeFactory.instance.objectNode();
+            payload.put(FailureReconstruction.TYPE_FIELD, "unknown");
+            payload.put(FailureReconstruction.MESSAGE_FIELD, exception.getMessage());
+            return payload;
         }
-
-        appendEventSafe(ctx, seq, EventType.ACTIVITY_FAILED, stepName, errorPayload, argsHash, false);
+        return FailureReconstruction.record(cause, serializer);
     }
 
     /**
-     * Structured error detail stored in the payload of ACTIVITY_FAILED events.
-     */
-    private record ErrorDetail(String exceptionType, @Nullable String message) {}
-
-    /**
-     * The exception type recorded for a live failure — the cause's class when
-     * present (mirrors {@link ErrorDetail}), else the wrapper's.
+     * The exception type of a live failure, for the observer — the cause's
+     * class when present (what {@link #failureRecord} records), else the
+     * wrapper's.
      */
     private static String failureExceptionType(ActivityExecutionException exception) {
         return exception.getCause() != null

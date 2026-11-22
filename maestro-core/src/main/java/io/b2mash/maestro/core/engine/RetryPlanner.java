@@ -213,8 +213,9 @@ final class RetryPlanner {
                 if (cause != null) {
                     rebuilt.add(activityFailureMessage(event.stepName(), workflowId, cause));
                 }
-                // A replayed memo with no message (or none at all) is rebuilt
-                // with ActivityInvocationHandler.reconstructFailure's text.
+                // A memo with no message (or none at all) that a build before
+                // Issue 42 replayed was rebuilt with "Replayed failure"; this
+                // build rebuilds it as null, which the first form matches.
                 if (memoMessage == null || memoMessage.isEmpty()) {
                     rebuilt.add(activityFailureMessage(event.stepName(), workflowId, ActivityInvocationHandler.REPLAYED_FAILURE_MESSAGE));
                 }
