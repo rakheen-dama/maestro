@@ -270,7 +270,13 @@ the call's arguments — `maestro_workflow_event.args_hash`, migration V7 — an
 replay whose arguments fingerprint differently stands down as
 `nondeterministic_history` instead of returning the recorded result; `NULL` on
 either side is unverified, never a mismatch; `false` skips the comparison but
-still writes the hash), `maestro.worker.task-queues[].concurrency` /
+still writes the hash), `maestro.replay.mapper-check` (fail | warn | off,
+default `warn`: at context refresh four fixed values — an `Instant` with
+nanoseconds, an `OffsetDateTime` in UTC, `BigDecimal("10.50")`,
+`Optional.empty()` — are round-tripped through the `PayloadSerializer` and the
+store's text form, and each that does not come back is named; times compare
+to the millisecond, `OffsetDateTime` by instant; Issue 48),
+`maestro.worker.task-queues[].concurrency` /
 `activity-concurrency` (bound per node), `maestro.worker.default-concurrency` /
 `default-activity-concurrency` (default 20/20 for every unlisted queue, per
 queue per node; `0` on both = unbounded, `0` on one or negative fails

@@ -41,6 +41,12 @@
 - **API.** Additive: `UnsupportedActivityReturnTypeException`, `ActivityProxyFactory.requireSupportedReturnTypes(Class)`.
 - **Parked runs.** Nothing persisted changes. A run parked by rc.1–rc.3 in a workflow whose activity returns a future cannot resume on this build until the interface is changed — the node does not start; such a run would already hang or stand down on its first recovery under rc.3. After the return type is changed to the value, a replay of a step recorded as a future reads its bean-property JSON (`{"done":true,…}`) as the new type, which in general fails and stands the run down as `unknown_event_payload`: terminate such runs.
 
+### Added — a startup check that the configured mapper reads back what it writes (Issue 48)
+
+- **What was wrong.** Every payload is written and read back with the host's `ObjectMapper`, and nothing checked that the mapper reads back what it writes. The asymmetric epoch-millisecond configuration (`WRITE_DATES_AS_TIMESTAMPS` on, `WRITE_DATE_TIMESTAMPS_AS_NANOSECONDS` off, `READ_DATE_TIMESTAMPS_AS_NANOSECONDS` left on) reads a 2026 `currentTime()` back as the year 58834 on every replay; a mapper whose trees strip a `BigDecimal`'s trailing zeros loses scale through the store. The only sign was a `WARN` the first time a run read the clock.
+- **What changes.** At context refresh the starter round-trips four fixed values — an `Instant` with nanoseconds, an `OffsetDateTime` in UTC, `BigDecimal("10.50")`, `Optional.empty()` — through the `PayloadSerializer` and the JSON text a JDBC store writes and parses back, and names each that does not come back, with its fix. New property `maestro.replay.mapper-check` = `warn` (default: one `WARN`) | `fail` (startup fails with that message) | `off`. Times compare to the millisecond and an `OffsetDateTime` by instant, so a symmetric epoch-millisecond mapper and a non-UTC default time zone pass (`MapperReadBackStartupCheckTest`).
+- **Compatibility.** The default only logs: no application that started before stops starting. Setting `fail` is the behaviour change, opt-in. Nothing persisted changes; parked runs are untouched.
+
 ## 0.3.0-rc.3
 
 ### Fixed — an exception thrown while replaying recorded history stands down as `replay_exception` (Issue 89)

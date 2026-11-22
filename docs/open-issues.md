@@ -47,11 +47,11 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (5 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 and 49 closed 2026-11-22)
+**`blocks-1.0`** (4 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 48 and 49 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. ~~[49](#issue-49) — Future-typed activity results are not rejected at startup~~ — closed (refused at proxy creation: `UnsupportedActivityReturnTypeException`, 2026-11-22)
-3. [48](#issue-48) — No startup check that the configured mapper reads back what it writes
+3. ~~[48](#issue-48) — No startup check that the configured mapper reads back what it writes~~ — closed (`maestro.replay.mapper-check`, default `warn`, 2026-11-22)
 4. ~~[43](#issue-43) — Workflow input on Postgres differs between the first run and recovery~~ — closed (the first run launches from the stored input, 2026-11-21)
 5. ~~[42](#issue-42) — A replayed activity failure keeps only the exception's type and message~~ — closed (the first run throws the failure rebuilt from its record; `@FailureDetails` opt-in, 2026-11-22; the rest is [93](#issue-93))
 6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
@@ -462,7 +462,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [45](#issue-45) | `collectSignals` throws `NullPointerException` on a signal with a null payload | Library defect | Low | **Resolved** |
 | [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | `limitation` — Open |
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
-| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | `blocks-1.0` — Open |
+| [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | **Resolved** |
 | [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | **Resolved** |
 | [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | `blocks-1.0` — Open |
 | [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | `limitation` — Open |
@@ -4227,8 +4227,24 @@ recovers the run and observes an `unknown_event_payload` stand-down, not
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Configuration safety for the payload mapper, before payload formats freeze.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-22): fixed, as proposed below**
+> (branch `fix/issues-48-49-listener-payload-type`). New
+> `MapperReadBackStartupCheck` (starter, at context refresh) round-trips the
+> four values named below the way a recorded payload travels —
+> `PayloadSerializer.serialize`, the JSON text a JDBC store writes and parses
+> back (its decimal-exact reader mirrored), `deserialize` into the declared
+> type — and names each that does not come back, with its fix, under the new
+> `maestro.replay.mapper-check` = `warn` (default: one `WARN`) | `fail` (startup
+> fails) | `off`. To avoid rejecting a legitimate mapper, times compare to the
+> millisecond (a symmetric epoch-millisecond mapper passes) and the
+> `OffsetDateTime` by instant (a non-UTC default time zone passes); the
+> `BigDecimal` compares with `equals`, so a mapper whose trees strip trailing
+> zeros is named. `MapperReadBackStartupCheckTest`: the asymmetric millisecond
+> mapper WARNs (default) or fails startup (`fail`) naming `Instant`; the
+> default mapper and four common customisations start silently. Default `warn`,
+> as the entry proposes, so no existing application stops starting.
+
+> Filed by WP1, replay fidelity (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library gap — configuration safety. **Severity:** Medium (a mapper
 customisation silently changes what every workflow computes).
