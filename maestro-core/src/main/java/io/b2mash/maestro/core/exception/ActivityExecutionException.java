@@ -19,9 +19,10 @@ package io.b2mash.maestro.core.exception;
  *       {@link ReconstructedActivityFailure}, reported on the first run.</li>
  *   <li><b>Any other class:</b> the class itself, created through its public
  *       {@code (String)} constructor with the recorded message, if it is an
- *       accessible public class with one that does not throw; otherwise
- *       (package-private or private nested class, abstract class, no such
- *       constructor, throwing constructor, class missing from the classpath,
+ *       accessible public class with one that does not throw and keeps the
+ *       message it is given; otherwise (package-private or private nested
+ *       class, abstract class, no such constructor, throwing constructor, a
+ *       constructor that derives its message, class missing from the classpath,
  *       or an engine control-flow signal name) a
  *       {@link ReconstructedActivityFailure} whose
  *       {@link ReconstructedActivityFailure#originalClassName() originalClassName()}

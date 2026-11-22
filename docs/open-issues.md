@@ -3899,7 +3899,10 @@ appended.
 > `ActivityExecutionException.failure()` returns the `RecordedFailure`
 > (`type`, `message`, `details`) on every node. A null message is `null`, not
 > `"Replayed failure"`. `ActivityTimeoutException` opted in. No migration; an
-> rc.1–rc.3 record replays as before; rc.3 ignores `details`. No startup check
+> rc.1–rc.3 record replays by the old rule except a null/empty message (now
+> `null`/empty) and a `(String)` constructor that derives its message (now a
+> `ReconstructedActivityFailure`, not a doubled message; PR #88 review); rc.3
+> ignores `details`. No startup check
 > for an opted-in class that can never be rebuilt: a `throws` clause names a
 > supertype of what is thrown and Jackson finds creators by parameter name, so
 > reflection cannot decide it; the first failure reports it. **Correction to

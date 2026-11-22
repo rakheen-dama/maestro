@@ -14,8 +14,9 @@ import java.util.Objects;
  * be re-created: for a class that has not opted in to
  * {@link io.b2mash.maestro.core.annotation.FailureDetails @FailureDetails}, it
  * is not an accessible public class with a public {@code (String)} constructor
- * that completes normally (package-private or private nested classes, abstract
- * classes, a missing constructor and a throwing constructor all qualify); for
+ * that completes normally and keeps the message it is given (package-private
+ * or private nested classes, abstract classes, a missing constructor, a
+ * throwing constructor and one that derives its message all qualify); for
  * an opted-in class, the mapper cannot create it from the recorded message and
  * properties, or the object it creates does not reproduce them; for either,
  * the class is not on this node's classpath, no type was recorded (reported as

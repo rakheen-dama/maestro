@@ -27,7 +27,9 @@ import java.util.Objects;
  * @param details the recorded properties as a JSON object, by property name as
  *                the mapper wrote them; an empty object when the class has not
  *                opted in, when the record predates recording, or when the
- *                properties could not be written. Each call returns a copy.
+ *                properties could not be written. It holds only the node
+ *                kinds JSON text parses to (no binary or POJO node). Each
+ *                call returns a copy.
  */
 public record RecordedFailure(String type, @Nullable String message, JsonNode details) implements Serializable {
 
@@ -36,7 +38,8 @@ public record RecordedFailure(String type, @Nullable String message, JsonNode de
 
     /**
      * @throws NullPointerException     if {@code type} or {@code details} is {@code null}
-     * @throws IllegalArgumentException if {@code details} is not a JSON object
+     * @throws IllegalArgumentException if {@code details} is not a JSON object,
+     *                                  or holds a binary or POJO node
      */
     public RecordedFailure {
         Objects.requireNonNull(type, "type");
@@ -44,7 +47,23 @@ public record RecordedFailure(String type, @Nullable String message, JsonNode de
         if (!details.isObject()) {
             throw new IllegalArgumentException("details must be a JSON object, was " + details.getNodeType());
         }
+        requireTextKinds(details);
         details = details.deepCopy();
+    }
+
+    /**
+     * Refuses a binary or POJO node anywhere in {@code node}: {@code deepCopy()}
+     * shares their contents, so a copy would not isolate them. The engine never
+     * builds one (recorded properties are parsed from JSON text).
+     */
+    private static void requireTextKinds(JsonNode node) {
+        if (node.isBinary() || node.isPojo()) {
+            throw new IllegalArgumentException(
+                    "details must hold only what JSON text parses to, found a " + node.getNodeType() + " node");
+        }
+        for (var child : node.values()) {
+            requireTextKinds(child);
+        }
     }
 
     /**

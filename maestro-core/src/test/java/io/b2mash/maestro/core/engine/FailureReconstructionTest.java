@@ -221,7 +221,115 @@ class FailureReconstructionTest {
         assertFalse(FailureReconstruction.sameJson(a, MAPPER.valueToTree(Map.of("x", 1))));
     }
 
+    // ── PR #88 review ───────────────────────────────────────────────────
+
+    @Test
+    void aStringConstructorThatRewritesTheMessageIsAReconstructionNotADoubledMessage() {
+        // The record holds the message the constructor already prefixed; calling
+        // the constructor with it again would read "declined: declined: 51".
+        var payload = FailureReconstruction.record(new Prefixing("51"), SERIALIZER);
+        var rebuilt = FailureReconstruction.rebuild(payload, SERIALIZER);
+        assertAll(
+                () -> assertEquals(Prefixing.class.getName(),
+                        assertInstanceOf(ReconstructedActivityFailure.class, rebuilt.cause()).originalClassName()),
+                () -> assertEquals("declined: 51", rebuilt.cause().getMessage()),
+                () -> assertEquals(rebuilt.failure().message(), rebuilt.cause().getMessage()),
+                () -> assertNull(rebuilt.notRebuilt(), "the class never opted in: not reported"));
+    }
+
+    /** Each payload as the store sent it back as-is, and as a text store returns it. */
+    private static java.util.List<JsonNode> storedForms(ObjectNode payload) {
+        return java.util.List.of(payload, MAPPER.readTree(MAPPER.writeValueAsString(payload)));
+    }
+
+    @Test
+    void numericPropertiesOfEveryKindRebuildFaithfully() {
+        var thrown = new Numbers("m", 0.1f, 0.1f, 0.1, new java.math.BigDecimal("0.10"), Long.MAX_VALUE, 3);
+        for (var stored : storedForms(FailureReconstruction.record(thrown, SERIALIZER))) {
+            var rebuilt = FailureReconstruction.rebuild(stored, SERIALIZER);
+            var numbers = assertInstanceOf(Numbers.class, rebuilt.cause(), "notRebuilt=" + rebuilt.notRebuilt());
+            assertAll(
+                    () -> assertEquals(0.1f, numbers.getF()),
+                    () -> assertEquals(0.1f, numbers.getBoxedF()),
+                    () -> assertEquals(0.1, numbers.getD()),
+                    () -> assertEquals(0, new java.math.BigDecimal("0.1").compareTo(numbers.getBig())),
+                    () -> assertEquals(Long.MAX_VALUE, numbers.getL()),
+                    () -> assertEquals(3, numbers.getI()));
+        }
+    }
+
+    @Test
+    void aByteArrayPropertyRebuildsFaithfully() {
+        var thrown = new Bytes("m", new byte[]{1, 2, (byte) 0xff});
+        for (var stored : storedForms(FailureReconstruction.record(thrown, SERIALIZER))) {
+            var rebuilt = FailureReconstruction.rebuild(stored, SERIALIZER);
+            var bytes = assertInstanceOf(Bytes.class, rebuilt.cause(), "notRebuilt=" + rebuilt.notRebuilt());
+            org.junit.jupiter.api.Assertions.assertArrayEquals(new byte[]{1, 2, (byte) 0xff}, bytes.getData());
+        }
+    }
+
+    @Test
+    void recordedDetailsHoldOnlyJsonTextNodeKinds() {
+        var payload = FailureReconstruction.record(new Bytes("m", new byte[]{9}), SERIALIZER);
+        assertTrue(payload.get("details").get("data").isString(), payload.toString());
+        assertTrue(FailureReconstruction.record(
+                new Numbers("m", 0.1f, 0.1f, 0.1, java.math.BigDecimal.ONE, 1L, 1), SERIALIZER)
+                .get("details").get("f").isDouble(), "a float is recorded as JSON text reads it");
+    }
+
     // ── Fixtures ────────────────────────────────────────────────────────
+
+    public static class Prefixing extends RuntimeException {
+        public Prefixing(String m) {
+            super("declined: " + m);
+        }
+    }
+
+    @FailureDetails
+    public static class Numbers extends RuntimeException {
+        private final float f;
+        private final Float boxedF;
+        private final double d;
+        private final java.math.BigDecimal big;
+        private final long l;
+        private final int i;
+
+        @JsonCreator
+        public Numbers(@JsonProperty("message") String message, @JsonProperty("f") float f,
+                       @JsonProperty("boxedF") Float boxedF, @JsonProperty("d") double d,
+                       @JsonProperty("big") java.math.BigDecimal big, @JsonProperty("l") long l,
+                       @JsonProperty("i") int i) {
+            super(message);
+            this.f = f;
+            this.boxedF = boxedF;
+            this.d = d;
+            this.big = big;
+            this.l = l;
+            this.i = i;
+        }
+
+        public float getF() { return f; }
+        public Float getBoxedF() { return boxedF; }
+        public double getD() { return d; }
+        public java.math.BigDecimal getBig() { return big; }
+        public long getL() { return l; }
+        public int getI() { return i; }
+    }
+
+    @FailureDetails
+    public static class Bytes extends RuntimeException {
+        private final byte[] data;
+
+        @JsonCreator
+        public Bytes(@JsonProperty("message") String message, @JsonProperty("data") byte[] data) {
+            super(message);
+            this.data = data;
+        }
+
+        public byte[] getData() {
+            return data;
+        }
+    }
 
     public static class StringCtor extends RuntimeException {
         public StringCtor(String m) {

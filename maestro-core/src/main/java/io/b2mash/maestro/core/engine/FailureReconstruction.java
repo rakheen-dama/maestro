@@ -13,6 +13,7 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 import tools.jackson.databind.node.ObjectNode;
 
+import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.IdentityHashMap;
 import java.util.Objects;
@@ -42,8 +43,10 @@ import java.util.concurrent.ConcurrentHashMap;
  *       original type is re-created only when the stored name resolves to a
  *       {@link Throwable} that is <b>not</b> a {@link MaestroControlFlowError}
  *       and exposes a <b>public</b> {@code (String)} constructor that
- *       completes normally (so a package-private or private nested class, an
- *       abstract class and a throwing constructor all fall back); in every
+ *       completes normally and keeps the message it is given (so a
+ *       package-private or private nested class, an abstract class, a
+ *       throwing constructor and one that derives its message all fall
+ *       back); in every
  *       other case (no such constructor, class not on the classpath, no type
  *       recorded, or a control-flow signal name) the result is a
  *       {@link ReconstructedActivityFailure} carrying the original class name
@@ -228,7 +231,14 @@ public final class FailureReconstruction {
             } else if (Throwable.class.isAssignableFrom(clazz)
                     && !MaestroControlFlowError.class.isAssignableFrom(clazz)) {
                 try {
-                    return (Throwable) clazz.getConstructor(String.class).newInstance(message);
+                    var rebuilt = (Throwable) clazz.getConstructor(String.class).newInstance(message);
+                    if (Objects.equals(rebuilt.getMessage(), message)) {
+                        return rebuilt;
+                    }
+                    // A constructor that derives its message (super("x: " + m))
+                    // would wrap the recorded, already-derived message again.
+                    logger.debug("Exception type '{}' changes the message its (String) constructor is given; "
+                            + "replaying as ReconstructedActivityFailure", exceptionType);
                 } catch (NoSuchMethodException e) {
                     logger.debug("Exception type '{}' has no public (String) constructor; "
                             + "replaying as ReconstructedActivityFailure", exceptionType);
@@ -247,12 +257,16 @@ public final class FailureReconstruction {
      * Whether two JSON trees hold the same values: objects by property (in any
      * order), arrays element by element, numbers by value (so {@code 1.0E7}
      * and {@code 10000000} agree, as a {@code jsonb} round trip makes them),
-     * everything else by {@link JsonNode#equals}.
+     * everything else by {@link JsonNode#equals}. Both sides come from
+ * {@link PayloadSerializer#failureDetails} or a store's parse of JSON text, so
+ * no binary or POJO node reaches the last case.
      */
     static boolean sameJson(JsonNode a, JsonNode b) {
         if (a.isNumber() && b.isNumber()) {
+            // By the value of the number's JSON text, never decimalValue(): a
+            // FloatNode's widens 0.1f to 0.10000000149011612.
             try {
-                return a.decimalValue().compareTo(b.decimalValue()) == 0;
+                return new BigDecimal(a.asString()).compareTo(new BigDecimal(b.asString())) == 0;
             } catch (RuntimeException notADecimal) {
                 return a.equals(b);
             }

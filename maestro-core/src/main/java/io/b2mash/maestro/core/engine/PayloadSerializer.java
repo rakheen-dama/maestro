@@ -208,6 +208,13 @@ public final class PayloadSerializer {
      * {@link io.b2mash.maestro.core.annotation.FailureDetails}: what this
      * serializer's mapper writes for it, without {@link #THROWABLE_PROPERTIES}.
      *
+     * <p>Written to JSON text and parsed back with this serializer's mapper, as
+     * a store parses a payload column, so the tree holds only the node kinds
+     * JSON text yields: a {@code byte[]} is its base64 string (never a binary
+     * node, whose copy would share the array), a {@code float} the
+     * {@code double} its text reads as. The record and the fidelity check's
+     * re-write therefore compare like with like, whatever the store returns.
+     *
      * @param failure the exception
      * @return a JSON object (empty when the class has no other property)
      * @throws SerializationException if the mapper cannot write it, or writes
@@ -216,7 +223,7 @@ public final class PayloadSerializer {
     ObjectNode failureDetails(Throwable failure) {
         JsonNode written;
         try {
-            written = detailsMapper().valueToTree(failure);
+            written = objectMapper.readTree(detailsMapper().writeValueAsBytes(failure));
         } catch (Exception e) {
             throw new SerializationException(
                     "Failed to serialize the properties of " + failure.getClass().getName(), e);

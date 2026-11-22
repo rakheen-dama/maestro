@@ -79,7 +79,7 @@ try {
 
 `causedBy` matches the rebuilt cause and a `ReconstructedActivityFailure` alike. What is guaranteed, on the first run and after any restart:
 
-- **Any exception:** its class and message. Give a business exception a public `(String)` constructor so the cause is its own type; without one it is a `ReconstructedActivityFailure` naming the original class. Its other fields, its cause chain and its stack trace are not recorded, so they are not there on either path.
+- **Any exception:** its class and message. Give a business exception a public `(String)` constructor that passes the message through unchanged so the cause is its own type; without one (or with one that derives its message, `super("declined: " + m)`) it is a `ReconstructedActivityFailure` naming the original class. Its other fields, its cause chain and its stack trace are not recorded, so they are not there on either path.
 - **`e.failure()`** always returns what was recorded: `type()`, `message()` and `details()`, also when the class is missing on this node or could not be rebuilt.
 - **To branch on a field, opt the class in:** annotate it `@FailureDetails` and give it a `@JsonCreator` constructor taking `message` and each property. The properties the configured mapper writes for it (bean getters, `@JsonProperty`; never `message`, `cause`, `stackTrace`) are stored with the failure, so keep secrets out (`@JsonIgnore`), and `getCause()` is the class rebuilt from them:
 
