@@ -47,7 +47,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (3 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 83, 50 and 52 closed 2026-11-22)
+**`blocks-1.0`** (2 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 83, 50, 52 and 85 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. [49](#issue-49) — Future-typed activity results are not rejected at startup
@@ -58,7 +58,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 7. ~~[83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged~~ — closed (the engine adopts; the janitor purges orphans past `maestro.signal.orphan-retention`, 2026-11-22)
 8. ~~[50](#issue-50) — The activity proxy keeps two ignored lock parameters~~ — closed (removed; internal package, no deprecation, 2026-11-22)
 9. ~~[52](#issue-52) — `maestro-admin-client` has no wired component~~ — closed (option 1: the module removed, 2026-11-22)
-10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
+10. ~~[85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package~~ — closed (procedure in `RELEASING.md`; drivers read git's stderr apart, 2026-11-22)
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
 **`limitation`** (26)
@@ -496,7 +496,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | `limitation` — Open |
 | [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | **Resolved** |
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | `limitation` — Open |
-| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | `blocks-1.0` — Open |
+| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | **Resolved** |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | **Resolved** (P2) |
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
@@ -6167,7 +6167,31 @@ autocommit off sees it off again after the listener releases the connection.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** The upgrade fixtures need the procedure before the first breaking core API change.
 
-> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
+> **Label: `blocks-1.0`. Closed (2026-11-22): the procedure is written**
+> (branch `chore/issues-50-52-83-85-housekeeping`). `RELEASING.md` § Upgrade
+> fixtures › "When a core change stops a frozen package compiling": the
+> driver is unpinned and adapted in the change's own commit; for the pinned
+> `SeededHistoryWorkflows` the default is to keep the old API compiling
+> (deprecated, behaving as before) while any frozen package uses it, and
+> only with the maintainer's approval, when a member cannot stay, a
+> one-commit migration of exactly the lines the compiler rejects. That
+> commit keeps the captured bytes as `SeededHistoryWorkflows.java.captured`
+> beside the dump (still checked against the untouched manifest), pins the
+> edited file by a new SHA-256 literal in the fixture's `SeededFixture`
+> (the guard extension is part of the first migration), and must leave
+> `RECORDED_EVENTS` and `APPENDED` unchanged with every suite over the
+> fixture green; never a re-capture or a deletion. Of the entry's two
+> suggestions, the shim is the default; a separate source set compiled
+> against the tag was not taken, because the upgrade tests run the frozen
+> workflows on this build's engine, where code compiled against an older
+> API fails at link time on the same change. No guard test added: the
+> done-when asks for the procedure, and the guard extension it describes
+> has nothing to check until a fixture is migrated. Every capture driver
+> (`cbf5a2a`, `v0_3_0_rc_1`–`v0_3_0_rc_3`; none is pinned) now reads git's
+> standard output only, its standard error going to a file shown only when
+> git fails.
+
+> Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
 > final review.
 
 **Kind:** Testing gap — upgrade fixtures. **Severity:** Low.
