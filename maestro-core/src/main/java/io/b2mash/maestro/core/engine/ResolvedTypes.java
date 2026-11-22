@@ -1,15 +1,20 @@
 package io.b2mash.maestro.core.engine;
 
-import tools.jackson.databind.JavaType;
-import tools.jackson.databind.type.TypeFactory;
+import org.jspecify.annotations.Nullable;
 
+import java.lang.reflect.Array;
 import java.lang.reflect.GenericArrayType;
 import java.lang.reflect.Method;
 import java.lang.reflect.ParameterizedType;
 import java.lang.reflect.Type;
 import java.lang.reflect.TypeVariable;
 import java.lang.reflect.WildcardType;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * A method's generic return and parameter types as a given owner type sees
@@ -25,23 +30,25 @@ import java.util.Arrays;
  * {@code @MaestroSignalListener} method inherited from a generic superclass,
  * resolved against the workflow or listener class.
  *
- * <p>A type with no variable for the owner to bind — a plain class, a
- * {@code List<Order>}, a method's own {@code <R> R}, or a variable the owner
+ * <p>The result is a plain reflective {@link Type} — the declared type with
+ * the bound variables substituted — never a Jackson {@code JavaType}, so the
+ * mapper that reads the payload constructs it itself and applies its own
+ * {@code TypeModifier}s, exactly as for a declared type. Only variables the
+ * <em>declaring type</em> declares are substituted, matched by declaration
+ * and name: a method's own {@code <T>} that shadows the class's {@code T} is
+ * never bound. A type with nothing to substitute — a plain class, a
+ * {@code List<Order>}, a method's own {@code <R> R}, a variable the owner
  * leaves unbound (a raw supertype, the owner's own parameter) — is returned
- * exactly as declared, so it reads as it always has: an unbound variable as
- * its bound. Only a type the owner's hierarchy changes is returned as a
- * Jackson {@link JavaType} (which implements {@link Type}); render it with
- * {@link #typeName(Type)}.
+ * as the very object reflection declared, so it reads as it always has: an
+ * unbound variable as its bound.
  *
  * <p>Public but internal until 1.0: the starter and the Kafka listener use
  * it; workflow code never needs it.
  *
- * <p><b>Thread safety:</b> stateless; every method is thread-safe.
+ * <p><b>Thread safety:</b> stateless; every method is thread-safe, and the
+ * types it returns are immutable.
  */
 public final class ResolvedTypes {
-
-    /** Type construction only — no mapper settings are involved in resolving bindings. */
-    private static final TypeFactory TYPES = TypeFactory.createDefaultInstance();
 
     private ResolvedTypes() {
     }
@@ -50,8 +57,8 @@ public final class ResolvedTypes {
      * {@code method}'s generic return type as {@code owner} sees it.
      *
      * @param owner  the proxied interface, or the class whose instance the
-     *               method is invoked on; must be {@code method}'s declaring
-     *               type or a subtype of it
+     *               method is invoked on; {@code method}'s declaring type or a
+     *               subtype of it
      * @param method a method of {@code owner} (declared or inherited)
      * @return the resolved type, or {@link Method#getGenericReturnType()}
      *         itself when {@code owner} binds nothing in it
@@ -85,7 +92,8 @@ public final class ResolvedTypes {
      * @return the resolved raw return class
      */
     public static Class<?> rawReturnType(Class<?> owner, Method method) {
-        return raw(returnType(owner, method), method.getReturnType());
+        var type = returnType(owner, method);
+        return type == method.getGenericReturnType() ? method.getReturnType() : rawClass(type);
     }
 
     /**
@@ -97,60 +105,235 @@ public final class ResolvedTypes {
      */
     public static Class<?>[] rawParameterTypes(Class<?> owner, Method method) {
         var erased = method.getParameterTypes();
+        var declared = method.getGenericParameterTypes();
         var resolved = new Class<?>[erased.length];
         for (int i = 0; i < erased.length; i++) {
-            resolved[i] = raw(parameterType(owner, method, i), erased[i]);
+            var type = parameterType(owner, method, i);
+            resolved[i] = type == declared[i] ? erased[i] : rawClass(type);
         }
         return resolved;
     }
 
     /**
-     * A type as a log line or exception message names it: Java's rendering
-     * for a reflected type, the canonical form ({@code java.util.List<x.Order>})
-     * for a resolved one.
+     * A type as a log line or exception message names it
+     * ({@link Type#getTypeName()}: {@code java.util.List<x.Order>}).
      *
      * @param type a type from this class or from reflection
      * @return its name
      */
     public static String typeName(Type type) {
-        return type instanceof JavaType resolved
-                ? resolved.toCanonical().replace(",", ", ")
-                : type.getTypeName();
+        return type.getTypeName();
+    }
+
+    /**
+     * The erasure of a substituted type (one that holds no unbound variable
+     * where it was substituted).
+     */
+    static Class<?> rawClass(Type type) {
+        return switch (type) {
+            case Class<?> c -> c;
+            case ParameterizedType p -> (Class<?>) p.getRawType();
+            case GenericArrayType a -> Array.newInstance(rawClass(a.getGenericComponentType()), 0).getClass();
+            case TypeVariable<?> v -> rawClass(v.getBounds()[0]);
+            case WildcardType w -> rawClass(w.getUpperBounds()[0]);
+            default -> Object.class;
+        };
     }
 
     private static Type resolve(Class<?> owner, Method method, Type declared) {
-        if (!mentionsTypeVariable(declared) || owner == method.getDeclaringClass()) {
+        var declaring = method.getDeclaringClass();
+        if (owner == declaring || declaring.getTypeParameters().length == 0) {
             // Nothing for the owner to bind: the method's own variables and
             // the declaring type's own parameters are unbound from there.
             return declared;
         }
-        var self = TYPES.constructType(owner);
-        var declaring = self.findSuperType(method.getDeclaringClass());
-        if (declaring == null) {
-            return declared;
+        var bindings = new HashMap<TypeVariable<?>, Type>();
+        collect(owner, bindings);
+        return substitute(declared, bindings);
+    }
+
+    /**
+     * Binds the type parameters of every generic supertype of {@code type}
+     * to the arguments its hierarchy passes, each argument already expressed
+     * in {@code type}'s own terms. Keys are {@link TypeVariable}s, whose
+     * equality is declaration plus name, so a method's variable never matches.
+     */
+    private static void collect(Class<?> type, Map<TypeVariable<?>, Type> bindings) {
+        var supertypes = new ArrayList<Type>(Arrays.asList(type.getGenericInterfaces()));
+        if (type.getGenericSuperclass() != null) {
+            supertypes.add(type.getGenericSuperclass());
         }
-        var resolved = TYPES.resolveMemberType(declared, declaring.getBindings());
-        // A variable the hierarchy leaves unbound (a raw supertype, a method's
-        // own <R>) resolves to its bound, as the declared type reads: keep the
-        // declared type so its reading and its rendering stay what they were.
-        return resolved.equals(TYPES.constructType(declared)) ? declared : resolved;
+        for (var supertype : supertypes) {
+            Class<?> raw;
+            if (supertype instanceof ParameterizedType p) {
+                raw = (Class<?>) p.getRawType();
+                var parameters = raw.getTypeParameters();
+                var arguments = p.getActualTypeArguments();
+                for (int i = 0; i < parameters.length; i++) {
+                    bindings.putIfAbsent(parameters[i], substitute(arguments[i], bindings));
+                }
+            } else if (supertype instanceof Class<?> c) {
+                raw = c;
+            } else {
+                continue;
+            }
+            collect(raw, bindings);
+        }
     }
 
-    private static Class<?> raw(Type type, Class<?> erased) {
-        return type instanceof JavaType resolved ? resolved.getRawClass() : erased;
-    }
-
-    private static boolean mentionsTypeVariable(Type type) {
+    /** {@code type} with every bound variable replaced; the same object when nothing was. */
+    private static Type substitute(Type type, Map<TypeVariable<?>, Type> bindings) {
         return switch (type) {
-            case Class<?> ignored -> false;
-            case TypeVariable<?> ignored -> true;
-            case ParameterizedType p -> Arrays.stream(p.getActualTypeArguments())
-                    .anyMatch(ResolvedTypes::mentionsTypeVariable)
-                    || (p.getOwnerType() != null && mentionsTypeVariable(p.getOwnerType()));
-            case GenericArrayType a -> mentionsTypeVariable(a.getGenericComponentType());
-            case WildcardType w -> Arrays.stream(w.getUpperBounds()).anyMatch(ResolvedTypes::mentionsTypeVariable)
-                    || Arrays.stream(w.getLowerBounds()).anyMatch(ResolvedTypes::mentionsTypeVariable);
-            default -> false;
+            case Class<?> c -> c;
+            case TypeVariable<?> v -> bindings.getOrDefault(v, v);
+            case ParameterizedType p -> {
+                var arguments = p.getActualTypeArguments();
+                var substituted = substituteAll(arguments, bindings);
+                var ownerType = p.getOwnerType();
+                var substitutedOwner = ownerType == null ? null : substitute(ownerType, bindings);
+                yield substituted == arguments && substitutedOwner == ownerType
+                        ? p
+                        : new Parameterized((Class<?>) p.getRawType(), substituted, substitutedOwner);
+            }
+            case GenericArrayType a -> {
+                var component = a.getGenericComponentType();
+                var substituted = substitute(component, bindings);
+                if (substituted == component) {
+                    yield a;
+                }
+                yield substituted instanceof Class<?> c
+                        ? Array.newInstance(c, 0).getClass()
+                        : new GenericArray(substituted);
+            }
+            case WildcardType w -> {
+                var upperBounds = w.getUpperBounds();
+                var lowerBounds = w.getLowerBounds();
+                var upper = substituteAll(upperBounds, bindings);
+                var lower = substituteAll(lowerBounds, bindings);
+                yield upper == upperBounds && lower == lowerBounds ? w : new Wildcard(upper, lower);
+            }
+            default -> type;
         };
+    }
+
+    /** The same array when no element changed. */
+    private static Type[] substituteAll(Type[] types, Map<TypeVariable<?>, Type> bindings) {
+        Type[] result = types;
+        for (int i = 0; i < types.length; i++) {
+            var substituted = substitute(types[i], bindings);
+            if (substituted != types[i]) {
+                if (result == types) {
+                    result = types.clone();
+                }
+                result[i] = substituted;
+            }
+        }
+        return result;
+    }
+
+    // ── Reflective types, equal to the JDK's own for the same structure ──
+
+    private record Parameterized(Class<?> raw, Type[] arguments, @Nullable Type owner)
+            implements ParameterizedType {
+        @Override
+        public Type[] getActualTypeArguments() {
+            return arguments.clone();
+        }
+
+        @Override
+        public Type getRawType() {
+            return raw;
+        }
+
+        @Override
+        public @Nullable Type getOwnerType() {
+            return owner;
+        }
+
+        @Override
+        public String getTypeName() {
+            return raw.getName() + Arrays.stream(arguments).map(Type::getTypeName)
+                    .collect(Collectors.joining(", ", "<", ">"));
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof ParameterizedType p && raw.equals(p.getRawType())
+                    && Objects.equals(owner, p.getOwnerType())
+                    && Arrays.equals(arguments, p.getActualTypeArguments());
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(arguments) ^ Objects.hashCode(owner) ^ raw.hashCode();
+        }
+
+        @Override
+        public String toString() {
+            return getTypeName();
+        }
+    }
+
+    private record GenericArray(Type component) implements GenericArrayType {
+        @Override
+        public Type getGenericComponentType() {
+            return component;
+        }
+
+        @Override
+        public String getTypeName() {
+            return component.getTypeName() + "[]";
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof GenericArrayType a && component.equals(a.getGenericComponentType());
+        }
+
+        @Override
+        public int hashCode() {
+            return component.hashCode();
+        }
+
+        @Override
+        public String toString() {
+            return getTypeName();
+        }
+    }
+
+    private record Wildcard(Type[] upper, Type[] lower) implements WildcardType {
+        @Override
+        public Type[] getUpperBounds() {
+            return upper.clone();
+        }
+
+        @Override
+        public Type[] getLowerBounds() {
+            return lower.clone();
+        }
+
+        @Override
+        public String getTypeName() {
+            if (lower.length > 0) {
+                return "? super " + lower[0].getTypeName();
+            }
+            return upper.length == 0 || upper[0] == Object.class ? "?" : "? extends " + upper[0].getTypeName();
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            return o instanceof WildcardType w && Arrays.equals(upper, w.getUpperBounds())
+                    && Arrays.equals(lower, w.getLowerBounds());
+        }
+
+        @Override
+        public int hashCode() {
+            return Arrays.hashCode(upper) ^ Arrays.hashCode(lower);
+        }
+
+        @Override
+        public String toString() {
+            return getTypeName();
+        }
     }
 }

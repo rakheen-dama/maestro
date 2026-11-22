@@ -30,6 +30,8 @@ class InheritedGenericActivityTest {
 
     private TestWorkflowEnvironment env;
     private RecordingOrderBooking booking;
+    private final RecordingReservations reservations = new RecordingReservations();
+    private final RecordingPlainReservations plainReservations = new RecordingPlainReservations();
 
     @BeforeEach
     void setUp() {
@@ -37,6 +39,8 @@ class InheritedGenericActivityTest {
         booking = new RecordingOrderBooking();
         env.registerActivities(Orders.class, new OrdersImpl());
         env.registerActivities(OrderBooking.class, booking);
+        env.registerActivities(Reservations.class, reservations);
+        env.registerActivities(PlainReservations.class, plainReservations);
     }
 
     @AfterEach
@@ -68,7 +72,92 @@ class InheritedGenericActivityTest {
         assertEquals(List.of(new Order("order-b")), booking.cancelled, "the compensation got an Order");
     }
 
+    /**
+     * PR #92 review finding 2: {@code undo(String)} accepts both the
+     * activity's argument and its result. A non-generic interface has always
+     * passed the result (a single parameter assignable from the return type
+     * is tried first); an inherited {@code T reserve(String)} with
+     * {@code T = String} now selects the same, where its erased {@code Object}
+     * return made rc.1–rc.4 pass the original argument.
+     */
+    @Test
+    void anInheritedGenericCompensation_selectsItsArgumentsAsTheNonGenericInterfaceDoes() throws Exception {
+        var inherited = env.startWorkflow(ReservationWorkflow.class, "order-1");
+        var plain = env.startWorkflow(PlainReservationWorkflow.class, "order-1");
+
+        assertEquals(WorkflowStatus.FAILED, inherited.awaitTerminal(Duration.ofSeconds(10)));
+        assertEquals(WorkflowStatus.FAILED, plain.awaitTerminal(Duration.ofSeconds(10)));
+        assertEquals(List.of("reservation-order-1"), plainReservations.undone, "the non-generic selection");
+        assertEquals(plainReservations.undone, reservations.undone, "the inherited generic selects the same");
+    }
+
     // ── Fixtures ─────────────────────────────────────────────────────────
+
+    public interface Reserving<T> {
+        @Compensate("undo")
+        T reserve(String orderId);
+    }
+
+    @Activity
+    public interface Reservations extends Reserving<String> {
+        void undo(String value);
+
+        void fail(String orderId);
+    }
+
+    @Activity
+    public interface PlainReservations {
+        @Compensate("undo")
+        String reserve(String orderId);
+
+        void undo(String value);
+
+        void fail(String orderId);
+    }
+
+    static final class RecordingReservations implements Reservations {
+        final List<String> undone = new CopyOnWriteArrayList<>();
+
+        @Override public String reserve(String orderId) { return "reservation-" + orderId; }
+        @Override public void undo(String value) { undone.add(value); }
+        @Override public void fail(String orderId) { throw new IllegalStateException("declined " + orderId); }
+    }
+
+    static final class RecordingPlainReservations implements PlainReservations {
+        final List<String> undone = new CopyOnWriteArrayList<>();
+
+        @Override public String reserve(String orderId) { return "reservation-" + orderId; }
+        @Override public void undo(String value) { undone.add(value); }
+        @Override public void fail(String orderId) { throw new IllegalStateException("declined " + orderId); }
+    }
+
+    @DurableWorkflow(name = "inherited-reservation")
+    public static class ReservationWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S", retryPolicy = @RetryPolicy(maxAttempts = 1))
+        private Reservations reservations;
+
+        @WorkflowMethod
+        @Saga
+        public String run(String orderId) {
+            reservations.reserve(orderId);
+            reservations.fail(orderId);
+            return "unreachable";
+        }
+    }
+
+    @DurableWorkflow(name = "plain-reservation")
+    public static class PlainReservationWorkflow {
+        @ActivityStub(startToCloseTimeout = "PT10S", retryPolicy = @RetryPolicy(maxAttempts = 1))
+        private PlainReservations reservations;
+
+        @WorkflowMethod
+        @Saga
+        public String run(String orderId) {
+            reservations.reserve(orderId);
+            reservations.fail(orderId);
+            return "unreachable";
+        }
+    }
 
     public record Order(String id) {
     }

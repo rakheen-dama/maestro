@@ -26,7 +26,6 @@ import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
-import tools.jackson.databind.JavaType;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.node.JsonNodeFactory;
 
@@ -264,8 +263,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * built without one, which reads each method's types as declared.
      */
     private final @Nullable Class<?> activityInterface;
-    /** Each invoked method's return type as {@link #activityInterface} binds it. */
-    private final Map<Method, Type> returnTypes = new ConcurrentHashMap<>();
+    /** Each invoked method's return type as {@link #activityInterface} binds it, and its erasure. */
+    private final Map<Method, ResolvedReturn> returnTypes = new ConcurrentHashMap<>();
+
+    /** A method's resolved generic return type and its raw class. */
+    private record ResolvedReturn(Type type, Class<?> raw) { }
     /** Activity methods whose unreadable or other-class result has already been WARNed by this handler. */
     private final Set<Method> warnedUnreadable = ConcurrentHashMap.newKeySet();
     /** Opted-in exception classes whose failure this handler has already WARNed as not rebuilt. */
@@ -525,16 +527,21 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * unreadable-result warning all use.
      */
     private Type returnType(Method method) {
-        var iface = activityInterface;
-        if (iface == null) {
-            return method.getGenericReturnType();
-        }
-        return returnTypes.computeIfAbsent(method, m -> ResolvedTypes.returnType(iface, m));
+        return resolvedReturn(method).type();
     }
 
     /** The erased class of {@link #returnType}. */
     private Class<?> rawReturnType(Method method) {
-        return returnType(method) instanceof JavaType resolved ? resolved.getRawClass() : method.getReturnType();
+        return resolvedReturn(method).raw();
+    }
+
+    private ResolvedReturn resolvedReturn(Method method) {
+        var iface = activityInterface;
+        if (iface == null) {
+            return new ResolvedReturn(method.getGenericReturnType(), method.getReturnType());
+        }
+        return returnTypes.computeIfAbsent(method, m -> new ResolvedReturn(
+                ResolvedTypes.returnType(iface, m), ResolvedTypes.rawReturnType(iface, m)));
     }
 
     @Override

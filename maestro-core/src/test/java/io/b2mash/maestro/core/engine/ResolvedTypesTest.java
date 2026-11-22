@@ -1,7 +1,15 @@
 package io.b2mash.maestro.core.engine;
 
 import org.junit.jupiter.api.Test;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.json.JsonMapper;
+import tools.jackson.databind.module.SimpleModule;
+import tools.jackson.databind.type.TypeBindings;
+import tools.jackson.databind.type.TypeFactory;
+import tools.jackson.databind.type.TypeModifier;
 
+import java.lang.reflect.Type;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
@@ -39,6 +47,16 @@ class ResolvedTypesTest {
     @SuppressWarnings("rawtypes")
     interface RawOrders extends Parent { }
 
+    /** A method variable that shadows the class's {@code T} (PR #92 review finding 4). */
+    interface Shadowing<T> {
+        @SuppressWarnings("TypeParameterHidesVisibleType")
+        <T extends Number> T call();
+
+        List<T> all();
+    }
+
+    interface Strings extends Shadowing<String> { }
+
     @Test
     void aBoundVariableResolvesThroughATwoLevelChain() throws Exception {
         var load = Parent.class.getMethod("load");
@@ -73,5 +91,60 @@ class ResolvedTypesTest {
         assertSame(load.getGenericReturnType(), ResolvedTypes.returnType(RawOrders.class, load), "a raw supertype");
         assertEquals(Object.class, ResolvedTypes.rawReturnType(RawOrders.class, load));
         assertSame(plain.getGenericReturnType(), ResolvedTypes.returnType(Orders.class, plain), "no variable");
+    }
+
+    @Test
+    void aMethodVariableShadowingTheClassVariableIsNotBound() throws Exception {
+        var call = Shadowing.class.getMethod("call");
+        assertSame(call.getGenericReturnType(), ResolvedTypes.returnType(Strings.class, call));
+        assertEquals(Number.class, ResolvedTypes.rawReturnType(Strings.class, call));
+        assertEquals("java.util.List<java.lang.String>",
+                ResolvedTypes.typeName(ResolvedTypes.returnType(Strings.class, Shadowing.class.getMethod("all"))));
+    }
+
+    /**
+     * A host mapper's {@link TypeModifier} applies to a resolved type as it
+     * does to a declared one (PR #92 review finding 3): here every
+     * {@code List} reads as a {@code LinkedList}.
+     */
+    @Test
+    void theConsumingMappersTypeModifiersApplyToAResolvedType() throws Exception {
+        var mapper = JsonMapper.builder().addModule(new SimpleModule() {
+            @Override
+            public void setupModule(SetupContext context) {
+                super.setupModule(context);
+                context.addTypeModifier(new TypeModifier() {
+                    /** Constructing LinkedList resolves its List supertype: do not modify that. */
+                    private final ThreadLocal<Boolean> inside = ThreadLocal.withInitial(() -> false);
+
+                    @Override
+                    public JavaType modifyType(JavaType type, Type jdkType, TypeBindings bindings,
+                                               TypeFactory factory) {
+                        if (type.getRawClass() != List.class || inside.get()) {
+                            return type;
+                        }
+                        inside.set(true);
+                        try {
+                            return factory.constructCollectionType(LinkedList.class, type.getContentType());
+                        } finally {
+                            inside.set(false);
+                        }
+                    }
+                });
+            }
+        }).build();
+        var serializer = new PayloadSerializer(mapper);
+        var stored = serializer.serialize(List.of(new Order("o-1")));
+
+        var declared = serializer.deserialize(stored, Declared.class.getMethod("all").getGenericReturnType());
+        var resolved = serializer.deserialize(stored, ResolvedTypes.returnType(Orders.class, Parent.class.getMethod("all")));
+
+        assertEquals(LinkedList.class, declared.getClass(), "control: the modifier applies to a declared List<Order>");
+        assertEquals(LinkedList.class, resolved.getClass());
+        assertEquals(new Order("o-1"), ((List<?>) resolved).getFirst());
+    }
+
+    interface Declared {
+        List<Order> all();
     }
 }
