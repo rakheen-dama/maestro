@@ -275,6 +275,18 @@ List<ApprovalResult> approvals = workflow.collectSignals(
 
 The list is unmodifiable and in order of receipt. A signal sent with a `null` payload contributes a `null` element (as `awaitSignal` returns `null` for it; an `Optional` type reads it as `Optional.empty()`), on the first run and identically on replay.
 
+### Signal payload types: declare a record
+
+`awaitSignal` and `collectSignals` take a `Class<T>`, which cannot express a generic type such as `List<Order>`: asking for `List.class` hands workflow code a list of `LinkedHashMap`s, not `Order`s. Declare the payload as a record and request that:
+
+```java
+public record OrdersSignal(List<Order> orders) {}
+
+OrdersSignal batch = workflow.awaitSignal("orders.batch", OrdersSignal.class, Duration.ofHours(1));
+```
+
+Generics inside a record (`List<Order>`, `Map<String, List<Order>>`) are read with their element types, and the record can gain fields later without changing the signal's type. A `@MaestroSignalListener` method's parameter and a workflow method's input may be declared generic directly — both are read with their generic type — but a wrapper record is still the recommended shape for the same reasons. See also [Pitfalls §12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned) for what a round trip through the mapper keeps.
+
 ### Sending a signal
 
 From outside the workflow, use the `MaestroClient`:
