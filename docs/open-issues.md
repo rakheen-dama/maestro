@@ -47,10 +47,10 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (6 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 closed 2026-11-22)
+**`blocks-1.0`** (5 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42 and 49 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
-2. [49](#issue-49) — Future-typed activity results are not rejected at startup
+2. ~~[49](#issue-49) — Future-typed activity results are not rejected at startup~~ — closed (refused at proxy creation: `UnsupportedActivityReturnTypeException`, 2026-11-22)
 3. [48](#issue-48) — No startup check that the configured mapper reads back what it writes
 4. ~~[43](#issue-43) — Workflow input on Postgres differs between the first run and recovery~~ — closed (the first run launches from the stored input, 2026-11-21)
 5. ~~[42](#issue-42) — A replayed activity failure keeps only the exception's type and message~~ — closed (the first run throws the failure rebuilt from its record; `@FailureDetails` opt-in, 2026-11-22; the rest is [93](#issue-93))
@@ -463,7 +463,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [46](#issue-46) | An `Error` thrown by a result deserializer fails a recorded activity, live and on replay | Library gap — D9 coverage | Low | `limitation` — Open |
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
 | [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | `blocks-1.0` — Open |
-| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | `blocks-1.0` — Open |
+| [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | **Resolved** |
 | [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | `blocks-1.0` — Open |
 | [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | `limitation` — Open |
 | [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | `blocks-1.0` — Open — maintainer to decide |
@@ -4278,8 +4278,24 @@ starts silently.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** API validation: a shape that cannot work should be refused at startup.
 
-> **Open.** Filed by WP1, replay fidelity
-> (2026-11-12, branch `fix/replay-fidelity`). Recorded, not fixed.
+> **Label: `blocks-1.0`. Closed (2026-11-22): fixed, as proposed below**
+> (branch `fix/issues-48-49-listener-payload-type`). Every `createProxy`
+> overload calls the new public `ActivityProxyFactory.requireSupportedReturnTypes`,
+> which refuses an interface with a non-static method whose return type is
+> assignable to `Future` or `CompletionStage` with the new
+> `UnsupportedActivityReturnTypeException` (a `MaestroException`; it names the
+> interface and every offending method with its generic return type). The
+> starter builds its proxies at context start, so startup fails
+> (`WorkflowRegistrarPrototypeTest.aFutureResultFailsStartup`); the test kit
+> calls the check in its `startWorkflow`/`recover` preflight, before anything
+> is persisted. `ReadBackFormsTest`'s and `ReadBackTypeValveTest`'s future
+> cases are replaced by `ActivityFutureReturnTypeTest` and
+> `ReadBackFormsTest.aStubWithAFutureResult_isRefusedAtStart_andNothingIsPersisted`.
+> A future parameter and a `static` interface method are not refused. The
+> handler's live future skip stays for a handler built directly. Pitfalls rule
+> 12 now lists two exceptions, not three.
+
+> Filed by WP1, replay fidelity (2026-11-12, branch `fix/replay-fidelity`).
 
 **Kind:** Library gap — API validation. **Severity:** Medium (a
 `CompletableFuture` return type hangs the workflow after its first restart).

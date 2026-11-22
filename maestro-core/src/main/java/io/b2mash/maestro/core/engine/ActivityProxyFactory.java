@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.exception.UnsupportedActivityReturnTypeException;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
@@ -12,11 +13,16 @@ import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
 /**
  * Creates JDK dynamic proxies for activity interfaces that implement
@@ -61,6 +67,8 @@ public final class ActivityProxyFactory {
      * @param retryExecutor       retry executor for live invocations
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -97,6 +105,8 @@ public final class ActivityProxyFactory {
      *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -138,6 +148,8 @@ public final class ActivityProxyFactory {
      *                            never {@code null} (pass {@link EngineObserver#NOOP})
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -184,6 +196,8 @@ public final class ActivityProxyFactory {
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -236,6 +250,8 @@ public final class ActivityProxyFactory {
      *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -284,6 +300,8 @@ public final class ActivityProxyFactory {
      *                            outcomes carry a fingerprint either way
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -305,6 +323,7 @@ public final class ActivityProxyFactory {
                     "Activity type must be an interface, got: " + activityInterface.getName());
         }
 
+        requireSupportedReturnTypes(activityInterface);
         validateCompensateAnnotations(activityInterface);
 
         var activityName = resolveActivityName(activityInterface);
@@ -340,6 +359,46 @@ public final class ActivityProxyFactory {
         );
 
         return activityInterface.cast(proxy);
+    }
+
+    /**
+     * Refuses an activity interface with a method declared to return a
+     * {@link Future} or a {@link CompletionStage} (any subtype included) —
+     * Issue 49. An activity call is synchronous and its result is recorded as
+     * JSON, a future's bean properties rather than its value, so such a result
+     * cannot survive a restart: a replayed {@code CompletableFuture} is one
+     * nothing completes, and a {@code Future} or {@code CompletionStage}
+     * cannot be read back at all. Every overload of {@code createProxy} calls
+     * this; it is public so a path that builds its proxies later than it
+     * learns the interface (the test kit, which builds them per run) can
+     * refuse the interface before anything is persisted.
+     *
+     * <p>Only results are checked: a future <em>parameter</em> is not
+     * recorded as a result, and a {@code static} interface method is never
+     * dispatched to a proxy. Default methods are checked — a proxy dispatches
+     * them as activity calls.
+     *
+     * @param activityInterface the activity interface
+     * @throws UnsupportedActivityReturnTypeException naming the interface and
+     *         every offending method, in name order
+     */
+    public static void requireSupportedReturnTypes(Class<?> activityInterface) {
+        var offending = Arrays.stream(activityInterface.getMethods())
+                .filter(m -> !Modifier.isStatic(m.getModifiers()))
+                .filter(m -> Future.class.isAssignableFrom(m.getReturnType())
+                        || CompletionStage.class.isAssignableFrom(m.getReturnType()))
+                .sorted(Comparator.comparing(Method::getName).thenComparing(Method::toGenericString))
+                .toList();
+        if (offending.isEmpty()) {
+            return;
+        }
+        throw new UnsupportedActivityReturnTypeException(
+                activityInterface.getName(),
+                offending.stream().map(Method::getName).toList(),
+                offending.stream().map(m -> "%s(%s) returns %s".formatted(m.getName(),
+                        Arrays.stream(m.getParameterTypes()).map(Class::getSimpleName)
+                                .collect(Collectors.joining(", ")),
+                        m.getGenericReturnType().getTypeName())).toList());
     }
 
     /**

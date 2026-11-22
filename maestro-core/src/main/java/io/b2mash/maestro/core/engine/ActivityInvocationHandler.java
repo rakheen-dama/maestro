@@ -118,8 +118,11 @@ import java.util.concurrent.TimeoutException;
  *       names both classes. A replay still reads the other class: for this
  *       shape live and replay still differ.</li>
  *   <li><b>A future.</b> A method declared to return a {@code Future} or a
- *       {@code CompletionStage} is not read back live (its payload is the
- *       future's bean properties, never its value); no callback, no WARN.</li>
+ *       {@code CompletionStage} is refused by {@link ActivityProxyFactory}
+ *       (Issue 49), so no factory-built proxy reaches this handler with one.
+ *       A handler built directly still does not read one back live (its
+ *       payload is the future's bean properties, never its value); no
+ *       callback, no WARN.</li>
  * </ul>
  * The WARNs share one once-per-activity-method set per handler.
  *
@@ -684,7 +687,9 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // makes a new future nothing completes (join() would hang on the
             // first run), or fails outright for Future/CompletionStage. Hand
             // workflow code the activity's own future; a replay of this step
-            // still reads the payload (unsupported return type, Issue 49).
+            // still reads the payload. Unreachable through ActivityProxyFactory,
+            // which refuses such a method (Issue 49); kept for a handler built
+            // directly.
             return raw;
         }
         var value = ReadBack.orLive(raw, () -> deserializeResult(stored, method), root -> {

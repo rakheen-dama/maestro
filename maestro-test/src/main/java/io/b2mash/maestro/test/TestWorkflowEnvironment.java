@@ -398,6 +398,9 @@ public final class TestWorkflowEnvironment {
      * @throws io.b2mash.maestro.core.exception.UnreadableWorkflowInputException if
      *         {@code input} cannot be read back into the workflow method's generic
      *         parameter type; nothing was persisted
+     * @throws io.b2mash.maestro.core.exception.UnsupportedActivityReturnTypeException if
+     *         an {@code @ActivityStub} interface has a method returning a {@code Future}
+     *         or {@code CompletionStage}; nothing was persisted (Issue 49)
      */
     public TestWorkflowHandle startWorkflow(String workflowId, Class<?> workflowClass,
                                             @Nullable Object input) {
@@ -915,7 +918,9 @@ public final class TestWorkflowEnvironment {
     /**
      * Checks, without instantiating anything, that {@code workflowClass} has a
      * no-arg constructor and that every {@link ActivityStub} field has a
-     * registered implementation.
+     * registered implementation and no method returning a {@code Future} or
+     * {@code CompletionStage} (Issue 49 — the check the starter makes at
+     * context start).
      */
     private void validateWiring(Class<?> workflowClass) {
         try {
@@ -927,6 +932,7 @@ public final class TestWorkflowEnvironment {
         for (var field : getAllFields(workflowClass)) {
             if (field.isAnnotationPresent(ActivityStub.class)) {
                 requireActivityImpl(field, workflowClass);
+                ActivityProxyFactory.requireSupportedReturnTypes(field.getType());
             }
         }
     }
