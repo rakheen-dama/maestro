@@ -61,7 +61,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. ~~[85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package~~ — closed (procedure in `RELEASING.md`; drivers read git's stderr apart, 2026-11-22)
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
-**`limitation`** (27)
+**`limitation`** (27, 24 open)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
@@ -89,7 +89,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 24. [88](#issue-88) — During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened
 25. [92](#issue-92) — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change
 26. [93](#issue-93) — A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in
-27. [94](#issue-94) — An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes
+27. ~~[94](#issue-94) — An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes~~ — closed (types resolved against the binding type, 2026-11-22)
 
 ---
 
@@ -502,7 +502,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
 | [93](#issue-93) | A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in | Library gap — replay fidelity | Low | `limitation` — Open |
-| [94](#issue-94) | An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes | Library gap — replay fidelity | Low | `limitation` — Open |
+| [94](#issue-94) | An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes | Library gap — replay fidelity | Low | **Resolved** |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -6756,8 +6756,38 @@ the same rule as the top-level cause.
 
 ### Issue 94 — An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes {#issue-94}
 
-> **Label: `limitation`.** Filed 2026-11-22. Found in the PR #89 review
-> (Issue 49 note); not fixed there because Issue 49 only refuses a future.
+> **Resolved** (2026-11-22, branch `fix/issue-94-inherited-generic-activity-types`).
+> The new `ResolvedTypes` (core, public but internal until 1.0) resolves a
+> method's generic return and parameter types against the type that binds
+> them, with Jackson's `resolveMemberType` — the resolver Issue 49 used,
+> moved out of `ActivityProxyFactory`. `ActivityProxyFactory` hands the
+> handler the proxied interface (a new `ActivityInvocationHandler`
+> constructor), and the resolved type is used by the live read-back, the
+> replay, the type valve's comparison and report, the unreadable-result and
+> type-mismatch `WARN`s, the future check, `@Compensate` validation and
+> argument matching (the compensation method is now found on the proxied
+> interface, so an inherited `@Compensate` naming a method only the child
+> declares works), the workflow input (start check via a new
+> `WorkflowExecutor.startWorkflow(…, Method, Class<?>)` overload that the
+> starter's `WorkflowStub` and the test kit call, and every run's read
+> against the workflow object's class) and the `@MaestroSignalListener`
+> payload (against the bean's class). A variable nothing binds (a method's
+> own `<R> R`, a raw supertype) is returned as declared and reads as before.
+> Activity arguments are never deserialized by type and the argument
+> fingerprint hashes the serialized objects, so neither changed. Pinned by
+> `ReadBackTypeValveTest.inheritedGenericMethod_firstRunEqualsReplay`
+> (direct parent, generic impl class, two-level chain, `List<T>`,
+> `Map<String, List<T>>`, a method-level variable that stays the valve),
+> `ResolvedTypesTest`, the test kit's `InheritedGenericActivityTest` (crash
+> and recover; inherited `@Compensate`), the starter's
+> `InheritedGenericSpringPathTest` (two contexts over one store; inherited
+> `@WorkflowMethod` input) and `MaestroSignalListenerPayloadTypeTest`. A
+> replay of a step recorded before the fix now returns the typed value where
+> it returned a map; nothing stored changes (`docs/release-notes.md`). Left
+> as it was: the test kit finds only a `@WorkflowMethod` the class declares.
+>
+> *Original label: `limitation`. Filed 2026-11-22. Found in the PR #89 review
+> (Issue 49 note); not fixed there because Issue 49 only refuses a future.*
 
 **What is wrong.** Given
 
