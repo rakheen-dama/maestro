@@ -257,6 +257,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     private final RetryExecutor retryExecutor;
     private final EngineObserver observer;
     private final TaskQueueGovernor governor;
+    /**
+     * The proxied activity interface, against which every method's return
+     * and parameter types are resolved (Issue 94); {@code null} for a handler
+     * built without one, which reads each method's types as declared.
+     */
+    private final @Nullable Class<?> activityInterface;
+    /** Each invoked method's return type as {@link #activityInterface} binds it. */
+    private final Map<Method, Type> returnTypes = new ConcurrentHashMap<>();
     /** Activity methods whose unreadable or other-class result has already been WARNed by this handler. */
     private final Set<Method> warnedUnreadable = ConcurrentHashMap.newKeySet();
     /** Opted-in exception classes whose failure this handler has already WARNed as not rebuilt. */
@@ -444,6 +452,51 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             LifecycleEventSink lifecycleEventSink,
             boolean verifyArguments
     ) {
+        this(activityImpl, activityName, store, retryPolicy, startToCloseTimeout, serializer, retryExecutor,
+                observer, governor, lifecycleEventSink, verifyArguments, null);
+    }
+
+    /**
+     * Creates a new handler with every collaborator explicit and the activity
+     * interface it serves, against which each method's generic return and
+     * parameter types are resolved (Issue 94): {@code T load()} inherited by
+     * {@code interface Orders extends Parent<Order>} reads its stored result
+     * back as {@code Order} — on the live run and on every replay — where the
+     * method as reflected says {@code T}. {@link ActivityProxyFactory} uses
+     * this constructor.
+     *
+     * @param activityImpl        the real activity implementation to delegate to
+     * @param activityName        the activity group name (for step name prefix)
+     * @param store               the workflow store for memoization lookups and event persistence
+     * @param retryPolicy         retry policy for failed activity invocations
+     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
+     * @param serializer          Jackson serializer for payloads
+     * @param retryExecutor       retry executor for live activity invocations
+     * @param observer            engine observation seam; never {@code null}
+     * @param governor            bounds live executions per task queue; pass
+     *                            {@link TaskQueueGovernor#UNBOUNDED} for none
+     * @param lifecycleEventSink  where {@code ACTIVITY_*} events go; never
+     *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
+     * @param verifyArguments     as for the constructor without the interface
+     * @param activityInterface   the proxied activity interface; {@code null}
+     *                            reads each method's types as declared, as the
+     *                            constructors without it do
+     * @throws IllegalArgumentException if {@code startToCloseTimeout} is zero or negative
+     */
+    public ActivityInvocationHandler(
+            Object activityImpl,
+            String activityName,
+            WorkflowStore store,
+            RetryPolicy retryPolicy,
+            Duration startToCloseTimeout,
+            PayloadSerializer serializer,
+            RetryExecutor retryExecutor,
+            EngineObserver observer,
+            TaskQueueGovernor governor,
+            LifecycleEventSink lifecycleEventSink,
+            boolean verifyArguments,
+            @Nullable Class<?> activityInterface
+    ) {
         Objects.requireNonNull(startToCloseTimeout, "startToCloseTimeout must not be null");
         if (startToCloseTimeout.isZero() || startToCloseTimeout.isNegative()) {
             throw new IllegalArgumentException(
@@ -461,6 +514,27 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         this.observer = CompositeEngineObserver.contain(observer);
         this.governor = governor;
         this.verifyArguments = verifyArguments;
+        this.activityInterface = activityInterface;
+    }
+
+    /**
+     * {@code method}'s generic return type as the proxied interface binds it
+     * ({@link ResolvedTypes#returnType}), or as declared without one. The
+     * one type the live read-back, a replay, the type valve's report and the
+     * unreadable-result warning all use.
+     */
+    private Type returnType(Method method) {
+        var iface = activityInterface;
+        if (iface == null) {
+            return method.getGenericReturnType();
+        }
+        return returnTypes.computeIfAbsent(method, m -> ResolvedTypes.returnType(iface, m));
+    }
+
+    /** The erased class of {@link #returnType}. */
+    private Class<?> rawReturnType(Method method) {
+        var iface = activityInterface;
+        return iface == null ? method.getReturnType() : ResolvedTypes.rawReturnType(iface, method);
     }
 
     @Override
@@ -579,13 +653,15 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Deserializes a stored activity result to the method's return type.
+     * Deserializes a stored activity result to the method's return type as
+     * the proxied interface binds it ({@link #returnType}).
      */
     private @Nullable Object deserializeResult(@Nullable JsonNode payload, Method method) {
-        if (method.getReturnType() == void.class || method.getReturnType() == Void.class) {
+        var raw = rawReturnType(method);
+        if (raw == void.class || raw == Void.class) {
             return null;
         }
-        return serializer.deserialize(payload, method.getGenericReturnType());
+        return serializer.deserialize(payload, returnType(method));
     }
 
     /**
@@ -619,7 +695,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      */
     private @Nullable Object readBack(@Nullable JsonNode stored, Method method, @Nullable Object raw,
                                       ActivityInfo info, WorkflowContext ctx, int seq, String stepName) {
-        if (returnsAFuture(method)) {
+        if (returnsAFuture(rawReturnType(method))) {
             // An activity call is synchronous and what is recorded is JSON: a
             // future's bean properties, never its value. Reading that back
             // makes a new future nothing completes (join() would hang on the
@@ -633,7 +709,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         var value = ReadBack.orLive(raw, () -> deserializeResult(stored, method), root -> {
             observer.activityResultUnreadable(info, root.getClass().getName());
             warnOnce(method, unreadableResultWarning(ctx.workflowId(), stepName, seq,
-                    method.getGenericReturnType(), root));
+                    returnType(method), root));
         });
         // (After the fallback value IS raw, which never reads as another class.)
         if (raw != null && value != null && readsBackAsAnotherClass(raw, value)) {
@@ -646,7 +722,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             // run reports that its replay will read the other class.
             observer.activityResultUnreadable(info, EngineObserver.READ_BACK_TYPE_MISMATCH);
             warnOnce(method, typeMismatchWarning(ctx.workflowId(), stepName, seq,
-                    method.getGenericReturnType(), value.getClass(), raw.getClass()));
+                    returnType(method), value.getClass(), raw.getClass()));
             return raw;
         }
         return value;
@@ -662,11 +738,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
     }
 
     /**
-     * Whether the method's declared raw return type is a {@link Future} or a
-     * {@link CompletionStage} — a result the live run never reads back.
+     * Whether the method's raw return type (as the proxied interface binds
+     * it) is a {@link Future} or a {@link CompletionStage} — a result the live
+     * run never reads back.
      */
-    private static boolean returnsAFuture(Method method) {
-        var declared = method.getReturnType();
+    private static boolean returnsAFuture(Class<?> declared) {
         return Future.class.isAssignableFrom(declared) || CompletionStage.class.isAssignableFrom(declared);
     }
 
@@ -712,7 +788,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param workflowId the run's workflow id
      * @param stepName   {@code <ActivityName>.<method>}
      * @param seq        the step's sequence number
-     * @param declared   the method's generic return type
+     * @param declared   the method's generic return type, as the proxied interface binds it
      * @param cause      the deserialization root cause
      * @return the log line
      */
@@ -722,7 +798,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 + "as %s (%s); this run continues with the object the activity returned, and a replay of this "
                 + "step will stand the run down as unknown_event_payload — make the type deserializable "
                 + "(docs/pitfalls.md, rule 12)")
-                .formatted(workflowId, stepName, seq, declared.getTypeName(),
+                .formatted(workflowId, stepName, seq, ResolvedTypes.typeName(declared),
                         UnknownHistoryGuard.redactedCause(cause));
     }
 
@@ -734,7 +810,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param workflowId the run's workflow id
      * @param stepName   {@code <ActivityName>.<method>}
      * @param seq        the step's sequence number
-     * @param declared   the method's generic return type
+     * @param declared   the method's generic return type, as the proxied interface binds it
      * @param readBack   the class the stored result reads back as
      * @param returned   the class of the object the activity returned
      * @return the log line
@@ -745,7 +821,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
                 + "as %s rather than %s; this run continues with the object the activity returned, and a replay of "
                 + "this step after a recovery will hand workflow code a %s instead — declare the concrete type the "
                 + "activity returns, one that reads back as itself (docs/pitfalls.md, rule 12)")
-                .formatted(workflowId, stepName, seq, declared.getTypeName(), readBack.getName(),
+                .formatted(workflowId, stepName, seq, ResolvedTypes.typeName(declared), readBack.getName(),
                         returned.getName(), readBack.getName());
     }
 
@@ -1299,8 +1375,12 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         }
 
         var compensationMethodName = compensate.value();
-        var compensationMethod = findCompensationMethod(method.getDeclaringClass(), compensationMethodName);
-        var compensationArgs = resolveCompensationArgs(compensationMethod, method, args, result);
+        // On the proxied interface, as ActivityProxyFactory validated it: an
+        // @Compensate inherited from a generic parent may name a method only
+        // the child interface declares (Issue 94).
+        var owner = activityInterface != null ? activityInterface : method.getDeclaringClass();
+        var compensationMethod = findCompensationMethod(owner, compensationMethodName);
+        var compensationArgs = resolveCompensationArgs(owner, compensationMethod, method, args, result);
         var compensationStepName = activityName + "." + compensationMethodName;
 
         ctx.addCompensation(compensationStepName, () -> {
@@ -1349,14 +1429,29 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             @Nullable Object @Nullable [] activityArgs,
             @Nullable Object activityResult
     ) {
-        var compensationParams = compensationMethod.getParameterTypes();
+        return resolveCompensationArgs(activityMethod.getDeclaringClass(), compensationMethod, activityMethod,
+                activityArgs, activityResult);
+    }
+
+    /**
+     * {@link #resolveCompensationArgs(Method, Method, Object[], Object)} with
+     * both methods' types resolved against {@code owner}, the proxied
+     * interface (Issue 94) — the resolution {@code ActivityProxyFactory}
+     * validated the pair with.
+     */
+    static @Nullable Object @Nullable [] resolveCompensationArgs(
+            Class<?> owner, Method compensationMethod, Method activityMethod,
+            @Nullable Object @Nullable [] activityArgs,
+            @Nullable Object activityResult
+    ) {
+        var compensationParams = ResolvedTypes.rawParameterTypes(owner, compensationMethod);
 
         if (compensationParams.length == 0) {
             return null;
         }
 
         // Pattern 1: single param matching the activity's return type → pass the return value
-        var returnType = activityMethod.getReturnType();
+        var returnType = ResolvedTypes.rawReturnType(owner, activityMethod);
         if (compensationParams.length == 1
                 && returnType != void.class
                 && returnType != Void.class
@@ -1365,7 +1460,7 @@ public final class ActivityInvocationHandler implements InvocationHandler {
         }
 
         // Pattern 2: same parameters as the activity → pass the original args
-        var activityParams = activityMethod.getParameterTypes();
+        var activityParams = ResolvedTypes.rawParameterTypes(owner, activityMethod);
         if (java.util.Arrays.equals(compensationParams, activityParams)) {
             return activityArgs != null ? activityArgs.clone() : null;
         }

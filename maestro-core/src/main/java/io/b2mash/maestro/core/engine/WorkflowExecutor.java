@@ -796,6 +796,44 @@ public final class WorkflowExecutor {
             Supplier<Object> workflowFactory,
             Method workflowMethod
     ) {
+        return startWorkflow(workflowId, workflowType, taskQueue, input, workflowFactory, workflowMethod,
+                workflowMethod.getDeclaringClass());
+    }
+
+    /**
+     * {@link #startWorkflow(String, String, String, Object, Supplier, Method)}
+     * for a workflow class whose {@code @WorkflowMethod} may be inherited from
+     * a generic superclass or interface (Issue 94): the input is checked
+     * against the method's parameter type as {@code workflowClass} binds it —
+     * {@code Order} for {@code run(I input)} inherited by
+     * {@code OrderWorkflow extends TypedWorkflow<Order>} — the type every run
+     * reads it back as. The six-argument overload passes the method's
+     * declaring class, which binds nothing.
+     *
+     * @param workflowId      the business workflow ID
+     * @param workflowType    the workflow type name
+     * @param taskQueue       the task queue name
+     * @param input           the workflow input, or {@code null}
+     * @param workflowFactory builds the workflow implementation object for this run
+     * @param workflowMethod  the entry-point method
+     * @param workflowClass   the workflow class the factory builds — the
+     *                        method's declaring class or a subclass of it
+     * @return the workflow instance UUID
+     * @throws IllegalStateException if the executor is shutting down
+     * @throws WorkflowAlreadyExistsException if a workflow with this ID exists
+     * @throws UnreadableWorkflowInputException if {@code input} cannot be read
+     *         back into the parameter type as {@code workflowClass} binds it
+     * @see #startWorkflow(String, String, String, Object, Supplier, Method)
+     */
+    public UUID startWorkflow(
+            String workflowId,
+            String workflowType,
+            String taskQueue,
+            @Nullable Object input,
+            Supplier<Object> workflowFactory,
+            Method workflowMethod,
+            Class<?> workflowClass
+    ) {
         // Joined before anything is locked or written (P1): refused once
         // shutdown has begun, and otherwise waited for by its drain. Nothing
         // is allocated between the join and the try below, so no Error can
@@ -809,7 +847,7 @@ public final class WorkflowExecutor {
         }
         try {
             startWorkflow(instanceId, workflowId, workflowType, taskQueue, input, workflowFactory,
-                    workflowMethod, cancellation, membership);
+                    workflowMethod, workflowClass, cancellation, membership);
             return instanceId;
         } finally {
             // Handed off the moment the run's thread started (launchWorkflow),
@@ -834,6 +872,7 @@ public final class WorkflowExecutor {
             @Nullable Object input,
             Supplier<Object> workflowFactory,
             Method workflowMethod,
+            Class<?> workflowClass,
             RunCancellation cancellation,
             LifecycleRegistry.Membership membership
     ) {
@@ -842,7 +881,7 @@ public final class WorkflowExecutor {
         var inputPayload = input != null ? serializer.serialize(input) : null;
         // Before anything is locked or written (Issue 44): an input no run
         // could read back would otherwise stand every run down at sequence 0.
-        requireReadableInput(workflowId, workflowType, workflowMethod, inputPayload);
+        requireReadableInput(workflowId, workflowType, workflowMethod, workflowClass, inputPayload);
 
         var instance = WorkflowInstance.builder()
                 .id(instanceId)
@@ -899,7 +938,7 @@ public final class WorkflowExecutor {
             refuseIfGivenUp(cancellation, workflowId, "its instance row was written", false);
             // Persist instance and adopt any pre-delivered signals (self-recovery case 2:
             // signals sent before workflow starts are stored with null instanceId)
-            persisted = withStoredInput(instance, createInstanceRefusingUnreadableInput(instance, workflowMethod));
+            persisted = withStoredInput(instance, createInstanceRefusingUnreadableInput(instance, workflowMethod, workflowClass));
             // A createInstance that returned only after the give-up: the row
             // is committed, so the start says so (WorkflowNotLaunchedException,
             // not "nothing was persisted") and writes nothing more — no
@@ -977,12 +1016,14 @@ public final class WorkflowExecutor {
      * caller releases the lock; nothing was persisted.
      */
     private @Nullable WorkflowInstance createInstanceRefusingUnreadableInput(WorkflowInstance instance,
-                                                                             Method workflowMethod) {
+                                                                             Method workflowMethod,
+                                                                             Class<?> workflowClass) {
         try {
             return store.createInstance(instance);
         } catch (SerializationException e) {
             var parameterType = workflowMethod.getParameterCount() == 0
-                    ? "(no parameter)" : workflowMethod.getGenericParameterTypes()[0].getTypeName();
+                    ? "(no parameter)"
+                    : ResolvedTypes.typeName(ResolvedTypes.parameterType(workflowClass, workflowMethod, 0));
             throw new UnreadableWorkflowInputException(instance.workflowId(), instance.workflowType(),
                     parameterType, e);
         }
@@ -1017,22 +1058,24 @@ public final class WorkflowExecutor {
      * @throws UnreadableWorkflowInputException if the read-back fails
      */
     private void requireReadableInput(String workflowId, String workflowType, Method workflowMethod,
-                                      @Nullable JsonNode inputPayload) {
+                                      Class<?> workflowClass, @Nullable JsonNode inputPayload) {
         if (workflowMethod.getParameterCount() == 0) {
             return;
         }
-        var paramType = workflowMethod.getGenericParameterTypes()[0];
+        // As the workflow class binds it (Issue 94), the type every run reads.
+        var paramType = ResolvedTypes.parameterType(workflowClass, workflowMethod, 0);
         @Nullable Object read;
         try {
             read = serializer.deserialize(inputPayload, paramType);
         } catch (SerializationException e) {
-            throw new UnreadableWorkflowInputException(workflowId, workflowType, paramType.getTypeName(), e);
+            throw new UnreadableWorkflowInputException(workflowId, workflowType,
+                    ResolvedTypes.typeName(paramType), e);
         }
         // An absent input — Java null or a JSON null — reads as null, which
         // Method.invoke cannot pass to a primitive parameter: every run would
         // fail before its body ran. A reference type or Optional accepts it.
         if (read == null && paramType instanceof Class<?> declared && declared.isPrimitive()) {
-            throw new UnreadableWorkflowInputException(workflowId, workflowType, paramType.getTypeName(),
+            throw new UnreadableWorkflowInputException(workflowId, workflowType, ResolvedTypes.typeName(paramType),
                     new IllegalArgumentException("a null input cannot be passed to the primitive parameter "
                             + declared.getName()));
         }
@@ -4400,8 +4443,10 @@ public final class WorkflowExecutor {
                 // results are read with the generic return type: a List<Pair>
                 // parameter receives Pairs, not LinkedHashMaps. A raw type,
                 // Object or a type variable resolves to what the erased class
-                // read before.
-                var paramType = workflowMethod.getGenericParameterTypes()[0];
+                // read before — unless the workflow class binds the variable
+                // (Issue 94): run(I input) inherited by OrderWorkflow extends
+                // TypedWorkflow<Order> reads an Order.
+                var paramType = ResolvedTypes.parameterType(workflowImpl.getClass(), workflowMethod, 0);
                 var input = UnknownHistoryGuard.requireReadablePayload(ctx.workflowId(), 0,
                         "persisted workflow input",
                         () -> serializer.deserialize(inputPayload, paramType));

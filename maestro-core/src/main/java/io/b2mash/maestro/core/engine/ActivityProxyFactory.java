@@ -10,8 +10,6 @@ import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
-import tools.jackson.databind.JavaType;
-import tools.jackson.databind.type.TypeFactory;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -20,7 +18,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Future;
@@ -282,7 +279,8 @@ public final class ActivityProxyFactory {
                 observer,
                 governor,
                 lifecycleEventSink,
-                verifyArguments
+                verifyArguments,
+                activityInterface
         );
 
         var proxy = Proxy.newProxyInstance(
@@ -320,19 +318,14 @@ public final class ActivityProxyFactory {
      *         every offending method, in name order
      */
     public static void requireSupportedReturnTypes(Class<?> activityInterface) {
-        var types = TypeFactory.createDefaultInstance();
-        var self = types.constructType(activityInterface);
         var offending = new ArrayList<Method>();
-        var resolved = new HashMap<Method, JavaType>();
         for (var method : activityInterface.getMethods()) {
             if (Modifier.isStatic(method.getModifiers())) {
                 continue;
             }
-            var returnType = resolvedReturnType(types, self, method);
-            var raw = returnType.getRawClass();
+            var raw = ResolvedTypes.rawReturnType(activityInterface, method);
             if (Future.class.isAssignableFrom(raw) || CompletionStage.class.isAssignableFrom(raw)) {
                 offending.add(method);
-                resolved.put(method, returnType);
             }
         }
         if (offending.isEmpty()) {
@@ -345,32 +338,7 @@ public final class ActivityProxyFactory {
                 offending.stream().map(m -> "%s(%s) returns %s".formatted(m.getName(),
                         Arrays.stream(m.getParameterTypes()).map(Class::getSimpleName)
                                 .collect(Collectors.joining(", ")),
-                        describe(m, resolved.get(m)))).toList());
-    }
-
-    /**
-     * The declared generic return type as Java renders it, or — when it is a
-     * type variable resolved to another class — the resolved type.
-     */
-    private static String describe(Method method, JavaType resolved) {
-        return method.getReturnType() == resolved.getRawClass()
-                ? method.getGenericReturnType().getTypeName()
-                : resolved.toCanonical().replace(",", ", ");
-    }
-
-    /**
-     * {@code method}'s generic return type as {@code self} sees it: a type
-     * variable of the declaring (super-)interface is replaced by the type
-     * argument {@code self}'s hierarchy binds to it (Jackson's
-     * {@link TypeFactory#resolveMemberType} over the declaring type's bindings
-     * found from {@code self}). An unbound variable — a method's own
-     * {@code <T> T}, or the interface's own parameter — resolves to its bound,
-     * as {@link Method#getReturnType()} erases it.
-     */
-    private static JavaType resolvedReturnType(TypeFactory types, JavaType self, Method method) {
-        var declaring = self.findSuperType(method.getDeclaringClass());
-        var bindings = declaring != null ? declaring.getBindings() : self.getBindings();
-        return types.resolveMemberType(method.getGenericReturnType(), bindings);
+                        ResolvedTypes.typeName(ResolvedTypes.returnType(activityInterface, m)))).toList());
     }
 
     /**
@@ -428,12 +396,16 @@ public final class ActivityProxyFactory {
             var compensationMethod = compensationMethods.getFirst();
 
             // Validate argument compatibility
-            var compensationParams = compensationMethod.getParameterTypes();
+            // Resolved against the proxied interface (Issue 94): a method
+            // inherited from a generic parent is matched as the interface
+            // binds it — the handler passes the arguments the same way.
+            var compensationParams = ResolvedTypes.rawParameterTypes(activityInterface, compensationMethod);
             if (compensationParams.length == 0) {
                 continue; // No-arg compensation is always valid
             }
 
-            var returnType = method.getReturnType();
+            var returnType = ResolvedTypes.rawReturnType(activityInterface, method);
+            var activityParams = ResolvedTypes.rawParameterTypes(activityInterface, method);
             // Pattern 1: single param matching return type
             if (compensationParams.length == 1
                     && returnType != void.class
@@ -443,7 +415,7 @@ public final class ActivityProxyFactory {
             }
 
             // Pattern 2: same params as the activity
-            if (Arrays.equals(compensationParams, method.getParameterTypes())) {
+            if (Arrays.equals(compensationParams, activityParams)) {
                 continue;
             }
 
@@ -453,7 +425,7 @@ public final class ActivityProxyFactory {
                             + "are incompatible. Expected: no params, a single param matching the return type (%s), "
                                     .formatted(returnType.getSimpleName())
                             + "or the same parameters as the activity method %s"
-                                    .formatted(Arrays.toString(method.getParameterTypes())));
+                                    .formatted(Arrays.toString(activityParams)));
         }
     }
 
