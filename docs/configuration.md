@@ -782,6 +782,7 @@ it replays a workflow against its recorded history.
 | Property                            | Type      | Default | Description |
 |-------------------------------------|-----------|---------|-------------|
 | `maestro.replay.verify-arguments`   | `boolean` | `true`  | Whether a replayed activity call compares the SHA-256 fingerprint of its arguments with the one the recorded outcome carries (`maestro_workflow_event.args_hash`, V7) and stands the run down as `nondeterministic_history` when they differ — the activity is being asked a different question than the recorded run asked (a `HashMap`'s iteration order, the clock, a per-node config value, or an ungated code change; see [Operations §10.7](operations.md#107-replay-drift-nondeterministic_history)). A missing fingerprint on either side is never a mismatch, so a rolling deploy from a build without the column is safe. Set to `false` only to ride out a known-benign drift while it is fixed: live outcomes still record their fingerprint, so re-enabling covers the rows written meanwhile. The engine logs a WARN at startup while it is off. |
+| `maestro.replay.mapper-check`       | `fail` \| `warn` \| `off` | `warn` | What startup does when the configured `ObjectMapper` does not read back what it writes ([Issue 48](open-issues.md#issue-48)). At context refresh the starter round-trips four fixed values the way a recorded payload travels (`PayloadSerializer.serialize`, the JSON text a JDBC store writes and parses back, `deserialize` into the declared type): an `Instant` with nanoseconds, an `OffsetDateTime` in UTC, `BigDecimal("10.50")` and `Optional.empty()`. `warn` logs one `WARN` naming each value that does not come back and its fix; `fail` stops startup with that message; `off` probes nothing. Times are compared to the millisecond and an `OffsetDateTime` by instant, so a symmetric epoch-millisecond mapper or a non-UTC default time zone passes; the asymmetric epoch-millisecond mapper (writes milliseconds, reads integers as seconds: a 2026 `currentTime()` replays as the year 58834) and a mapper whose trees strip a decimal's trailing zeros do not ([Pitfalls §12](pitfalls.md#12-your-workflow-gets-an-activitys-result-as-the-store-gives-it-back-not-the-object-the-activity-returned)). |
 
 ---
 
@@ -1054,6 +1055,7 @@ maestro:
     default-backoff-multiplier: 2.0
   replay:
     verify-arguments: true
+    mapper-check: warn   # fail to refuse a mapper that does not read back what it writes
   admin:
     events:
       enabled: true   # off by default; on here for the dashboard

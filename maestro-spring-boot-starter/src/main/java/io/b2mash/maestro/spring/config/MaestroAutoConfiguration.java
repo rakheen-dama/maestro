@@ -310,6 +310,19 @@ public class MaestroAutoConfiguration {
         return new ForeignServiceStartupCheck(executor, properties.getStore().foreignServiceCheck());
     }
 
+    /**
+     * The mapper read-back probe at context refresh ({@code maestro.replay.mapper-check},
+     * default {@code warn}; Issue 48).
+     */
+    @Bean
+    public MapperReadBackStartupCheck maestroMapperReadBackStartupCheck(
+            ObjectMapper objectMapper,
+            PayloadSerializer serializer,
+            MaestroProperties properties
+    ) {
+        return new MapperReadBackStartupCheck(objectMapper, serializer, properties.getReplay().mapperCheck());
+    }
+
     @Bean
     public StartupRecoveryRunner maestroStartupRecoveryRunner(
             WorkflowExecutor executor,

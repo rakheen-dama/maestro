@@ -21,7 +21,7 @@ Read these before making architectural decisions:
 1. Workflow method runs on a **Java 25 virtual thread**.
 2. Activity calls intercepted by a **proxy**. Proxy checks Postgres for stored result at current **sequence number**.
 3. **Replay (found):** Return stored result instantly — no execution.
-4. **Live (not found):** Execute activity, persist result, return it **as read back from the persisted payload** (deserialized into the method's declared return type, exactly as a replay reads it — not the activity's own object). Three exceptions return the activity's own object and still differ on replay (`docs/pitfalls.md` rule 12): a result that cannot be read back (stands down on replay), one that reads back as another class (the type valve: supertype/`Object`/type-variable declarations; a same-kind container — both `List`, `Set`, `Queue` or `Map` — is not a difference), and a `Future`/`CompletionStage` return type (never read back live). The first two are reported via `EngineObserver.activityResultUnreadable` and `maestro.activity.result.unreadable`.
+4. **Live (not found):** Execute activity, persist result, return it **as read back from the persisted payload** (deserialized into the method's declared return type, exactly as a replay reads it — not the activity's own object). Two exceptions return the activity's own object and still differ on replay (`docs/pitfalls.md` rule 12): a result that cannot be read back (stands down on replay), and one that reads back as another class (the type valve: supertype/`Object`/type-variable declarations; a same-kind container — both `List`, `Set`, `Queue` or `Map` — is not a difference). A `Future`/`CompletionStage` return type is refused when the proxy is built (`UnsupportedActivityReturnTypeException`, Issue 49: startup fails). Both are reported via `EngineObserver.activityResultUnreadable` and `maestro.activity.result.unreadable`.
    A live **failure** has no such exceptions: once its `ACTIVITY_FAILED` memo is durable, workflow code gets the exception **rebuilt from the stored payload** (`FailureReconstruction.rebuild`), never the activity's own object — type and message, plus the properties of a class annotated `@FailureDetails` (opt-in, `details` payload field; an unfaithful rebuild is a `ReconstructedActivityFailure` on both paths, reported via `EngineObserver.activityFailureUnrebuildable` / `maestro.activity.failure.unrebuildable`). `ActivityExecutionException.failure()` exposes the record (Issue 42).
 5. **Recovery:** Re-invoke workflow method. Completed steps replay instantly. Resumes from first uncompleted step.
 
@@ -270,7 +270,13 @@ the call's arguments — `maestro_workflow_event.args_hash`, migration V7 — an
 replay whose arguments fingerprint differently stands down as
 `nondeterministic_history` instead of returning the recorded result; `NULL` on
 either side is unverified, never a mismatch; `false` skips the comparison but
-still writes the hash), `maestro.worker.task-queues[].concurrency` /
+still writes the hash), `maestro.replay.mapper-check` (fail | warn | off,
+default `warn`: at context refresh four fixed values — an `Instant` with
+nanoseconds, an `OffsetDateTime` in UTC, `BigDecimal("10.50")`,
+`Optional.empty()` — are round-tripped through the `PayloadSerializer` and the
+store's text form, and each that does not come back is named; times compare
+to the millisecond, `OffsetDateTime` by instant; Issue 48),
+`maestro.worker.task-queues[].concurrency` /
 `activity-concurrency` (bound per node), `maestro.worker.default-concurrency` /
 `default-activity-concurrency` (default 20/20 for every unlisted queue, per
 queue per node; `0` on both = unbounded, `0` on one or negative fails

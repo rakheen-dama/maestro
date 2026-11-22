@@ -601,6 +601,11 @@ public final class WorkflowContext {
     /**
      * Waits for a named signal to be delivered to this workflow.
      *
+     * <p>{@code type} is a {@code Class}, which cannot express {@code List<Order>}
+     * ({@code List.class} reads as a list of maps): declare the payload as a
+     * record such as {@code record OrdersSignal(List<Order> orders)} and pass
+     * that ({@code docs/concepts.md}, "Signal payload types").
+     *
      * @param signalName the signal name to wait for
      * @param type       the expected payload type
      * @param timeout    maximum time to wait
@@ -616,6 +621,11 @@ public final class WorkflowContext {
 
     /**
      * Collects exactly {@code count} signals with the given name.
+     *
+     * <p>{@code type} is a {@code Class}, which cannot express {@code List<Order>}
+     * ({@code List.class} reads as a list of maps): declare the payload as a
+     * record such as {@code record OrdersSignal(List<Order> orders)} and pass
+     * that ({@code docs/concepts.md}, "Signal payload types").
      *
      * @param signalName the signal name to collect
      * @param type       the expected payload type

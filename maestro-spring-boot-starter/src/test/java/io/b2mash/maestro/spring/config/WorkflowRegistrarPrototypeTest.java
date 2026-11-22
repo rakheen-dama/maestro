@@ -1,7 +1,9 @@
 package io.b2mash.maestro.spring.config;
 
+import io.b2mash.maestro.core.exception.UnsupportedActivityReturnTypeException;
 import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.WorkflowStore;
+import io.b2mash.maestro.spring.config.invalidfixture.futureresult.FutureResultWorkflow;
 import io.b2mash.maestro.spring.config.invalidfixture.missingactivity.MissingActivityWorkflow;
 import io.b2mash.maestro.spring.config.invalidfixture.threadscope.ThreadScopedWorkflow;
 import io.b2mash.maestro.spring.config.scanfixture.ApprovalActivities;
@@ -163,6 +165,21 @@ class WorkflowRegistrarPrototypeTest {
                             .hasMessageContaining("'activities'")
                             .hasMessageContaining("'thirty seconds'")
                             .hasRootCauseInstanceOf(DateTimeParseException.class);
+                });
+    }
+
+    @Test
+    @DisplayName("an @ActivityStub interface returning a CompletableFuture fails context startup (Issue 49)")
+    void aFutureResultFailsStartup() {
+        runner.withPropertyValues("maestro.workflow-packages=" + INVALID_FIXTURES + ".futureresult")
+                .withBean(FutureResultWorkflow.AsyncActivities.class,
+                        () -> id -> java.util.concurrent.CompletableFuture.completedFuture(id))
+                .run(ctx -> {
+                    assertThat(ctx).hasFailed();
+                    assertThat(ctx.getStartupFailure())
+                            .isInstanceOf(UnsupportedActivityReturnTypeException.class)
+                            .hasMessageContaining(FutureResultWorkflow.AsyncActivities.class.getName())
+                            .hasMessageContaining("fetch(String) returns java.util.concurrent.CompletableFuture");
                 });
     }
 

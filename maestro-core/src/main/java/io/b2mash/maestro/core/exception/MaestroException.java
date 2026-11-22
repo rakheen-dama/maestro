@@ -53,7 +53,8 @@ public sealed class MaestroException extends RuntimeException
                 ForeignServiceRowsException,
                 WorkflowNotLaunchedException,
                 ExecutorShuttingDownException,
-                UnreadableWorkflowInputException {
+                UnreadableWorkflowInputException,
+                UnsupportedActivityReturnTypeException {
 
     /**
      * Creates a new exception with the given message.
