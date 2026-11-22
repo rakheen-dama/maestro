@@ -61,7 +61,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 10. ~~[85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package~~ — closed (procedure in `RELEASING.md`; drivers read git's stderr apart, 2026-11-22)
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
-**`limitation`** (27, 24 open)
+**`limitation`** (28, 25 open)
 
 1. [12](#issue-12) — Recovery polling doesn't scale
 2. [16](#issue-16) — Retrying a compensated saga is guarded off, not supported
@@ -90,6 +90,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 25. [92](#issue-92) — Timing-sensitive tests the 2026-11-21 flaky-test sweep listed but did not change
 26. [93](#issue-93) — A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in
 27. ~~[94](#issue-94) — An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes~~ — closed (types resolved against the binding type, 2026-11-22)
+28. [95](#issue-95) — The test kit finds only a `@WorkflowMethod` the workflow class declares itself
 
 ---
 
@@ -503,6 +504,7 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
 | [93](#issue-93) | A recorded activity failure keeps no cause chain, stack trace or suppressed exceptions, and no fields of a class that has not opted in | Library gap — replay fidelity | Low | `limitation` — Open |
 | [94](#issue-94) | An activity method inherited from a generic parent interface is read back as its type variable's bound: the first run and a replay return different classes | Library gap — replay fidelity | Low | **Resolved** |
+| [95](#issue-95) | The test kit finds only a `@WorkflowMethod` the workflow class declares itself | Library gap — test fidelity | Low | `limitation` — Open |
 
 Issues 1–10 were each either observed directly through a written reproduction,
 or pinned by a test that was `@Disabled` describing the desired behaviour.
@@ -6759,8 +6761,11 @@ the same rule as the top-level cause.
 > **Resolved** (2026-11-22, branch `fix/issue-94-inherited-generic-activity-types`).
 > The new `ResolvedTypes` (core, public but internal until 1.0) resolves a
 > method's generic return and parameter types against the type that binds
-> them, with Jackson's `resolveMemberType` — the resolver Issue 49 used,
-> moved out of `ActivityProxyFactory`. `ActivityProxyFactory` hands the
+> them, substituting only the declaring type's own variables (matched by
+> declaration and name, so a method's shadowing `<T>` stays unbound) into a
+> plain reflective `Type` the reading mapper constructs with its own
+> `TypeModifier`s (PR #92 review findings 3 and 4; it replaces the Jackson
+> `resolveMemberType` resolver Issue 49 used). `ActivityProxyFactory` hands the
 > handler the proxied interface (a new `ActivityInvocationHandler`
 > constructor), and the resolved type is used by the live read-back, the
 > replay, the type valve's comparison and report, the unreadable-result and
@@ -6773,8 +6778,24 @@ the same rule as the top-level cause.
 > against the workflow object's class) and the `@MaestroSignalListener`
 > payload (against the bean's class). A variable nothing binds (a method's
 > own `<R> R`, a raw supertype) is returned as declared and reads as before.
-> Activity arguments are never deserialized by type and the argument
-> fingerprint hashes the serialized objects, so neither changed. Pinned by
+> Activity arguments are never deserialized by type and the fingerprint
+> function is unchanged, but an argument built from such a result is now the
+> typed value where rc.1–rc.4 held a map: the two fingerprint alike unless
+> the typed value fails to serialize back to the stored JSON up to key order
+> and numeric form (a decimal finer than a `double`, a property dropped on
+> read or absent from the stored JSON, a value normalised on read —
+> `InheritedGenericFingerprintTest`), and then a downstream step recorded on
+> rc.1–rc.4 stands down as `nondeterministic_history` (operations §10.7,
+> upgrade note). **Behaviour change (PR #92 review finding 2, kept by
+> ruling):** a compensation whose single parameter equals the activity's
+> single parameter type and is assignable from the resolved return type but
+> not the erased one (`undo(String)` for `T reserve(String)` bound to
+> `String`) now receives the result where rc.1–rc.4 passed the arguments —
+> what a non-generic interface of the same shape always did
+> (`InheritedGenericActivityTest.anInheritedGenericCompensation_…`); drain
+> or terminate such sagas before upgrading (release notes). The selection
+> rule — result first — is stated in the `@Compensate` Javadoc and
+> `docs/concepts.md`. Pinned by
 > `ReadBackTypeValveTest.inheritedGenericMethod_firstRunEqualsReplay`
 > (direct parent, generic impl class, two-level chain, `List<T>`,
 > `Map<String, List<T>>`, a method-level variable that stays the valve),
@@ -6784,7 +6805,8 @@ the same rule as the top-level cause.
 > `@WorkflowMethod` input) and `MaestroSignalListenerPayloadTypeTest`. A
 > replay of a step recorded before the fix now returns the typed value where
 > it returned a map; nothing stored changes (`docs/release-notes.md`). Left
-> as it was: the test kit finds only a `@WorkflowMethod` the class declares.
+> as it was: the test kit finds only a `@WorkflowMethod` the class declares
+> ([Issue 95](#issue-95)).
 >
 > *Original label: `limitation`. Filed 2026-11-22. Found in the PR #89 review
 > (Issue 49 note); not fixed there because Issue 49 only refuses a future.*
@@ -6855,6 +6877,29 @@ to settle: whether the resolved type of an unbound variable stays its bound
 an already-recorded step reads, so it needs a release note and a look at
 parked runs: a step recorded under the old read replays as `Order` instead
 of a map, which only helps a cast and may change an argument fingerprint.
+
+### Issue 95 — The test kit finds only a `@WorkflowMethod` the workflow class declares itself {#issue-95}
+
+> **Label: `limitation`.** Filed 2026-11-22, from the Issue 94 fix (PR #92).
+
+**What is wrong.** `TestWorkflowEnvironment.findWorkflowMethod` scans
+`workflowClass.getDeclaredMethods()`, so a `@WorkflowMethod` inherited from a
+superclass (`OrderWorkflow extends TypedWorkflow<OrderRequest>`, the entry
+point declared on `TypedWorkflow<I>`) is not found and `startWorkflow` throws
+`IllegalArgumentException: Class … has no @WorkflowMethod annotated method`.
+The starter's `WorkflowRegistrar` scans `getMethods()` and supports it — with
+Issue 94 it also reads the input as the subclass binds `I`
+(`InheritedGenericSpringPathTest`).
+
+**Harm.** Low: a workflow shaped this way cannot be tested with the kit,
+although it runs under the starter. Nothing in production is affected.
+
+**How to tackle it.** Scan the class hierarchy as the starter does. The
+difference to settle: `getDeclaredMethods()` also finds a non-public
+`@WorkflowMethod`, which the starter's `getMethods()` does not; walking
+superclasses' declared methods keeps both. The kit already passes the workflow
+class to `WorkflowExecutor.startWorkflow(…, Method, Class<?>)`, so the input
+would be resolved correctly once the method is found.
 
 ---
 
