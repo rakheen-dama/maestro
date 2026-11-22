@@ -62,6 +62,23 @@
           "description": "The check reads nothing."
         }
       ]
+    },
+    {
+      "name": "maestro.replay.mapper-check",
+      "values": [
+        {
+          "value": "warn",
+          "description": "Default. At startup, one WARN names each fixed value (an Instant, an OffsetDateTime, BigDecimal 10.50, Optional.empty()) the configured ObjectMapper does not read back as written; startup continues."
+        },
+        {
+          "value": "fail",
+          "description": "Startup fails, naming each value the configured ObjectMapper does not read back as written."
+        },
+        {
+          "value": "off",
+          "description": "Nothing is probed."
+        }
+      ]
     }
   ]
 }

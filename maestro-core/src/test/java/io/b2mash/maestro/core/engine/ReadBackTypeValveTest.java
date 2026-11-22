@@ -44,10 +44,7 @@ import java.util.Set;
 import java.util.SortedSet;
 import java.util.TreeMap;
 import java.util.TreeSet;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.Future;
 import java.util.stream.Stream;
 
 import static org.awaitility.Awaitility.await;
@@ -57,8 +54,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The read-back's type valve (final fix wave C1) and its {@code Future} skip
- * (C2), end to end: what workflow code receives from a live activity call,
+ * The read-back's type valve (final fix wave C1), end to end: what workflow code receives from a live activity call,
  * whether the run reported it, and what a replay of the call returns after
  * the node stops and another node adopts the run.
  *
@@ -70,9 +66,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * {@link EngineObserver#activityResultUnreadable} fires with
  * {@link EngineObserver#READ_BACK_TYPE_MISMATCH}, and a {@code WARN} names
  * the two classes. A replay still reads the stored payload as the declared
- * type, so for every valved row the live and replayed values differ. A method
- * declared to return a {@code Future} or {@code CompletionStage} is never read
- * back live: the activity's own object, no callback.
+ * type, so for every valved row the live and replayed values differ. (A
+ * method declared to return a {@code Future} or {@code CompletionStage} is
+ * refused at proxy creation, Issue 49: {@code ActivityFutureReturnTypeTest}.)
  *
  * <p>Every assertion is on a collected value: what the workflow saw (live,
  * then replayed), the observers' lists, the instance row, the log records.
@@ -141,10 +137,7 @@ class ReadBackTypeValveTest {
                 row("pojoAsObject",       "Pair Pair[left=l, right=r]",          true,  "LinkedHashMap {left=l, right=r}"),
                 row("typeVariable",       "Pair Pair[left=l, right=r]",          true,  "LinkedHashMap {left=l, right=r}"),
                 row("subtype",            "Sub a=a b=b",                         true,  "Base a=a"),
-                row("exception",          "IllegalStateException boom",          true,  "RuntimeException boom"),
-                row("completableFuture",  "CompletableFuture done=true value=v", false, "CompletableFuture done=false"),
-                row("future",             "CompletableFuture done=true value=v", false, "stood down: UNKNOWN_EVENT_PAYLOAD"),
-                row("stage",              "CompletableFuture done=true value=v", false, "stood down: UNKNOWN_EVENT_PAYLOAD"));
+                row("exception",          "IllegalStateException boom",          true,  "RuntimeException boom"));
     }
 
     private static Arguments row(String method, String live, boolean reported, String replayed) {
@@ -272,24 +265,6 @@ class ReadBackTypeValveTest {
         }
     }
 
-    // ── Future and CompletionStage: returned as they are ─────────────────
-
-    @Test
-    @Timeout(30)
-    void aFutureResultIsTheActivitysOwnObject_andJoinCompletesOnTheFirstRun() throws Exception {
-        var id = "valve-join";
-        var impl = new ShapesImpl();
-        LAST_IMPL.set(impl);
-        var a = nodeA;
-        a.startWorkflow(id, "JoinWorkflow", "default", "in",
-                () -> new JoinWorkflow(proxy(impl, observerA)), JoinWorkflow.class.getMethod("run", String.class));
-
-        assertEquals(WorkflowStatus.COMPLETED, settle(id));
-        assertEquals("joined v same=true", serializer.deserialize(
-                store.getInstance(id).orElseThrow().output(), String.class));
-        assertEquals(List.of(), observerA.unreadableResults());
-    }
-
     // ── Helpers ──────────────────────────────────────────────────────────
 
     /** The instance's status once terminal, or as it stands after {@link #BOUND}. */
@@ -319,9 +294,6 @@ class ReadBackTypeValveTest {
     static String describe(@Nullable Object v) {
         if (v == null) {
             return "null";
-        }
-        if (v instanceof CompletableFuture<?> f) {
-            return "CompletableFuture done=" + f.isDone() + (f.isDone() ? " value=" + f.join() : "");
         }
         if (v instanceof Object[] array) {
             return v.getClass().getSimpleName() + " " + Arrays.toString(array);
@@ -412,14 +384,9 @@ class ReadBackTypeValveTest {
         Base subtype();
         Base secretSubtype();
         RuntimeException exception();
-        CompletableFuture<String> completableFuture();
-        Future<String> future();
-        CompletionStage<String> stage();
     }
 
     public static final class ShapesImpl implements Shapes {
-        volatile @Nullable CompletableFuture<String> lastFuture;
-
         @Override public long primitiveLong() { return 5L; }
         @Override public Long boxedLong() { return 5L; }
         @Override public Number numberLong() { return 5L; }
@@ -453,15 +420,6 @@ class ReadBackTypeValveTest {
         @Override public Base subtype() { return new Sub(); }
         @Override public Base secretSubtype() { return new SecretSub(); }
         @Override public RuntimeException exception() { return new IllegalStateException("boom"); }
-
-        @Override public CompletableFuture<String> completableFuture() {
-            var f = CompletableFuture.completedFuture("v");
-            lastFuture = f;
-            return f;
-        }
-
-        @Override public Future<String> future() { return CompletableFuture.completedFuture("v"); }
-        @Override public CompletionStage<String> stage() { return CompletableFuture.completedFuture("v"); }
     }
 
     /** Calls the named method, records what it got, parks on "go", then returns what it got. */
@@ -499,25 +457,6 @@ class ReadBackTypeValveTest {
                     + "/" + shapes.secretSubtype().getClass().getSimpleName();
         }
     }
-
-    /** Joins a {@code CompletableFuture} result on the first run. */
-    public static class JoinWorkflow {
-        private final Shapes shapes;
-
-        JoinWorkflow(Shapes shapes) {
-            this.shapes = shapes;
-        }
-
-        public String run(String in) {
-            var future = shapes.completableFuture();
-            var impl = LAST_IMPL.get();
-            return "joined " + future.join() + " same=" + (impl != null && future == impl.lastFuture);
-        }
-    }
-
-    /** The impl {@link #aFutureResultIsTheActivitysOwnObject_andJoinCompletesOnTheFirstRun} uses. */
-    static final java.util.concurrent.atomic.AtomicReference<@Nullable ShapesImpl> LAST_IMPL =
-            new java.util.concurrent.atomic.AtomicReference<>();
 
     /** What workflow code saw, per workflow id, in arrival order (live run first, then each replay). */
     static final class Seen {

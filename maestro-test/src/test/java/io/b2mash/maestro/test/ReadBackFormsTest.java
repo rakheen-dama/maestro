@@ -4,8 +4,7 @@ import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.ActivityStub;
 import io.b2mash.maestro.core.annotation.DurableWorkflow;
 import io.b2mash.maestro.core.annotation.WorkflowMethod;
-import io.b2mash.maestro.core.model.WorkflowStatus;
-import io.b2mash.maestro.core.observe.StandDownReason;
+import io.b2mash.maestro.core.exception.UnsupportedActivityReturnTypeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,6 +27,8 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * The forms {@code docs/pitfalls.md} rule 12 names: what workflow code gets
@@ -37,12 +38,12 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  * straight through the kit (no crash) and asserts the value it saw, so each
  * would read differently if a live call returned the activity's own object.
  *
- * <p>Two exceptions return the activity's own object on the first run: a
+ * <p>One exception returns the activity's own object on the first run: a
  * read-back of another class than the object the activity returned (a
  * subtype declared as its supertype, a record declared as {@code Object}; the
- * type valve), and a method declared to return a {@code Future} or
- * {@code CompletionStage}, which is never read back live. A replay of either
- * still reads the stored payload as the declared type.
+ * type valve). A replay still reads the stored payload as the declared type.
+ * A method declared to return a {@code Future} or {@code CompletionStage} is
+ * refused before the workflow starts (Issue 49).
  *
  * <p>The kit's default mapper is Jackson 3's default, as the starter's is.
  * Map key order on Postgres ({@code jsonb}: shorter keys first) is not
@@ -112,41 +113,21 @@ class ReadBackFormsTest {
     }
 
     /**
-     * Jackson writes a {@code CompletableFuture}'s bean properties, never its
-     * value. A live call does not read that back: it returns the activity's
-     * own future, so {@code join()} completes on the first run.
+     * Issue 49: a {@code Future}, {@code CompletionStage} or
+     * {@code CompletableFuture} result cannot survive a restart (its record is
+     * the future's bean properties, never its value), so a workflow whose stub
+     * declares one is refused at {@code startWorkflow}, naming the interface
+     * and every such method, before anything is persisted.
      */
     @Test
-    void aCompletableFutureResultIsTheActivitysFuture_andJoinCompletesOnTheFirstRun() throws Exception {
-        var handle = env.startWorkflow(CompletableFutureWorkflow.class, "x");
-        assertEquals("CompletableFuture done=true joined=v", handle.getResult(String.class, BOUND));
-        assertEquals("{\"cancelled\":false,\"completedExceptionally\":false,\"done\":true,\"numberOfDependents\":0}",
-                String.valueOf(handle.getEvents().stream()
-                        .filter(e -> "Forms.completableFuture".equals(e.stepName()))
-                        .findFirst().orElseThrow().payload()));
-    }
+    void aStubWithAFutureResult_isRefusedAtStart_andNothingIsPersisted() {
+        env.registerActivities(AsyncForms.class, new AsyncFormsImpl());
 
-    /**
-     * {@code Future} and {@code CompletionStage} are never read back live (nor
-     * could they be): the live run carries on with the activity's own object ...
-     */
-    @Test
-    void aFutureOrCompletionStageResult_runsLiveWithTheActivitysObject() throws Exception {
-        assertEquals("Future done=true | CompletionStage done=true | stepped",
-                env.startWorkflow(FutureInterfacesWorkflow.class, "x").getResult(String.class, BOUND));
-    }
-
-    /** ... and a recovery that replays either stands the run down. */
-    @Test
-    void aFutureOrCompletionStageResult_standsDownOnRecovery() throws Exception {
-        var crash = env.crashAfter(3);   // future, stage and step completed; the node dies before the run ends
-        var handle = env.startWorkflow(FutureInterfacesWorkflow.class, "x");
-        crash.awaitCrash(BOUND);
-        crash.recover();
-
-        var standDown = handle.awaitStandDown(BOUND);
-        assertEquals(StandDownReason.UNKNOWN_EVENT_PAYLOAD, standDown.reason());
-        assertEquals(WorkflowStatus.RUNNING, handle.getStatus());
+        var refused = assertThrows(UnsupportedActivityReturnTypeException.class,
+                () -> env.startWorkflow("future-refused", FutureWorkflow.class, "x"));
+        assertEquals(AsyncForms.class.getName(), refused.activityInterface());
+        assertEquals(List.of("completableFuture", "future", "stage"), refused.methods());
+        assertTrue(env.getStore().getInstance("future-refused").isEmpty(), "nothing persisted");
     }
 
     // ── Fixtures ─────────────────────────────────────────────────────────
@@ -189,7 +170,11 @@ class ReadBackFormsTest {
         SortedMap<String, Integer> sortedMap();
 
         Receipt receipt();
+    }
 
+    /** Every future-shaped result Issue 49 refuses, beside an ordinary one. */
+    @Activity
+    public interface AsyncForms {
         CompletableFuture<String> completableFuture();
 
         Future<String> future();
@@ -197,6 +182,16 @@ class ReadBackFormsTest {
         CompletionStage<String> stage();
 
         String step();
+    }
+
+    public static final class AsyncFormsImpl implements AsyncForms {
+        @Override public CompletableFuture<String> completableFuture() { return CompletableFuture.completedFuture("v"); }
+
+        @Override public Future<String> future() { return CompletableFuture.completedFuture("v"); }
+
+        @Override public CompletionStage<String> stage() { return CompletableFuture.completedFuture("v"); }
+
+        @Override public String step() { return "stepped"; }
     }
 
     public static final class FormsImpl implements Forms {
@@ -229,14 +224,6 @@ class ReadBackFormsTest {
             Returned.LAST.set(receipt);
             return receipt;
         }
-
-        @Override public CompletableFuture<String> completableFuture() { return CompletableFuture.completedFuture("v"); }
-
-        @Override public Future<String> future() { return CompletableFuture.completedFuture("v"); }
-
-        @Override public CompletionStage<String> stage() { return CompletableFuture.completedFuture("v"); }
-
-        @Override public String step() { return "stepped"; }
     }
 
     @DurableWorkflow(name = "read-back-times")
@@ -324,29 +311,14 @@ class ReadBackFormsTest {
         }
     }
 
-    @DurableWorkflow(name = "read-back-completable-future")
-    public static class CompletableFutureWorkflow {
+    @DurableWorkflow(name = "read-back-future")
+    public static class FutureWorkflow {
         @ActivityStub(startToCloseTimeout = "PT10S")
-        private Forms forms;
+        private AsyncForms forms;
 
         @WorkflowMethod
         public String run(String in) {
-            var future = forms.completableFuture();
-            return future.getClass().getSimpleName() + " done=" + future.isDone() + " joined=" + future.join();
-        }
-    }
-
-    @DurableWorkflow(name = "read-back-future-interfaces")
-    public static class FutureInterfacesWorkflow {
-        @ActivityStub(startToCloseTimeout = "PT10S")
-        private Forms forms;
-
-        @WorkflowMethod
-        public String run(String in) {
-            var future = forms.future();
-            var stage = forms.stage();
-            return "Future done=" + future.isDone() + " | CompletionStage done="
-                    + stage.toCompletableFuture().isDone() + " | " + forms.step();
+            return forms.step();
         }
     }
 }

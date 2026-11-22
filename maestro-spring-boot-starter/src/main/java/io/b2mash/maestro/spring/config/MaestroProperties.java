@@ -885,11 +885,35 @@ public class MaestroProperties {
      *                        fingerprint, so re-enabling covers the rows written
      *                        meanwhile. The engine logs a WARN at startup while
      *                        it is off.
+     * @param mapperCheck     {@code maestro.replay.mapper-check}: what startup does
+     *                        when the configured {@code ObjectMapper} does not read
+     *                        back what it writes for a fixed set of values the
+     *                        engine records (an {@code Instant} with nanoseconds,
+     *                        an {@code OffsetDateTime} in UTC, {@code BigDecimal("10.50")},
+     *                        {@code Optional.empty()}; Issue 48) — {@code warn}
+     *                        (default: one WARN naming each value), {@code fail}
+     *                        or {@code off}
      */
-    public record ReplayProperties(@DefaultValue("true") boolean verifyArguments) {
+    public record ReplayProperties(
+            @DefaultValue("true") boolean verifyArguments,
+            @DefaultValue("warn") MapperCheck mapperCheck
+    ) {
         /** @return the defaults documented above */
         public static ReplayProperties defaults() {
-            return new ReplayProperties(true);
+            return new ReplayProperties(true, MapperCheck.WARN);
+        }
+
+        /**
+         * Startup policy for the mapper read-back probe
+         * ({@code maestro.replay.mapper-check}; {@link MapperReadBackStartupCheck}).
+         */
+        public enum MapperCheck {
+            /** A value that does not come back as written fails context startup, naming each one. */
+            FAIL,
+            /** Values that do not come back as written are named in one WARN; startup continues. The default. */
+            WARN,
+            /** Nothing is probed. */
+            OFF
         }
     }
 }

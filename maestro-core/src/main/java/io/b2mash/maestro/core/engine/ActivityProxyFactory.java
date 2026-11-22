@@ -2,6 +2,7 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.annotation.Activity;
 import io.b2mash.maestro.core.annotation.Compensate;
+import io.b2mash.maestro.core.exception.UnsupportedActivityReturnTypeException;
 import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
@@ -9,13 +10,21 @@ import io.b2mash.maestro.core.retry.RetryPolicy;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
 import io.b2mash.maestro.core.spi.WorkflowStore;
 import org.jspecify.annotations.Nullable;
+import tools.jackson.databind.JavaType;
+import tools.jackson.databind.type.TypeFactory;
 
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.Future;
+import java.util.stream.Collectors;
 
 /**
  * Creates JDK dynamic proxies for activity interfaces that implement
@@ -58,6 +67,8 @@ public final class ActivityProxyFactory {
      * @param retryExecutor       retry executor for live invocations
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -92,6 +103,8 @@ public final class ActivityProxyFactory {
      *                            never {@code null} (pass {@link EngineObserver#NOOP})
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -132,6 +145,8 @@ public final class ActivityProxyFactory {
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -178,6 +193,8 @@ public final class ActivityProxyFactory {
      *                            {@code null} (pass {@link LifecycleEventSink#NOOP})
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -220,6 +237,8 @@ public final class ActivityProxyFactory {
      *                            outcomes carry a fingerprint either way
      * @return a proxy instance that implements {@code activityInterface}
      * @throws IllegalArgumentException if {@code activityInterface} is not an interface
+     * @throws UnsupportedActivityReturnTypeException if a method of {@code activityInterface}
+     *         returns a {@code Future} or {@code CompletionStage} (Issue 49)
      */
     public <T> T createProxy(
             Class<T> activityInterface,
@@ -239,6 +258,7 @@ public final class ActivityProxyFactory {
                     "Activity type must be an interface, got: " + activityInterface.getName());
         }
 
+        requireSupportedReturnTypes(activityInterface);
         validateCompensateAnnotations(activityInterface);
 
         var activityName = resolveActivityName(activityInterface);
@@ -272,6 +292,85 @@ public final class ActivityProxyFactory {
         );
 
         return activityInterface.cast(proxy);
+    }
+
+    /**
+     * Refuses an activity interface with a method declared to return a
+     * {@link Future} or a {@link CompletionStage} (any subtype included) —
+     * Issue 49. An activity call is synchronous and its result is recorded as
+     * JSON, a future's bean properties rather than its value, so such a result
+     * cannot survive a restart: a replayed {@code CompletableFuture} is one
+     * nothing completes, and a {@code Future} or {@code CompletionStage}
+     * cannot be read back at all. Every overload of {@code createProxy} calls
+     * this; it is public so a path that builds its proxies later than it
+     * learns the interface (the test kit, which builds them per run) can
+     * refuse the interface before anything is persisted.
+     *
+     * <p>Only results are checked: a future <em>parameter</em> is not
+     * recorded as a result, and a {@code static} interface method is never
+     * dispatched to a proxy. Default methods are checked — a proxy dispatches
+     * them as activity calls. A return type declared as a type variable of a
+     * generic super-interface is resolved against {@code activityInterface}'s
+     * type arguments first, so {@code T result()} inherited by
+     * {@code interface Orders extends Fetcher<CompletableFuture<String>>} is
+     * refused as the {@code CompletableFuture<String>} it is there.
+     *
+     * @param activityInterface the activity interface
+     * @throws UnsupportedActivityReturnTypeException naming the interface and
+     *         every offending method, in name order
+     */
+    public static void requireSupportedReturnTypes(Class<?> activityInterface) {
+        var types = TypeFactory.createDefaultInstance();
+        var self = types.constructType(activityInterface);
+        var offending = new ArrayList<Method>();
+        var resolved = new HashMap<Method, JavaType>();
+        for (var method : activityInterface.getMethods()) {
+            if (Modifier.isStatic(method.getModifiers())) {
+                continue;
+            }
+            var returnType = resolvedReturnType(types, self, method);
+            var raw = returnType.getRawClass();
+            if (Future.class.isAssignableFrom(raw) || CompletionStage.class.isAssignableFrom(raw)) {
+                offending.add(method);
+                resolved.put(method, returnType);
+            }
+        }
+        if (offending.isEmpty()) {
+            return;
+        }
+        offending.sort(Comparator.comparing(Method::getName).thenComparing(Method::toGenericString));
+        throw new UnsupportedActivityReturnTypeException(
+                activityInterface.getName(),
+                offending.stream().map(Method::getName).toList(),
+                offending.stream().map(m -> "%s(%s) returns %s".formatted(m.getName(),
+                        Arrays.stream(m.getParameterTypes()).map(Class::getSimpleName)
+                                .collect(Collectors.joining(", ")),
+                        describe(m, resolved.get(m)))).toList());
+    }
+
+    /**
+     * The declared generic return type as Java renders it, or — when it is a
+     * type variable resolved to another class — the resolved type.
+     */
+    private static String describe(Method method, JavaType resolved) {
+        return method.getReturnType() == resolved.getRawClass()
+                ? method.getGenericReturnType().getTypeName()
+                : resolved.toCanonical().replace(",", ", ");
+    }
+
+    /**
+     * {@code method}'s generic return type as {@code self} sees it: a type
+     * variable of the declaring (super-)interface is replaced by the type
+     * argument {@code self}'s hierarchy binds to it (Jackson's
+     * {@link TypeFactory#resolveMemberType} over the declaring type's bindings
+     * found from {@code self}). An unbound variable — a method's own
+     * {@code <T> T}, or the interface's own parameter — resolves to its bound,
+     * as {@link Method#getReturnType()} erases it.
+     */
+    private static JavaType resolvedReturnType(TypeFactory types, JavaType self, Method method) {
+        var declaring = self.findSuperType(method.getDeclaringClass());
+        var bindings = declaring != null ? declaring.getBindings() : self.getBindings();
+        return types.resolveMemberType(method.getGenericReturnType(), bindings);
     }
 
     /**

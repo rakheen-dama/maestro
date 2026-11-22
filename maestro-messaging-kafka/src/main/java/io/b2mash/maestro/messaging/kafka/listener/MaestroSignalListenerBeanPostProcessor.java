@@ -30,10 +30,12 @@ import org.springframework.kafka.listener.ContainerProperties;
 import org.springframework.kafka.listener.DefaultErrorHandler;
 import org.springframework.kafka.listener.MessageListener;
 import org.springframework.util.backoff.FixedBackOff;
+import tools.jackson.databind.JavaType;
 import tools.jackson.databind.ObjectMapper;
 
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
+import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -70,7 +72,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
  * Kafka message (byte[])
  *   → resolve the message id (maestro-message-id header, else the record's
  *     topic-id coordinate — {@link KafkaSignalIdentity})
- *   → deserialize to method parameter type (Jackson 3)
+ *   → deserialize to the method's generic parameter type (Jackson 3)
  *   → invoke annotated method
  *   → extract {@link SignalRouting} (workflowId + payload)
  *   → call {@link WorkflowExecutor#deliverSignal(String, String, Object, String)}
@@ -125,6 +127,13 @@ public class MaestroSignalListenerBeanPostProcessor
 
     /**
      * Internal registration for a discovered {@link MaestroSignalListener} method.
+     *
+     * <p>{@code parameterType} is the method's <em>generic</em> parameter type
+     * ({@link Method#getGenericParameterTypes()}), so a {@code List<Order>}
+     * parameter receives {@code Order}s rather than {@code LinkedHashMap}s
+     * (Issue 92, "Kafka listener payload type"; the listener-side twin of Issue
+     * 44). A raw type, {@code Object} or a type variable reads as the erased
+     * class read before.
      */
     private record ListenerRegistration(
             Object bean,
@@ -132,7 +141,7 @@ public class MaestroSignalListenerBeanPostProcessor
             Method method,
             String topic,
             String signalName,
-            Class<?> parameterType,
+            Type parameterType,
             String groupIdSuffix
     ) {}
 
@@ -154,7 +163,7 @@ public class MaestroSignalListenerBeanPostProcessor
                     method,
                     annotation.topic(),
                     annotation.signalName(),
-                    method.getParameterTypes()[0],
+                    method.getGenericParameterTypes()[0],
                     annotation.groupIdSuffix()
             ));
 
@@ -365,6 +374,8 @@ public class MaestroSignalListenerBeanPostProcessor
         containerProps.setObservationEnabled(
                 listenerObservation != null ? listenerObservation : tracePropagation != null);
         containerProps.setConsumerRebalanceListener(signalIdentity.rebalanceListener());
+        // Resolved once per registration, not per record.
+        var payloadType = objectMapper.constructType(reg.parameterType());
         containerProps.setMessageListener((MessageListener<String, byte[]>) record -> {
             // A domain record has no envelope: its identity is the
             // maestro-message-id header, else its topic-id coordinate. Resolved
@@ -373,9 +384,9 @@ public class MaestroSignalListenerBeanPostProcessor
             var messageId = signalIdentity.resolve(null, record);
             if (tracePropagation != null) {
                 tracePropagation.runWithExtractedContext(record.headers(),
-                        () -> handleMessage(record.value(), messageId, reg, executor, objectMapper));
+                        () -> handleMessage(record.value(), messageId, reg, payloadType, executor, objectMapper));
             } else {
-                handleMessage(record.value(), messageId, reg, executor, objectMapper);
+                handleMessage(record.value(), messageId, reg, payloadType, executor, objectMapper);
             }
         });
 
@@ -438,12 +449,13 @@ public class MaestroSignalListenerBeanPostProcessor
             byte[] value,
             @Nullable String messageId,
             ListenerRegistration reg,
+            JavaType payloadType,
             WorkflowExecutor executor,
             ObjectMapper objectMapper
     ) {
         try {
-            // Deserialize the Kafka message to the method's parameter type
-            var event = objectMapper.readValue(value, reg.parameterType());
+            // Deserialize the Kafka message to the method's generic parameter type
+            var event = objectMapper.readValue(value, payloadType);
 
             // Invoke the annotated method to get signal routing
             var routing = (SignalRouting) reg.method().invoke(reg.bean(), event);

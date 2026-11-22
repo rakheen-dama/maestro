@@ -11,7 +11,8 @@ import java.lang.annotation.Target;
  *
  * <p>Annotated methods act as signal routers: when a message arrives on the
  * specified Kafka topic, the framework deserializes it to the method's
- * parameter type, invokes the method, and delivers the resulting
+ * generic parameter type (a {@code List<Order>} parameter receives
+ * {@code Order}s), invokes the method, and delivers the resulting
  * {@link SignalRouting} as a workflow signal via the engine.
  *
  * <h2>Usage</h2>
