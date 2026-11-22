@@ -56,7 +56,7 @@ class ReplayExceptionCheckReadFailureTest extends ParallelSagaTestSupport {
         store = lookup;
         store.createInstance(instance);
         var parkingLot = new ParkingLot();
-        ops = new DefaultWorkflowOperations(store, null, null, serializer, parkingLot, stack,
+        ops = new DefaultWorkflowOperations(store, null, serializer, parkingLot, stack,
                 new SignalManager(store, null, null, serializer, parkingLot));
         // The fork is recorded, so the replaying run replays it and its branch
         // contexts are replaying too — the only state in which the check reads.

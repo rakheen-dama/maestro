@@ -757,6 +757,42 @@ public final class InMemoryWorkflowStore implements WorkflowStore {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * <p>Evaluated under the signal lock against the current instance map
+     * (keyed by workflow id); removes the first {@code limit} qualifying
+     * orphans in storage order. This store keeps the caller's
+     * {@code receivedAt}, so a test can backdate an orphan by saving it with
+     * an old one.
+     */
+    @Override
+    public int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
+        Objects.requireNonNull(receivedBefore, "receivedBefore");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+        synchronized (signalLock) {
+            int deleted = 0;
+            for (var it = signals.iterator(); it.hasNext() && deleted < limit; ) {
+                var s = it.next();
+                if (!s.consumed() && s.workflowInstanceId() == null && s.receivedAt().isBefore(receivedBefore)
+                        && !mayStillConsume(instances.get(s.workflowId()))) {
+                    it.remove();
+                    deleted++;
+                }
+            }
+            return deleted;
+        }
+    }
+
+    /** Whether an instance (if any) could still consume a signal: any status but COMPLETED or TERMINATED. */
+    private static boolean mayStillConsume(@Nullable WorkflowInstance instance) {
+        return instance != null
+                && instance.status() != WorkflowStatus.COMPLETED
+                && instance.status() != WorkflowStatus.TERMINATED;
+    }
+
     // ── Retention ────────────────────────────────────────────────────────
 
     /**

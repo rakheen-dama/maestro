@@ -286,9 +286,8 @@ final class RecoveryCapacityFixtures {
                 return "done";
             };
             return new ActivityProxyFactory().createProxy(
-                    Work.class, impl, store, null, null,
-                    RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                    WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, EngineObserver.NOOP,
+                    Work.class, impl, store, null,
+                    RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), EngineObserver.NOOP,
                     executor.taskQueueGovernor());
         }
 

@@ -18,7 +18,6 @@ import io.b2mash.maestro.core.observe.CompositeEngineObserver;
 import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
-import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
 import io.b2mash.maestro.core.spi.WorkflowMessaging;
@@ -269,8 +268,6 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
@@ -281,49 +278,14 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Object activityImpl,
             String activityName,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor
     ) {
-        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
-                startToCloseTimeout, serializer, retryExecutor,
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX);
-    }
-
-    /**
-     * Creates a new handler that takes a (now ignored) lock key prefix.
-     *
-     * @param activityImpl        the real activity implementation to delegate to
-     * @param activityName        the activity group name (for step name prefix)
-     * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
-     * @param messaging           optional messaging for lifecycle event publishing
-     * @param retryPolicy         retry policy for failed activity invocations
-     * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
-     * @param serializer          Jackson serializer for payloads
-     * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
-     */
-    public ActivityInvocationHandler(
-            Object activityImpl,
-            String activityName,
-            WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
-            @Nullable WorkflowMessaging messaging,
-            RetryPolicy retryPolicy,
-            Duration startToCloseTimeout,
-            PayloadSerializer serializer,
-            RetryExecutor retryExecutor,
-            String lockKeyPrefix
-    ) {
-        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
-                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix,
-                EngineObserver.NOOP);
+        this(activityImpl, activityName, store, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, EngineObserver.NOOP);
     }
 
     /**
@@ -332,15 +294,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam — fires
      *                            {@code activityStarted} (live only) and
      *                            {@code activityCompleted}/{@code activityFailed}
@@ -357,17 +315,15 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Object activityImpl,
             String activityName,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer
     ) {
-        this(activityImpl, activityName, store, distributedLock, messaging, retryPolicy,
-                startToCloseTimeout, serializer, retryExecutor, lockKeyPrefix, observer,
+        this(activityImpl, activityName, store, messaging, retryPolicy,
+                startToCloseTimeout, serializer, retryExecutor, observer,
                 TaskQueueGovernor.UNBOUNDED);
     }
 
@@ -378,15 +334,11 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param messaging           optional messaging for lifecycle event publishing
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      *                            (pass {@link EngineObserver#NOOP})
      * @param governor            bounds live executions per task queue: a live
@@ -402,18 +354,16 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Object activityImpl,
             String activityName,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             @Nullable WorkflowMessaging messaging,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer,
             TaskQueueGovernor governor
     ) {
-        this(activityImpl, activityName, store, distributedLock, retryPolicy, startToCloseTimeout,
-                serializer, retryExecutor, lockKeyPrefix, observer, governor,
+        this(activityImpl, activityName, store, retryPolicy, startToCloseTimeout,
+                serializer, retryExecutor, observer, governor,
                 LifecycleEventSink.direct(messaging));
     }
 
@@ -429,14 +379,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -448,18 +394,16 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Object activityImpl,
             String activityName,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer,
             TaskQueueGovernor governor,
             LifecycleEventSink lifecycleEventSink
     ) {
-        this(activityImpl, activityName, store, distributedLock, retryPolicy, startToCloseTimeout,
-                serializer, retryExecutor, lockKeyPrefix, observer, governor, lifecycleEventSink, true);
+        this(activityImpl, activityName, store, retryPolicy, startToCloseTimeout,
+                serializer, retryExecutor, observer, governor, lifecycleEventSink, true);
     }
 
     /**
@@ -469,14 +413,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
      * @param activityImpl        the real activity implementation to delegate to
      * @param activityName        the activity group name (for step name prefix)
      * @param store               the workflow store for memoization lookups and event persistence
-     * @param distributedLock     ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param retryPolicy         retry policy for failed activity invocations
      * @param startToCloseTimeout wall-clock bound for each live attempt (enforced)
      * @param serializer          Jackson serializer for payloads
      * @param retryExecutor       retry executor for live activity invocations
-     * @param lockKeyPrefix       ignored: Maestro takes no per-activity lock (3.10); kept
-     *                            so existing callers compile until Issue 50 in {@code docs/open-issues.md}
      * @param observer            engine observation seam; never {@code null}
      * @param governor            bounds live executions per task queue; pass
      *                            {@link TaskQueueGovernor#UNBOUNDED} for none
@@ -495,12 +435,10 @@ public final class ActivityInvocationHandler implements InvocationHandler {
             Object activityImpl,
             String activityName,
             WorkflowStore store,
-            @Nullable DistributedLock distributedLock,
             RetryPolicy retryPolicy,
             Duration startToCloseTimeout,
             PayloadSerializer serializer,
             RetryExecutor retryExecutor,
-            String lockKeyPrefix,
             EngineObserver observer,
             TaskQueueGovernor governor,
             LifecycleEventSink lifecycleEventSink,

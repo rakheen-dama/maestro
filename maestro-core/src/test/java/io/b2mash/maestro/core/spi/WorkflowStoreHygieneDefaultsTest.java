@@ -47,6 +47,16 @@ class WorkflowStoreHygieneDefaultsTest {
         assertEquals(List.of(), store.cutoffs(), "an invalid call never reaches the delegate");
     }
 
+    /** Issue 83: a store that does not implement the orphan purge keeps every orphan — it never discards a signal. */
+    @Test
+    void theOrphanPurgesDefaultDeletesNothingAndValidatesItsArguments() {
+        store.returns(7);
+        assertEquals(0, store.deleteOrphanedSignalsBefore(cutoff, 2));
+        assertThrows(NullPointerException.class, () -> store.deleteOrphanedSignalsBefore(null, 2));
+        assertThrows(IllegalArgumentException.class, () -> store.deleteOrphanedSignalsBefore(cutoff, 0));
+        assertEquals(List.of(), store.cutoffs(), "the default never reaches the terminal-instance delete");
+    }
+
     @Test
     void theScopedPurgesDefaultIsTheUnscopedPurge() {
         var scripted = new PurgeResult(2, 6, 1, 1);

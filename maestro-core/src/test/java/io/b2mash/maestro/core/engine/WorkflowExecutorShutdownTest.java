@@ -360,7 +360,7 @@ class WorkflowExecutorShutdownTest {
         var invocations = new AtomicInteger();
         var activityImpl = new ParkingActivityImpl(invocations, RetryShutdownWorkflow.RESUME_SIGNAL);
         var proxy = new ActivityProxyFactory().createProxy(
-                ParkingActivity.class, activityImpl, store, null, null,
+                ParkingActivity.class, activityImpl, store, null,
                 RetryPolicy.builder().maxAttempts(5).initialInterval(Duration.ofMillis(1))
                         .maxInterval(Duration.ofMillis(10)).backoffMultiplier(1.0).build(),
                 Duration.ofSeconds(30), serializer, new RetryExecutor());
@@ -392,7 +392,7 @@ class WorkflowExecutorShutdownTest {
         var restartedInvocations = new AtomicInteger();
         var restartedActivityImpl = new ParkingActivityImpl(restartedInvocations, RetryShutdownWorkflow.RESUME_SIGNAL);
         var restartedProxy = new ActivityProxyFactory().createProxy(
-                ParkingActivity.class, restartedActivityImpl, store, null, null,
+                ParkingActivity.class, restartedActivityImpl, store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var restartedWorkflow = new RetryShutdownWorkflow(restartedProxy);
         var registrations = Map.of("RetryShutdownWorkflow",
@@ -420,7 +420,7 @@ class WorkflowExecutorShutdownTest {
         var undoCount = new AtomicInteger();
         var activityImpl = new ParkingCompensateActivityImpl(undoCount, CompensateShutdownWorkflow.RESUME_SIGNAL);
         var proxy = new ActivityProxyFactory().createProxy(
-                ParkingCompensateActivity.class, activityImpl, store, null, null,
+                ParkingCompensateActivity.class, activityImpl, store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new CompensateShutdownWorkflow(proxy);
         var method = CompensateShutdownWorkflow.class.getMethod("run", String.class);
@@ -448,7 +448,7 @@ class WorkflowExecutorShutdownTest {
         var restartedActivityImpl = new ParkingCompensateActivityImpl(
                 restartedUndoCount, CompensateShutdownWorkflow.RESUME_SIGNAL);
         var restartedProxy = new ActivityProxyFactory().createProxy(
-                ParkingCompensateActivity.class, restartedActivityImpl, store, null, null,
+                ParkingCompensateActivity.class, restartedActivityImpl, store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var restartedWorkflow = new CompensateShutdownWorkflow(restartedProxy);
         var registrations = Map.of("CompensateShutdownWorkflow",

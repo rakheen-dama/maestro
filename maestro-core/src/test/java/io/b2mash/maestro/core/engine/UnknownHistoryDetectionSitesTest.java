@@ -149,7 +149,7 @@ class UnknownHistoryDetectionSitesTest {
         plantFutureEvent(1);
 
         var proxy = new ActivityProxyFactory().createProxy(
-                Greeter.class, name -> "hello " + name, store, null, null,
+                Greeter.class, name -> "hello " + name, store, null,
                 RetryPolicy.defaultPolicy(), Duration.ofSeconds(5), serializer,
                 new RetryExecutor());
 
@@ -240,7 +240,7 @@ class UnknownHistoryDetectionSitesTest {
     private DefaultWorkflowOperations newOperations() {
         var parkingLot = new ParkingLot();
         var signalManager = new SignalManager(store, null, null, serializer, parkingLot);
-        return new DefaultWorkflowOperations(store, null, null, serializer, parkingLot,
+        return new DefaultWorkflowOperations(store, null, serializer, parkingLot,
                 new CompensationStack(), signalManager);
     }
 

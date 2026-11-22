@@ -212,9 +212,8 @@ class ShutdownReleasesSlotWaitersTest {
 
     private <T> T proxy(Class<T> type, T impl) {
         return new ActivityProxyFactory().createProxy(
-                type, impl, store, null, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer,
+                type, impl, store, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), observer,
                 executor.taskQueueGovernor());
     }
 

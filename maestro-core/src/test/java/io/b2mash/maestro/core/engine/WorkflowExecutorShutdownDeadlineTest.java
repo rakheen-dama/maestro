@@ -567,9 +567,8 @@ class WorkflowExecutorShutdownDeadlineTest {
 
     private BlockingActivities proxy() {
         return new ActivityProxyFactory().createProxy(
-                BlockingActivities.class, new BlockingActivitiesImpl(), store, null, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, recorder,
+                BlockingActivities.class, new BlockingActivitiesImpl(), store, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), recorder,
                 executor.taskQueueGovernor());
     }
 

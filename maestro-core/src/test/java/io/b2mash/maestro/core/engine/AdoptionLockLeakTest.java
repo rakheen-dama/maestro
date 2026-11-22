@@ -176,14 +176,15 @@ class AdoptionLockLeakTest {
 
     /**
      * Fix wave e12, pinning {@code startWorkflow}'s {@code @throws} contract:
-     * a failure after the {@code RUNNING} row is created — an {@code Error} or
-     * a {@code RuntimeException} — leaves the row {@code RUNNING}, releases the
-     * lock and propagates unchanged; a retry of the same start is
-     * {@code WorkflowAlreadyExistsException}; the next recovery pass adopts
-     * and runs the workflow.
+     * an {@code Error} after the {@code RUNNING} row is created leaves the row
+     * {@code RUNNING}, releases the lock and propagates unchanged; a retry of
+     * the same start is {@code WorkflowAlreadyExistsException}; the next
+     * recovery pass adopts and runs the workflow. (A {@code RuntimeException}
+     * from the adoption alone no longer fails the start: see
+     * {@link #startWorkflow_anExceptionAdoptingOrphanedSignals_isContainedAndTheStartRunsTheWorkflow}.)
      */
     @ParameterizedTest(name = "{0}")
-    @ValueSource(strings = {"Error", "RuntimeException"})
+    @ValueSource(strings = {"Error"})
     void startWorkflow_aFailureAfterTheRowIsCreated_leavesItForRecoveryAndARetryOfTheStartAlreadyExists(String kind)
             throws Exception {
         var thrownOnce = new AtomicBoolean();
@@ -217,6 +218,64 @@ class AdoptionLockLeakTest {
 
         executor.startRecoveryPoller(registrations(), Duration.ofMillis(50));
         assertTrue(ran.await(5, TimeUnit.SECONDS), "no recovery pass adopted and ran the workflow");
+    }
+
+    /**
+     * Issue 83 review: adoption is bookkeeping (an await finds a signal by
+     * workflow id and name, and consumes it by row id), so an exception from
+     * the adoption alone — here a store fault, {@code StoreUnavailableException},
+     * after {@code createInstance} committed — is contained: one {@code WARN}
+     * naming the workflow, and the start goes on to run the workflow with the
+     * lock it took, instead of releasing it and failing a start whose
+     * {@code RUNNING} row is already committed. The pre-delivered signal stays
+     * unadopted and is still consumed.
+     */
+    @Test
+    void startWorkflow_anExceptionAdoptingOrphanedSignals_isContainedAndTheStartRunsTheWorkflow() throws Exception {
+        var failingStore = new VersionedInMemoryStore() {
+            @Override
+            public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
+                throw new io.b2mash.maestro.core.exception.StoreUnavailableException(
+                        "injected store fault", new java.sql.SQLException("connection reset"));
+            }
+        };
+        executor = WorkflowExecutor.builder(failingStore, serializer, "svc")
+                .distributedLock(lock)
+                .lifecycleEventsEnabled(false)
+                .build();
+
+        try (var logs = io.b2mash.maestro.core.logcapture.CapturingSlf4jProvider.watch(WorkflowExecutor.class)) {
+            executor.startWorkflow("wf-adopt-fault", "LeakWorkflow", "default", null,
+                    () -> new LeakWorkflow(ran), workflowMethod());
+            assertTrue(ran.await(5, TimeUnit.SECONDS), "the start itself ran the workflow, no recovery pass needed");
+            var warnings = logs.records().stream()
+                    .filter(r -> r.level() == org.slf4j.event.Level.WARN && r.message().contains("wf-adopt-fault"))
+                    .toList();
+            assertEquals(1, warnings.size(), "one WARN naming the workflow: " + logs.records());
+        }
+        await().atMost(Duration.ofSeconds(5)).until(() ->
+                failingStore.getInstance("wf-adopt-fault").orElseThrow().status() == WorkflowStatus.COMPLETED);
+    }
+
+    /** A control-flow {@code Error} from the adoption is never contained: the start fails and releases its lock. */
+    @Test
+    void startWorkflow_aControlFlowErrorAdoptingOrphanedSignals_isNotContained() {
+        var failingStore = new VersionedInMemoryStore() {
+            @Override
+            public void adoptOrphanedSignals(String workflowId, UUID instanceId) {
+                throw new io.b2mash.maestro.core.exception.ExecutorShutdownException("injected control flow");
+            }
+        };
+        executor = WorkflowExecutor.builder(failingStore, serializer, "svc")
+                .distributedLock(lock)
+                .lifecycleEventsEnabled(false)
+                .build();
+
+        assertThrows(io.b2mash.maestro.core.exception.ExecutorShutdownException.class,
+                () -> executor.startWorkflow("wf-adopt-cf", "LeakWorkflow", "default", null,
+                        () -> new LeakWorkflow(ran), workflowMethod()));
+        assertEquals(List.of("maestro:lock:workflow:wf-adopt-cf"), lock.released, "the lock is released");
+        assertEquals(1, ran.getCount(), "the workflow did not run");
     }
 
     /**

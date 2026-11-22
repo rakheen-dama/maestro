@@ -430,6 +430,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * which is written as SQL {@code NULL}). Every other field is
      * {@code instance}'s. A stored input that cannot be parsed back rolls the
      * whole transaction back and is thrown as {@link SerializationException}.
+     * The transaction writes the instance row only: orphaned signals are
+     * adopted by the engine's own {@link #adoptOrphanedSignals} call (Issue 83).
      */
     @Override
     public WorkflowInstance createInstance(WorkflowInstance instance) {
@@ -441,7 +443,6 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             boolean settled = false; // committed or rolled back — see endTransaction
             try {
                 var storedInput = insertInstance(conn, instance);
-                doAdoptOrphanedSignals(conn, instance.workflowId(), instance.id());
                 conn.commit();
                 settled = true;
                 log.debug("Created workflow instance: workflowId={}, id={}",
@@ -724,8 +725,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * or an {@link Error} escaped mid-transaction — the transaction may still
      * be open on a live connection, and JDBC specifies that
      * {@code setAutoCommit(true)} mid-transaction <em>commits</em> it: the
-     * half-done write (an instance row without its adopted signals, a terminal
-     * status without its terminal event) would become durable. So auto-commit
+     * half-done write (an instance row whose input could not be read back, a
+     * terminal status without its terminal event) would become durable. So auto-commit
      * is deliberately left off and the connection is
      * {@linkplain Connection#abort aborted}: the database rolls the
      * transaction back when the session ends, and a pool evicts the dead
@@ -1697,8 +1698,8 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * every non-{@code true} outcome nothing was written.
      *
      * <p>Locks are taken instance row (share) then signal row, the order of
-     * every other multi-statement transaction in this store ({@code
-     * createInstance}'s adoption, the retention purge); a concurrent consumer
+     * every other multi-statement transaction in this store (the retention
+     * purge); a concurrent consumer
      * of the same row waits on the flip and then finds it consumed.
      */
     @Override
@@ -1767,8 +1768,16 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
         Objects.requireNonNull(workflowId, "workflowId");
         Objects.requireNonNull(instanceId, "instanceId");
 
-        try (var conn = dataSource.getConnection()) {
-            doAdoptOrphanedSignals(conn, workflowId, instanceId);
+        String sql = "UPDATE " + tableName("workflow_signal")
+                + " SET workflow_instance_id = ? WHERE workflow_id = ?"
+                + " AND workflow_instance_id IS NULL";
+        try (var conn = dataSource.getConnection(); var ps = conn.prepareStatement(sql)) {
+            ps.setObject(1, instanceId);
+            ps.setString(2, workflowId);
+            int adopted = ps.executeUpdate();
+            if (adopted > 0) {
+                log.debug("Adopted {} orphaned signal(s) for workflowId={}", adopted, workflowId);
+            }
         } catch (SQLException e) {
             throw storeFault("Failed to adopt orphaned signals for workflow: "
                     + workflowId, e);
@@ -1825,6 +1834,49 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
             ps.setTimestamp(1, Timestamp.from(cutoff));
             ps.setString(2, serviceName);
             ps.setInt(3, limit);
+        });
+    }
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>One dialect-neutral statement in autocommit: a {@code DELETE} whose
+     * {@code id IN (SELECT ...)} subquery takes the first {@code limit}
+     * unconsumed {@code NULL}-instance rows received before the cutoff for
+     * whose workflow id {@code NOT EXISTS} an instance in a status other than
+     * {@code COMPLETED}/{@code TERMINATED}, with {@code FETCH FIRST ? ROWS
+     * ONLY}. The outer {@code consumed = FALSE AND workflow_instance_id IS
+     * NULL} re-checks a row consumed or adopted after the subquery read it
+     * (under Postgres' read committed, the {@code DELETE} re-evaluates both on
+     * the row's newest version). No migration, and no index serves the
+     * {@code received_at} cutoff: the V2 partial index
+     * {@code idx_wf_signal_orphan} is on {@code (workflow_id, consumed)}, so
+     * each call scans this table's unconsumed {@code NULL}-instance rows
+     * (through that index or the table) and filters them by
+     * {@code received_at}. That is fine at the expected volumes — orphans are
+     * pre-delivered signals, normally few — and a partial index on
+     * {@code received_at} is a possible later migration. The instance's
+     * unique {@code workflow_id} serves the {@code NOT EXISTS}.
+     */
+    @Override
+    public int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
+        Objects.requireNonNull(receivedBefore, "receivedBefore");
+        if (limit < 1) {
+            throw new IllegalArgumentException("limit must be positive, got " + limit);
+        }
+
+        String sql = "DELETE FROM " + tableName("workflow_signal")
+                + " WHERE consumed = FALSE AND workflow_instance_id IS NULL AND id IN (SELECT s.id FROM "
+                + tableName("workflow_signal") + " s"
+                + " WHERE s.consumed = FALSE AND s.workflow_instance_id IS NULL AND s.received_at < ?"
+                + " AND NOT EXISTS (SELECT 1 FROM " + tableName("workflow_instance") + " i"
+                + " WHERE i.workflow_id = s.workflow_id AND i.status NOT IN ('"
+                + WorkflowStatus.COMPLETED.name() + "', '" + WorkflowStatus.TERMINATED.name() + "'))"
+                + " FETCH FIRST ? ROWS ONLY)";
+
+        return update(sql, ps -> {
+            ps.setTimestamp(1, Timestamp.from(receivedBefore));
+            ps.setInt(2, limit);
         });
     }
 
@@ -2013,8 +2065,7 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
      * a 1501-digit integer, past the reader's number-length limit) is thrown
      * as the parser's {@link SerializationException}: {@link #getInstance}
      * would meet the same failure, so no recovery could ever load the row.
-     * {@link #createInstance} rolls the insert back — and the orphan-signal
-     * adoption with it — so nothing is persisted and the start fails before
+     * {@link #createInstance} rolls the insert back, so nothing is persisted and the start fails before
      * any run begins.
      *
      * @throws SerializationException if the stored input cannot be parsed back
@@ -2062,23 +2113,6 @@ public abstract class AbstractJdbcWorkflowStore implements WorkflowStore {
     }
 
     private static final String RETURNING_INPUT = " RETURNING input";
-
-    private void doAdoptOrphanedSignals(Connection conn, String workflowId,
-                                         UUID instanceId) throws SQLException {
-        String sql = "UPDATE " + tableName("workflow_signal")
-                + " SET workflow_instance_id = ? WHERE workflow_id = ?"
-                + " AND workflow_instance_id IS NULL";
-
-        try (var ps = conn.prepareStatement(sql)) {
-            ps.setObject(1, instanceId);
-            ps.setString(2, workflowId);
-            int adopted = ps.executeUpdate();
-            if (adopted > 0) {
-                log.debug("Adopted {} orphaned signal(s) for workflowId={}",
-                        adopted, workflowId);
-            }
-        }
-    }
 
     /**
      * Determines whether a zero-row instance update was caused by a missing

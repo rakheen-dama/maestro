@@ -212,7 +212,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var gatedMessaging = GatedWorkflowMessaging.wrap(messaging, false);
         var activities = new ActivityProxyFactory().createProxy(
                 GreetingActivities.class, new GreetingActivitiesImpl(),
-                store, null, gatedMessaging, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
+                store, gatedMessaging, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
                 serializer, new RetryExecutor());
 
         var workflow = new FullLifecycleWorkflow(activities);
@@ -286,7 +286,7 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         var gatedMessaging = GatedWorkflowMessaging.wrap(messaging, true);
         var activities = new ActivityProxyFactory().createProxy(
                 GreetingActivities.class, new GreetingActivitiesImpl(),
-                store, null, gatedMessaging, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
+                store, gatedMessaging, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
                 serializer, new RetryExecutor());
 
         var workflow = new FullLifecycleWorkflow(activities);
@@ -378,8 +378,8 @@ class WorkflowExecutorLifecycleEventPublishingTest {
         // executor's sink to the proxy, so ACTIVITY_* events take the same route.
         var activities = new ActivityProxyFactory().createProxy(
                 GreetingActivities.class, new GreetingActivitiesImpl(),
-                store, null, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
-                serializer, new RetryExecutor(), WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                store, RetryPolicy.defaultPolicy(), Duration.ofSeconds(5),
+                serializer, new RetryExecutor(),
                 io.b2mash.maestro.core.observe.EngineObserver.NOOP, executor.taskQueueGovernor(),
                 executor.lifecycleEventSink());
 

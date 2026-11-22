@@ -25,8 +25,16 @@ val modules = listOf(
     "maestro-store-jdbc",
     "maestro-store-postgres",
     "maestro-messaging-kafka",
-    "maestro-admin-client",
     "maestro-test",
+)
+
+/**
+ * Modules the old version publishes and this build no longer does: reported as
+ * removed, never resolved on the new side. Drop an entry once the newest row of
+ * previousReleases no longer publishes the module.
+ */
+val removedModules = listOf(
+    "maestro-admin-client", // Issue 52: its one class, AdminEventPublisher, had no user
 )
 
 /**
@@ -126,6 +134,11 @@ tasks.register("apiCompatReport") {
                 fun cell(names: List<String>) =
                     if (names.isEmpty()) "none" else "**${names.size}**: " + names.joinToString()
                 text.append("| `$module` | ${classes.size} | ${cell(named('!'))} | ${cell(named('*'))} |\n")
+            }
+            if (scope == "public") {
+                for (module in removedModules) {
+                    text.append("| `$module` | removed: not published by $newVersion | — | — |\n")
+                }
             }
             text.append('\n')
         }

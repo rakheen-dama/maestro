@@ -2,7 +2,6 @@ package io.b2mash.maestro.core.engine;
 
 import io.b2mash.maestro.core.context.WorkflowContext;
 import io.b2mash.maestro.core.engine.ActivityInvocationHandlerTest.InMemoryWorkflowStore;
-import io.b2mash.maestro.core.engine.ActivityInvocationHandlerTest.RecordingLock;
 import io.b2mash.maestro.core.engine.ActivityInvocationHandlerTest.RecordingMessaging;
 import io.b2mash.maestro.core.exception.ActivityExecutionException;
 import io.b2mash.maestro.core.exception.ActivityTimeoutException;
@@ -49,7 +48,7 @@ class ActivityFailureReconstructionTest {
         };
         proxy = new ActivityProxyFactory().createProxy(
                 ExplodingActivities.class, impl,
-                store, new RecordingLock(), new RecordingMessaging(),
+                store, new RecordingMessaging(),
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 new PayloadSerializer(MAPPER), new RetryExecutor());
     }
@@ -142,7 +141,7 @@ class ActivityFailureReconstructionTest {
         };
         proxy = new ActivityProxyFactory().createProxy(
                 ExplodingActivities.class, impl,
-                store, new RecordingLock(), new RecordingMessaging(),
+                store, new RecordingMessaging(),
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 new PayloadSerializer(MAPPER), new RetryExecutor());
         var live = assertThrows(ActivityExecutionException.class, this::callExplode);

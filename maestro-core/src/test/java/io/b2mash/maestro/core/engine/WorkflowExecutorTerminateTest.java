@@ -258,7 +258,7 @@ class WorkflowExecutorTerminateTest {
         var activityImpl = new WorkflowExecutorShutdownTest.ParkingActivityImpl(
                 invocations, WorkflowExecutorShutdownTest.RetryShutdownWorkflow.RESUME_SIGNAL);
         var proxy = new ActivityProxyFactory().createProxy(
-                WorkflowExecutorShutdownTest.ParkingActivity.class, activityImpl, store, null, null,
+                WorkflowExecutorShutdownTest.ParkingActivity.class, activityImpl, store, null,
                 RetryPolicy.builder().maxAttempts(5).initialInterval(Duration.ofMillis(1))
                         .maxInterval(Duration.ofMillis(10)).backoffMultiplier(1.0).build(),
                 Duration.ofSeconds(30), serializer, new RetryExecutor());
@@ -472,13 +472,13 @@ class WorkflowExecutorTerminateTest {
     static FailingActivity failingProxy(WorkflowStore store, PayloadSerializer serializer,
                                         AtomicInteger invocations) {
         return new ActivityProxyFactory().createProxy(
-                FailingActivity.class, new FailingActivityImpl(invocations), store, null, null,
+                FailingActivity.class, new FailingActivityImpl(invocations), store, null,
                 SLOW_RETRY, Duration.ofSeconds(30), serializer, new RetryExecutor());
     }
 
     private GatedActivity gatedProxy(GatedActivityImpl impl) {
         return new ActivityProxyFactory().createProxy(
-                GatedActivity.class, impl, store, null, null,
+                GatedActivity.class, impl, store, null,
                 SLOW_RETRY, Duration.ofSeconds(30), serializer, new RetryExecutor());
     }
 

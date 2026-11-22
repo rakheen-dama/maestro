@@ -285,9 +285,8 @@ class ReadBackTypeValveTest {
     }
 
     private Shapes proxy(ShapesImpl impl, EngineObserver observer) {
-        return new ActivityProxyFactory().createProxy(Shapes.class, impl, store, null, RetryPolicy.noRetry(),
-                Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer, TaskQueueGovernor.UNBOUNDED,
+        return new ActivityProxyFactory().createProxy(Shapes.class, impl, store, RetryPolicy.noRetry(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor(), observer, TaskQueueGovernor.UNBOUNDED,
                 LifecycleEventSink.NOOP, true);
     }
 

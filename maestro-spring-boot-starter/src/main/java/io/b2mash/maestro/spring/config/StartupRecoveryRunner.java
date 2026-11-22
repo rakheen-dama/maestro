@@ -79,12 +79,12 @@ public class StartupRecoveryRunner implements ApplicationRunner, Ordered {
                 timer.pollInterval(), timer.batchSize());
 
         // 2b. Start the signal janitor — purges unconsumed signals addressed
-        // to workflows that finished long ago. Runs on every node; the purge
-        // is idempotent.
+        // to workflows that finished long ago, and orphans no workflow can
+        // consume any more. Runs on every node; the purge is idempotent.
         var signal = properties.getSignal();
-        executor.startSignalJanitor(signal.janitorInterval(), signal.terminalRetention());
-        logger.info("Maestro signal janitor started (interval={}, terminalRetention={})",
-                signal.janitorInterval(), signal.terminalRetention());
+        executor.startSignalJanitor(signal.janitorInterval(), signal.terminalRetention(), signal.orphanRetention());
+        logger.info("Maestro signal janitor started (interval={}, terminalRetention={}, orphanRetention={})",
+                signal.janitorInterval(), signal.terminalRetention(), signal.orphanRetention());
 
         // 2c. Start the retention sweeper — purges workflows that finished
         // longer ago than their status's retention, history included. Only

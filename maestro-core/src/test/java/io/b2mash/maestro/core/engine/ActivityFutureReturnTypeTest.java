@@ -198,9 +198,9 @@ class ActivityFutureReturnTypeTest {
         // The implementation is never called: proxy creation only.
         var impl = (T) Proxy.newProxyInstance(iface.getClassLoader(), new Class<?>[]{iface},
                 (p, m, a) -> { throw new UnsupportedOperationException(); });
-        return factory.createProxy(iface, impl, store, null, RetryPolicy.defaultPolicy(),
+        return factory.createProxy(iface, impl, store, RetryPolicy.defaultPolicy(),
                 Duration.ofSeconds(1), new PayloadSerializer(new ObjectMapper()), new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED,
+                EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED,
                 LifecycleEventSink.NOOP, true);
     }
 }

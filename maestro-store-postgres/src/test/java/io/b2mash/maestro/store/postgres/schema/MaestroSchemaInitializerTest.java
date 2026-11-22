@@ -736,6 +736,7 @@ class MaestroSchemaInitializerTest {
                 .workflowType("dml").taskQueue("default").status(WorkflowStatus.RUNNING)
                 .serviceName("svc").eventSequence(0).startedAt(now).updatedAt(now).version(0)
                 .build());
+        store.adoptOrphanedSignals("wf-dml", created.id()); // the engine's one adoption (Issue 83)
         var lease = new RunLease(created.id(), created.leaseEpoch());
         store.appendEvent(new WorkflowEvent(UUID.randomUUID(), created.id(), 1, EventType.ACTIVITY_COMPLETED,
                 "step-1", json.readTree("\"done\""), now), lease);
@@ -760,6 +761,7 @@ class MaestroSchemaInitializerTest {
                 new WorkflowEvent(UUID.randomUUID(), created.id(), 4, EventType.WORKFLOW_COMPLETED,
                         null, json.readTree("\"done\""), now), lease)).isTrue();
         assertThat(store.deleteUnconsumedSignalsForTerminalInstancesBefore(now)).isZero();
+        assertThat(store.deleteOrphanedSignalsBefore(now, 10)).isZero();
         assertThat(store.purgeTerminalInstancesBefore(WorkflowStatus.COMPLETED, now, 10).instances()).isOne();
         assertThat(store.getInstance("wf-dml")).isEmpty();
 

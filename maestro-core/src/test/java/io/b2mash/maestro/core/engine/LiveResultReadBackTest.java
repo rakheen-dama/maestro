@@ -240,9 +240,8 @@ class LiveResultReadBackTest {
     // ── Helpers ───────────────────────────────────────────────────────
 
     private <T> T proxy(Class<T> iface, T impl) {
-        return new ActivityProxyFactory().createProxy(iface, impl, guarded, null, RetryPolicy.noRetry(),
-                Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer, TaskQueueGovernor.UNBOUNDED,
+        return new ActivityProxyFactory().createProxy(iface, impl, guarded, RetryPolicy.noRetry(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor(), observer, TaskQueueGovernor.UNBOUNDED,
                 LifecycleEventSink.NOOP, true);
     }
 

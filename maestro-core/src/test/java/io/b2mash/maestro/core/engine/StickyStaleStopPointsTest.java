@@ -144,7 +144,7 @@ class StickyStaleStopPointsTest {
 
     private UUID start(String workflowId, StopPoint stopPoint) throws NoSuchMethodException {
         var activity = new ActivityProxyFactory().createProxy(Step.class, input -> input + "-local",
-                store, null, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, new RetryExecutor());
+                store, null, RetryPolicy.noRetry(), Duration.ofSeconds(5), serializer, new RetryExecutor());
         return executor.startWorkflow(workflowId, "SwallowingWorkflow", "default", null,
                 () -> new SwallowingWorkflow(activity, stopPoint, afterStopPoint, compensations),
                 SwallowingWorkflow.class.getMethod("run"));

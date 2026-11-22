@@ -165,6 +165,17 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         assertFalse(orphan.consumed());
         assertTrue(store.getInstance(workflowId).isEmpty(), "no instance should exist yet");
 
+        // Issue 83: the janitor's orphan purge keeps an orphan younger than its
+        // retention, so a workflow started six days after its signal still gets it.
+        try (var conn = dataSource.getConnection();
+             var ps = conn.prepareStatement("UPDATE maestro_workflow_signal SET received_at = now() - interval '6 days'"
+                     + " WHERE workflow_id = ?")) {
+            ps.setString(1, workflowId);
+            assertEquals(1, ps.executeUpdate());
+        }
+        store.deleteOrphanedSignalsBefore(java.time.Instant.now().minus(java.time.Duration.ofDays(7)), 1_000);
+        assertNull(readSingleSignalRow(workflowId).workflowInstanceId(), "the orphan inside its retention survives");
+
         var handle = harness.start(workflowId, TestWorkflows.SignalWorkflow.class, "seed");
 
         assertEquals(WorkflowStatus.COMPLETED, handle.awaitTerminal(BOUND));
@@ -572,6 +583,11 @@ class EnginePostgresSignalIT extends PostgresIntegrationSupport {
         @Override
         public int deleteUnconsumedSignalsForTerminalInstancesBefore(String serviceName, Instant cutoff, int limit) {
             return delegate.deleteUnconsumedSignalsForTerminalInstancesBefore(serviceName, cutoff, limit);
+        }
+
+        @Override
+        public int deleteOrphanedSignalsBefore(Instant receivedBefore, int limit) {
+            return delegate.deleteOrphanedSignalsBefore(receivedBefore, limit);
         }
 
         @Override

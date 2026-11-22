@@ -280,7 +280,7 @@ class ForeignPayloadStandDownTest {
                                  EventType winnerType, JsonNode winnerPayload) {
         var impl = new AdoptingWorkflow(compensations);
         impl.greeter = new ActivityProxyFactory().createProxy(
-                Greeter.class, name -> "local-" + name, store, null, null,
+                Greeter.class, name -> "local-" + name, store, null,
                 RetryPolicy.defaultPolicy(), Duration.ofSeconds(5), serializer,
                 new RetryExecutor());
         // Arm the race before the run starts: the activity's own append at

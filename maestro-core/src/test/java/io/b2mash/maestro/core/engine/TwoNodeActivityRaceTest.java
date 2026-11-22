@@ -135,8 +135,8 @@ class TwoNodeActivityRaceTest {
     }
 
     private RaceActivities proxy(RaceActivities impl) {
-        return new ActivityProxyFactory().createProxy(RaceActivities.class, impl, store, lock, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), "maestro:lock:");
+        return new ActivityProxyFactory().createProxy(RaceActivities.class, impl, store, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
     }
 
     /** Two activities; every result is stamped with the node that produced it. */

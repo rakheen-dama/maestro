@@ -587,7 +587,6 @@ class WorkflowExecutorTest {
                 HandlerActivity.class,
                 activityImpl,
                 store,
-                null,
                 messaging,
                 RetryPolicy.noRetry(),
                 Duration.ofSeconds(30),
@@ -1098,7 +1097,7 @@ class WorkflowExecutorTest {
             var entered = new CountDownLatch(1);
             var activityImpl = new GatedHandlerActivity(entered, gate);
             var activityProxy = new ActivityProxyFactory().createProxy(
-                    HandlerActivity.class, activityImpl, store, null, messaging,
+                    HandlerActivity.class, activityImpl, store, messaging,
                     RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
             var done = new CountDownLatch(1);
             var workflow = new TwoActivityWorkflow(activityProxy, done);

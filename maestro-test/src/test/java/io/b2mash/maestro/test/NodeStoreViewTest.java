@@ -48,7 +48,7 @@ class NodeStoreViewTest {
             "createInstance", "updateInstance", "completeInstance", "appendEvent", "appendEventReturningPayload",
             "deleteFailureEvents", "reopenFailedInstance",
             "saveSignal", "saveSignalIfAbsent", "markSignalConsumed", "appendEventAndConsumeSignal",
-            "adoptOrphanedSignals", "deleteUnconsumedSignalsForTerminalInstancesBefore",
+            "adoptOrphanedSignals", "deleteUnconsumedSignalsForTerminalInstancesBefore", "deleteOrphanedSignalsBefore",
             "purgeTerminalInstancesBefore", "saveTimer", "markTimerFired", "markTimerCancelled");
 
     private static final Set<String> READS = Set.of(

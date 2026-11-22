@@ -103,6 +103,86 @@ class InMemoryStoreHygieneTest {
         }
     }
 
+    /** The fixture of {@code PostgresStoreHygieneTest.OrphanPurge} (Issue 83). */
+    @Nested
+    class OrphanPurge {
+
+        private final List<UUID> deletable = new java.util.ArrayList<>();
+        private final List<UUID> kept = new java.util.ArrayList<>();
+
+        @BeforeEach
+        void fixture() {
+            deletable.add(orphan("never-started-old", 10));
+            deletable.add(orphan(finished("done-c", "orders", WorkflowStatus.COMPLETED, 10).workflowId(), 10));
+            deletable.add(orphan(finished("done-t", "orders", WorkflowStatus.TERMINATED, 10).workflowId(), 10));
+            kept.add(orphan("never-started-new", 1));
+            kept.add(orphan(active("live-r").workflowId(), 10));
+            kept.add(orphan(finished("done-f", "orders", WorkflowStatus.FAILED, 10).workflowId(), 10));
+            var consumed = orphan("consumed-old", 10);
+            assertTrue(store.markSignalConsumed(consumed));
+            kept.add(consumed);
+            var adopted = newSignal("done-c", store.getInstance("done-c").orElseThrow().id());
+            store.saveSignal(adopted);
+            kept.add(adopted.id());
+        }
+
+        @Test
+        void deletesExactlyTheOrphansNoWorkflowCanConsumeAtMostLimitPerCall() {
+            var deleted = IntStream.range(0, 3)
+                    .map(i -> store.deleteOrphanedSignalsBefore(cutoff, 2)).boxed().toList();
+            assertEquals(List.of(2, 1, 0), deleted);
+            assertEquals(List.of(), deletable.stream().filter(this::exists).toList(), "deletable rows left");
+            assertEquals(kept, kept.stream().filter(this::exists).toList(), "a kept row was deleted");
+        }
+
+        @Test
+        void aWorkflowStartedAfterASweepInsideTheRetentionStillGetsItsSignal() {
+            var early = orphan("late-start", 6);
+            while (store.deleteOrphanedSignalsBefore(cutoff, 2) == 2) {
+                // drain the deletable rows
+            }
+            var instance = active("late-start");
+            store.adoptOrphanedSignals(instance.workflowId(), instance.id());
+            var signals = store.getUnconsumedSignals("late-start", "s");
+            assertEquals(List.of(early), signals.stream().map(WorkflowSignal::id).toList());
+            assertEquals(instance.id(), signals.getFirst().workflowInstanceId());
+        }
+
+        @Test
+        void rejectsANonPositiveLimit() {
+            assertThrows(IllegalArgumentException.class, () -> store.deleteOrphanedSignalsBefore(cutoff, 0));
+        }
+
+        /** An orphan for {@code workflowId} received {@code daysAgo} days ago (this store keeps the caller's time). */
+        private UUID orphan(String workflowId, int daysAgo) {
+            var signal = new WorkflowSignal(UUID.randomUUID(), null, workflowId, "s",
+                    JsonMapper.builder().build().readTree("{\"data\":\"value\"}"), false,
+                    now.minus(Duration.ofDays(daysAgo)));
+            store.saveSignal(signal);
+            return signal.id();
+        }
+
+        private WorkflowInstance active(String workflowId) {
+            return store.createInstance(WorkflowInstance.builder()
+                    .id(UUID.randomUUID())
+                    .workflowId(workflowId)
+                    .runId(UUID.randomUUID())
+                    .workflowType("test-workflow")
+                    .taskQueue("default")
+                    .status(WorkflowStatus.RUNNING)
+                    .serviceName("orders")
+                    .eventSequence(0)
+                    .startedAt(now.minus(Duration.ofDays(11)))
+                    .updatedAt(now)
+                    .version(0)
+                    .build());
+        }
+
+        private boolean exists(UUID signalId) {
+            return store.getAllSignals().stream().anyMatch(s -> s.id().equals(signalId));
+        }
+    }
+
     /** The fixture of {@code PostgresStoreHygieneTest.ScopedPurge}. */
     @Nested
     class ScopedPurge {

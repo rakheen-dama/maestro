@@ -282,9 +282,8 @@ class WorkflowExecutorConcurrencyTest {
         newExecutor(Map.of(), new TaskQueueLimits(1, 2));
         var tracking = new TrackingActivitiesImpl(2);
         var activities = new ActivityProxyFactory().createProxy(
-                TrackingActivities.class, tracking, store, null, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, EngineObserver.NOOP,
+                TrackingActivities.class, tracking, store, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), EngineObserver.NOOP,
                 executor.taskQueueGovernor());
 
         start("wf-fan-out", "fan-out", new ParallelActivitiesWorkflow(activities, 5));
@@ -375,9 +374,8 @@ class WorkflowExecutorConcurrencyTest {
 
     private BlockingActivities proxy() {
         return new ActivityProxyFactory().createProxy(
-                BlockingActivities.class, new BlockingActivitiesImpl(), store, null, null,
-                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(),
-                WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, EngineObserver.NOOP,
+                BlockingActivities.class, new BlockingActivitiesImpl(), store, null,
+                RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor(), EngineObserver.NOOP,
                 executor.taskQueueGovernor());
     }
 

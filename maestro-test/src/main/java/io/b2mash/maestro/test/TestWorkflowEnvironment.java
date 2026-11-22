@@ -975,13 +975,11 @@ public final class TestWorkflowEnvironment {
                     (Class) activityInterface,
                     activityImpl,
                     node.executor.guardedStore(),   // the node's one store guard and retry episode
-                    lock,
                     messaging,
                     retryPolicy,
                     timeout,
                     serializer,
                     retryExecutor,
-                    LOCK_KEY_PREFIX,
                     node.executor.observer(),       // the node's contained observer
                     node.executor.taskQueueGovernor()   // the node's activity limits (Builder)
             );

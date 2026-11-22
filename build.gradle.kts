@@ -89,7 +89,6 @@ val libraryModules = listOf(
     "maestro-store-postgres",
     "maestro-spring-boot-starter",
     "maestro-messaging-kafka",
-    "maestro-admin-client",
     "maestro-test",
 )
 

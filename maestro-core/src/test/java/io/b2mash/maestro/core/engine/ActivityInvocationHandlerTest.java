@@ -20,7 +20,6 @@ import io.b2mash.maestro.core.observe.EngineObserver;
 import io.b2mash.maestro.core.observe.RecordingEngineObserver;
 import io.b2mash.maestro.core.retry.RetryExecutor;
 import io.b2mash.maestro.core.retry.RetryPolicy;
-import io.b2mash.maestro.core.spi.DistributedLock;
 import io.b2mash.maestro.core.spi.LockHandle;
 import io.b2mash.maestro.core.spi.LifecycleEventType;
 import io.b2mash.maestro.core.spi.WorkflowLifecycleEvent;
@@ -66,7 +65,6 @@ class ActivityInvocationHandlerTest {
 
     private InMemoryWorkflowStore store;
     private RecordingMessaging messaging;
-    private RecordingLock lock;
     private PayloadSerializer serializer;
     private RetryExecutor retryExecutor;
     private ActivityProxyFactory factory;
@@ -75,7 +73,6 @@ class ActivityInvocationHandlerTest {
     void setUp() {
         store = new InMemoryWorkflowStore();
         messaging = new RecordingMessaging();
-        lock = new RecordingLock();
         serializer = new PayloadSerializer(MAPPER);
         retryExecutor = new RetryExecutor();
         factory = new ActivityProxyFactory();
@@ -242,9 +239,9 @@ class ActivityInvocationHandlerTest {
 
     private <T> T createProxy(Class<T> iface, T impl, boolean verifyArguments) {
         return factory.createProxy(
-                iface, impl, store, lock,
+                iface, impl, store,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
-                serializer, retryExecutor, WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX,
+                serializer, retryExecutor,
                 EngineObserver.NOOP, TaskQueueGovernor.UNBOUNDED, LifecycleEventSink.direct(messaging),
                 verifyArguments
         );
@@ -441,7 +438,7 @@ class ActivityInvocationHandlerTest {
     }
 
     @Test
-    @DisplayName("A live activity takes no lock (3.10)")
+    @DisplayName("A live activity takes no lock (3.10): the handler is given none (Issue 50)")
     void liveActivityTakesNoLock() {
         var result = new java.util.concurrent.atomic.AtomicReference<Greeting>();
         withContext(() -> result.set(
@@ -450,8 +447,6 @@ class ActivityInvocationHandlerTest {
         assertEquals(List.of(EventType.ACTIVITY_COMPLETED),
                 store.appendedEvents.stream().map(WorkflowEvent::eventType).toList(),
                 "the live call recorded its one outcome");
-        assertEquals(List.of(), lock.acquiredKeys, "a live activity takes no lock (3.10)");
-        assertEquals(0, lock.releasedCount);
     }
 
     // ── Messaging behavior tests ──────────────────────────────────────
@@ -717,7 +712,7 @@ class ActivityInvocationHandlerTest {
 
     private <T> T createProxy(Class<T> iface, T impl) {
         return factory.createProxy(
-                iface, impl, store, lock, messaging,
+                iface, impl, store, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
         );
@@ -726,15 +721,15 @@ class ActivityInvocationHandlerTest {
     private <T> T createProxy(Class<T> iface, T impl, RetryPolicy policy, Duration startToCloseTimeout,
                               EngineObserver observer) {
         return factory.createProxy(
-                iface, impl, store, lock, messaging,
+                iface, impl, store, messaging,
                 policy, startToCloseTimeout,
-                serializer, retryExecutor, WorkflowInstanceLockManager.DEFAULT_KEY_PREFIX, observer
+                serializer, retryExecutor, observer
         );
     }
 
     private <T> T createProxy(Class<T> iface, T impl, RetryPolicy policy, Duration startToCloseTimeout) {
         return factory.createProxy(
-                iface, impl, store, lock, messaging,
+                iface, impl, store, messaging,
                 policy, startToCloseTimeout,
                 serializer, retryExecutor
         );
@@ -753,7 +748,7 @@ class ActivityInvocationHandlerTest {
 
     private <T> T createProxyWithoutMessaging(Class<T> iface, T impl) {
         return factory.createProxy(
-                iface, impl, store, lock, null,
+                iface, impl, store, null,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30),
                 serializer, retryExecutor
         );
@@ -1042,37 +1037,6 @@ class ActivityInvocationHandlerTest {
         @Override
         public boolean markTimerCancelled(UUID timerId) {
             throw new UnsupportedOperationException();
-        }
-    }
-
-    /**
-     * Recording distributed lock that tracks acquisitions and releases.
-     */
-    static class RecordingLock implements DistributedLock {
-
-        final List<String> acquiredKeys = new ArrayList<>();
-        int releasedCount = 0;
-
-        @Override
-        public Optional<LockHandle> tryAcquire(String key, Duration ttl) {
-            acquiredKeys.add(key);
-            return Optional.of(new LockHandle(key, UUID.randomUUID().toString(), Instant.now().plus(ttl)));
-        }
-
-        @Override
-        public void release(LockHandle handle) {
-            releasedCount++;
-        }
-
-        @Override
-        public boolean renew(LockHandle handle, Duration ttl) {
-            // no-op
-            return true;
-        }
-
-        @Override
-        public boolean trySetLeader(String electionKey, String candidateId, Duration ttl) {
-            return false;
         }
     }
 

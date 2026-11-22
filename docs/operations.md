@@ -1281,7 +1281,8 @@ candidate is deleted with its entire history — every event, every signal whose
 `workflow_instance_id` is the instance (consumed or not), every timer whatever
 its status (a terminated workflow leaves `PENDING` ones behind) — and then the
 instance row. Instances with a `NULL` `completed_at` are never candidates, and
-orphaned signals (a `NULL` `workflow_instance_id`) are never touched.
+orphaned signals (a `NULL` `workflow_instance_id`) are never touched by the
+sweeper; the signal janitor purges them (below).
 
 Every node runs a sweep loop (`maestro-retention-sweeper` virtual thread, first
 sweep at startup, then every `maestro.retention.interval`), but only the
@@ -1334,6 +1335,23 @@ wait at most one batch on each other's row locks, and the later one then ends
 its sweep early (traced, not tested). The two purges coexist; the retention
 sweeper later removes the workflow itself.
 
+Each janitor sweep then purges **orphaned signals** (Issue 83),
+`maestro.signal.orphan-retention` (7 d) after they were received: unconsumed
+rows with a `NULL` `workflow_instance_id` whose workflow id has no instance
+that could still consume them — none was ever started, retention already
+purged it, or it `COMPLETED` or was `TERMINATED` (a delivery that raced the
+start can leave such a row unadopted; it is consumed by workflow id all the
+same). An active or `FAILED` instance keeps its orphans however old they are;
+a workflow started within the retention adopts and consumes its signal. An
+orphan names no service, so this phase is not service-scoped: each node
+purges every orphan of its tables, which belong to its service alone. Same
+batches, pause and per-sweep cap as above (`PostgresStoreHygieneTest$OrphanPurge`).
+Adoption itself has one owner: the engine's start calls
+`adoptOrphanedSignals` once, after `createInstance` (which does not adopt); if
+that call fails with an exception the start logs one `WARN` naming the
+workflow and continues. The purge has no index on `received_at`, so each batch
+scans the table's unconsumed orphans — fine while orphans are few.
+
 ### 11.2 What a purge means downstream
 
 - **The admin dashboard keeps its own copy.** It consumed the lifecycle events
@@ -1347,7 +1365,8 @@ sweeper later removes the workflow itself.
   same ID succeed where it would have thrown `WorkflowAlreadyExistsException`.
   That new instance **adopts any orphaned signals** still addressed to that
   ID (orphans survive the purge precisely because the SPI promises never to
-  discard a signal). If a late duplicate signal for the *old* run would be
+  discard a signal; the signal janitor removes them only once they are older
+  than `maestro.signal.orphan-retention`). If a late duplicate signal for the *old* run would be
   wrong for the *new* run, keep the ID unique across time (include a date or
   version in it) rather than relying on the engine to tell them apart.
 - **A late signal races the purge benignly.** A signal delivered for a
@@ -1384,8 +1403,9 @@ purged anything logs one `INFO` line with its counts; a store failure logs
 
 - `Retention sweep purged {} workflow instance(s) with {} event(s), {} signal(s) and {} timer(s) in {} batch(es)`
 - `Signal janitor purged {} unconsumed signal(s) of service '{}' workflows finished before {} in {} batch(es)`
-- `Signal janitor started (interval={}, terminalRetention={}, batchSize={}, service={})`
-- `Signal janitor ended this sweep after {} batches ({} signal(s)); the rest is left to the next sweep, in {}` — the janitor reached its 1,000-batch cap. Once after a large backlog is expected; every interval means a backlog above a million stale signals, or a custom store whose delete reports more rows than it removes.
+- `Signal janitor purged {} orphaned signal(s) received before {} that no workflow can consume, in {} batch(es)` (Issue 83)
+- `Signal janitor started (interval={}, terminalRetention={}, orphanRetention={}, batchSize={}, service={})`
+- `Signal janitor ended this sweep after {} batches ({} signal(s)); the rest is left to the next sweep, in {}` — the janitor reached its 1,000-batch cap. Once after a large backlog is expected; every interval means a backlog above a million stale signals, or a custom store whose delete reports more rows than it removes. `… ended this sweep's orphan purge after …` is the same cap on the orphan phase.
 
 ### 11.4 Deploying it
 

@@ -85,8 +85,8 @@ class FencedOutcomeObserverTest {
     }
 
     private Step proxy(Step impl) {
-        return new ActivityProxyFactory().createProxy(Step.class, impl, store, null, null, RetryPolicy.noRetry(),
-                Duration.ofSeconds(30), serializer, new RetryExecutor(), "maestro:lock:", observer);
+        return new ActivityProxyFactory().createProxy(Step.class, impl, store, null, RetryPolicy.noRetry(),
+                Duration.ofSeconds(30), serializer, new RetryExecutor(), observer);
     }
 
     /** Fences every activity-outcome append, as a store would once another node adopted the run. */

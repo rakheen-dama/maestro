@@ -380,7 +380,6 @@ maestro/
 ├── maestro-store-postgres          # Postgres store, lock and LISTEN/NOTIFY wake + Flyway migrations
 ├── maestro-messaging-kafka         # Kafka WorkflowMessaging implementation (the only transport)
 ├── maestro-admin                   # Standalone dashboard (Spring Boot + Thymeleaf + HTMX)
-├── maestro-admin-client            # A plain AdminEventPublisher class, not auto-configured; services do not need it (Issue 52)
 ├── maestro-test                    # In-memory engine, time control, TestWorkflowEnvironment
 ├── maestro-integration-tests       # Real-backend suites (not published)
 ├── maestro-samples/

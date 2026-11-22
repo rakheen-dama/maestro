@@ -95,7 +95,7 @@ class WorkflowExecutorRetryTest {
     void retryOfExhaustedActivity_reExecutesFailedStepAndCompletes() throws Exception {
         var activityImpl = new FlakyThreeStepActivitiesImpl();
         var proxy = new ActivityProxyFactory().createProxy(
-                FlakyThreeStepActivities.class, activityImpl, store, null, messaging,
+                FlakyThreeStepActivities.class, activityImpl, store, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
@@ -211,7 +211,7 @@ class WorkflowExecutorRetryTest {
     void duplicateRetry_secondDeliverySeesNonFailed_noOp() throws Exception {
         var activityImpl = new FlakyThreeStepActivitiesImpl();
         var proxy = new ActivityProxyFactory().createProxy(
-                FlakyThreeStepActivities.class, activityImpl, store, null, messaging,
+                FlakyThreeStepActivities.class, activityImpl, store, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
@@ -237,7 +237,7 @@ class WorkflowExecutorRetryTest {
     void concurrentRetry_exactlyOneLaunch() throws Exception {
         var activityImpl = new FlakyThreeStepActivitiesImpl();
         var proxy = new ActivityProxyFactory().createProxy(
-                FlakyThreeStepActivities.class, activityImpl, store, null, messaging,
+                FlakyThreeStepActivities.class, activityImpl, store, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
@@ -400,7 +400,7 @@ class WorkflowExecutorRetryTest {
         var activityImpl = new FlakyThreeStepActivitiesImpl();
         activityImpl.faultFixed.set(true);
         var proxy = new ActivityProxyFactory().createProxy(
-                FlakyThreeStepActivities.class, activityImpl, store, null, messaging,
+                FlakyThreeStepActivities.class, activityImpl, store, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");
@@ -452,7 +452,7 @@ class WorkflowExecutorRetryTest {
     void deletedMemosOnStillFailed_isHarmless() throws Exception {
         var activityImpl = new FlakyThreeStepActivitiesImpl();
         var proxy = new ActivityProxyFactory().createProxy(
-                FlakyThreeStepActivities.class, activityImpl, store, null, messaging,
+                FlakyThreeStepActivities.class, activityImpl, store, messaging,
                 RetryPolicy.noRetry(), Duration.ofSeconds(30), serializer, new RetryExecutor());
         var workflow = new ThreeStepWorkflow(proxy);
         var method = ThreeStepWorkflow.class.getMethod("run");

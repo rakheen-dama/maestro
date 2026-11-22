@@ -726,6 +726,18 @@ public class MaestroProperties {
      *                            unconsumed signals are kept before the
      *                            janitor purges them. {@code FAILED} workflows
      *                            keep theirs, because they can be retried.
+     * @param orphanRetention     how long a signal delivered before its
+     *                            workflow exists (an orphan, with no
+     *                            instance) waits for the workflow to start:
+     *                            a workflow started within it adopts and
+     *                            consumes the signal. Older orphans that no
+     *                            workflow can consume — none was started under
+     *                            the id, or it {@code COMPLETED} or was
+     *                            {@code TERMINATED} — are purged by the
+     *                            janitor; an active or {@code FAILED}
+     *                            workflow keeps them however old (Issue 83).
+     *                            Orphans carry no service name, so every
+     *                            node purges every orphan of its tables.
      * @param wakeNotify          the cross-node wake over Postgres
      *                            {@code LISTEN}/{@code NOTIFY}
      */
@@ -733,12 +745,13 @@ public class MaestroProperties {
             @DefaultValue("30s") Duration wakeRecheckInterval,
             @DefaultValue("1h") Duration janitorInterval,
             @DefaultValue("7d") Duration terminalRetention,
+            @DefaultValue("7d") Duration orphanRetention,
             @DefaultValue WakeNotifyProperties wakeNotify
     ) {
         /** @return the defaults documented above */
         public static SignalProperties defaults() {
             return new SignalProperties(Duration.ofSeconds(30), Duration.ofHours(1), Duration.ofDays(7),
-                    WakeNotifyProperties.defaults());
+                    Duration.ofDays(7), WakeNotifyProperties.defaults());
         }
     }
 

@@ -47,7 +47,7 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 5. ~~[69](#issue-69) — Maestro's Kafka listener containers are not lifecycle beans: they consume through the drain, and `@MaestroSignalListener`'s stop after the `DataSource`~~ — closed (P1)
 6. ~~[66](#issue-66) — A timed-out health probe interrupts its virtual thread, which can close a pooled connection mid-query~~ — closed (P1)
 
-**`blocks-1.0`** (4 open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 48 and 49 closed 2026-11-22)
+**`blocks-1.0`** (none open; 89 closed 2026-11-20, 43, 44 and 45 closed 2026-11-21, 42, 48, 49, 83, 50, 52 and 85 closed 2026-11-22)
 
 1. ~~[44](#issue-44) — Workflow input is read with the raw parameter class~~ — closed (generic parameter type; unreadable input refused at start, 2026-11-21)
 2. ~~[49](#issue-49) — Future-typed activity results are not rejected at startup~~ — closed (refused at proxy creation: `UnsupportedActivityReturnTypeException`, 2026-11-22)
@@ -55,10 +55,10 @@ triage: [31](#issue-31) (out of scope), [62](#issue-62) (out of scope), [74](#is
 4. ~~[43](#issue-43) — Workflow input on Postgres differs between the first run and recovery~~ — closed (the first run launches from the stored input, 2026-11-21)
 5. ~~[42](#issue-42) — A replayed activity failure keeps only the exception's type and message~~ — closed (the first run throws the failure rebuilt from its record; `@FailureDetails` opt-in, 2026-11-22; the rest is [93](#issue-93))
 6. ~~[45](#issue-45) — `collectSignals` throws `NullPointerException` on a signal with a null payload~~ — closed (a `null` element; `parallel()`'s null branch result fixed with it, 2026-11-21)
-7. [83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged
-8. [50](#issue-50) — The activity proxy keeps two ignored lock parameters
-9. [52](#issue-52) — `maestro-admin-client` has no wired component
-10. [85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package
+7. ~~[83](#issue-83) — Orphaned-signal adoption has two owners; an unadopted signal is never purged~~ — closed (the engine adopts; the janitor purges orphans past `maestro.signal.orphan-retention`, 2026-11-22)
+8. ~~[50](#issue-50) — The activity proxy keeps two ignored lock parameters~~ — closed (removed; internal package, no deprecation, 2026-11-22)
+9. ~~[52](#issue-52) — `maestro-admin-client` has no wired component~~ — closed (option 1: the module removed, 2026-11-22)
+10. ~~[85](#issue-85) — The upgrade fixtures have no procedure for a core API change that breaks a frozen package~~ — closed (procedure in `RELEASING.md`; drivers read git's stderr apart, 2026-11-22)
 11. ~~[89](#issue-89) — A workflow exception thrown while replaying recorded history is written at an occupied slot and reported as `stale_run`~~ — closed (stands down as `replay_exception`)
 
 **`limitation`** (26)
@@ -169,8 +169,6 @@ maestro-messaging-kafka       Kafka transport (the only one).
 maestro-test                  In-memory SPIs, TestWorkflowEnvironment, DeterminismChecker.
 maestro-integration-tests     Real-backend suites (not published).
 maestro-admin                 Dashboard.
-maestro-admin-client          One hand-built lifecycle-event publisher; no
-                              auto-configuration (Issue 52).
 maestro-samples/…             Demos, incl. the loan-origination E2E and
                               sample-perf (the k6 load-test app, not published).
 ```
@@ -464,9 +462,9 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [47](#issue-47) | A stored payload the store cannot parse is logged at `DEBUG` only, and every later read of it throws | Library gap — operability | Low | `limitation` — Open |
 | [48](#issue-48) | No startup check that the configured mapper reads back what it writes | Library gap — configuration safety | Medium | **Resolved** |
 | [49](#issue-49) | Future-typed activity results are not rejected at startup | Library gap — API validation | Medium | **Resolved** |
-| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | `blocks-1.0` — Open |
+| [50](#issue-50) | The activity proxy keeps two ignored lock parameters | Library gap — API design | Low | **Resolved** |
 | [51](#issue-51) | Timer deadlines are armed on the scheduling node's clock | Library gap — clock skew | Low | `limitation` — Open |
-| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | `blocks-1.0` — Open — maintainer to decide |
+| [52](#issue-52) | `maestro-admin-client` has no wired component | Product decision — module scope | Low | **Resolved** |
 | [53](#issue-53) | The engine's Kafka clients ignore Boot's factory customizers, and take only bootstrap servers from `KafkaConnectionDetails` | Library gap — Spring Boot integration | Low | `limitation` — Open |
 | [54](#issue-54) | An unresolvable Kafka bootstrap host fails startup once a `@MaestroSignalListener` exists | Library gap — startup behaviour, docs | Low | `limitation` — Open |
 | [55](#issue-55) | A host with its own `ProducerFactory` and no `KafkaTemplate` fails startup with no failure analysis | Library gap — error reporting | Low | `limitation` — Open |
@@ -496,9 +494,9 @@ unknowns into two piles, things now proven to work and a defect backlog.
 | [80](#issue-80) | Shutdown's drain can miss a run registered after it began, and not wait for it | Library gap — shutdown | Low | **Closed** (P1: fixed) |
 | [81](#issue-81) | An `Error` from an observer callback escapes the engine's guard | Library gap — observer isolation | Low | **Resolved** (P2) |
 | [82](#issue-82) | Two `parallel()` branches awaiting the same signal name at once collide on one park key | Library gap — parallel signals | Low | `limitation` — Open |
-| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | `blocks-1.0` — Open |
+| [83](#issue-83) | Orphaned-signal adoption has two owners; an unadopted signal is never purged | Library gap — SPI contract, retention | Low | **Resolved** |
 | [84](#issue-84) | The wake listener turns autocommit on for its pooled connection and never restores it | Library gap — connection hygiene | Low | `limitation` — Open |
-| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | `blocks-1.0` — Open |
+| [85](#issue-85) | The upgrade fixtures have no procedure for a core API change that breaks a frozen package | Testing gap — upgrade fixtures | Low | **Resolved** |
 | [86](#issue-86) | A store fault the guard retries away is logged at `DEBUG` only and counted nowhere | Library gap — operability | Low | **Resolved** (P2) |
 | [87](#issue-87) | `shutdown()` can return while a run it drained still holds its instance lock | Library defect — shutdown, test kit | Low (production), High (test kit) | **Resolved** |
 | [88](#issue-88) | During a rolling deploy, an older node's Retry can delete failure memos from a run a newer node just reopened | Library gap — mixed-version deploy | Low | `blocks-pilot` — Open |
@@ -4360,7 +4358,25 @@ replaced by that test.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Public API cleanup (ignored parameters) before the API freezes.
 
-> **Open.** Filed by WP2, wake permits, timer clock and activity lock
+> **Label: `blocks-1.0`. Closed (2026-11-22): fixed, the parameters removed**
+> (branch `chore/issues-50-52-83-85-housekeeping`). The done-when holds: no
+> `ActivityInvocationHandler` constructor or `createProxy` overload takes a
+> `DistributedLock` or a lock key prefix, and `DefaultWorkflowOperations`
+> has no `distributedLock` field (nor the constructor parameter that fed
+> it). Not the builder this entry suggested: dropping the two parameters
+> leaves five overloads per type (the one that differed only by the prefix
+> collapsed into its neighbour), which every call site keeps with two
+> arguments fewer, so a builder would have rewritten every call for no
+> behaviour. Deprecation-free, because all three types are in
+> `io.b2mash.maestro.core.engine`, internal until 1.0: the API
+> compatibility report lists the change under "Internal packages" and never
+> in the public verdict. Callers migrated: the starter's
+> `ActivityStubBeanPostProcessor` (its unused lock and prefix fields went
+> too), the test kit, `MaestroEngineHarness`, and the tests; the frozen
+> upgrade packages call none of them. Release notes § "Removed — the ignored
+> lock parameters".
+
+> Filed by WP2, wake permits, timer clock and activity lock
 > (2026-11-16, branch `fix/wake-timers-activity-lock`). Recorded, not fixed.
 
 **Kind:** Library gap — API design. **Severity:** Low (dead arguments, no
@@ -4456,7 +4472,24 @@ the database clock, and the kit's `advanceTime` tests pass unchanged.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** Module scope is a product decision before 1.0.
 
-> **Open.** Filed by WP7, Kafka coexistence
+> **Label: `blocks-1.0`. Closed (2026-11-22): option 1, the module removed**
+> (branch `chore/issues-50-52-83-85-housekeeping`). The simplest option, and
+> the only one that needs no new purpose invented for the module: option 3
+> would need a use nobody has, and option 2 would keep a class nobody calls.
+> `maestro-admin-client` (its `AdminEventPublisher`, `package-info.java` and
+> both tests) is deleted; it is gone from `settings.gradle.kts`, the BOM, the
+> aggregate Javadoc list, `RELEASING.md`'s artifact table, both issue
+> templates and the PR template, `README.md`, `CONTRIBUTING.md`, `CLAUDE.md`,
+> `docs/maestro-architecture.md`, `docs/maestro-prd.md`, `docs/admin.md`,
+> `docs/test-plan.md`, §1 of this file and the root `Dockerfile`.
+> `maestro-admin` depends on `maestro-core` directly, as traced. The API
+> compatibility report (`maestro-integration-tests/api-compat`) no longer
+> resolves the module on the new side and lists it as removed until the
+> newest previous release stops publishing it. Older release notes and
+> plans keep their historical mentions. Release notes § "Removed — the
+> `maestro-admin-client` module".
+
+> Filed by WP7, Kafka coexistence
 > (2026-11-16, branch `fix/kafka-coexistence`). Recorded, not decided: this is
 > the maintainer's call.
 
@@ -6046,7 +6079,46 @@ documented and the error names it.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** An SPI contract with two owners, and rows that are never purged.
 
-> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
+> **Label: `blocks-1.0`. Closed (2026-11-22): fixed, the janitor purges
+> orphans** (branch `chore/issues-50-52-83-85-housekeeping`). **One owner:**
+> the engine — `WorkflowExecutor.startWorkflow` calls `adoptOrphanedSignals`
+> once, after `createInstance`, which no longer adopts in the JDBC store (the
+> in-memory store never did); both Javadocs say so. **The purge**, the
+> entry's second option: new `WorkflowStore.deleteOrphanedSignalsBefore(Instant,
+> int)` deletes unconsumed `NULL`-instance rows received before the cutoff
+> whose workflow id has no instance in a status other than
+> `COMPLETED`/`TERMINATED` — so a never-started id, an instance retention
+> already purged, and the race's row once its workflow finished; an active
+> or `FAILED` instance keeps them. The signal janitor runs it after its
+> terminal-instance phase, in batches of its own (1,000, at most 1,000 per
+> sweep), with a retention of its own, `maestro.signal.orphan-retention`
+> (default 7d, documented in `docs/configuration.md`): reusing
+> `terminal-retention` would let an operator who shortens it for finished
+> workflows cut how long a pre-delivered signal waits. A workflow started
+> within the retention still adopts and consumes its signal. **Not
+> service-scoped:** an orphan row carries no service name and no instance,
+> so nothing attributes it; every node's janitor purges every orphan of its
+> tables, which are one service's (services never share Maestro tables). No
+> migration. **Not index-supported** (narrowed after review): no index is on
+> `received_at` — `idx_wf_signal_orphan` is `(workflow_id, consumed)` — so
+> each batch scans this table's unconsumed orphans; fine at the expected
+> volumes, and a partial index on `received_at` is a possible later
+> migration. **A failed adoption is contained** (review): a
+> `RuntimeException` from the start's one adoption, `StoreUnavailableException`
+> included, is logged at `WARN` with the workflow id and the start goes on
+> (the row is committed and adoption is bookkeeping); an `Error`, a
+> `MaestroControlFlowError` above all, still propagates and releases the lock
+> (`AdoptionLockLeakTest`). The SPI default deletes nothing. Tests:
+> `PostgresStoreHygieneTest$OrphanPurge` (this entry's done-when — a `NULL`
+> row of a workflow completed past the retention is gone — the batch bound
+> `[2, 1, 0]`, the survivors, a start after a sweep inside the retention),
+> its in-memory twin, `SignalJanitorBatchingTest` (the orphan phase, its
+> cutoff and batch cap), `PostgresWorkflowStoreTest`
+> (`createInstance` leaves the orphan), `JdbcCreateInstanceReturningInputTest`
+> (one statement), `EnginePostgresSignalIT.orphanSignal_isAdoptedOnWorkflowStart`
+> (a six-day-old orphan survives a sweep and is adopted by the engine's start).
+
+> Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
 > final review; rewritten after the WP13 review. Traced, not tested.
 
 **Kind:** Library gap — SPI contract, retention. **Severity:** Low.
@@ -6140,7 +6212,31 @@ autocommit off sees it off again after the listener releases the connection.
 
 > **Label (pilot-readiness P3 triage, 2026-11-18): `blocks-1.0`.** The upgrade fixtures need the procedure before the first breaking core API change.
 
-> **Open.** Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
+> **Label: `blocks-1.0`. Closed (2026-11-22): the procedure is written**
+> (branch `chore/issues-50-52-83-85-housekeeping`). `RELEASING.md` § Upgrade
+> fixtures › "When a core change stops a frozen package compiling": the
+> driver is unpinned and adapted in the change's own commit; for the pinned
+> `SeededHistoryWorkflows` the default is to keep the old API compiling
+> (deprecated, behaving as before) while any frozen package uses it, and
+> only with the maintainer's approval, when a member cannot stay, a
+> one-commit migration of exactly the lines the compiler rejects. That
+> commit keeps the captured bytes as `SeededHistoryWorkflows.java.captured`
+> beside the dump (still checked against the untouched manifest), pins the
+> edited file by a new SHA-256 literal in the fixture's `SeededFixture`
+> (the guard extension is part of the first migration), and must leave
+> `RECORDED_EVENTS` and `APPENDED` unchanged with every suite over the
+> fixture green; never a re-capture or a deletion. Of the entry's two
+> suggestions, the shim is the default; a separate source set compiled
+> against the tag was not taken, because the upgrade tests run the frozen
+> workflows on this build's engine, where code compiled against an older
+> API fails at link time on the same change. No guard test added: the
+> done-when asks for the procedure, and the guard extension it describes
+> has nothing to check until a fixture is migrated. Every capture driver
+> (`cbf5a2a`, `v0_3_0_rc_1`–`v0_3_0_rc_3`; none is pinned) now reads git's
+> standard output only, its standard error going to a file shown only when
+> git fails.
+
+> Filed by WP13, docs and housekeeping (2026-11-17), from the WP9
 > final review.
 
 **Kind:** Testing gap — upgrade fixtures. **Severity:** Low.

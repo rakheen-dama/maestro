@@ -121,6 +121,7 @@ class MaestroPropertiesBindingTest {
                         "maestro.signal.wake-recheck-interval=5s",
                         "maestro.signal.janitor-interval=2h",
                         "maestro.signal.terminal-retention=3d",
+                        "maestro.signal.orphan-retention=12d",
                         "maestro.retention.enabled=false",
                         "maestro.retention.interval=15m",
                         "maestro.retention.completed-retention=10d",
@@ -145,6 +146,7 @@ class MaestroPropertiesBindingTest {
                     assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(5));
                     assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(2));
                     assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(3));
+                    assertThat(properties.getSignal().orphanRetention()).isEqualTo(Duration.ofDays(12));
                     var retention = properties.getRetention();
                     assertThat(retention.enabled()).isFalse();
                     assertThat(retention.interval()).isEqualTo(Duration.ofMinutes(15));
@@ -211,6 +213,7 @@ class MaestroPropertiesBindingTest {
             assertThat(properties.getSignal().wakeRecheckInterval()).isEqualTo(Duration.ofSeconds(30));
             assertThat(properties.getSignal().janitorInterval()).isEqualTo(Duration.ofHours(1));
             assertThat(properties.getSignal().terminalRetention()).isEqualTo(Duration.ofDays(7));
+            assertThat(properties.getSignal().orphanRetention()).isEqualTo(Duration.ofDays(7));
             assertThat(properties.getSignal().wakeNotify().enabled()).isTrue();
             var retention = properties.getRetention();
             assertThat(retention.enabled()).isTrue();

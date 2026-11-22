@@ -185,10 +185,19 @@ class SeededHistoryCapture {
         var command = new ArrayList<String>();
         command.add("git");
         command.addAll(List.of(args));
-        var process = new ProcessBuilder(command).redirectErrorStream(true).start();
-        var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertEquals(0, process.waitFor(), String.join(" ", command) + " failed: " + output);
-        return output;
+        // Only standard output is parsed. Standard error (a git warning, say) goes to a file that
+        // is shown only when git fails, so it can never make the capture refuse (Issue 85).
+        var stderr = Files.createTempFile("seeded-history-git", ".stderr");
+        try {
+            var process = new ProcessBuilder(command).redirectError(stderr.toFile()).start();
+            var output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            int exit = process.waitFor();
+            var errors = exit == 0 ? "" : Files.readString(stderr, StandardCharsets.UTF_8);
+            assertEquals(0, exit, String.join(" ", command) + " failed: " + output + errors);
+            return output;
+        } finally {
+            Files.deleteIfExists(stderr);
+        }
     }
 
     // ── nodes ─────────────────────────────────────────────────────────────

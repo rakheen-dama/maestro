@@ -28,7 +28,6 @@ body:
         - maestro-store-jdbc
         - maestro-messaging-kafka
         - maestro-admin
-        - maestro-admin-client
         - maestro-test
         - Other / Not sure
     validations:

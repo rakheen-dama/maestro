@@ -62,8 +62,9 @@ import static org.awaitility.Awaitility.await;
  * {@code maestro.shutdown.timeout}, {@code maestro.signal.wake-recheck-interval},
  * {@code maestro.lock.key-prefix}, and
  * {@code maestro.retry.default-*} for the default {@code @ActivityStub}
- * retry policy. {@code maestro.signal.janitor-interval} and
- * {@code maestro.signal.terminal-retention} (C14b) are pinned the same way,
+ * retry policy. {@code maestro.signal.janitor-interval},
+ * {@code maestro.signal.terminal-retention} (C14b) and
+ * {@code maestro.signal.orphan-retention} (Issue 83) are pinned the same way,
  * through {@link StartupRecoveryRunner}; so are {@code maestro.retention.*},
  * {@code maestro.worker.*} (the listed task queues, the
  * {@code default-concurrency}/{@code default-activity-concurrency} bound on
@@ -269,9 +270,10 @@ class MaestroAutoConfigurationConfigSeamsTest {
     }
 
     @Test
-    @DisplayName("maestro.signal.janitor-interval and maestro.signal.terminal-retention reach the executor's signal janitor")
+    @DisplayName("maestro.signal.janitor-interval, terminal-retention and orphan-retention reach the executor's signal janitor")
     void signalJanitorSettingsReachTheExecutor() {
-        runner.withPropertyValues("maestro.signal.janitor-interval=2h", "maestro.signal.terminal-retention=3d")
+        runner.withPropertyValues("maestro.signal.janitor-interval=2h", "maestro.signal.terminal-retention=3d",
+                        "maestro.signal.orphan-retention=12d")
                 .run(context -> {
                     assertThat(context).hasNotFailed();
                     // ApplicationContextRunner never invokes ApplicationRunner beans
@@ -280,8 +282,9 @@ class MaestroAutoConfigurationConfigSeamsTest {
                     var executor = context.getBean(WorkflowExecutor.class);
                     assertThat(executor.isSignalJanitorRunning()).isTrue();
                     assertThat(executor.signalJanitorSettings())
-                            .as("the configured 2h/3d must reach the engine, not the 1h/7d defaults")
-                            .isEqualTo(new WorkflowExecutor.SignalJanitorSettings(Duration.ofHours(2), Duration.ofDays(3)));
+                            .as("the configured 2h/3d/12d must reach the engine, not the 1h/7d/7d defaults")
+                            .isEqualTo(new WorkflowExecutor.SignalJanitorSettings(Duration.ofHours(2), Duration.ofDays(3),
+                                    Duration.ofDays(12)));
                     executor.shutdown();
                     assertThat(executor.isSignalJanitorRunning()).isFalse();
                 });

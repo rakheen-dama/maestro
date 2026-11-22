@@ -93,7 +93,7 @@ class ReplayDriftStandDownTest {
             invocations.incrementAndGet();
             return "live";
         };
-        acts = new ActivityProxyFactory().createProxy(Acts.class, impl, store, null, null,
+        acts = new ActivityProxyFactory().createProxy(Acts.class, impl, store, null,
                 RetryPolicy.defaultPolicy(), Duration.ofSeconds(5), serializer, new RetryExecutor());
     }
 

@@ -226,7 +226,6 @@ graph TB
 | `maestro-store-postgres` | Postgres `WorkflowStore`, table-backed `DistributedLock`, LISTEN/NOTIFY signal wake, Flyway migrations | Yes (auto-configuration only) |
 | `maestro-messaging-kafka` | Kafka `WorkflowMessaging` implementation | Yes |
 | `maestro-admin` | Standalone monitoring dashboard | Yes |
-| `maestro-admin-client` | A plain `AdminEventPublisher` class, not auto-configured; no service needs it (services publish lifecycle events through `maestro-messaging-kafka` when `maestro.admin.events.enabled=true`). Its future is [Issue 52](docs/open-issues.md#issue-52) | Minimal |
 | `maestro-bom` | Gradle/Maven platform aligning all module versions | No |
 | `maestro-test` | In-memory engine for testing | No |
 

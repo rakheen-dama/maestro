@@ -127,8 +127,8 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
         }
 
         @Test
-        @DisplayName("createInstance adopts orphaned signals atomically")
-        void createInstance_adoptsOrphanedSignals() {
+        @DisplayName("createInstance does not adopt orphaned signals: the engine's adoptOrphanedSignals call does (Issue 83)")
+        void createInstance_leavesOrphansToTheEnginesAdoption() {
             // Save orphan signal (null instanceId)
             var orphan = new WorkflowSignal(
                     UUID.randomUUID(), null, "order-orphan", "payment.result",
@@ -136,14 +136,17 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     Instant.now().truncatedTo(ChronoUnit.MILLIS));
             store.saveSignal(orphan);
 
-            // Create the workflow — should adopt the orphan
             var instance = newInstance("order-orphan");
             store.createInstance(instance);
 
-            // Verify the signal now has the instance ID
+            // Still an orphan, yet readable by workflow id: adoption is bookkeeping, not delivery.
             var signals = store.getUnconsumedSignals("order-orphan", "payment.result");
             assertEquals(1, signals.size());
-            assertEquals(instance.id(), signals.getFirst().workflowInstanceId());
+            assertNull(signals.getFirst().workflowInstanceId(), "createInstance adopted the orphan");
+
+            store.adoptOrphanedSignals(instance.workflowId(), instance.id());
+            assertEquals(instance.id(),
+                    store.getUnconsumedSignals("order-orphan", "payment.result").getFirst().workflowInstanceId());
         }
 
         @Test
@@ -1020,7 +1023,8 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
             store.saveSignal(orphanOther);
 
             var instance = newInstance("order-adopt");
-            store.createInstance(instance); // adopts orphan1, not orphanOther
+            store.createInstance(instance);
+            store.adoptOrphanedSignals(instance.workflowId(), instance.id()); // adopts orphan1, not orphanOther
 
             // orphan1 should be adopted
             var adopted = store.getUnconsumedSignals("order-adopt", "sig-a");
@@ -1078,7 +1082,8 @@ class PostgresWorkflowStoreTest extends PostgresTestSupport {
                     null, false, Instant.now().truncatedTo(ChronoUnit.MILLIS), TRACEPARENT));
 
             var instance = newInstance("order-trace-adopt");
-            store.createInstance(instance); // adopts the orphan
+            store.createInstance(instance);
+            store.adoptOrphanedSignals(instance.workflowId(), instance.id()); // adopts the orphan
 
             var signals = store.getUnconsumedSignals("order-trace-adopt", "payment.result");
             assertEquals(1, signals.size());
