@@ -5,3 +5,4 @@ maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0
 maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0_3_0_rc_2/SeededHistoryWorkflows.java -text
 maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0_3_0_rc_3/SeededHistoryWorkflows.java -text
 maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0_3_0_rc_4/SeededHistoryWorkflows.java -text
+maestro-integration-tests/src/test/java/io/b2mash/maestro/integration/upgrade/v0_3_0_rc_5/SeededHistoryWorkflows.java -text
