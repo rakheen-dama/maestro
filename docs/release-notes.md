@@ -1,6 +1,6 @@
 # Release Notes — Maestro
 
-## Unreleased — after 0.3.0-rc.4
+## 0.3.0-rc.5
 
 ### Fixed — a method inherited from a generic parent is read as the subtype binds it (Issue 94)
 
